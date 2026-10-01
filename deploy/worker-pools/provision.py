@@ -431,7 +431,7 @@ def inspect(config, cloud):
         expected = {
             config["cloud_id"]: set(),
             config["folder_id"]: {"compute.editor"},
-            config["canonical_folder_id"]: {"vpc.user"},
+            config["canonical_folder_id"]: {"vpc.user", "monitoring.viewer"},
         }[resource]
         if (
             {row.get("roleId") for row in manager} != expected

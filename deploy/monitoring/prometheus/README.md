@@ -99,8 +99,8 @@ positive Prometheus grid steps, matching source/target kinds and references, res
 promtool syntax and behavior scenarios. It wraps the actual rendered Prometheus dashboard queries
 as temporary recording rules, then runs five dashboard fixtures for independent queue/cloud
 freshness, idle zero versus no data, combined runtime source age, disjoint histogram intervals and
-accepted-preview zero versus a missing source. It validates both the committed default-off worker profile
-and the enabled profile against the same base rules plus worker saturation, reset, missing-source,
+accepted-preview zero versus a missing source. It validates both the committed enabled worker profile
+and the disabled profile against the same base rules plus worker saturation, reset, missing-source,
 sender-outage and idle-zero fixtures. No credential or network call to Yandex is
 needed; Docker may pull the pinned tool image. Yandex's receiver extension is checked structurally
 by the renderer and accepted by the service on explicit PUT; upstream Alertmanager does not
@@ -260,10 +260,10 @@ Only the diagnostic route uses `channel.pipe.filter`, plugin `transform_metric_l
 The [Prometheus agent contract](https://yandex.cloud/en/docs/monitoring/operations/prometheus/ingestion/prometheus-agent)
 describes generated job/instance labels and metadata IAM. The backend already constrains source
 labels to pool/instance_id/zone_id and runtime kind/outcome/le. Shared-channel and native/Linux,
-HTTP, Commerce and public routes keep their existing labels. The committed default profile applies
-no worker alert.
+HTTP, Commerce and public routes keep their existing labels. The committed Git profile includes
+worker alerts; that is not evidence that the profile has been applied or evaluated live.
 
-`environment.json` keeps `worker_alerts_enabled` false. The enabled profile adds the reviewed
+`environment.json` keeps `worker_alerts_enabled` true. The enabled profile adds the reviewed
 `findme-workers` group to the same owned rule file and existing email+Telegram receiver; it does
 not add a workspace, channel or route. `check` and `apply` then require fresh 90-second queue,
 complete cloud-membership and successful native-publication source clocks for both pools, finite
@@ -277,6 +277,17 @@ documents status, local TLS rehearsal, reset/freshness guards and cost inputs. B
 acceptance, query actual ingested point timestamps along with source age/freshness: a retained
 `fresh=1` point during a sender outage is stale evidence. Ingestion, rules and notification
 firing/no-data/recovery each require their own separately approved evidence.
+
+The same protected, serialized Monitoring workflow has a separately approved
+`drill-run` action for a finite synthetic worker-alert evaluator rehearsal. Its
+offline-rendered temporary rule file clones the current worker predicates and original
+`for` durations, substitutes only reviewed worker inputs with inline synthetic
+vectors, and stops matching at an absolute expiry. Pinned `promtool` validation
+checks both-pool saturation, missing sources, node diagnostics with fresh membership,
+retained-stale sources and recovery. The production-owned rule file is unchanged.
+Use the [worker runbook](../../../docs/runbooks/worker-pools.md#bounded-synthetic-worker-alert-evaluator-rehearsal)
+for the exact workflow and cleanup sequence. A green synthetic rehearsal is not real
+production saturation or notification receipt.
 
 ## Read-only check and explicit apply
 

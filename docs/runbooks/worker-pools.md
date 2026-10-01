@@ -178,7 +178,9 @@ Canonical opt-in uses the existing agent/channel and metadata IAM described in t
 Keep native demand/capacity, public health, HTTP and Commerce controls active. Validate actual
 ingested timestamps, allowed labels, source freshness/reset boundaries and measured volume
 before declaring delivery; retained buffered data or a retained `fresh=1` sample is insufficient.
-Diagnostic rules, routing and notification firing/no-data/recovery are deferred. On loss,
+The phase-one diagnostic receipt does not activate ADR 0048's Git-owned rules, routing or
+notification firing/no-data/recovery; these still require separate Monitoring apply and live
+acceptance. On loss,
 inspect exact timer/receiver/sender status and preserve unknown state and existing lease authority.
 Rollback disables worker probe/runtime opt-in and re-renders canonical config without
 `--worker-telemetry`, using the existing reviewed host installer/rollback only after approval.
@@ -224,8 +226,18 @@ sequence use the existing ordered observation API; failed reads do not erase res
 Prepared canonical units are `metrics.service` and `metrics.timer`, installed under names
 `findme-worker-pool-metrics.service` and `.timer`. Their host collector runs independently of
 worker count every 30 seconds, first cloud observation, then queue publication. Installation
-and identity grants belong to the separately approved activation; no repository command installs
-or enables these units by default. The collector's `/etc/findme-worker-pools/metrics.json` is:
+and identity grants belong to the separately approved activation. The `stage` Deploy action
+calls the preinstalled, root-owned `/usr/local/sbin/findme-worker-pool-metrics install`, which
+installs and starts the timer and performs one collection. It fails closed when the helper,
+reviewed root-owned source package, observation document, or first collection is missing.
+The helper accepts only `install`, `verify`, and `remove`; it compares the root-owned package
+to the exact deployed candidate before installation. The operator must first verify the source
+commit and file hashes, install `deploy/worker-pools/metrics-root-helper.sh` as that root-owned
+helper and `metrics.py`, `metrics.service`, `metrics.timer` as mode 0644 files in
+`/usr/local/lib/findme-worker-pool-metrics-package`, and grant the deploy user sudo access to
+only that helper. This bootstrap and its sudo rule require the separate operational approval;
+Deploy does not install arbitrary root code from its mutable package. The collector's
+`/etc/findme-worker-pools/metrics.json` is:
 
 ```json
 {"deploy_root":"/opt/photo-prjct","cloud":"/opt/photo-prjct/worker-pools-observation.json"}
@@ -257,7 +269,8 @@ Worker alerting uses the existing Managed Prometheus package under
 alert lifecycle. Native publication remains the autoscaler's input. The additional private
 diagnostics scrape exposes read-only pool observations and numeric source timestamps.
 
-The default-off worker profile targets ceiling one: fresh actual running capacity >=1,
+The worker alert profile is enabled in Git for reviewed activation but not yet proven
+live-applied. It targets ceiling one: fresh actual running capacity >=1,
 claimable age above 300 seconds, and positive recent age growth sustained for five minutes.
 Queue progress/reset or missing/stale sources breaks saturation. Separate queue, cloud and
 native-publisher diagnostics identify unknown demand/capacity; retained positive history is not
@@ -441,7 +454,8 @@ cloud change requiring separate review, including after quota approval.
 prepared checksum. It verifies both folders' cloud membership; exact worker ownership of
 group manager/runtime accounts, image, subnet, SG, NAT, route and bootstrap secret; canonical
 ownership of VM, application secret and VPC; direct manager `compute.editor` only on the worker
-folder and canonical cross-folder `vpc.user` without canonical Compute management; exact runtime
+folder and canonical cross-folder `vpc.user` plus `monitoring.viewer` (for native WORKLOAD
+metric reads) without canonical Compute management; exact runtime
 `lockbox.payloadViewer` on the worker bootstrap secret with no ancestor grant or application-
 secret access; exact payload-key metadata; private
 subnet/NAT route/gateway, worker SG ingress absence, and ALL canonical NIC SGs, including resolved
@@ -455,6 +469,10 @@ code preparation. An operator must review effective identity authority, includin
 inheritance and grants on other resources; the automated direct cloud/folder/exact-resource
 checks are not a claim of an exhaustive organization IAM audit. Before activation, prove private
 TLS success, public 8443 denial, permitted outbound DNS/HTTPS, and the intended identity isolation.
+The operator must also read back the manager's exact `iam.serviceAccounts.user` binding on the
+runtime account before group creation; folder grants are not a substitute. Canonical inspect
+does not query that account's access-binding list because the required API read itself needs
+service-account admin authority outside the canonical deployer's scope.
 Cloud API inspection does not replace these live proofs.
 
 After those prerequisites and current cost are reviewed and separately approved, explicit
@@ -576,27 +594,187 @@ Policy/API sources: [Create](https://yandex.cloud/en/docs/compute/instancegroup/
 `PHOTO_PROCESSING_ENABLED`; leave the latter true for the remote API. No pool, IAM grant,
 private listener, timer or feature/model gate is activated by installing this code.
 
-After the separate infrastructure/live approval, prepare an existing-group manifest with
-`provision.py` for the exact candidate SHA and GHCR digest. Store its JSON at a reviewed
-canonical path, set Deploy variables `WORKER_POOL_RELEASE_MANIFEST` to that path,
-`WORKER_POOL_RELEASE_CHECKSUM` to its checksum, `WORKER_POOL_PRIVATE_API_IPV4` to the inspected
-private address and `PHOTO_WORKER_PLACEMENT=remote`. The existing application Lockbox projection
-has an optional, deploy-only `PHOTO_PROCESSING_FLEET_TOKEN`; it must match the separate worker
-payload's fleet token and differ from the local token. Creation/rotation of these payloads and
-their permissions is a separately approved operator action. Workers never read the app secret.
+First activation is a persistent five-step canonical Deploy protocol. First run the candidate
+SHA through ordinary **local** Deploy, with `PHOTO_WORKER_PLACEMENT=local`, so its exact web,
+worker and import images are built and published. Prepare a reviewed null-ID create manifest
+(`groups.bulk.id` and `groups.selfie.id` both null) using that worker's immutable digest,
+and set its canonical path/checksum in the Deploy variables before receiver. Every subsequent
+manual run uses the **same exact** `deployment_sha` and
+`worker_pool_worker_digest=sha256:<64 lowercase hex>` from that initial build. Receiver,
+stage, activate, complete, and abort reuse these exact images without rebuilding or pushing; any tag
+digest drift rejects.
+Set approved Deploy variables `PHOTO_WORKER_PLACEMENT=remote` and
+`WORKER_POOL_PRIVATE_API_IPV4` to the inspected private address. The existing application
+Lockbox projection's deploy-only `PHOTO_PROCESSING_FLEET_TOKEN` must match the worker payload's
+fleet token and differ from the local token. Creation/rotation of payloads, IAM, private
+networking, and collector bootstrap remain separate approved operator actions.
+
+1. Run `gh workflow run deploy.yml --ref main -f deployment_sha=<SHA> -f worker_pool_activation=receiver -f worker_pool_worker_digest=sha256:<DIGEST>`.
+   This installs the compatible web, private HTTPS receiver, coordinator, and fleet token while
+   local workers continue serving. Preflight checks and pins the null-ID manifest, its worker
+   folder and all immutable configuration fields, candidate SHA and actual web/worker digests
+   as `receiver-staged`; no group ID or remote-success marker is invented. The retained
+   recovery gate stores the prior local package, environment, and image marker.
+2. Create the separately approved worker groups in the worker folder using the reviewed image,
+   secret and network prerequisites. Their first members may boot only after the receiver is
+   reachable; coordinator configuration keeps remote claims paused. Prepare the existing-group
+   manifest with `provision.py` using the receiver's exact worker digest and
+   otherwise identical immutable configuration, bind its exact IDs,
+   both folder IDs and checksum, and set `WORKER_POOL_RELEASE_MANIFEST` and
+   `WORKER_POOL_RELEASE_CHECKSUM` to its reviewed canonical path and checksum.
+3. Run `gh workflow run deploy.yml --ref main -f deployment_sha=<SHA> -f worker_pool_activation=stage -f worker_pool_worker_digest=sha256:<DIGEST>`.
+   This binds the manifest to the receiver receipt, verifies provider ownership and private-edge
+   prerequisites, warms both paused pools, starts the native collector, and leaves local workers
+   serving. Status reports `local-staged`; `worker-pools-current.json` remains absent. Complete
+   private TLS, diagnostics, native observations, and Managed Prometheus evaluator/routing
+   acceptance before step 4.
+4. Run `gh workflow run deploy.yml --ref main -f deployment_sha=<SHA> -f worker_pool_activation=activate -f worker_pool_worker_digest=sha256:<DIGEST>`.
+   The same Deploy health gates repeat. Only then does the controller pause local claims, wait
+   up to 900 seconds for current local attempts, stop exact local containers, open remote claims,
+   and verify both pools. It leaves the receipt `verified`/`remote-pending-acceptance`, with the
+   original package and recovery gate intact and no committed fleet marker. Opening remote claims
+   can process any eligible queued job, not just a chosen photo. A failed drain never stops local.
+   On failure, preserve the compatible receiver and recovery gate until ownership is resolved.
+5. After the explicitly approved, bounded real-job acceptance below, run
+   `gh workflow run deploy.yml --ref main -f deployment_sha=<SHA> -f worker_pool_activation=complete -f worker_pool_worker_digest=sha256:<DIGEST>`.
+   This repeats candidate, collector, fleet, public HTTPS and application-observability checks
+   under the canonical lock before writing the committed fleet marker and clearing the original
+   recovery gate/package. If acceptance fails, use the same pinned `abort` instead. Ordinary
+   Deploy and another `activate` remain fenced throughout this pending-acceptance window.
+
+Before step 3, an authorized operator must inspect the exact release SHA and SHA256 hashes,
+then install only the reviewed `metrics-root-helper.sh` as root-owned mode 0755 at
+`/usr/local/sbin/findme-worker-pool-metrics`, and `metrics.py`, `metrics.service`, and
+`metrics.timer` as root-owned mode 0644 files at
+`/usr/local/lib/findme-worker-pool-metrics-package/`. The package directory is root-owned
+mode 0755. The approved sudoers entry must bind the exact deploy user and only the helper's
+three fixed subcommands (`install`, `verify`, `remove`); validate it with `visudo -c` and read
+back file owner/mode. The helper checks its package against the deployed source before it
+copies any collector file, and `stage` fails if this bootstrap or sudo permission is absent.
+Do not grant sudo to `metrics.py`, the mutable deployment directory, or an arbitrary shell.
+After comparing each `sha256sum` with the reviewed exact-SHA source, the operator's narrowly
+approved host bootstrap is:
+
+```sh
+cd /opt/photo-prjct
+sha256sum deploy/worker-pools/metrics-root-helper.sh deploy/worker-pools/metrics.py deploy/worker-pools/metrics.service deploy/worker-pools/metrics.timer
+sudo install -d -o root -g root -m 0755 /usr/local/lib/findme-worker-pool-metrics-package
+sudo install -o root -g root -m 0755 deploy/worker-pools/metrics-root-helper.sh /usr/local/sbin/findme-worker-pool-metrics
+for name in metrics.py metrics.service metrics.timer; do sudo install -o root -g root -m 0644 "deploy/worker-pools/$name" "/usr/local/lib/findme-worker-pool-metrics-package/$name"; done
+sudo visudo -c
+sudo stat -c '%U:%G:%a %n' /usr/local/sbin/findme-worker-pool-metrics /usr/local/lib/findme-worker-pool-metrics-package /usr/local/lib/findme-worker-pool-metrics-package/*
+```
+
+The separately reviewed sudoers file is edited with `visudo` by the operator; it lists only
+`<DEPLOY_USER> ALL=(root) NOPASSWD: /usr/local/sbin/findme-worker-pool-metrics install,
+/usr/local/sbin/findme-worker-pool-metrics verify,
+/usr/local/sbin/findme-worker-pool-metrics remove`. After a bound `abort`, the Deploy action
+stops/disables the timer and service and removes only those installed collector files. Removal
+of the root-owned bootstrap and sudoers entry is a separate operator rollback after confirming
+no staged receipt or collector remains; ordinary Deploy never edits sudoers.
+
+For a bound stage, `worker_pool_activation=abort` with the same SHA and digest fences remote
+claims, waits for attempts to finish or recover, restores the original local package,
+environment, workers, public endpoint and image marker, removes the private collector, and only
+then clears the recovery gate. A receiver-only receipt may also be aborted without creating
+missing paid groups: after the operator resolves every create/delete operation in the provisioning
+receipt, `abort` rechecks the pinned null-ID manifest and requires complete read-only worker-folder
+group, VM, and disk listings all empty. An unresolved operation, failed/partial inventory read,
+or any remaining worker resource forbids receiver abort. This includes a partial one-group create:
+reconcile and remove that exact receipt-owned group through a separately approved operation,
+prove all three inventories empty, then rerun `abort`. Receiver abort restores the original
+local package/environment and closes its journal under the Deploy lock. Ordinary unrelated Deploy
+runs reject while a receiver or stage receipt is pending, before package replacement. The staged
+`.env` says `PHOTO_WORKER_PLACEMENT=remote` to enable the private receiver, while receipt/status
+is authoritative for serving placement; until activation it remains **local serving**. After
+abort, restore the GitHub Deploy variable to its prior local/default state (remove it if it
+was absent before activation) before the next ordinary
+push. Independently of that operator step, ordinary remote Deploy refuses to recreate first
+activation when no committed fleet marker exists.
+The three live inventory reads reject unknown/partial results; they do not certify an outstanding
+provider operation has finished. The operator must reconcile every provisioning-receipt operation
+to a terminal provider result before the absence-proven receiver abort.
+If receiver preflight failed before its recovery gate was created, the same absence-proven `abort`
+uses the installer's local package/environment snapshot and closes that prepared receipt. If a
+receiver failed after package mutation, the original backup/gate remain available for the same
+abort or a pinned receiver retry, including when its private receiver reached `receiver-staged`
+but a later public-health gate failed. The retry must use the original null-ID manifest, SHA
+and digest; it does not recreate groups or clear an uncertain provider operation.
+
+Worker claims are not scoped to one test event. Opening remote claims can process every eligible
+queued job. The supported bounded real-job acceptance therefore requires a fresh queue/lease
+snapshot, explicitly approved cutover, a short monitored observation window, and immediate
+`abort` if the agreed result or latency guard fails; only a successful observation authorizes
+`complete`. There is no one-photo remote canary control.
+Cap-one saturation firing cannot be demonstrated while claims remain paused and locals serve;
+the operator must use a separately reviewed synthetic evaluator drill or approved claim pause.
+Warm-stage fixtures, a green Deploy, and a VM `RUNNING` state do not prove live alert delivery.
+
+### Bounded synthetic worker-alert evaluator rehearsal
+
+After the Git-enabled worker profile is explicitly applied to the existing Managed Prometheus
+workspace and live source preflight is green, a separately approved Monitoring workflow
+`drill-run` may rehearse the reviewed worker alert predicates without pausing customer jobs.
+Use the exact merged `main` SHA, the existing protected `monitoring` environment, and the
+existing email/Telegram receiver. This action creates one temporary
+`findme-worker-activation-drill.yml` file in that workspace; it never writes synthetic
+samples to production metric names or edits the production `findme-photo.yml` rule file.
+The source rule content is hash-checked before and after. The receipt is uploaded as a
+workflow artifact **before** the temporary PUT, so an interrupted or uncertain PUT has an
+exact cleanup identity.
+
+```sh
+sha="$(git rev-parse origin/main)"
+gh workflow run monitoring.yml --ref main -f revision="$sha" -f action=drill-run
+# Record the resulting Monitoring workflow run ID from GitHub Actions as run_id.
+sha="$(git rev-parse origin/main)" # refresh origin/main first if main advanced
+gh workflow run monitoring.yml --ref main -f revision="$sha" -f action=drill-status -f drill_run_id="$run_id"
+sha="$(git rev-parse origin/main)" # refresh origin/main first if main advanced again
+gh workflow run monitoring.yml --ref main -f revision="$sha" -f action=drill-cleanup -f drill_run_id="$run_id"
+```
+
+`drill-run` has a hard 29-minute observation deadline inside a 45-minute workflow timeout.
+The synthetic predicates themselves stop matching after 32 minutes even if the runner dies;
+the exact-content cleanup deletes the temporary evaluator file and confirms absence. The
+finite timeline is four minutes healthy, nine minutes with both pools' cap-one growing
+backlog, four minutes with bulk source missing and selfie node diagnostics missing while
+selfie cloud membership stays fresh, four minutes with selfie sources retained-stale and
+bulk node diagnostics stale while bulk membership stays fresh, then four minutes recovered.
+The 5-minute production saturation `for` is unchanged; queries/snapshots allow the
+provider's two-minute evaluator delay and record actual evaluation times. The source
+preflight independently requires current pool/node samples and 90-second freshness, but
+that 90-second bound is **not** applied to delayed `ALERTS` results.
+
+Download `worker-activation-drill-receipt-<run_id>` and
+`worker-activation-drill-report-<run_id>` artifacts for the reviewed acceptance ledger.
+The report requires fresh, pending, firing, missing, stale, and recovery observations for
+both pool labels as appropriate; `delivery` remains `unverified` until the intended
+recipient supplies exact firing and resolved notification receipts with timestamps.
+The drill demonstrates server evaluation/routing of synthetic predicates, **not** real
+queue saturation, autoscaling, processed photos, or production source delivery. Actual
+source point timestamps/current node identities require separate live read-back; a
+separately approved short collector outage/recovery is needed for real missing/stale
+proof. Temporary rule evaluation incurs usage-dependent, presently unquoted cost and
+channel noise. If the workflow is interrupted, run `drill-cleanup` with the same source
+run ID and exact SHA; a foreign file, altered production hash, wrong workspace, or
+missing receipt fails closed. Ordinary Monitoring routing apply remains blocked while
+the temporary file exists. Recovery dispatch uses the **current** main SHA, but validates
+the source run's repository, workflow, main-branch dispatch and run ID, then checks out
+that trusted source SHA solely to interpret its exact receipt/content for read-only status
+or exact-owned cleanup. A new main commit during the 29-minute drill does not make the
+prior receipt orphaned; it does not authorize arbitrary historical writes.
 
 The existing Deploy workflow is the sole release pipeline. Its concurrency group and the
 canonical host `/opt/photo-prjct/.deployment.lock` cover application/fleet coordination. The
 archive includes the exact existing Python cloud transport, under one explicit canonical
 `PYTHONPATH`; it does not require the source checkout or copy application credentials.
 
-Preflight verifies the reviewed template checksum, exact group baselines, effective attached
-canonical SG union and actual pulled web/worker image digest plus OCI revision. After compatible
-web/private edge is running, the controller checks the actual container image ID, configures
-initial remote claims paused, observes/warm-verifies pools, pauses local claims and waits for
-authoritative current ownership to empty. Drain failure aborts local container stop. Only then
-are the exact canonical photo-worker containers stopped and remote claims opened. PostgreSQL is
-not restarted by the remote reconciliation; no Compose down or data reset is part of cutover.
+Receiver preflight pins the actual pulled web/worker digests and OCI revision before groups
+exist. Stage binding checks the manifest checksum, group baselines, folder ownership, attached
+canonical SG union and the same digests. Warm verification requires both groups paused and local
+claims open. Activation repeats image, private and public health checks before its bounded
+local drain. PostgreSQL is not restarted by remote reconciliation; no Compose down or data reset
+is part of cutover.
 The shared deployment's vector preflight retains capability/collation checks and reconciles
 the same pinned DB image with `up --wait --no-deps`; an already matching service is unchanged.
 Worker rollout itself neither reconciles PostgreSQL nor pauses compatible remote workers for
@@ -635,30 +813,35 @@ empty; subsequent zero-member verification also checks the exact future launch t
 
 `worker-pools-release.json` is the durable write-ahead receipt. An uncertain cloud submission is
 recorded before sending it; retries inspect its desired configuration and do not resubmit it.
-Partial group failure never advances `deployed-image`. Both enabled pools and running web must
-verify before the existing successful-image marker commits. A pending or failed release remains
-explicit; do not delete its receipt to bypass reconciliation.
+Partial group failure never advances the remote fleet marker. Receiver and stage may advance
+`deployed-image` for a healthy compatible web while local workers still serve. Both enabled
+pools and running web must verify before `complete` commits the remote fleet marker. A pending
+or failed release remains explicit; do not delete its receipt to bypass reconciliation.
+If activation fails after local drain starts, canonical recovery fences and drains remote
+claims, restarts local workers under the still-compatible staged receiver, and keeps the
+original local package/environment in `.deployment-recovery`. A same-candidate `stage`
+run can re-warm from `rolled-back-local` before another `activate`; alternatively run the
+bound `abort`. A pre-mutation failure leaves the stage and gate intact. Fleet-only `rollout`
+rejects a local predecessor and cannot bypass canonical Deploy health gates.
 
-The bounded fleet-only recovery interface uses the same host lock and never restarts unrelated
-services. Through the existing narrow remote-check secret wrapper, set `WORKER_POOL_OPERATION`
-to `status`, `rollout` (resume), `verify` or `rollback`, then invoke `deploy/run-remote.sh worker-pools`.
-Equivalently, an already-authorized canonical operator selects one appropriate phase below,
-starting with status after an interruption:
+The bounded fleet-only inspection interface uses the same host lock. Through the existing narrow
+remote-check secret wrapper, set `WORKER_POOL_OPERATION=status` and invoke
+`deploy/run-remote.sh worker-pools`. For an established remote image release, `rollout` resumes
+and `verify` checks the fleet; `rollback` is the existing compatible remote-release recovery.
+Initial activation and abort are **Deploy** actions so application image/public health gates and
+package/environment recovery remain coupled. An authorized operator can inspect status directly:
 
 ```sh
 PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
   python3 /opt/photo-prjct/deploy/worker-pools/release.py status --root /opt/photo-prjct
-PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
-  python3 /opt/photo-prjct/deploy/worker-pools/release.py rollout --root /opt/photo-prjct
-PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
-  python3 /opt/photo-prjct/deploy/worker-pools/release.py verify --root /opt/photo-prjct
-PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
-  python3 /opt/photo-prjct/deploy/worker-pools/release.py rollback --root /opt/photo-prjct
 ```
 
-Read status/receipt and provider operation evidence first after a lost response. Resume uses the
-same exact manifest and boot/grant CAS; it does not synthesize a new release. Fleet-only commands
-do not advance the application successful-image marker independently of Deploy's health gates.
+Read status/receipt and provider operation evidence first after a lost response. Re-run the same
+receiver/stage Deploy action with the same SHA and digest to resume; the write-ahead
+cloud receipt never blindly resubmits an uncertain mutation. After `verified`, use only the same
+pinned `complete` or `abort`; do not repeat `activate` after remote claims have opened.
+Fleet-only commands do not advance the application successful-image marker independently of
+Deploy's health gates.
 
 Before promotion, rollback restores the verified prior template, retires staged candidates,
 waits for fresh complete post-grant reconciliation, then invokes guarded cancellation. After
@@ -672,7 +855,9 @@ operation. Coordination tables, attempt history and accepted artifacts are prese
 
 Before remote mutation, `.deployment-recovery/` (mode0700) preserves `previous.env` (mode0600),
 the previous image marker and the exact package-backup path. An interrupted or failed recovery
-keeps that directory, the candidate tooling and the previous package; another Deploy fails closed.
+keeps that directory, the candidate tooling and the previous package; ordinary Deploy fails closed.
+Only the pinned receiver/stage/activate/complete/abort action may resume this first activation,
+with `activate` limited to the staged/pre-verification transition.
 Use the fleet status/rollback operation to resolve ownership first. Then an authorized operator
 must reconcile the preserved prior app package/environment under the same host lock and verify
 health before clearing this recovery gate. Do not delete the gate or restore old web while

@@ -76,7 +76,7 @@ def test_live_checklist_binds_policy_and_replacement_gates_to_selected_ceiling(c
     assert "distinct worker and canonical folders" in gates
     assert "canonical Monitoring folder" in gates
     if selected == 1:
-        assert "cap-one Git-owned alert" in gates
+        assert "cap-one Git-owned Managed Prometheus alert" in gates
         assert "serial" in gates and "<=3" in gates
         assert "second-instance demand" not in gates
     else:

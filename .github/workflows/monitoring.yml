@@ -12,11 +12,15 @@ on:
         required: true
         type: string
       action:
-        description: Read-only check or explicit apply (requires separate operational approval)
+        description: Check, apply, or separately approved bounded worker evaluator drill
         required: true
         default: check
         type: choice
-        options: [check, apply]
+        options: [check, apply, drill-run, drill-status, drill-cleanup]
+      drill_run_id:
+        description: Source Monitoring workflow run ID for drill-status/drill-cleanup only
+        required: false
+        type: string
 permissions:
   contents: read
 jobs:
@@ -40,20 +44,26 @@ jobs:
           EOF
           chmod +x /tmp/promtool
           /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/control.py validate --output "$PWD/.monitoring-render" --promtool /tmp/promtool
+          /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/drill.py render --output "$PWD/.monitoring-drill-render"
+          /tmp/promtool check rules "$PWD/.monitoring-drill-render/findme-worker-activation-drill.yml"
+          /tmp/promtool test rules "$PWD/.monitoring-drill-render/drill-rule-tests.yml"
   reconcile:
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     needs: validate
     runs-on: ubuntu-latest
     environment: monitoring
+    timeout-minutes: 45
     concurrency:
       group: findme-monitoring-production
       cancel-in-progress: false
     permissions:
       contents: read
+      actions: read
       id-token: write
     env:
       MONITORING_REVISION: ${{ inputs.revision }}
       MONITORING_ACTION: ${{ inputs.action }}
+      DRILL_SOURCE_RUN_ID: ${{ inputs.drill_run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,6 +75,34 @@ jobs:
           printf '%s' "$MONITORING_REVISION" | grep -Eq '^[0-9a-f]{40}$'
           test "$MONITORING_REVISION" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "$MONITORING_REVISION"
+          case "$MONITORING_ACTION" in
+            check|apply|drill-run) test -z "$DRILL_SOURCE_RUN_ID" ;;
+            drill-status|drill-cleanup)
+              printf '%s' "$DRILL_SOURCE_RUN_ID" | grep -Eq '^[0-9]{1,20}$'
+              ;;
+            *) exit 2 ;;
+          esac
+      - name: Bind prior drill to a trusted source Monitoring run
+        id: source
+        if: ${{ inputs.action == 'drill-status' || inputs.action == 'drill-cleanup' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          source_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DRILL_SOURCE_RUN_ID" | \
+            python3 deploy/monitoring/prometheus/drill.py source-revision \
+              --repository "$GITHUB_REPOSITORY" --run-id "$DRILL_SOURCE_RUN_ID")"
+          printf 'DRILL_SOURCE_SHA=%s\n' "$source_sha" >> "$GITHUB_ENV"
+          printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: ${{ inputs.action == 'drill-status' || inputs.action == 'drill-cleanup' }}
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify recovered source revision
+        if: ${{ inputs.action == 'drill-status' || inputs.action == 'drill-cleanup' }}
+        run: test "$(git rev-parse HEAD)" = "$DRILL_SOURCE_SHA"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -81,14 +119,61 @@ jobs:
           identity = json.loads((source / 'oidc.json').read_text())
           Path('/tmp/monitoring-oidc.json').write_text(json.dumps(identity))
           PY
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.action == 'drill-status' || inputs.action == 'drill-cleanup' }}
+        with:
+          name: worker-activation-drill-receipt-${{ inputs.drill_run_id }}
+          run-id: ${{ inputs.drill_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: worker-drill-artifact
+      - name: Prepare exact drill receipt before any temporary rule write
+        if: ${{ inputs.action == 'drill-run' }}
+        run: |
+          set -eu
+          mkdir -p "$PWD/worker-drill-artifact"
+          /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/drill.py prepare \
+            --config /tmp/monitoring-environment.json --run-id "$GITHUB_RUN_ID" \
+            --revision "$MONITORING_REVISION" \
+            --receipt "$PWD/worker-drill-artifact/worker-drill-receipt.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.action == 'drill-run' }}
+        with:
+          name: worker-activation-drill-receipt-${{ github.run_id }}
+          path: worker-drill-artifact/worker-drill-receipt.json
+          if-no-files-found: error
       - name: Check or apply exact reviewed configuration
         run: |
-          /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/control.py "$MONITORING_ACTION" \
-            --config /tmp/monitoring-environment.json --identity github-oidc --oidc-config /tmp/monitoring-oidc.json \
-            --backup "$PWD/monitoring-backup-$MONITORING_REVISION"
+          set -eu
+          case "$MONITORING_ACTION" in
+            check|apply)
+              /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/control.py "$MONITORING_ACTION" \
+                --config /tmp/monitoring-environment.json --identity github-oidc --oidc-config /tmp/monitoring-oidc.json \
+                --backup "$PWD/monitoring-backup-$MONITORING_REVISION"
+              ;;
+            drill-run)
+              /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/drill.py run \
+                --config /tmp/monitoring-environment.json --identity github-oidc --oidc-config /tmp/monitoring-oidc.json \
+                --run-id "$GITHUB_RUN_ID" --revision "$MONITORING_REVISION" \
+                --receipt "$PWD/worker-drill-artifact/worker-drill-receipt.json" \
+                --report "$PWD/worker-drill-artifact/worker-drill-report.json"
+              ;;
+            drill-status|drill-cleanup)
+              /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/drill.py "${MONITORING_ACTION#drill-}" \
+                --config /tmp/monitoring-environment.json --identity github-oidc --oidc-config /tmp/monitoring-oidc.json \
+                --run-id "$DRILL_SOURCE_RUN_ID" --revision "$DRILL_SOURCE_SHA" \
+                --receipt "$PWD/worker-drill-artifact/worker-drill-receipt.json"
+              ;;
+          esac
       - uses: actions/upload-artifact@v4
         if: ${{ always() && inputs.action == 'apply' }}
         with:
           name: monitoring-backup-${{ inputs.revision }}
           path: monitoring-backup-${{ inputs.revision }}
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.action == 'drill-run' }}
+        with:
+          name: worker-activation-drill-report-${{ github.run_id }}
+          path: worker-drill-artifact/worker-drill-report.json
           if-no-files-found: ignore

@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -15,9 +16,33 @@ from unittest.mock import Mock, patch
 from uuid import UUID, uuid4
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.operational
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_followup_activation_reuses_receiver_digest_without_rebuilding_images():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
+    build = workflow["jobs"]["build"]
+    pushes = [
+        step
+        for step in build["steps"]
+        if step.get("uses", "").startswith("docker/build-push-action")
+    ]
+    assert len(pushes) == 3
+    assert all("worker_pool_activation" in step.get("if", "") for step in pushes)
+    assert all("'receiver'" not in step.get("if", "") for step in pushes)
+    resolver = next(
+        step for step in build["steps"] if step["name"] == "Resolve reviewed worker digest"
+    )
+    assert "inputs.worker_pool_worker_digest" in resolver["env"]["REVIEWED_DIGEST"]
+    assert "receiver|stage|activate|complete|abort" in resolver["run"]
+    assert "steps.worker_ref.outputs.worker_digest" in build["outputs"]["worker_digest"]
+    deploy_step = next(
+        step for step in workflow["jobs"]["deploy"]["steps"] if step["name"] == "Run deployment"
+    )
+    assert "WORKER_POOL_WORKER_DIGEST" in deploy_step["env"]
 
 
 def test_remote_install_trap_retains_compatible_package_after_failed_fleet_recovery(tmp_path):
@@ -76,6 +101,118 @@ def test_remote_install_trap_retains_compatible_package_after_failed_fleet_recov
     backups = list(tmp_path.glob(".deployment-previous.*"))
     assert len(backups) == 1
     assert (backups[0] / "deploy/version").read_text() == "previous"
+
+
+@pytest.mark.parametrize(
+    "activation,phase,allowed,drift",
+    [
+        ("normal", "staged", False, False),
+        ("stage", "staged", True, False),
+        ("activate", "staged", True, False),
+        ("normal", "receiver-staged", False, False),
+        ("receiver", "receiver-staged", True, False),
+        ("stage", "receiver-staged", True, False),
+        ("stage", "receiver-staged", False, True),
+    ],
+)
+def test_pending_stage_install_gate_rejects_unrelated_deploy_before_package_swap(
+    tmp_path, activation, phase, allowed, drift
+):
+    source = (ROOT / "deploy/run-remote.sh").read_text()
+    program = source.split("REMOTE_PROGRAM=$(cat <<'PY'\n", 1)[1].split("\nPY\n)", 1)[0]
+    tree = ast.parse(program)
+    command = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "deployment_command"
+            for target in node.targets
+        )
+    ).replace("deployment_root=/opt/photo-prjct", "deployment_root=" + shlex.quote(str(tmp_path)))
+    (tmp_path / "deploy").mkdir()
+    (tmp_path / "deploy/version").write_text("staged")
+    (tmp_path / "docker-compose.deployment.yml").write_text("staged")
+    (tmp_path / "docker-compose.https.yml").write_text("staged")
+    (tmp_path / ".env").write_text("staged")
+    recovery = tmp_path / ".deployment-recovery"
+    recovery.mkdir()
+    original_backup = tmp_path / ".deployment-previous.original"
+    original_backup.mkdir()
+    (recovery / "package-path").write_text(str(original_backup) + "\n")
+    creation = {
+        "checksum": "creation",
+        "configuration": {
+            "worker_build": "a" * 40,
+            "worker_image": "ghcr.io/example/worker@sha256:" + "b" * 64,
+            "worker_sa_id": "worker-sa",
+            "groups": {"bulk": {"id": None}, "selfie": {"id": None}},
+        },
+    }
+    manifest = {
+        "checksum": "reviewed",
+        "configuration": {
+            "worker_build": "a" * 40,
+            "worker_image": "ghcr.io/example/worker@sha256:" + "b" * 64,
+            "worker_sa_id": "different-sa" if drift else "worker-sa",
+            "groups": {"bulk": {"id": "bulk-group"}, "selfie": {"id": "selfie-group"}},
+        },
+    }
+    manifest_path = tmp_path / "manifest.json"
+    selected_manifest = creation if activation == "receiver" else manifest
+    manifest_path.write_text(json.dumps(selected_manifest))
+    (tmp_path / "worker-pools-release.json").write_text(
+        json.dumps(
+            {
+                "phase": phase,
+                "candidate": {
+                    "manifest": manifest if phase == "staged" else None,
+                    "creation_manifest": creation,
+                    "worker_build": "a" * 40,
+                    "worker_image": manifest["configuration"]["worker_image"],
+                },
+            }
+        )
+    )
+    candidate = tmp_path / "candidate"
+    (candidate / "deploy").mkdir(parents=True)
+    (candidate / "deploy/version").write_text("replacement")
+    (candidate / "deploy/apply-deployment.sh").write_text(
+        'printf "%s" "$WORKER_POOL_ACTIVATION" > "$DEPLOY_ROOT/operation-seen"\n'
+    )
+    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
+        (candidate / name).write_text("replacement")
+    with tarfile.open(tmp_path / ".deployment-candidate.fixture.tar", "w") as archive:
+        for path in candidate.iterdir():
+            archive.add(path, arcname=path.name)
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    for name, body in {
+        "docker": "printf 'worker-bulk\\nworker-selfie\\n'",
+        "flock": "exit 0",
+    }.items():
+        path = binary / name
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+    result = subprocess.run(
+        ["sh", "-c", command],
+        env={
+            "PATH": str(binary) + ":" + os.environ["PATH"],
+            "DEPLOYMENT_ARCHIVE_NAME": ".deployment-candidate.fixture.tar",
+            "WORKER_POOL_ACTIVATION": activation,
+            "APP_IMAGE": "ghcr.io/example/photo-prjct:" + "a" * 40,
+            "WORKER_POOL_RELEASE_MANIFEST": str(manifest_path),
+            "WORKER_POOL_RELEASE_CHECKSUM": selected_manifest["checksum"],
+            "WORKER_POOL_WORKER_DIGEST": manifest["configuration"]["worker_image"],
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) is allowed, result.stderr
+    assert (tmp_path / "deploy/version").read_text() == ("replacement" if allowed else "staged")
+    assert (tmp_path / "operation-seen").exists() is allowed
+    if allowed:
+        assert list(tmp_path.glob(".deployment-previous.*")) == [original_backup]
 
 
 def release_module():
@@ -215,6 +352,7 @@ def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
 
         def template(self, name, desired, floor):
             events.append(("template", name, floor))
+            groups[name]["scalePolicy"]["autoScale"]["minZoneSize"] = str(floor)
 
         def stop_local(self):
             snapshot = self.control("status")
@@ -226,7 +364,8 @@ def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
 
     monkeypatch.setattr(release, "Host", Host)
     assert not WorkerPool.objects.exists()
-    release.execute("rollout", tmp_path, None, None, None)
+    release.execute("stage", tmp_path, None, None, None)
+    release.execute("activate", tmp_path, None, None, None)
     assert events[0] == "verified-web"
     assert "stop-local" in events
     assert list(
@@ -345,7 +484,9 @@ def test_workflow_builds_candidate_revision_even_for_unchanged_worker_sources():
     worker = next(
         step for step in steps if step.get("with", {}).get("file") == "./Dockerfile.worker"
     )
-    assert "if" not in worker
+    assert "worker_pool_activation == 'normal'" in worker["if"]
+    assert "worker_pool_activation == 'receiver'" not in worker["if"]
+    assert "github.event_name == 'push'" in worker["if"]
     assert (
         worker["with"]["build-args"]
         == "RELEASE_SHA=${{ needs.classify-release.outputs.release_sha }}"
@@ -1282,9 +1423,303 @@ def test_interrupted_second_pool_is_reconciled_first_in_either_direction(
 
 def test_initial_capped_cutover_preserves_paused_bulk_until_claims_open(tmp_path, monkeypatch):
     release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    release.execute("rollout", tmp_path, None, None, None)
+    host.journal.data["phase"] = "prepared"
+    host.journal.save()
+    for row in host.states.values():
+        row["local_claims_paused"] = False
+    release.execute("stage", tmp_path, None, None, None)
+    release.execute("activate", tmp_path, None, None, None)
     assert host.events.index(("stop-local",)) < host.events.index(("template", "bulk", 0))
     assert all(any(member["serving"] for member in row["members"]) for row in host.states.values())
+
+
+def test_first_activation_stage_warms_fleet_without_stopping_or_pausing_local(
+    tmp_path, monkeypatch
+):
+    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
+    host.journal.data["phase"] = "prepared"
+    host.journal.save()
+    for row in host.states.values():
+        row["local_claims_paused"] = False
+    release.execute("stage", tmp_path, None, None, None)
+    assert host.journal.data["phase"] == "staged"
+    assert host.journal.data["verified"] == ["bulk", "selfie"]
+    assert not (tmp_path / "worker-pools-current.json").exists()
+    assert ("stop-local",) not in host.events
+    assert not any(event[0] == "drain-local" for event in host.events)
+    assert all(
+        row["claims_paused"] and not row["local_claims_paused"] for row in host.states.values()
+    )
+
+
+def test_staged_activation_drains_local_then_requires_explicit_completion(
+    tmp_path, monkeypatch, capsys
+):
+    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
+    host.journal.data["phase"] = "prepared"
+    host.journal.save()
+    for row in host.states.values():
+        row["local_claims_paused"] = False
+    release.execute("stage", tmp_path, None, None, None)
+    host.events.clear()
+    release.execute("activate", tmp_path, None, None, None)
+    assert host.events.index(("stop-local",)) > host.events.index(("drain-local", "selfie"))
+    assert host.events.index(("stop-local",)) < host.events.index(("template", "bulk", 0))
+    assert host.journal.data["phase"] == "verified"
+    assert not (tmp_path / "worker-pools-current.json").exists()
+    release.execute("status", tmp_path, None, None, None)
+    assert json.loads(capsys.readouterr().out)["placement"] == "remote-pending-acceptance"
+    release.execute("commit", tmp_path, None, None, None)
+    assert (tmp_path / "worker-pools-current.json").exists()
+
+
+def test_staged_abort_restores_local_claims_without_committing_remote(tmp_path, monkeypatch):
+    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
+    host.journal.data["phase"] = "prepared"
+    host.journal.save()
+    for row in host.states.values():
+        row["local_claims_paused"] = False
+    release.execute("stage", tmp_path, None, None, None)
+    release.execute("rollback", tmp_path, None, None, None)
+    assert host.journal.data["phase"] == "rolled-back-local"
+    assert all(
+        row["claims_paused"] and not row["local_claims_paused"] for row in host.states.values()
+    )
+    assert not (tmp_path / "worker-pools-current.json").exists()
+
+
+def test_failed_activation_can_rewarm_same_stage_after_local_rollback(tmp_path, monkeypatch):
+    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
+    host.journal.data["phase"] = "prepared"
+    host.journal.save()
+    for row in host.states.values():
+        row["local_claims_paused"] = False
+    release.execute("stage", tmp_path, None, None, None)
+    release.execute("rollback", tmp_path, None, None, None)
+    assert host.journal.data["phase"] == "rolled-back-local"
+    host.events.clear()
+    release.execute("stage", tmp_path, None, None, None)
+    assert host.journal.data["phase"] == "staged"
+    assert ("stop-local",) not in host.events
+    assert all(
+        row["claims_paused"] and not row["local_claims_paused"] for row in host.states.values()
+    )
+
+
+@pytest.mark.parametrize("change", ["checksum", "sha", "manifest", "web-digest"])
+def test_staged_candidate_guard_rejects_reviewed_input_drift(tmp_path, monkeypatch, change):
+    release = release_module()
+    manifest = capped_manifest()
+    checksum = manifest["checksum"]
+    app_image = "ghcr.io/example/photo-prjct:" + "a" * 40
+    proof = {"web_image": "ghcr.io/example/photo-prjct@sha256:" + "f" * 64}
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    release.Journal(
+        tmp_path / "worker-pools-release.json",
+        {
+            "phase": "staged",
+            "previous": None,
+            "pending": None,
+            "verified": ["bulk", "selfie"],
+            "candidate": {"manifest": manifest, "proof": proof},
+        },
+    )
+    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
+    monkeypatch.setattr(release, "Host", Mock(side_effect=AssertionError("host started")))
+    if change == "checksum":
+        checksum = "0" * 64
+    elif change == "sha":
+        app_image = "ghcr.io/example/photo-prjct:" + "b" * 40
+    elif change == "manifest":
+        path.write_text(json.dumps(capped_manifest(build="b" * 40)))
+    else:
+        monkeypatch.setattr(release, "image_proof", lambda *args: {"web_image": "changed"})
+    with pytest.raises(ValueError, match="candidate"):
+        release.execute(
+            "verify-candidate" if change == "web-digest" else "guard",
+            tmp_path,
+            path,
+            checksum,
+            app_image,
+        )
+
+
+def test_receiver_is_pinned_before_group_ids_exist_then_stage_binds_reviewed_groups(
+    tmp_path, monkeypatch
+):
+    release = release_module()
+    manifest = capped_manifest()
+    from tests.deployment.test_worker_pool_provisioning import config
+
+    creation = release.provision_module().prepare(config(1))
+    creation_path = tmp_path / "creation.json"
+    creation_path.write_text(json.dumps(creation))
+    app_image = "ghcr.io/example/photo-prjct:" + "a" * 40
+    worker_digest = manifest["configuration"]["worker_image"]
+    proof = {
+        "web_image": "ghcr.io/example/photo-prjct@sha256:" + "f" * 64,
+        "web_id": "web",
+        "worker_id": "worker",
+    }
+    monkeypatch.setattr(release, "image_proof", lambda *args: proof)
+    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
+    monkeypatch.setattr(
+        release, "Host", lambda *args: SimpleNamespace(verify_web=lambda proof: None)
+    )
+    provision = release.provision_module()
+    monkeypatch.setattr(provision, "inspect", lambda *args: None)
+    monkeypatch.setattr(release, "provision_module", lambda: provision)
+    release.execute(
+        "receiver-preflight",
+        tmp_path,
+        creation_path,
+        creation["checksum"],
+        app_image,
+        worker_digest,
+    )
+    release.execute(
+        "receiver-preflight",
+        tmp_path,
+        creation_path,
+        creation["checksum"],
+        app_image,
+        worker_digest,
+    )
+    release.execute("receiver-stage", tmp_path, None, None, app_image, worker_digest)
+    release.execute(
+        "receiver-preflight",
+        tmp_path,
+        creation_path,
+        creation["checksum"],
+        app_image,
+        worker_digest,
+    )
+    receipt = release.Journal(tmp_path / "worker-pools-release.json").data
+    assert receipt["phase"] == "receiver-staged"
+    assert receipt["candidate"]["manifest"] is None
+    assert receipt["candidate"]["creation_manifest"] == creation
+    assert not (tmp_path / "worker-pools-current.json").exists()
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    altered = deepcopy(manifest["configuration"])
+    altered["worker_sa_id"] = "different-sa"
+    changed = provision.prepare(altered)
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="receiver and reviewed fleet candidate differ"):
+        release.execute("bind-stage", tmp_path, path, changed["checksum"], app_image, worker_digest)
+    path.write_text(json.dumps(manifest))
+    release.execute("bind-stage", tmp_path, path, manifest["checksum"], app_image, worker_digest)
+    receipt = release.Journal(tmp_path / "worker-pools-release.json").data
+    assert receipt["phase"] == "prepared"
+    assert receipt["candidate"]["manifest"] == manifest
+    assert (tmp_path / "worker-pools-observation.json").exists()
+
+
+@pytest.mark.parametrize("occupied", [None, "instanceGroups", "instances", "disks", "read-error"])
+def test_receiver_abort_requires_complete_empty_receipt_bound_worker_folder(
+    tmp_path, monkeypatch, occupied
+):
+    release = release_module()
+    from tests.deployment.test_worker_pool_provisioning import config
+
+    creation = release.provision_module().prepare(config(1))
+    path = tmp_path / "creation.json"
+    path.write_text(json.dumps(creation))
+    app_image = "ghcr.io/example/photo-prjct:" + "a" * 40
+    digest = creation["configuration"]["worker_image"]
+    proof = {"web_image": "ghcr.io/example/photo-prjct@sha256:" + "f" * 64}
+    monkeypatch.setattr(release, "image_proof", lambda *args: proof)
+    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
+
+    class Cloud:
+        def resource(self, service, collection, identity):
+            assert (service, collection, identity) == (
+                "resourcemanager",
+                "folders",
+                "worker-folder",
+            )
+            return {"id": "worker-folder", "cloudId": "cloud"}
+
+        def pages(self, collection, key, **parameters):
+            assert collection == key
+            assert parameters == {"folderId": "worker-folder"}
+            if occupied == "read-error" and collection == "instances":
+                raise ValueError("partial provider listing")
+            return [{"id": "unreconciled"}] if collection == occupied else []
+
+    provision = release.provision_module()
+    monkeypatch.setattr(provision, "Cloud", lambda token: Cloud())
+    monkeypatch.setattr(release, "provision_module", lambda: provision)
+    release.Journal(
+        tmp_path / "worker-pools-release.json",
+        {
+            "phase": "receiver-staged",
+            "previous": None,
+            "candidate": {
+                "creation_manifest": creation,
+                "manifest": None,
+                "worker_build": "a" * 40,
+                "worker_image": digest,
+                "proof": proof,
+            },
+        },
+    )
+    if occupied:
+        with pytest.raises(
+            ValueError,
+            match="partial provider listing" if occupied == "read-error" else "empty worker folder",
+        ):
+            release.execute(
+                "receiver-absence", tmp_path, path, creation["checksum"], app_image, digest
+            )
+        assert (
+            release.Journal(tmp_path / "worker-pools-release.json").data["phase"]
+            == "receiver-staged"
+        )
+    else:
+        release.execute("receiver-absence", tmp_path, path, creation["checksum"], app_image, digest)
+        release.execute("receiver-close", tmp_path, path, creation["checksum"], app_image, digest)
+        assert (
+            release.Journal(tmp_path / "worker-pools-release.json").data["phase"]
+            == "receiver-aborted"
+        )
+
+
+def test_native_collector_helper_installs_verified_owned_source_and_can_remove(tmp_path):
+    package = tmp_path / "package"
+    candidate = tmp_path / "candidate"
+    package.mkdir()
+    candidate.mkdir()
+    for name in ("metrics.py", "metrics.service", "metrics.timer"):
+        shutil.copy2(ROOT / "deploy/worker-pools" / name, package / name)
+        shutil.copy2(package / name, candidate / name)
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    systemctl = binary / "systemctl"
+    systemctl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FINDME_SYSTEMCTL_LOG"\n')
+    systemctl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": str(binary) + ":" + os.environ["PATH"],
+        "FINDME_METRICS_TEST_ROOT": str(tmp_path),
+        "FINDME_SYSTEMCTL_LOG": str(tmp_path / "systemctl.log"),
+    }
+    helper = ROOT / "deploy/worker-pools/metrics-root-helper.sh"
+    result = subprocess.run(["sh", helper, "install"], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "runtime/metrics.py").read_bytes() == (package / "metrics.py").read_bytes()
+    assert (tmp_path / "config/metrics.json").is_file()
+    assert (
+        "enable --now findme-worker-pool-metrics.timer" in (tmp_path / "systemctl.log").read_text()
+    )
+    (candidate / "metrics.py").write_text("unreviewed source")
+    result = subprocess.run(["sh", helper, "install"], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert (tmp_path / "runtime/metrics.py").read_bytes() == (package / "metrics.py").read_bytes()
+    result = subprocess.run(["sh", helper, "remove"], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "runtime/metrics.py").exists()
 
 
 def test_initial_warm_floor_cannot_allocate_over_unexplained_worker_disks(tmp_path, monkeypatch):
@@ -1305,10 +1740,22 @@ def test_unjournaled_extra_running_member_blocks_release_expansion(tmp_path, mon
 
 def test_final_fleet_verification_rejects_unsettled_extra_candidate(tmp_path, monkeypatch):
     release, host, new, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    release.execute("rollout", tmp_path, None, None, None)
+    host.journal.data["phase"] = "prepared"
+    host.journal.save()
+    for row in host.states.values():
+        row["local_claims_paused"] = False
+    release.execute("stage", tmp_path, None, None, None)
+    release.execute("activate", tmp_path, None, None, None)
     host.cloud.add("bulk", "extra-candidate")
     with pytest.raises(ValueError, match="settled"):
         release.verify_fleet(host, new)
+
+
+def test_initial_rollout_cannot_bypass_staged_deploy_health_gate(tmp_path, monkeypatch):
+    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
+    with pytest.raises(ValueError, match="staged activation"):
+        release.execute("rollout", tmp_path, None, None, None)
+    assert ("stop-local",) not in host.events
 
 
 def test_uncertain_unapplied_expansion_does_not_retry_or_switch_pools(tmp_path, monkeypatch):

@@ -484,6 +484,10 @@ class FakeCloud:
             ],
             "canonical-folder": [
                 {"roleId": "vpc.user", "subject": {"id": "manager-sa", "type": "serviceAccount"}},
+                {
+                    "roleId": "monitoring.viewer",
+                    "subject": {"id": "manager-sa", "type": "serviceAccount"},
+                },
             ],
             "worker-secret": [
                 {
@@ -733,6 +737,20 @@ def test_inspection_rejects_missing_manager_folder_authority(resource):
     cloud = FakeCloud(provision, conf)
     cloud.grants[resource] = []
     with pytest.raises(ValueError):
+        provision.inspect(conf, cloud)
+
+
+def test_inspection_requires_only_read_access_to_canonical_monitoring():
+    provision = module("provision")
+    conf = config()
+    cloud = FakeCloud(provision, conf)
+    cloud.grants["canonical-folder"] = [cloud.grants["canonical-folder"][0]]
+    with pytest.raises(ValueError, match="manager authority"):
+        provision.inspect(conf, cloud)
+    cloud.grants["canonical-folder"].append(
+        {"roleId": "monitoring.editor", "subject": {"id": "manager-sa", "type": "serviceAccount"}}
+    )
+    with pytest.raises(ValueError, match="manager authority"):
         provision.inspect(conf, cloud)
 
 

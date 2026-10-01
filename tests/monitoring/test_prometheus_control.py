@@ -41,6 +41,7 @@ def config(control):
         cpu_semantics="cumulative_counter",
         type_contract_evidence="reviewed capture",
         image_origin_alerts_enabled=False,
+        worker_alerts_enabled=False,
     )
     return value
 
@@ -54,9 +55,10 @@ def test_offline_render_has_missing_observations_separate(control):
     assert len(json.loads(package["dashboard.json"])["widgets"]) == 41
 
 
-def test_worker_profile_is_boolean_default_off_and_renders_only_when_enabled(control):
+def test_worker_profile_is_boolean_git_enabled_and_renders_only_when_enabled(control):
     cfg = control.load_config()
-    assert cfg["worker_alerts_enabled"] is False
+    assert cfg["worker_alerts_enabled"] is True
+    cfg["worker_alerts_enabled"] = False
     disabled = yaml.safe_load(control.render(cfg)["rules.yml"])
     assert [group["name"] for group in disabled["groups"]] == [
         "findme-photo",
@@ -132,7 +134,9 @@ def test_validate_package_checks_disabled_and_enabled_worker_profiles(
         return subprocess.CompletedProcess(command, 0, stdout="promtool, version 3.5.0", stderr="")
 
     monkeypatch.setattr(control.subprocess, "run", run)
-    control.validate_prometheus_profiles(control.load_config(), tmp_path, "promtool")
+    cfg = control.load_config()
+    cfg["worker_alerts_enabled"] = False
+    control.validate_prometheus_profiles(cfg, tmp_path, "promtool")
 
     checked = [Path(command[-1]) for command in calls if command[1:3] == ["check", "rules"]]
     assert len(checked) == 3
@@ -594,6 +598,9 @@ def test_owned_rule_404_is_absence_but_other_http_errors_fail_closed(control, mo
 
     monkeypatch.setattr(control, "urlopen", fail)
     assert transport.request("GET", "/extensions/v1/rules/findme-photo.yml")["absent"]
+    assert transport.request("GET", "/extensions/v1/rules/findme-worker-activation-drill.yml")[
+        "absent"
+    ]
     with pytest.raises(control.ControlError) as error:
         transport.request("PUT", "/extensions/v1/rules", {"content": "anything"})
     assert "secret-never-print" not in str(error.value)

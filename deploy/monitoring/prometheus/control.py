@@ -754,7 +754,11 @@ class CloudTransport:
             if (
                 error.code == 404
                 and method == "GET"
-                and path == "/extensions/v1/rules/" + OWNED_RULES
+                and path
+                in {
+                    "/extensions/v1/rules/" + OWNED_RULES,
+                    "/extensions/v1/rules/findme-worker-activation-drill.yml",
+                }
             ):
                 return {"content": "", "absent": True}
             raise ControlError(f"Monitoring {method} failed (HTTP {error.code})") from None

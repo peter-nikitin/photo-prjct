@@ -1080,7 +1080,7 @@ def test_operator_create_queries_pinned_canonical_receiver_over_bounded_ssh():
     assert command[-2] == "operator@111.88.151.64"
     assert (
         "sudo -n env PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical "
-        "python3 /opt/photo-prjct/deploy/worker-pools/release.py eligibility" in command[-1]
+        "python3 -B /opt/photo-prjct/deploy/worker-pools/release.py eligibility" in command[-1]
     )
     assert checksum in command[-1]
     assert kwargs["timeout"] <= 45 and kwargs["stdin"] is subprocess.DEVNULL
@@ -1145,6 +1145,8 @@ def test_canonical_eligibility_command_reaches_validation_from_package_only_layo
     assert result.stderr.strip() == (
         "canonical worker release failed; inspect durable receipt and retain compatible web"
     )
+    assert not list(installed.rglob("__pycache__"))
+    assert not list(installed.rglob("*.pyc"))
 
 
 def test_second_create_waits_for_receipt_owned_first_group_inventory_to_settle(

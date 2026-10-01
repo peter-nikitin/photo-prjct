@@ -506,7 +506,7 @@ private paths and a reviewed checksum already substituted:
 
 ```sh
 python3 deploy/worker-pools/provision.py --config '<creation.json>' --inspect --profile '<yc-profile>'
-ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes '<user@canonical-host>' 'sudo -n env PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical python3 /opt/photo-prjct/deploy/worker-pools/release.py eligibility --root /opt/photo-prjct --manifest /opt/photo-prjct/<creation.json> --checksum <reviewed-sha256>'
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes '<user@canonical-host>' 'sudo -n env PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical python3 -B /opt/photo-prjct/deploy/worker-pools/release.py eligibility --root /opt/photo-prjct --manifest /opt/photo-prjct/<creation.json> --checksum <reviewed-sha256>'
 python3 deploy/worker-pools/provision.py --config '<creation.json>' --apply '<reviewed-sha256>' --profile '<yc-profile>' --receipt '<fresh-private-receipt>' --canonical-ssh-target '<user@canonical-host>' --canonical-root /opt/photo-prjct --canonical-manifest '/opt/photo-prjct/<creation.json>'
 ```
 
@@ -885,7 +885,7 @@ package/environment recovery remain coupled. An authorized operator can inspect 
 
 ```sh
 PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
-  python3 /opt/photo-prjct/deploy/worker-pools/release.py status --root /opt/photo-prjct
+  python3 -B /opt/photo-prjct/deploy/worker-pools/release.py status --root /opt/photo-prjct
 ```
 
 Read status/receipt and provider operation evidence first after a lost response. Re-run the same

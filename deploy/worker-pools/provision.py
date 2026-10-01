@@ -712,6 +712,8 @@ def ssh_eligibility(config, checksum, *, target, root, manifest, run=subprocess.
         [
             "sudo",
             "-n",
+            "env",
+            f"PYTHONPATH={root / 'deploy/worker-pools/_canonical'}",
             "python3",
             str(root / "deploy/worker-pools/release.py"),
             "eligibility",

@@ -113,6 +113,11 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   instance and disk inventory, immutable release/receipt binding and canonical-native
   WORKLOAD metric selection and publication. Local fixtures verify this contract; they do not
   establish a created worker folder, effective organization policy, alert delivery or cutover.
+  Canonical Deploy now supports a pinned receiver, warm paused stage, explicit health-gated
+  activation, explicit completion and local rollback gate. Stage retains local photo workers
+  while the private receiver and native collector run; activation drains local claims and opens
+  remote serving with original recovery retained. Only completion after real-work acceptance
+  commits the remote fleet marker. Repository support is not evidence that this protocol has run.
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
   PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first
@@ -333,8 +338,9 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   existing Managed Prometheus agent renderer. Local TLS/container and additive-upgrade rehearsals
   are separate from cloud delivery. [ADR 0048](adr/0048-reuse-managed-prometheus-for-worker-alerts.md)
   reuses the delivered Prometheus workspace, operator channel and Git reconciliation for
-  worker queue/capacity and diagnostic alerts. The worker profile is disabled until live
-  activation; source timestamps distinguish retained stale data from fresh observations.
+  worker queue/capacity and diagnostic alerts. The worker alert profile is enabled in Git
+  for reviewed activation, but still requires separate Monitoring apply and live acceptance;
+  source timestamps distinguish retained stale data from fresh observations.
   The Git-owned dashboard separates queue/capacity, runtime operation throughput and duration
   distributions from backend-accepted clean-preview throughput. The latter is a label-free,
   commit-only application counter, not a count of all completed processing stages or an accounting

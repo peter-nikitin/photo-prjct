@@ -27,6 +27,10 @@ The provisioning and trusted observation documents retain `folder_id` for worker
 
 The approved ceiling remains bulk `0..1`, selfie `1..1`, with initial warm `1+1` and unchanged 2 vCPU / 8 GiB / 32 GiB SSD VM shapes. A separate folder does not raise the ceiling or alter the selfie claim cap. The dated SSD arithmetic remains 164 GiB for two worker disks plus the canonical disk, and 196 GiB for one serial replacement; builder overlap and retained disks require a fresh full inventory before each charged step. A dedicated folder is an IAM boundary, not a quota exemption or a promise of lower charges.
 
+The manager also needs `monitoring.viewer` on the canonical folder, because the native WORKLOAD rule reads the existing canonical metric namespace. This is read-only metric access, not Compute management or permission to publish metrics. The 2026-10-01 operational audit found that grant absent; provisioning must require it and reject broader manager grants. See the [provider's custom-metric scaling requirements](https://yandex.cloud/en/docs/compute/concepts/instance-groups/scale). The effective manager roles remain exactly `compute.editor` on the worker folder and `vpc.user` plus `monitoring.viewer` on the canonical folder, with no cloud-level grant.
+
+The manager must additionally have `iam.serviceAccounts.user` on the **exact worker-runtime account**, allowing that identity to be attached to the group's VMs. It does not receive an IAM role on the whole folder or authority over the canonical identity. Read back this direct binding with the operator identity before creation; do not give the canonical release service-account-admin just to inspect the ACL. This follows the [provider's VM-group attachment requirement](https://yandex.cloud/en/docs/compute/tutorials/vm-scale-scheduled/console).
+
 ## Alert and activation boundary
 
 Before any customer cutover at ceiling one, enable the Git-reviewed Managed Prometheus worker

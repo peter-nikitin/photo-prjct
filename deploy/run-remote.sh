@@ -390,7 +390,76 @@ deployment_root=/opt/photo-prjct
 exec 9>"$deployment_root/.deployment.lock"
 flock -n 9 || exit 1
 export FINDME_CANONICAL_LOCK=1
-[ ! -e "$deployment_root/.deployment-recovery" ] || exit 1
+python3 - "$deployment_root" <<'PY_STAGE_GUARD'
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+action = os.environ.get('WORKER_POOL_ACTIVATION', 'normal')
+if action not in {'normal', 'receiver', 'stage', 'activate', 'complete', 'abort'}:
+    raise SystemExit(2)
+receipt_path = root / 'worker-pools-release.json'
+recovery = root / '.deployment-recovery'
+receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else None
+phase = receipt.get('phase') if receipt else None
+pending = (phase in {'receiver-prepared', 'receiver-staged', 'prepared', 'staging', 'staged', 'activating', 'verified', 'rolling-back-local', 'rolled-back-local'} or (phase == 'receiver-aborted' and recovery.is_dir())) and receipt.get('previous') is None
+if pending:
+    allowed = {
+        'receiver-prepared': {'receiver', 'abort'},
+        'receiver-staged': {'receiver', 'stage', 'abort'},
+        'receiver-aborted': {'abort'},
+        'prepared': {'stage', 'abort'},
+        'staging': {'stage', 'abort'},
+        'staged': {'stage', 'activate', 'abort'},
+        'activating': {'activate', 'abort'},
+        'verified': {'complete', 'abort'},
+        'rolling-back-local': {'abort'},
+        'rolled-back-local': {'stage', 'abort'},
+    }
+    if action not in allowed[phase] or (phase != 'receiver-prepared' and not recovery.is_dir()):
+        raise SystemExit(1)
+    candidate = receipt['candidate']
+    if phase in {'receiver-prepared', 'receiver-staged', 'receiver-aborted'}:
+        if os.environ.get('APP_IMAGE', '').rsplit(':', 1)[-1] != candidate['worker_build']:
+            raise SystemExit(1)
+        manifest_path = Path(os.environ.get('WORKER_POOL_RELEASE_MANIFEST', ''))
+        if not manifest_path.is_file():
+            raise SystemExit(1)
+        manifest = json.loads(manifest_path.read_text())
+        initial = candidate['creation_manifest']
+        if (
+            manifest['checksum'] != os.environ.get('WORKER_POOL_RELEASE_CHECKSUM')
+            or manifest['configuration']['worker_build'] != candidate['worker_build']
+            or manifest['configuration']['worker_image'] != candidate['worker_image']
+            or os.environ.get('WORKER_POOL_WORKER_DIGEST') != candidate['worker_image']
+        ):
+            raise SystemExit(1)
+        if action == 'stage':
+            immutable = lambda row: {key: value for key, value in row['configuration'].items() if key != 'groups'}
+            if immutable(manifest) != immutable(initial):
+                raise SystemExit(1)
+        elif manifest != initial:
+            raise SystemExit(1)
+    else:
+        manifest_path = Path(os.environ.get('WORKER_POOL_RELEASE_MANIFEST', ''))
+        if not manifest_path.is_file():
+            raise SystemExit(1)
+        manifest = json.loads(manifest_path.read_text())
+        if (
+            manifest != candidate['manifest']
+            or manifest['checksum'] != os.environ.get('WORKER_POOL_RELEASE_CHECKSUM')
+            or os.environ.get('APP_IMAGE', '').rsplit(':', 1)[-1]
+            != manifest['configuration']['worker_build']
+            or os.environ.get('WORKER_POOL_WORKER_DIGEST') != manifest['configuration']['worker_image']
+        ):
+            raise SystemExit(1)
+elif recovery.exists() or action in {'activate', 'complete', 'abort', 'stage'}:
+    raise SystemExit(1)
+if action == 'normal' and os.environ.get('PHOTO_WORKER_PLACEMENT') == 'remote' and not (root / 'worker-pools-current.json').is_file():
+    raise SystemExit(1)
+PY_STAGE_GUARD
 case "$DEPLOYMENT_ARCHIVE_NAME" in
   *[!a-zA-Z0-9.-]*|'') exit 2 ;;
   .deployment-candidate.*.tar) ;;
@@ -409,6 +478,13 @@ restore_install_failure() {
     # Candidate web may still own remote attempts. Never restore incompatible tooling or
     # erase the exact prior package/env while canonical recovery remains incomplete.
     rm -rf "$candidate_package" "$candidate_archive"
+    if [ "$status" -eq 0 ]; then
+      retained_package="$(sed -n '1p' "$deployment_root/.deployment-recovery/package-path")"
+      [ -n "$retained_package" ] || exit 1
+      if [ "$previous_package" != "$retained_package" ]; then
+        rm -rf "$previous_package"
+      fi
+    fi
     exit "$status"
   fi
   if [ "$status" -ne 0 ] && [ "$package_mutation_started" -eq 1 ] && \
@@ -553,19 +629,24 @@ export TBANK_RECEIPT_PAYMENT_OBJECT TBANK_RECEIPT_MEASUREMENT_UNIT
 export TBANK_RECEIPT_CLOSING_REQUIRED
 
 PHOTO_WORKER_PLACEMENT="${PHOTO_WORKER_PLACEMENT:-local}"
+WORKER_POOL_ACTIVATION="${WORKER_POOL_ACTIVATION:-normal}"
 WORKER_POOL_PRIVATE_API_IPV4="${WORKER_POOL_PRIVATE_API_IPV4:-}"
 WORKER_POOL_RELEASE_MANIFEST="${WORKER_POOL_RELEASE_MANIFEST:-}"
 WORKER_POOL_RELEASE_CHECKSUM="${WORKER_POOL_RELEASE_CHECKSUM:-}"
+WORKER_POOL_WORKER_DIGEST="${WORKER_POOL_WORKER_DIGEST:-}"
 export PHOTO_WORKER_PLACEMENT WORKER_POOL_PRIVATE_API_IPV4
-export WORKER_POOL_RELEASE_MANIFEST WORKER_POOL_RELEASE_CHECKSUM
+export WORKER_POOL_ACTIVATION WORKER_POOL_RELEASE_MANIFEST WORKER_POOL_RELEASE_CHECKSUM
+export WORKER_POOL_WORKER_DIGEST
 
 REMOTE_DEPLOYMENT_VALUES='
 APP_IMAGE
 WORKER_IMAGE
 PHOTO_WORKER_PLACEMENT
+WORKER_POOL_ACTIVATION
 WORKER_POOL_PRIVATE_API_IPV4
 WORKER_POOL_RELEASE_MANIFEST
 WORKER_POOL_RELEASE_CHECKSUM
+WORKER_POOL_WORKER_DIGEST
 IMPORT_WORKER_IMAGE
 PHOTO_IMPORT_ENABLED
 PHOTO_IMPORT_BUILD

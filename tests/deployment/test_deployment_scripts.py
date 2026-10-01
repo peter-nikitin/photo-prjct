@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -63,6 +64,7 @@ recover_previous_deployment
             **os.environ,
             "DEPLOY_ROOT": str(tmp_path),
             "requested_worker_placement": "remote",
+            "worker_pool_activation": "normal",
             "previous_worker_placement": previous_placement,
             "requested_commerce_worker_enabled": requested_commerce,
             "previous_commerce_worker_enabled": previous_commerce,
@@ -497,6 +499,10 @@ if [ "${1-}" = /usr/local/sbin/findme-selfie-observability ]; then
   [ "$APPLY_SCENARIO:$action" != observability-commit-failure:commit ] || exit 1
   exit 0
 fi
+if [ "${1-}" = /usr/local/sbin/findme-worker-pool-metrics ]; then
+  printf 'worker-metrics-%s\n' "${2-}" >> "$COMMAND_LOG"
+  exit 0
+fi
 if [ "${1-}" = env ] && [ "${2-}" = -i ]; then
   shift 2
   case "${1-}" in PATH=*) shift ;; esac
@@ -527,7 +533,7 @@ if [ "$APPLY_SCENARIO" = fresh-first-deployment ] || \
    [ "$APPLY_SCENARIO" = fresh-first-marker-failure ]; then
   [ ! -e "$DEPLOY_ROOT/deployed-image" ]
 else
-  [ "$(cat "$DEPLOY_ROOT/deployed-image")" = old-image ]
+  [ "$(cat "$DEPLOY_ROOT/deployed-image")" = "${EXPECTED_DEPLOYED_IMAGE:-old-image}" ]
 fi
 [ "$APPLY_SCENARIO" != public-failure ]
 printf 'verify-public-edge\n' >> "$COMMAND_LOG"
@@ -1083,9 +1089,487 @@ def test_remote_placement_requires_reviewed_release_before_mutation(
     assert not (tmp_path / "apply.log").exists()
 
 
+def test_committed_remote_normal_release_clears_gate_before_next_installer_and_release(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env.update(
+        PHOTO_WORKER_PLACEMENT="remote",
+        WORKER_POOL_ACTIVATION="normal",
+        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
+        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
+        WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
+        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
+    )
+    previous_remote = (
+        PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
+    )
+    (tmp_path / ".env").write_bytes(previous_remote)
+    (tmp_path / "previous-env.expected").write_bytes(previous_remote)
+    (tmp_path / "worker-pools-current.json").write_text("{}\n")
+    _write_executable(
+        fake_bin / "python3",
+        """
+case "$*" in
+  *worker-pools/release.py*) printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"; exit 0 ;;
+esac
+exec """
+        + sys.executable
+        + """ "$@"
+""",
+    )
+    first = _run("deploy/apply-deployment.sh", env=env)
+    assert first.returncode == 0, first.stderr
+    assert "fleet commit" in _apply_log(tmp_path)
+    assert not (tmp_path / ".deployment-recovery").exists()
+
+    source = (ROOT / "deploy/run-remote.sh").read_text()
+    installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
+    installer = installer.replace("deployment_root=/opt/photo-prjct", f"deployment_root={tmp_path}")
+    _write_executable(fake_bin / "flock", "exit 0")
+    checked = subprocess.run(
+        ["sh", "-c", installer],
+        env={**os.environ, **env, "DEPLOYMENT_ARCHIVE_NAME": "invalid"},
+        text=True,
+        capture_output=True,
+    )
+    assert checked.returncode == 2, checked.stderr  # passed pre-package gate
+
+    env["EXPECTED_DEPLOYED_IMAGE"] = (tmp_path / "deployed-image").read_text().strip()
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    second = _run("deploy/apply-deployment.sh", env=env)
+    assert second.returncode == 0, second.stderr
+    assert not (tmp_path / ".deployment-recovery").exists()
+
+
+def test_receiver_stage_keeps_local_workers_and_retains_recovery_gate(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env.update(
+        PHOTO_WORKER_PLACEMENT="remote",
+        WORKER_POOL_ACTIVATION="receiver",
+        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
+        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
+        WORKER_POOL_RELEASE_MANIFEST="/reviewed-creation.json",
+        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
+        WORKER_POOL_WORKER_DIGEST="ghcr.io/example/worker@sha256:" + "a" * 64,
+    )
+    _write_executable(
+        fake_bin / "python3",
+        """
+case "$*" in
+  *worker-pools/release.py*) printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"; exit 0 ;;
+esac
+exec """
+        + sys.executable
+        + """ "$@"
+""",
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stderr
+    log = _apply_log(tmp_path)
+    assert "fleet receiver-preflight" in log
+    assert "fleet receiver-stage" in log
+    assert not any(line.startswith("docker stop ") for line in log)
+    assert not any("rm -sf worker-bulk worker-selfie" in line for line in log)
+    assert (tmp_path / ".deployment-recovery/previous.env").read_bytes() == PREVIOUS_ENV
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    env["EXPECTED_DEPLOYED_IMAGE"] = (tmp_path / "deployed-image").read_text().strip()
+    retry = _run("deploy/apply-deployment.sh", env=env)
+    assert retry.returncode == 0, retry.stderr
+    assert _apply_log(tmp_path).count("fleet receiver-preflight") == 2
+
+
+@pytest.mark.parametrize(("action", "expected_code"), [("normal", 1), ("receiver", 2)])
+@pytest.mark.parametrize("aborted_receipt", [False, True])
+def test_installer_fences_remote_first_activation_before_package_replacement(
+    tmp_path: Path, action: str, expected_code: int, aborted_receipt: bool
+) -> None:
+    source = (ROOT / "deploy/run-remote.sh").read_text()
+    installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
+    installer = installer.replace("deployment_root=/opt/photo-prjct", f"deployment_root={tmp_path}")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "flock", "exit 0")
+    (tmp_path / "docker-compose.deployment.yml").write_text("original\n")
+    if aborted_receipt:
+        (tmp_path / "worker-pools-release.json").write_text(
+            json.dumps({"phase": "receiver-aborted", "previous": None})
+        )
+    result = subprocess.run(
+        ["sh", "-c", installer],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WORKER_POOL_ACTIVATION": action,
+            "PHOTO_WORKER_PLACEMENT": "remote",
+            "DEPLOYMENT_ARCHIVE_NAME": "invalid",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == expected_code, result.stderr
+    assert (tmp_path / "docker-compose.deployment.yml").read_text() == "original\n"
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_code"),
+    [("abort", 2), ("normal", 1), ("stage", 1), ("activate", 1)],
+)
+def test_interrupted_local_rollback_allows_only_pinned_abort_before_package_replacement(
+    tmp_path: Path, action: str, expected_code: int
+) -> None:
+    source = (ROOT / "deploy/run-remote.sh").read_text()
+    installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
+    installer = installer.replace("deployment_root=/opt/photo-prjct", f"deployment_root={tmp_path}")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "flock", "exit 0")
+    (tmp_path / "docker-compose.deployment.yml").write_text("original\n")
+    (tmp_path / ".deployment-recovery").mkdir()
+    image = "ghcr.io/example/worker@sha256:" + "c" * 64
+    manifest = {
+        "checksum": "a" * 64,
+        "configuration": {"worker_build": "b" * 40, "worker_image": image},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    (tmp_path / "worker-pools-release.json").write_text(
+        json.dumps(
+            {"phase": "rolling-back-local", "previous": None, "candidate": {"manifest": manifest}}
+        )
+    )
+    result = subprocess.run(
+        ["sh", "-c", installer],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WORKER_POOL_ACTIVATION": action,
+            "PHOTO_WORKER_PLACEMENT": "remote",
+            "APP_IMAGE": "ghcr.io/example/photo-prjct:" + "b" * 40,
+            "WORKER_POOL_RELEASE_MANIFEST": str(manifest_path),
+            "WORKER_POOL_RELEASE_CHECKSUM": "a" * 64,
+            "WORKER_POOL_WORKER_DIGEST": image,
+            "DEPLOYMENT_ARCHIVE_NAME": "invalid",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == expected_code, result.stderr
+    assert (tmp_path / "docker-compose.deployment.yml").read_text() == "original\n"
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_code"),
+    [("complete", 2), ("abort", 2), ("normal", 1), ("activate", 1), ("stage", 1)],
+)
+def test_activated_window_allows_only_pinned_complete_or_abort_before_package_replacement(
+    tmp_path: Path, action: str, expected_code: int
+) -> None:
+    source = (ROOT / "deploy/run-remote.sh").read_text()
+    installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
+    installer = installer.replace("deployment_root=/opt/photo-prjct", f"deployment_root={tmp_path}")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "flock", "exit 0")
+    (tmp_path / "docker-compose.deployment.yml").write_text("original\n")
+    (tmp_path / ".deployment-recovery").mkdir()
+    image = "ghcr.io/example/worker@sha256:" + "c" * 64
+    manifest = {
+        "checksum": "a" * 64,
+        "configuration": {"worker_build": "b" * 40, "worker_image": image},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    (tmp_path / "worker-pools-release.json").write_text(
+        json.dumps({"phase": "verified", "previous": None, "candidate": {"manifest": manifest}})
+    )
+    result = subprocess.run(
+        ["sh", "-c", installer],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "WORKER_POOL_ACTIVATION": action,
+            "PHOTO_WORKER_PLACEMENT": "remote",
+            "APP_IMAGE": "ghcr.io/example/photo-prjct:" + "b" * 40,
+            "WORKER_POOL_RELEASE_MANIFEST": str(manifest_path),
+            "WORKER_POOL_RELEASE_CHECKSUM": "a" * 64,
+            "WORKER_POOL_WORKER_DIGEST": image,
+            "DEPLOYMENT_ARCHIVE_NAME": "invalid",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == expected_code, result.stderr
+    assert (tmp_path / "docker-compose.deployment.yml").read_text() == "original\n"
+
+
+@pytest.mark.parametrize(
+    ("receiver_only", "rollback_fails", "public_fails"),
+    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+)
+def test_abort_restores_original_local_package_env_workers_and_public_health(
+    tmp_path: Path,
+    fake_bin: Path,
+    receiver_only: bool,
+    rollback_fails: bool,
+    public_fails: bool,
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="public-failure" if public_fails else "success")
+    env.update(
+        PHOTO_WORKER_PLACEMENT="remote",
+        WORKER_POOL_ACTIVATION="abort",
+        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
+        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
+        WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
+        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
+    )
+    original_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
+    staged_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
+    (tmp_path / ".env").write_bytes(staged_env)
+    (tmp_path / "previous-env.expected").write_bytes(staged_env)
+    original_package = tmp_path / ".deployment-previous.original"
+    original_package.mkdir()
+    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
+        shutil.copy2(tmp_path / name, original_package / name)
+    shutil.copytree(tmp_path / "deploy", original_package / "deploy")
+    recovery = tmp_path / ".deployment-recovery"
+    recovery.mkdir()
+    (recovery / "previous.env").write_bytes(original_env)
+    (recovery / "deployed-image").write_text("old-image\n")
+    (recovery / "package-path").write_text(str(original_package) + "\n")
+    (recovery / "worker-topology").write_text("split\n")
+    (tmp_path / "worker-pools-release.json").write_text(
+        json.dumps({"phase": "receiver-staged" if receiver_only else "staged"})
+    )
+    _write_executable(
+        fake_bin / "python3",
+        """
+case "$*" in
+  *worker-pools/release.py*)
+    printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"
+    [ "$2:$FLEET_ROLLBACK_FAILS" != rollback:1 ] || exit 1
+    exit 0 ;;
+esac
+exec """
+        + sys.executable
+        + """ "$@"
+""",
+    )
+    env["FLEET_ROLLBACK_FAILS"] = "1" if rollback_fails else "0"
+    result = _run("deploy/apply-deployment.sh", env=env)
+    if rollback_fails:
+        assert result.returncode != 0
+        assert _apply_log(tmp_path).count("fleet rollback") == 1
+        assert (recovery / "previous.env").read_bytes() == original_env
+        assert (recovery / "deployed-image").read_text() == "old-image\n"
+        assert (recovery / "package-path").read_text() == str(original_package) + "\n"
+        assert original_package.is_dir()
+        assert (tmp_path / ".env").read_bytes() == staged_env
+        assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+        return
+    if public_fails:
+        assert result.returncode != 0
+        assert _apply_log(tmp_path).count("fleet rollback") == 1
+        assert (recovery / "previous.env").read_bytes() == original_env
+        assert (recovery / "deployed-image").read_text() == "old-image\n"
+        assert (recovery / "package-path").read_text() == str(original_package) + "\n"
+        assert original_package.is_dir()
+        assert (tmp_path / ".env").read_bytes() == original_env
+        assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+        env["APPLY_SCENARIO"] = "success"
+        retried = _run("deploy/apply-deployment.sh", env=env)
+        assert retried.returncode == 0, retried.stderr
+        result = retried
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".env").read_bytes() == original_env
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+    assert not recovery.exists()
+    assert not original_package.exists()
+    log = _apply_log(tmp_path)
+    if receiver_only:
+        assert "fleet receiver-absence" in log
+        assert "fleet receiver-close" in log
+        assert "fleet rollback" not in log
+    else:
+        assert "fleet rollback" in log
+    assert any("--profile worker up -d --no-deps" in line for line in log)
+    assert "verify-public-edge" in log
+    assert ("worker-metrics-remove" in log) is not receiver_only
+
+
+@pytest.mark.parametrize("decision", ["complete", "abort", "complete-public-failure"])
+def test_activated_real_work_window_retains_original_gate_until_complete_or_abort(
+    tmp_path: Path, fake_bin: Path, decision: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env.update(
+        PHOTO_WORKER_PLACEMENT="remote",
+        WORKER_POOL_ACTIVATION="activate",
+        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
+        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
+        WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
+        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
+        WORKER_POOL_WORKER_DIGEST="ghcr.io/example/worker@sha256:" + "a" * 64,
+    )
+    original_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
+    staged_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
+    (tmp_path / ".env").write_bytes(staged_env)
+    (tmp_path / "previous-env.expected").write_bytes(staged_env)
+    original_package = tmp_path / ".deployment-previous.original"
+    original_package.mkdir()
+    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
+        shutil.copy2(tmp_path / name, original_package / name)
+    shutil.copytree(tmp_path / "deploy", original_package / "deploy")
+    recovery = tmp_path / ".deployment-recovery"
+    recovery.mkdir()
+    (recovery / "previous.env").write_bytes(original_env)
+    (recovery / "deployed-image").write_text("old-image\n")
+    (recovery / "package-path").write_text(str(original_package) + "\n")
+    (recovery / "worker-topology").write_text("split\n")
+    (tmp_path / "worker-pools-release.json").write_text(json.dumps({"phase": "staged"}))
+    _write_executable(
+        fake_bin / "python3",
+        """
+case "$*" in
+  *worker-pools/release.py*) printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"; exit 0 ;;
+esac
+exec """
+        + sys.executable
+        + """ "$@"
+""",
+    )
+    activated = _run("deploy/apply-deployment.sh", env=env)
+    assert activated.returncode == 0, activated.stderr
+    assert "fleet activate" in _apply_log(tmp_path)
+    assert "fleet commit" not in _apply_log(tmp_path)
+    assert (recovery / "previous.env").read_bytes() == original_env
+    assert (recovery / "deployed-image").read_text() == "old-image\n"
+    assert original_package.is_dir()
+    env["WORKER_POOL_ACTIVATION"] = (
+        "complete" if decision == "complete-public-failure" else decision
+    )
+    env["EXPECTED_DEPLOYED_IMAGE"] = (
+        (tmp_path / "deployed-image").read_text().strip()
+        if decision in {"complete", "complete-public-failure"}
+        else "old-image"
+    )
+    if decision == "complete-public-failure":
+        env["APPLY_SCENARIO"] = "public-failure"
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    (tmp_path / "worker-pools-release.json").write_text(json.dumps({"phase": "verified"}))
+    finished = _run("deploy/apply-deployment.sh", env=env)
+    if decision == "complete-public-failure":
+        assert finished.returncode != 0
+        assert "fleet commit" not in _apply_log(tmp_path)
+        assert (recovery / "previous.env").read_bytes() == original_env
+        assert original_package.is_dir()
+        return
+    assert finished.returncode == 0, finished.stderr
+    log = _apply_log(tmp_path)
+    if decision == "complete":
+        assert "fleet verify" in log
+        assert "fleet commit" in log
+        assert (tmp_path / ".env").read_bytes() != original_env
+    else:
+        assert "fleet rollback" in log
+        assert "fleet commit" not in log
+        assert (tmp_path / ".env").read_bytes() == original_env
+        assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+    assert not recovery.exists()
+    assert not original_package.exists()
+
+
+def test_receiver_preflight_abort_without_recovery_gate_restores_local_package(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env.update(
+        PHOTO_WORKER_PLACEMENT="remote",
+        WORKER_POOL_ACTIVATION="abort",
+        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
+        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
+        WORKER_POOL_RELEASE_MANIFEST="/reviewed-creation.json",
+        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
+    )
+    local_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
+    (tmp_path / ".env").write_bytes(local_env)
+    (tmp_path / "previous-env.expected").write_bytes(local_env)
+    previous_package = tmp_path / ".deployment-previous.original"
+    previous_package.mkdir()
+    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
+        shutil.copy2(tmp_path / name, previous_package / name)
+    shutil.copytree(tmp_path / "deploy", previous_package / "deploy")
+    env["PREVIOUS_DEPLOYMENT_PACKAGE_ROOT"] = str(previous_package)
+    env["PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY"] = "split"
+    (tmp_path / "worker-pools-release.json").write_text(json.dumps({"phase": "receiver-prepared"}))
+    _write_executable(
+        fake_bin / "python3",
+        """
+case "$*" in
+  *worker-pools/release.py*) printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"; exit 0 ;;
+esac
+exec """
+        + sys.executable
+        + """ "$@"
+""",
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".env").read_bytes() == local_env
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+    assert not (tmp_path / ".deployment-recovery").exists()
+    assert not previous_package.exists()
+    log = _apply_log(tmp_path)
+    assert "fleet receiver-absence" in log
+    assert "fleet receiver-close" in log
+    assert "fleet rollback" not in log
+
+
+def test_failed_receiver_recovery_preserves_original_package_in_durable_gate(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / ".deployment-previous.original"
+    original.mkdir()
+    for package_root, value in ((tmp_path, "candidate"), (original, "original")):
+        (package_root / "deploy").mkdir()
+        (package_root / "deploy/version").write_text(value)
+        for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
+            (package_root / name).write_text(value)
+    recovery = tmp_path / ".deployment-recovery"
+    recovery.mkdir()
+    (recovery / "package-path").write_text(str(original) + "\n")
+    source = (ROOT / "deploy/apply-deployment.sh").read_text()
+    function = re.search(
+        r"^restore_previous_deployment_package\(\) \{\n.*?^\}", source, re.M | re.S
+    )[0]
+    result = subprocess.run(
+        ["/bin/sh", "-eu", "-c", function + "\nrestore_previous_deployment_package\n"],
+        env={
+            **os.environ,
+            "DEPLOY_ROOT": str(tmp_path),
+            "PREVIOUS_DEPLOYMENT_PACKAGE_ROOT": str(original),
+            "worker_pool_activation": "receiver",
+            "vector_database_reconciled": "0",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "deploy/version").read_text() == "original"
+    assert (original / "deploy/version").read_text() == "original"
+    assert (recovery / "package-path").read_text() == str(original) + "\n"
+
+
 @pytest.mark.parametrize(
     "rollback_fails,scenario",
-    [(False, "success"), (True, "success"), (False, "migration-plan-failure")],
+    [
+        (False, "success"),
+        (True, "success"),
+        (False, "migration-plan-failure"),
+        (False, "public-failure"),
+    ],
 )
 def test_remote_cutover_never_force_removes_local_workers_and_gates_image_marker(
     tmp_path: Path, fake_bin: Path, rollback_fails: bool, scenario: str
@@ -1093,12 +1577,23 @@ def test_remote_cutover_never_force_removes_local_workers_and_gates_image_marker
     env = _apply_env(tmp_path, fake_bin, scenario=scenario)
     env.update(
         PHOTO_WORKER_PLACEMENT="remote",
+        WORKER_POOL_ACTIVATION="activate",
         PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
         WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
         WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
         WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
         FLEET_ROLLBACK_FAILS="1" if rollback_fails else "0",
     )
+    original_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
+    staged_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
+    (tmp_path / ".env").write_bytes(staged_env)
+    (tmp_path / "previous-env.expected").write_bytes(staged_env)
+    recovery = tmp_path / ".deployment-recovery"
+    recovery.mkdir()
+    (recovery / "previous.env").write_bytes(original_env)
+    (recovery / "deployed-image").write_text("old-image\n")
+    (recovery / "package-path").write_text("unused\n")
+    (recovery / "worker-topology").write_text("split\n")
     # Inject only fleet/cloud host boundary. Canonical shell and real file marker paths execute.
     _write_executable(
         fake_bin / "python3",
@@ -1106,7 +1601,7 @@ def test_remote_cutover_never_force_removes_local_workers_and_gates_image_marker
 case "$*" in
   *worker-pools/release.py*)
     printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"
-    [ "$2" != rollout ] || exit 1
+    [ "$2" != activate ] || exit 1
     [ "$2:$FLEET_ROLLBACK_FAILS" != rollback:1 ] || exit 1
     exit 0 ;;
 esac
@@ -1118,8 +1613,11 @@ exec """
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode != 0
     log = _apply_log(tmp_path)
-    assert ("fleet rollout" in log) == (scenario == "success")
-    assert "fleet rollback" in log
+    assert ("fleet activate" in log) == (scenario == "success"), result.stderr
+    if scenario == "success":
+        assert "fleet rollback" in log
+        assert log.index("verify-public-edge") < log.index("fleet activate")
+        assert log.index("verify-selfie-observability") < log.index("fleet activate")
     assert not any("rm -sf worker" in line for line in log)
     assert not any(line.startswith("docker stop ") for line in log)
     if scenario == "success":
@@ -1127,7 +1625,7 @@ exec """
             log.index("candidate-vector-collation-check")
             < log.index("candidate-vector-capability")
             < log.index("candidate-migrate")
-            < log.index("fleet rollout")
+            < log.index("fleet activate")
         )
         database_start = next(line for line in log if " up -d --wait --no-deps db" in line)
         assert "--force-recreate" not in database_start
@@ -1135,11 +1633,15 @@ exec """
     assert (tmp_path / "deployed-image").read_text() == "old-image\n"
     recovery = tmp_path / ".deployment-recovery"
     if rollback_fails:
-        assert (recovery / "previous.env").read_bytes() == PREVIOUS_ENV
+        assert (recovery / "previous.env").read_bytes() == original_env
         assert (recovery / "deployed-image").read_text() == "old-image\n"
-        assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
+        assert (tmp_path / ".env").read_bytes() != original_env
     else:
-        assert not recovery.exists()
+        assert (recovery / "previous.env").read_bytes() == original_env
+        assert (recovery / "deployed-image").read_text() == "old-image\n"
+        assert (tmp_path / ".env").read_bytes() == staged_env
+        if scenario == "success":
+            assert any("--profile worker up -d --no-deps" in line for line in log)
 
 
 def _render_gallery_environment(env_file: Path) -> tuple[dict[str, str], str]:

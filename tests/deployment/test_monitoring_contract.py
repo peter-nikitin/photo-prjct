@@ -184,23 +184,24 @@ def test_alert_selectors_use_folder_as_request_context_not_metric_label() -> Non
     assert all("folderId=" not in selector for selector in selectors)
 
 
-def test_worker_pool_alerts_are_default_off_cap_one_prometheus_rules() -> None:
+def test_worker_pool_alerts_are_git_enabled_cap_one_prometheus_rules() -> None:
     manifest = (ROOT / "deploy/monitoring/alerts.md").read_text()
     runbook = (ROOT / "docs/runbooks/worker-pools.md").read_text()
     section = manifest.split("## Worker pool alerts\n", 1)[1]
     control = load_prometheus_control()
     config = control.load_config()
 
-    assert config["worker_alerts_enabled"] is False
+    assert config["worker_alerts_enabled"] is True
+    enabled = yaml.safe_load(control.render(config)["rules.yml"])
+    worker = next(group for group in enabled["groups"] if group["name"] == "findme-workers")
+
+    config["worker_alerts_enabled"] = False
     disabled = yaml.safe_load(control.render(config)["rules.yml"])
     assert [group["name"] for group in disabled["groups"]] == [
         "findme-photo",
         "findme-image-origin",
     ]
 
-    config["worker_alerts_enabled"] = True
-    enabled = yaml.safe_load(control.render(config)["rules.yml"])
-    worker = next(group for group in enabled["groups"] if group["name"] == "findme-workers")
     saturation = next(rule for rule in worker["rules"] if rule["alert"] == "WorkerPoolSaturated")
     expression = saturation["expr"]
     for required in (

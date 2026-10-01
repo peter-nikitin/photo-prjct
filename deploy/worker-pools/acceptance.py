@@ -24,8 +24,8 @@ COMMON_LIVE_GATES = (
 POLICY_LIVE_GATES = {
     1: (
         "native WORKLOAD policy bulk 0..1/selfie 1..1; backlog cannot allocate a second instance",
-        "cap-one Git-owned alert apply/read-back/rollback, native Alarm/NoData/recovery "
-        "and approved operator notification before customer cutover",
+        "cap-one Git-owned Managed Prometheus alert apply/read-back/rollback, fresh evaluator "
+        "firing/missing/stale/recovery plus notification receipt before customer cutover",
         "serial forward/rollback: only current pool temporarily maxSize=2, <=3 worker boot disks; "
         "restore maxSize=1 and prove obsolete disks absent before next pool expansion",
         "actual provider recovery/replacement survivor and physical disk allocation rehearsal",

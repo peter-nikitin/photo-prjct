@@ -75,6 +75,11 @@ case "$requested_import_enabled" in
 esac
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
 requested_worker_placement="${PHOTO_WORKER_PLACEMENT:-local}"
+worker_pool_activation="${WORKER_POOL_ACTIVATION:-normal}"
+case "$worker_pool_activation" in
+    normal|receiver|stage|activate|complete|abort) ;;
+    *) echo "WORKER_POOL_ACTIVATION must be normal, receiver, stage, activate, complete or abort" >&2; exit 2 ;;
+esac
 requested_local_processing_enabled="$requested_processing_enabled"
 fleet_prepared=0
 case "$requested_worker_placement" in
@@ -89,7 +94,13 @@ case "$requested_worker_placement" in
             echo "remote placement requires enabled API, distinct fleet credential and reviewed release" >&2
             exit 2
         fi
-        requested_local_processing_enabled=False
+        if [ "$worker_pool_activation" = receiver ] && [ -z "${WORKER_POOL_WORKER_DIGEST:-}" ]; then
+            echo "receiver stage requires reviewed worker digest" >&2
+            exit 2
+        fi
+        if [ "$worker_pool_activation" != receiver ] && [ "$worker_pool_activation" != stage ]; then
+            requested_local_processing_enabled=False
+        fi
         ;;
     *) echo "PHOTO_WORKER_PLACEMENT must be local or remote" >&2; exit 2 ;;
 esac
@@ -723,7 +734,8 @@ clear_fleet_recovery_snapshot() {
     [ "$requested_worker_placement" = remote ] || return 0
     rm -f "$DEPLOY_ROOT/.deployment-recovery/previous.env" \
         "$DEPLOY_ROOT/.deployment-recovery/deployed-image" \
-        "$DEPLOY_ROOT/.deployment-recovery/package-path"
+        "$DEPLOY_ROOT/.deployment-recovery/package-path" \
+        "$DEPLOY_ROOT/.deployment-recovery/worker-topology"
     rmdir "$DEPLOY_ROOT/.deployment-recovery"
 }
 
@@ -891,14 +903,25 @@ restore_previous_deployment_package() {
         [ -e "$previous_package_root/$package_entry" ] || return 1
     done
     failed_package_root="$(mktemp -d "$DEPLOY_ROOT/.deployment-failed.XXXXXX")" || return 1
+    retain_recovery_backup=0
+    if { [ "$worker_pool_activation" = receiver ] || [ "$worker_pool_activation" = abort ]; } && \
+       [ -f "$DEPLOY_ROOT/.deployment-recovery/package-path" ] && \
+       [ "$(sed -n '1p' "$DEPLOY_ROOT/.deployment-recovery/package-path")" = "$previous_package_root" ]; then
+        retain_recovery_backup=1
+    fi
     for package_entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
         mv "$DEPLOY_ROOT/$package_entry" "$failed_package_root/$package_entry" || return 1
-        mv "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
+        if [ "$retain_recovery_backup" -eq 1 ]; then
+            cp -Rp "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
+        else
+            mv "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
+        fi
     done
     if [ "$vector_database_reconciled" -eq 1 ]; then
         retain_vector_database_image || return 1
     fi
-    rm -rf "$failed_package_root" "$previous_package_root" || return 1
+    rm -rf "$failed_package_root" || return 1
+    if [ "$retain_recovery_backup" -eq 0 ]; then rm -rf "$previous_package_root" || return 1; fi
     unset PREVIOUS_DEPLOYMENT_PACKAGE_ROOT
 }
 
@@ -987,7 +1010,7 @@ start_import_after_web_ready() {
 }
 
 recover_previous_deployment() {
-    if [ "$fleet_prepared" -eq 1 ]; then
+    if [ "$fleet_prepared" -eq 1 ] && [ "$worker_pool_activation" != receiver ]; then
         # Failure keeps compatible candidate web in place until remote ownership is safe.
         fleet_phase rollback || return 1
     fi
@@ -1025,7 +1048,10 @@ recover_previous_deployment() {
     clear_candidate_compose_interpolation
     if [ "$previous_worker_placement" = remote ] || [ "$requested_worker_placement" = remote ]; then
         compose up -d --no-deps web nginx || return 1
-        if [ "$previous_worker_placement" = local ] && [ "$previous_processing_enabled" = True ]; then
+        if { [ "$previous_worker_placement" = local ] || \
+             [ "$worker_pool_activation" = activate ] || \
+             [ "$worker_pool_activation" = complete ]; } && \
+           [ "$previous_processing_enabled" = True ]; then
             compose --profile worker up -d --no-deps --scale worker-bulk="$previous_worker_replicas" \
                 --scale worker-selfie=1 worker-bulk worker-selfie || return 1
         fi
@@ -1062,7 +1088,11 @@ on_exit() {
                 diagnostics
             else
                 rollback_result=succeeded
-                if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
+                if [ -d "$DEPLOY_ROOT/.deployment-recovery" ] && \
+                   [ "$worker_pool_activation" != stage ] && \
+                   [ "$worker_pool_activation" != activate ] && \
+                   [ "$worker_pool_activation" != complete ] && \
+                   [ "$worker_pool_activation" != receiver ]; then
                     clear_fleet_recovery_snapshot || rollback_result=failed
                 fi
                 if [ "${previous_upload_enabled:-False}" = True ]; then
@@ -1084,7 +1114,8 @@ on_exit() {
                     echo "Observability managed-file rollback failed" >&2
                 }
         fi
-    elif [ "$fleet_prepared" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
+    elif [ "$fleet_prepared" -eq 1 ] && [ "$deployment_committed" -eq 0 ] && \
+         [ "$worker_pool_activation" = normal ]; then
         # No fleet mutation has begun. Close the prepared receipt before the installer
         # restores a potentially legacy package that has no fleet recovery command.
         fleet_phase rollback || status=1
@@ -1130,12 +1161,17 @@ if [ "${FINDME_CANONICAL_LOCK:-}" != 1 ]; then
     FINDME_CANONICAL_LOCK=1
     export FINDME_CANONICAL_LOCK
 fi
-[ ! -e "$DEPLOY_ROOT/.deployment-recovery" ] || fail "Canonical recovery remains unfinished"
+if [ -e "$DEPLOY_ROOT/.deployment-recovery" ]; then
+    case "$worker_pool_activation" in
+        receiver|stage|activate|complete|abort) ;;
+        *) fail "Canonical recovery remains unfinished" ;;
+    esac
+fi
 fleet_phase() {
-    PYTHONPATH="$DEPLOY_ROOT/deploy/worker-pools/_canonical" \
+    FINDME_CANONICAL_DEPLOY=1 PYTHONPATH="$DEPLOY_ROOT/deploy/worker-pools/_canonical" \
         python3 "$DEPLOY_ROOT/deploy/worker-pools/release.py" "$1" --root "$DEPLOY_ROOT" \
         --manifest "${WORKER_POOL_RELEASE_MANIFEST:-}" --checksum "${WORKER_POOL_RELEASE_CHECKSUM:-}" \
-        --app-image "$requested_image"
+        --app-image "$requested_image" --worker-image "${WORKER_POOL_WORKER_DIGEST:-}"
 }
 previous_worker_placement=local
 previous_import_enabled="False"
@@ -1209,6 +1245,74 @@ if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
     previous_deployed_image_exists=1
     previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
     cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
+fi
+
+if [ "$worker_pool_activation" = abort ]; then
+    recovery_gate="$DEPLOY_ROOT/.deployment-recovery"
+    receiver_only=0
+    receiver_phase="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["phase"])' "$DEPLOY_ROOT/worker-pools-release.json")" || \
+        fail "Staged receiver receipt is unavailable"
+    if [ "$receiver_phase" = receiver-prepared ] && [ ! -d "$recovery_gate" ]; then
+        # Receiver preflight may have completed before any app/env mutation. The installer
+        # still carries the prior local package; its snapshot is the exact rollback input.
+        [ "$previous_worker_placement" = local ] && [ "$previous_env_exists" -eq 1 ] || \
+            fail "Receiver predecessor is not an established local deployment"
+        fleet_phase receiver-absence || fail "Receiver worker-folder absence is unproved"
+        fleet_phase receiver-close || fail "Receiver abort receipt could not be closed"
+        recover_previous_deployment || fail "Pre-mutation receiver package recovery failed"
+        sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh" || fail "Restored public endpoint failed health verification"
+        deployment_committed=1
+        exit 0
+    fi
+    [ -f "$recovery_gate/previous.env" ] && [ -f "$recovery_gate/package-path" ] || \
+        fail "Staged recovery inputs are unavailable"
+    case "$receiver_phase" in
+        receiver-prepared|receiver-staged|receiver-aborted)
+            receiver_only=1
+            fleet_phase receiver-absence || fail "Receiver worker-folder absence is unproved"
+            fleet_phase receiver-close || fail "Receiver abort receipt could not be closed"
+            ;;
+        *) fleet_phase guard || fail "Staged candidate pin changed" ;;
+    esac
+    original_package_root="$(sed -n '1p' "$recovery_gate/package-path")"
+    case "$original_package_root" in "$DEPLOY_ROOT"/.deployment-previous.*) ;; *) fail "Invalid staged package backup" ;; esac
+    original_worker_topology="$(sed -n '1p' "$recovery_gate/worker-topology")"
+    case "$original_worker_topology" in shared|split) ;; *) fail "Invalid staged worker topology" ;; esac
+    original_env="$recovery_gate/previous.env"
+    previous_worker_placement="$(sed -n 's/^PHOTO_WORKER_PLACEMENT=//p' "$original_env" | head -n 1)"
+    [ -n "$previous_worker_placement" ] || previous_worker_placement=local
+    [ "$previous_worker_placement" = local ] || fail "Stage predecessor is not local"
+    previous_import_enabled="$(sed -n 's/^PHOTO_IMPORT_ENABLED=//p' "$original_env" | head -n 1)"
+    previous_processing_enabled="$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$original_env" | head -n 1)"
+    previous_commerce_worker_enabled="$(sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$original_env" | head -n 1)"
+    previous_worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$original_env" | head -n 1)"
+    [ -n "$previous_import_enabled" ] || previous_import_enabled=False
+    [ -n "$previous_commerce_worker_enabled" ] || previous_commerce_worker_enabled=False
+    [ -n "$previous_worker_replicas" ] || previous_worker_replicas=1
+    case "$previous_import_enabled:$previous_processing_enabled:$previous_commerce_worker_enabled:$previous_worker_replicas" in
+        True:True:True:1|True:True:True:2|True:True:False:1|True:True:False:2|False:True:True:1|False:True:True:2|False:True:False:1|False:True:False:2) ;;
+        *) fail "Invalid staged predecessor worker settings" ;;
+    esac
+    PREVIOUS_DEPLOYMENT_PACKAGE_ROOT="$original_package_root"
+    PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY="$original_worker_topology"
+    previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not copy original recovery environment"
+    cp "$original_env" "$previous_env_tmp" || fail "Could not copy original recovery environment"
+    previous_deployed_image_exists=1
+    [ -f "$recovery_gate/deployed-image" ] || fail "Original image marker missing"
+    previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not copy original image marker"
+    cp "$recovery_gate/deployed-image" "$previous_deployed_image_tmp" || fail "Could not copy original image marker"
+    if [ "$receiver_only" -eq 0 ]; then fleet_prepared=1; fi
+    recover_previous_deployment || fail "Local stage recovery failed"
+    if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
+        fail "Restored public endpoint failed health verification"
+    fi
+    if [ "$receiver_only" -eq 0 ]; then
+        sudo -n /usr/local/sbin/findme-worker-pool-metrics remove || fail "Collector removal failed"
+    fi
+    clear_fleet_recovery_snapshot || fail "Staged recovery gate cleanup failed"
+    rm -rf "$original_package_root" || fail "Original recovery package cleanup failed"
+    deployment_committed=1
+    exit 0
 fi
 
 if [ "$requested_worker_placement" = remote ] && [ "$previous_env_exists" -ne 1 ]; then
@@ -1361,8 +1465,31 @@ if [ "$requested_import_enabled" = True ]; then
 fi
 
 if [ "$requested_worker_placement" = remote ]; then
-    # Includes complete canonical attached-SG allow-union inspection before exposing private8443.
-    fleet_phase preflight || fail "Fleet release preflight failed"
+    # The receiver is deployed before group IDs exist. Binding requires complete reviewed
+    # ownership and SG inspection before any remotely claimable capacity exists.
+    case "$worker_pool_activation" in
+        receiver) fleet_phase receiver-preflight || fail "Receiver preflight failed" ;;
+        stage)
+            if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
+                if [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["phase"])' "$DEPLOY_ROOT/worker-pools-release.json")" = receiver-staged ]; then
+                    fleet_phase bind-stage || fail "Receiver/fleet binding failed"
+                else
+                    fleet_phase guard || fail "Staged candidate pin changed"
+                fi
+            else
+                fail "Receiver must be staged before fleet warm-up"
+            fi
+            ;;
+        activate|complete|abort) fleet_phase guard || fail "Staged candidate pin changed" ;;
+        normal)
+            [ -f "$DEPLOY_ROOT/worker-pools-current.json" ] || fail "Initial remote placement requires explicit staged activation"
+            fleet_phase preflight || fail "Fleet release preflight failed"
+            ;;
+    esac
+    if [ "$worker_pool_activation" = stage ] || [ "$worker_pool_activation" = activate ] || \
+       [ "$worker_pool_activation" = complete ]; then
+        fleet_phase verify-candidate || fail "Candidate image digest changed after staging"
+    fi
     fleet_prepared=1
 fi
 
@@ -1421,12 +1548,19 @@ phase observability-reconcile
 if [ "$requested_worker_placement" = remote ]; then
     # Keep rollback inputs through interruption or failed remote fencing. The outer installer
     # recognizes this directory and must retain compatible tooling plus the prior package.
-    mkdir -m 0700 "$DEPLOY_ROOT/.deployment-recovery"
-    install -m 0600 "$previous_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/previous.env"
-    if [ "$previous_deployed_image_exists" -eq 1 ]; then
-        install -m 0600 "$previous_deployed_image_tmp" "$DEPLOY_ROOT/.deployment-recovery/deployed-image"
+    if [ ! -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
+        mkdir -m 0700 "$DEPLOY_ROOT/.deployment-recovery"
+        install -m 0600 "$previous_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/previous.env"
+        if [ "$previous_deployed_image_exists" -eq 1 ]; then
+            install -m 0600 "$previous_deployed_image_tmp" "$DEPLOY_ROOT/.deployment-recovery/deployed-image"
+        fi
+        (umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}" > "$DEPLOY_ROOT/.deployment-recovery/package-path")
+        (umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY:-}" > "$DEPLOY_ROOT/.deployment-recovery/worker-topology")
+    else
+        [ -f "$DEPLOY_ROOT/.deployment-recovery/previous.env" ] && \
+            [ -f "$DEPLOY_ROOT/.deployment-recovery/package-path" ] || \
+            fail "Staged recovery gate is incomplete"
     fi
-    (umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}" > "$DEPLOY_ROOT/.deployment-recovery/package-path")
 fi
 observability_installed=1
 mutation_started=1
@@ -1568,7 +1702,25 @@ fi
 
 phase worker-health
 if [ "$requested_worker_placement" = remote ]; then
-    fleet_phase rollout || fail "Canonical fleet release failed"
+    case "$worker_pool_activation" in
+        receiver) fleet_phase receiver-stage || fail "Receiver staging failed" ;;
+        stage)
+            fleet_phase stage || fail "Fleet warm-up failed"
+            sudo -n /usr/local/sbin/findme-worker-pool-metrics install || \
+                fail "Native collector installation or first collection failed"
+            ;;
+        activate)
+            sudo -n /usr/local/sbin/findme-worker-pool-metrics verify || \
+                fail "Native collector is not active"
+            ;;
+        complete)
+            sudo -n /usr/local/sbin/findme-worker-pool-metrics verify || \
+                fail "Native collector is not active"
+            fleet_phase verify || fail "Activated fleet live verification failed"
+            ;;
+        normal) fleet_phase rollout || fail "Canonical fleet release failed" ;;
+        abort) fail "Abort is a separate local recovery operation" ;;
+    esac
 fi
 if [ "$requested_local_processing_enabled" = True ]; then
     bulk_worker_containers="$(compose_with_requested_runtime_profiles ps -q worker-bulk)"
@@ -1679,8 +1831,9 @@ if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
 fi
 
 phase commit
-if [ "$requested_worker_placement" = remote ]; then
-    fleet_phase commit || fail "Fleet release verification failed"
+if [ "$requested_worker_placement" = remote ] && \
+    [ "$worker_pool_activation" = activate ]; then
+    fleet_phase activate || fail "Fleet activation failed"
 fi
 if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
@@ -1694,7 +1847,19 @@ printf '%s\n' "$requested_image" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
 sudo -n "$observability_helper" commit
+if [ "$worker_pool_activation" = complete ]; then
+    original_package_root="$(sed -n '1p' "$DEPLOY_ROOT/.deployment-recovery/package-path")"
+    case "$original_package_root" in "$DEPLOY_ROOT"/.deployment-previous.*) ;; *) fail "Invalid activated package backup" ;; esac
+fi
+if [ "$requested_worker_placement" = remote ] && \
+    { [ "$worker_pool_activation" = normal ] || [ "$worker_pool_activation" = complete ]; }; then
+    fleet_phase commit || fail "Fleet release verification failed"
+fi
 deployment_committed=1
-if [ "$requested_worker_placement" = remote ]; then
-    clear_fleet_recovery_snapshot
+if [ "$requested_worker_placement" = remote ] && \
+    { [ "$worker_pool_activation" = normal ] || [ "$worker_pool_activation" = complete ]; }; then
+    clear_fleet_recovery_snapshot || fail "Committed recovery gate cleanup failed"
+fi
+if [ "$worker_pool_activation" = complete ]; then
+    rm -rf "$original_package_root" || fail "Original activated package cleanup failed"
 fi

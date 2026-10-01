@@ -99,6 +99,46 @@ class Journal:
                 os.unlink(name)
 
 
+def provider_field_matches(field, actual, reviewed):
+    """Compare only observed protobuf omissions and the numeric workload target."""
+    if actual == reviewed:
+        return True
+    if not isinstance(actual, dict) or not isinstance(reviewed, dict):
+        return False
+    actual = deepcopy(actual)
+    if field == "deployPolicy" and reviewed.get("maxExpansion") == "0":
+        actual.setdefault("maxExpansion", "0")
+    elif field == "instanceTemplate":
+        disk = actual.get("bootDiskSpec", {}).get("diskSpec")
+        reviewed_disk = reviewed.get("bootDiskSpec", {}).get("diskSpec", {})
+        if isinstance(disk, dict) and reviewed_disk.get("preserveAfterInstanceDelete") is False:
+            disk.setdefault("preserveAfterInstanceDelete", False)
+        if (
+            reviewed.get("schedulingPolicy") == {"preemptible": False}
+            and actual.get("schedulingPolicy") == {}
+        ):
+            actual["schedulingPolicy"] = {"preemptible": False}
+    elif field == "scalePolicy":
+        autoscale = actual.get("autoScale")
+        reviewed_autoscale = reviewed.get("autoScale", {})
+        if isinstance(autoscale, dict):
+            if reviewed_autoscale.get("minZoneSize") == "0":
+                autoscale.setdefault("minZoneSize", "0")
+            rules = autoscale.get("customRules")
+            reviewed_rules = reviewed_autoscale.get("customRules")
+            if isinstance(rules, list) and isinstance(reviewed_rules, list):
+                for rule, reviewed_rule in zip(rules, reviewed_rules, strict=False):
+                    if (
+                        isinstance(rule, dict)
+                        and isinstance(reviewed_rule, dict)
+                        and reviewed_rule.get("target") == "1"
+                        and type(rule.get("target")) in {int, float}
+                        and rule["target"] == 1
+                    ):
+                        rule["target"] = "1"
+    return actual == reviewed
+
+
 def update_group(group, body, *, cloud, journal):
     """Write ahead of one cloud submission. Lost responses are inspected, never retried."""
     desired = {"group": group, "body": body}
@@ -106,7 +146,7 @@ def update_group(group, body, *, cloud, journal):
     if pending and pending != desired:
         raise ValueError("another cloud submission requires reconciliation")
     current = cloud.get(f"instanceGroups/{group}", view="FULL")
-    if all(current.get(key) == value for key, value in body.items()):
+    if all(provider_field_matches(key, current.get(key), value) for key, value in body.items()):
         journal.data["pending"] = None
         journal.save()
         return
@@ -171,7 +211,9 @@ def rollback_initial(gateway, journal, marker, *, timeout=900):
 
 
 def verify_pool(name, snapshot, group, candidate):
-    if group["instanceTemplate"] != candidate["groups"][name]["instanceTemplate"]:
+    if not provider_field_matches(
+        "instanceTemplate", group["instanceTemplate"], candidate["groups"][name]["instanceTemplate"]
+    ):
         raise ValueError("future launch template mismatch")
     build = candidate["configuration"]["worker_build"]
     rows = snapshot["observed_members"]
@@ -440,7 +482,11 @@ class Host:
                 or group.get("allocationPolicy") != manifest["groups"][name]["allocationPolicy"]
                 or group["instanceTemplate"]["bootDiskSpec"]["diskSpec"]["imageId"]
                 != config["boot_image_id"]
-                or group["deployPolicy"] != manifest["groups"][name]["deployPolicy"]
+                or not provider_field_matches(
+                    "deployPolicy",
+                    group.get("deployPolicy"),
+                    manifest["groups"][name]["deployPolicy"],
+                )
             ):
                 raise ValueError("wrong worker group ownership")
             groups[name] = group
@@ -621,7 +667,9 @@ def verify_fleet(host, manifest):
     for name in ("bulk", "selfie"):
         group_id = manifest["configuration"]["groups"][name]["id"]
         group = host.cloud.get(f"instanceGroups/{group_id}", view="FULL")
-        if group["scalePolicy"] != manifest["groups"][name]["scalePolicy"]:
+        if not provider_field_matches(
+            "scalePolicy", group["scalePolicy"], manifest["groups"][name]["scalePolicy"]
+        ):
             raise ValueError("steady pool scale policy mismatch")
         verify_pool(name, snapshot[name], group, manifest)
     if manifest["configuration"]["pool_max_size"] == 1:
@@ -636,6 +684,8 @@ def verify_staged_fleet(host, manifest):
         row = snapshot[name]
         group_id = manifest["configuration"]["groups"][name]["id"]
         group = host.cloud.get(f"instanceGroups/{group_id}", view="FULL")
+        staged_scale = deepcopy(manifest["groups"][name]["scalePolicy"])
+        staged_scale["autoScale"]["minZoneSize"] = "1"
         if (
             not row["fresh"]
             or row["active_build"] != build
@@ -646,10 +696,12 @@ def verify_staged_fleet(host, manifest):
                 member["worker_build"] == build and member["warm"] for member in row["members"]
             )
             or any(member["grant"] and not member["reconciled"] for member in row["members"])
-            or group["instanceTemplate"] != manifest["groups"][name]["instanceTemplate"]
-            or group["scalePolicy"]["autoScale"]["maxSize"]
-            != str(manifest["configuration"]["pool_max_size"])
-            or group["scalePolicy"]["autoScale"]["minZoneSize"] != "1"
+            or not provider_field_matches(
+                "instanceTemplate",
+                group["instanceTemplate"],
+                manifest["groups"][name]["instanceTemplate"],
+            )
+            or not provider_field_matches("scalePolicy", group["scalePolicy"], staged_scale)
         ):
             raise ValueError("staged pool is not warm and safely paused")
     if manifest["configuration"]["pool_max_size"] == 1:

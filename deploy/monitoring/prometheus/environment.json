@@ -8,7 +8,7 @@
   "channel_name": "findme-photo-operator-email",
   "telegram_channel_name": "findme-photo-operator-telegram",
   "cpu_semantics": "cumulative_counter",
-  "worker_alerts_enabled": true,
+  "worker_alerts_enabled": false,
   "image_origin_alerts_enabled": true,
   "metrics": {
     "public_success": {

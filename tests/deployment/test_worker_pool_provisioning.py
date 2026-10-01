@@ -362,6 +362,109 @@ def test_bootstrap_private_files_and_real_oci_revision_gate(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("failure", "phase", "category"),
+    [
+        ("pull-timeout", "docker-pull", "timeout"),
+        ("pull-exit", "docker-pull", "command-exit"),
+        ("image-mismatch", "image-identity", "invalid-data"),
+        ("compose-exit", "compose-start", "command-exit"),
+    ],
+)
+def test_bootstrap_reports_safe_docker_failure_phase_and_category(
+    tmp_path, monkeypatch, capsys, failure, phase, category
+):
+    bootstrap = module("bootstrap")
+    secret = "private-credential-must-not-appear"
+    conf = config() | {"pool": "bulk", "identities": "1/capture_metadata/2"}
+    config_path = tmp_path / "bootstrap.json"
+    config_path.write_text(json.dumps(conf))
+    monkeypatch.setattr(bootstrap, "metadata_token", lambda: "metadata-token")
+    monkeypatch.setattr(
+        bootstrap,
+        "request_json",
+        lambda request: {
+            "versionId": "secret-version",
+            "entries": [
+                {"key": "PHOTO_PROCESSING_FLEET_TOKEN", "textValue": "fleet-token"},
+                {"key": "IMAGE_PULL_AUTH", "textValue": "dXNlcjpwYXNz"},
+            ],
+        },
+    )
+    monkeypatch.setattr(bootstrap, "request_bytes", lambda request, **kwargs: b"instance-1")
+
+    def run(args, **kwargs):
+        if args[1] == "pull":
+            if failure == "pull-timeout":
+                raise subprocess.TimeoutExpired(args, 300, output=secret, stderr=secret)
+            if failure == "pull-exit":
+                raise subprocess.CalledProcessError(1, args, output=secret, stderr=secret)
+        if args[1:3] == ["image", "inspect"]:
+            return Mock(
+                stdout=("b" * 40 if failure == "image-mismatch" else conf["worker_build"]) + "\n"
+            )
+        if "up" in args and failure == "compose-exit":
+            raise subprocess.CalledProcessError(1, args, output=secret, stderr=secret)
+        if args[1] == "version":
+            return Mock(stdout="27.5.1\n")
+        if args[1:3] == ["compose", "version"]:
+            return Mock(stdout="2.32.4\n")
+        return Mock(stdout="")
+
+    real_activate = bootstrap.activate
+    monkeypatch.setattr(
+        bootstrap,
+        "activate",
+        lambda cfg, values, instance, **kwargs: real_activate(
+            cfg, values, instance, root=tmp_path, run=run, **kwargs
+        ),
+    )
+    monkeypatch.setattr("sys.argv", ["bootstrap.py", "--config", str(config_path)])
+
+    assert bootstrap.main() == 1
+    output = capsys.readouterr()
+    assert output.out == f"worker bootstrap failed phase={phase} category={category}\n"
+    assert output.err == ""
+    assert secret not in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    ("failure", "phase", "category"),
+    [
+        ("metadata", "metadata-token", "io-error"),
+        ("lockbox-request", "lockbox-request", "io-error"),
+        ("lockbox-validation", "lockbox-validation", "invalid-data"),
+    ],
+)
+def test_bootstrap_reports_safe_pre_activation_failure_phase_and_category(
+    tmp_path, monkeypatch, capsys, failure, phase, category
+):
+    bootstrap = module("bootstrap")
+    secret = "private-credential-must-not-appear"
+    config_path = tmp_path / "bootstrap.json"
+    config_path.write_text(json.dumps(config()))
+
+    def metadata_token():
+        if failure == "metadata":
+            raise OSError(secret)
+        return "metadata-token"
+
+    def request_json(request):
+        if failure == "lockbox-request":
+            raise OSError(secret)
+        return {"versionId": "secret-version", "entries": [{"key": secret, "textValue": secret}]}
+
+    monkeypatch.setattr(bootstrap, "metadata_token", metadata_token)
+    monkeypatch.setattr(bootstrap, "request_json", request_json)
+    monkeypatch.setattr("sys.argv", ["bootstrap.py", "--config", str(config_path)])
+
+    assert bootstrap.main() == 1
+    output = capsys.readouterr()
+    assert output.out == f"worker bootstrap failed phase={phase} category={category}\n"
+    assert output.err == ""
+    assert secret not in output.out + output.err
+
+
+@pytest.mark.parametrize(
     "image",
     [
         "cr.yandex/registry/worker@sha256:" + "a" * 64,

@@ -25,6 +25,14 @@ accepted numerical policy (ADR 0041) and operator gate state. Worker coordinatio
 Those inventories record local worker placement; refresh runtime state before activation.
 Remote activation and telemetry delivery still require separate live evidence.
 
+The 2026-10-01 launch attempt failed and was aborted; the original local environment,
+package, workers and public health were restored. The remote launch is not accepted.
+Both new worker VMs failed bootstrap at about 335 seconds of uptime, with cloud-init final
+running for about 304 seconds. A Docker operation timeout is possible, but the failing
+phase and root cause are unresolved. Bootstrap now reports only a safe phase and error
+category for a future, separately approved attempt; do not infer readiness from that log
+or change timeouts based on this timing alone.
+
 The main VM retains Django, PostgreSQL, media services, Yandex Disk imports and commerce.
 Only photo processing and selfie query workers move into their own pools. The import worker
 and commerce worker remain unchanged. Bulk backfill remains dependent on the accepted

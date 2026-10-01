@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,7 +32,45 @@ def modules():
 def config(control):
     value = control.load_config()
     value["workspace_id"] = "reviewed-workspace"
+    value["worker_alerts_enabled"] = True
     return value
+
+
+def test_offline_cli_renders_enabled_drill_from_disabled_git_profile_but_live_prepare_rejects(
+    tmp_path,
+):
+    control = load("control")
+    assert control.load_config()["worker_alerts_enabled"] is False
+    rendered = tmp_path / "rendered"
+    offline = subprocess.run(
+        [sys.executable, str(SOURCE / "drill.py"), "render", "--output", str(rendered)],
+        capture_output=True,
+        text=True,
+    )
+    assert offline.returncode == 0, offline.stderr
+    rules = yaml.safe_load((rendered / "findme-worker-activation-drill.yml").read_text())
+    assert rules["groups"][0]["name"] == "findme-worker-activation-drill"
+    assert (rendered / "drill-rule-tests.yml").is_file()
+
+    receipt = tmp_path / "receipt.json"
+    live = subprocess.run(
+        [
+            sys.executable,
+            str(SOURCE / "drill.py"),
+            "prepare",
+            "--receipt",
+            str(receipt),
+            "--run-id",
+            "123456",
+            "--revision",
+            "a" * 40,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert live.returncode != 0
+    assert "worker alert profile must be Git-enabled and live-applied" in live.stderr
+    assert not receipt.exists()
 
 
 def test_drill_clones_exact_worker_rules_with_synthetic_finite_inputs(modules):

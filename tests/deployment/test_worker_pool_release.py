@@ -1133,6 +1133,28 @@ class DiskCloud:
         return {"id": "operation"}
 
 
+class ProviderShapedDiskCloud(DiskCloud):
+    """Return the observed protobuf JSON defaults on every GET, including after PATCH."""
+
+    def get(self, path, **parameters):
+        group = super().get(path, **parameters)
+        if not path.startswith("instanceGroups/") or path.count("/") != 1:
+            return group
+        group["deployPolicy"].pop("maxExpansion", None)
+        group["instanceTemplate"]["bootDiskSpec"]["diskSpec"].pop(
+            "preserveAfterInstanceDelete", None
+        )
+        if group["instanceTemplate"].get("schedulingPolicy") == {"preemptible": False}:
+            group["instanceTemplate"]["schedulingPolicy"] = {}
+        autoscale = group["scalePolicy"]["autoScale"]
+        if autoscale.get("minZoneSize") == "0":
+            autoscale.pop("minZoneSize")
+        for rule in autoscale["customRules"]:
+            if rule["target"] == "1":
+                rule["target"] = 1
+        return group
+
+
 def disk_host(tmp_path, monkeypatch):
     release = release_module()
     monkeypatch.setattr(release.time, "sleep", lambda delay: None)
@@ -1152,6 +1174,70 @@ def test_temporary_ceiling_is_restored_and_other_pool_cannot_expand(tmp_path, mo
     host.disk_fence(manifest, settled="bulk")
     host.template("selfie", manifest, 2)
     assert host.cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["maxSize"] == "1"
+
+
+def test_release_expansion_accepts_provider_omitted_zero_max_expansion(tmp_path, monkeypatch):
+    _, host, manifest = disk_host(tmp_path, monkeypatch)
+    for group in host.cloud.groups.values():
+        group["deployPolicy"].pop("maxExpansion")
+
+    host.template("bulk", manifest, 2)
+
+    assert len(host.cloud.writes) == 1
+    assert host.cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["maxSize"] == "2"
+
+
+def test_release_expansion_rejects_nonzero_provider_max_expansion(tmp_path, monkeypatch):
+    _, host, manifest = disk_host(tmp_path, monkeypatch)
+    host.cloud.groups["bulk-group"]["deployPolicy"]["maxExpansion"] = "1"
+
+    with pytest.raises(ValueError, match="wrong worker group ownership"):
+        host.template("bulk", manifest, 2)
+
+    assert not host.cloud.writes
+
+
+def test_release_template_settles_patch_against_provider_shaped_every_get(tmp_path, monkeypatch):
+    release = release_module()
+    manifest = capped_manifest()
+    cloud = ProviderShapedDiskCloud(manifest)
+    journal = release.Journal(tmp_path / "journal.json", {"pending": None})
+    host = release.Host(tmp_path, cloud, journal)
+    clock = [0]
+    monkeypatch.setattr(release.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(release.time, "sleep", lambda delay: clock.__setitem__(0, 100))
+
+    host.template("bulk", manifest, 2)
+
+    assert len(cloud.writes) == 1
+    assert cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["maxSize"] == "2"
+    assert journal.data["pending"] is None
+
+
+def test_release_verifiers_accept_only_provider_default_and_numeric_target_shapes(
+    tmp_path, monkeypatch
+):
+    release = release_module()
+    manifest = capped_manifest()
+    cloud = ProviderShapedDiskCloud(manifest)
+    journal = release.Journal(tmp_path / "journal.json", {"pending": None})
+    host = release.Host(tmp_path, cloud, journal)
+    host.observe = lambda: {name: state("a" * 40) for name in ("bulk", "selfie")}
+
+    release.verify_fleet(host, manifest)
+
+    for name in ("bulk", "selfie"):
+        cloud.groups[name + "-group"]["scalePolicy"]["autoScale"]["minZoneSize"] = "1"
+    staged = {name: state("a" * 40) for name in ("bulk", "selfie")}
+    for row in staged.values():
+        row["claims_paused"] = True
+        row["local_claims_paused"] = False
+    host.observe = lambda: staged
+    release.verify_staged_fleet(host, manifest)
+
+    cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["customRules"][0]["target"] = "2"
+    with pytest.raises(ValueError):
+        release.verify_staged_fleet(host, manifest)
 
 
 @pytest.mark.parametrize("status", ["STOPPED", "DELETING", "CREATING"])

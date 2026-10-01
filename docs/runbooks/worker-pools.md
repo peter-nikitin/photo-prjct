@@ -892,6 +892,19 @@ worker images while existing disk receipts and original local recovery remain re
 Re-entry with the same forward candidate preserves these receipts and resumes the recorded
 expanded pool first. A changed candidate is rejected during an unfinished transition.
 
+The sole `staging` exception is a web-only candidate whose worker transition never started:
+there is no pending operation or expanded pool, both active builds still equal the retained
+`staged_predecessor`, and both staged builds are null. The prior running web must match the
+current candidate proof. Complete, coherent provider membership and actual running-instance
+metadata must prove every worker still has the predecessor's exact build and digest. Any
+intermediate candidate member, staging, promotion or provider drift rejects supersession.
+The web-only receipt is retained as `superseded_candidate`; `staged_predecessor` remains the
+worker origin, and observation permits only that origin and the new corrective build.
+
+Cloud observation treats an omitted `targetSize` as zero only inside a present valid
+`managedInstancesState` object, as required by the provider's int64 ProtoJSON zero default.
+Actual running members are still fully checked; a zero target does not imply an empty fleet.
+
 Paused replacement temporarily warms two members in one pool, promotes the exact candidate,
 restores its cap/floor to one, and then retires the old boot before expanding the other pool.
 A fresh ready new-build member can protect release retirement while remote claims are paused,

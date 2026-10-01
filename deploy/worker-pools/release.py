@@ -937,19 +937,35 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
             execute("verify-candidate", root, manifest_path, checksum, app_image)
             return
         if initial_stage:
+            never_started = prior.data["phase"] == "staging"
+            predecessor = (
+                prior.data.get("staged_predecessor") if never_started else prior.data["candidate"]
+            )
             if (
                 prior.data.get("pending")
-                or prior.data["phase"] not in {"staged", "rolled-back-local"}
+                or prior.data["phase"] not in {"staged", "rolled-back-local", "staging"}
                 or not (root / ".deployment-recovery").is_dir()
                 or not same_initial_revision_scope(prior.data["candidate"]["manifest"], manifest)
+                or (never_started and (not predecessor or prior.data.get("expanded_pool")))
             ):
                 raise ValueError("initial forward revision requires settled same-scope stage")
+            if never_started:
+                validate_manifest(predecessor["manifest"])
+                if not same_initial_revision_scope(
+                    predecessor["manifest"], prior.data["candidate"]["manifest"]
+                ):
+                    raise ValueError("initial worker origin scope differs")
             cloud = provision.Cloud(metadata_token())
             host = Host(root, cloud, prior)
             host.verify_web(prior.data["candidate"]["proof"])
-            validate_initial_state(host.control("status"), prior.data["candidate"]["manifest"])
+            existing = host.control("status")
+            validate_initial_state(existing, predecessor["manifest"])
+            if never_started and any(
+                existing[name]["staged_build"] is not None for name in ("bulk", "selfie")
+            ):
+                raise ValueError("initial worker transition already started")
             provision.inspect(manifest["configuration"], cloud)
-            old = prior.data["candidate"]["manifest"]
+            old = predecessor["manifest"]
             for name in ("bulk", "selfie"):
                 actual = cloud.get(
                     f"instanceGroups/{manifest['configuration']['groups'][name]['id']}", view="FULL"
@@ -966,9 +982,34 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
                     for key in provision.MANAGED_FIELDS
                 ):
                     raise ValueError("initial staged provider configuration drift")
+                if never_started:
+                    group_id = manifest["configuration"]["groups"][name]["id"]
+                    for row in cloud.pages(f"instanceGroups/{group_id}/instances", "instances"):
+                        if row.get("status") == "DELETED":
+                            continue
+                        if row.get("status") not in RUNNING:
+                            raise ValueError("initial worker membership is not settled")
+                        instance_id = provision.identifier(row.get("instanceId"))
+                        instance = cloud.get(f"instances/{instance_id}", view="FULL")
+                        metadata = instance.get("metadata", {})
+                        if (
+                            instance.get("id") != instance_id
+                            or instance.get("status") != "RUNNING"
+                            or instance.get("folderId") != old["configuration"]["folder_id"]
+                            or instance.get("zoneId") != old["configuration"]["zone"]
+                            or row.get("zoneId") != old["configuration"]["zone"]
+                            or metadata.get("findme-worker-build")
+                            != old["configuration"]["worker_build"]
+                            or metadata.get("findme-worker-image")
+                            != old["configuration"]["worker_image"]
+                        ):
+                            raise ValueError("initial worker origin differs from actual member")
+                    if cloud.get(f"instanceGroups/{group_id}", view="FULL") != actual:
+                        raise ValueError("initial worker group changed during inspection")
             proof = image_proof(manifest, app_image)
-            predecessor = prior.data["candidate"]
             config = observation_config(manifest, predecessor)
+            if never_started:
+                prior.data["superseded_candidate"] = prior.data["candidate"]
             prior.data.update(
                 phase="prepared",
                 verified=[],

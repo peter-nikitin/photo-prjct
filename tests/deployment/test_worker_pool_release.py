@@ -115,6 +115,8 @@ def test_remote_install_trap_retains_compatible_package_after_failed_fleet_recov
         ("stage", "receiver-staged", False, True),
         ("stage", "rolled-back-local", True, False),
         ("stage", "rolled-back-local", False, True),
+        ("stage", "staging", True, False),
+        ("stage", "staging", False, True),
     ],
 )
 def test_pending_stage_install_gate_rejects_unrelated_deploy_before_package_swap(
@@ -162,21 +164,29 @@ def test_pending_stage_install_gate_rejects_unrelated_deploy_before_package_swap
     }
     manifest_path = tmp_path / "manifest.json"
     prior_manifest = deepcopy(manifest)
-    if phase == "rolled-back-local":
+    origin_manifest = deepcopy(manifest)
+    if phase in {"rolled-back-local", "staging"}:
         manifest["configuration"]["worker_build"] = "c" * 40
         manifest["configuration"]["worker_image"] = "ghcr.io/example/worker@sha256:" + "c" * 64
         manifest["configuration"]["groups"]["bulk"]["baseline"] = "fresh"
         if drift:
             prior_manifest["configuration"]["worker_sa_id"] = "worker-sa"
+            origin_manifest["configuration"]["worker_sa_id"] = "worker-sa"
+        if phase == "staging":
+            prior_manifest["configuration"]["worker_build"] = "b" * 40
+            prior_manifest["configuration"]["worker_image"] = (
+                "ghcr.io/example/worker@sha256:" + "b" * 64
+            )
     selected_manifest = creation if activation == "receiver" else manifest
     manifest_path.write_text(json.dumps(selected_manifest))
     (tmp_path / "worker-pools-release.json").write_text(
         json.dumps(
             {
                 "phase": phase,
+                "staged_predecessor": {"manifest": origin_manifest} if phase == "staging" else None,
                 "candidate": {
                     "manifest": prior_manifest
-                    if phase == "rolled-back-local"
+                    if phase in {"rolled-back-local", "staging"}
                     else manifest
                     if phase == "staged"
                     else None,
@@ -1826,6 +1836,180 @@ def test_forward_initial_stage_resumes_interrupted_second_pool(tmp_path, monkeyp
     assert host.events[0][1] == "selfie"
     assert host.journal.data["staged_predecessor"] == origin
     assert len(host.cloud.disks) == 2
+
+
+def never_started_initial_fleet(tmp_path, monkeypatch):
+    release, host, web_manifest, origin, path = forward_initial_fleet(
+        tmp_path, monkeypatch, phase="staging", warmed=False
+    )
+    web_only = {
+        "manifest": web_manifest,
+        "proof": {
+            "web_image": "ghcr.io/example/photo-prjct@sha256:" + "b" * 64,
+            "web_id": "new-web",
+            "worker_id": "new-worker",
+        },
+    }
+    host.running_web_id = "new-web"
+    host.journal.data.update(candidate=web_only, staged_predecessor=origin)
+    host.journal.save()
+    configuration = deepcopy(web_manifest["configuration"])
+    configuration.update(
+        worker_build="c" * 40, worker_image="ghcr.io/example/photo-prjct-worker@sha256:" + "c" * 64
+    )
+    next_manifest = release.provision_module().prepare(configuration)
+    path.write_text(json.dumps(next_manifest))
+    monkeypatch.setattr(
+        release,
+        "image_proof",
+        lambda manifest, image: {
+            "web_image": "ghcr.io/example/photo-prjct@sha256:" + "c" * 64,
+            "web_id": "corrective-web",
+            "worker_id": "corrective-worker",
+        },
+    )
+    cloud = host.cloud
+    for instance in cloud.instances.values():
+        instance["metadata"] = {
+            "findme-worker-build": "a" * 40,
+            "findme-worker-image": origin["manifest"]["configuration"]["worker_image"],
+        }
+    get = cloud.get
+
+    def full_instance(path, **parameters):
+        if path.startswith("instances/"):
+            return deepcopy(cloud.instances[path.split("/")[1]])
+        return get(path, **parameters)
+
+    cloud.get = full_instance
+    return release, host, next_manifest, origin, web_only, path
+
+
+def test_never_started_initial_stage_supersedes_web_only_candidate_without_losing_worker_origin(
+    tmp_path, monkeypatch
+):
+    release, host, manifest, origin, web_only, path = never_started_initial_fleet(
+        tmp_path, monkeypatch
+    )
+    release.execute(
+        "preflight", tmp_path, path, manifest["checksum"], "ghcr.io/example/photo-prjct:" + "c" * 40
+    )
+    receipt = release.Journal(host.journal.path).data
+    assert receipt["previous"] is None
+    assert receipt["staged_predecessor"] == origin
+    assert receipt["superseded_candidate"] == web_only
+    assert "bulk-old-disk" in receipt["worker_disks"]
+    assert json.loads((tmp_path / "worker-pools-observation.json").read_text())["releases"] == {
+        "a" * 40: origin["manifest"]["configuration"]["worker_image"],
+        "c" * 40: manifest["configuration"]["worker_image"],
+    }
+    release.execute(
+        "preflight", tmp_path, path, manifest["checksum"], "ghcr.io/example/photo-prjct:" + "c" * 40
+    )
+    assert release.Journal(host.journal.path).data == receipt
+    host.running_web_id = "corrective-web"
+    release.execute("stage", tmp_path, None, None, None)
+    assert host.journal.data["phase"] == "staged"
+    assert all(
+        row["active_build"] == "c" * 40
+        and row["staged_build"] is None
+        and row["claims_paused"]
+        and not row["local_claims_paused"]
+        for row in host.states.values()
+    )
+    assert host.events.index(("template", "bulk", 1)) < host.events.index(("template", "selfie", 2))
+    assert len(host.cloud.disks) == 2
+    assert (
+        tmp_path / ".deployment-recovery/previous.env"
+    ).read_text() == "original-local-environment"
+    assert not (tmp_path / "worker-pools-current.json").exists()
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "staged-build",
+        "mixed-active",
+        "pending",
+        "expanded",
+        "claiming",
+        "local-paused",
+        "remote-lease",
+        "unreconciled",
+        "web-proof",
+        "provider-drift",
+        "candidate-member",
+        "wrong-digest",
+        "stopped-vm",
+        "changing-group",
+        "origin-scope",
+    ],
+)
+def test_never_started_initial_stage_rejects_progress_or_drift_without_replacing_receipt(
+    tmp_path, monkeypatch, problem
+):
+    release, host, manifest, _, _, path = never_started_initial_fleet(tmp_path, monkeypatch)
+    if problem == "staged-build":
+        host.states["bulk"]["staged_build"] = "b" * 40
+    elif problem == "mixed-active":
+        host.states["bulk"]["active_build"] = "b" * 40
+    elif problem == "pending":
+        host.journal.data["pending"] = {"group": "bulk-group", "body": {}}
+    elif problem == "expanded":
+        host.journal.data["expanded_pool"] = "bulk"
+    elif problem == "claiming":
+        host.states["bulk"]["claims_paused"] = False
+    elif problem == "local-paused":
+        host.states["bulk"]["local_claims_paused"] = True
+    elif problem == "remote-lease":
+        host.states["bulk"]["live_attempts"] = 1
+    elif problem == "unreconciled":
+        host.states["bulk"]["members"][0]["grant"] = "outstanding"
+    elif problem == "web-proof":
+        host.journal.data["candidate"]["proof"]["web_id"] = "wrong-web"
+    elif problem == "origin-scope":
+        source = deepcopy(host.journal.data["staged_predecessor"]["manifest"]["configuration"])
+        source["worker_sa_id"] = "different-worker-sa"
+        host.journal.data["staged_predecessor"]["manifest"] = release.provision_module().prepare(
+            source
+        )
+    elif problem == "provider-drift":
+        host.cloud.groups["bulk-group"]["instanceTemplate"]["metadata"]["findme-worker-build"] = (
+            "b" * 40
+        )
+    elif problem == "candidate-member":
+        host.cloud.instances["bulk-old"]["metadata"] = {
+            "findme-worker-build": "b" * 40,
+            "findme-worker-image": "ghcr.io/example/photo-prjct-worker@sha256:" + "b" * 64,
+        }
+    elif problem == "wrong-digest":
+        host.cloud.instances["bulk-old"]["metadata"]["findme-worker-image"] = (
+            "ghcr.io/example/photo-prjct-worker@sha256:" + "b" * 64
+        )
+    elif problem == "stopped-vm":
+        host.cloud.instances["bulk-old"]["status"] = "STOPPED"
+    else:
+        get = host.cloud.get
+
+        def changing(path, **parameters):
+            result = get(path, **parameters)
+            if path == "instances/bulk-old":
+                host.cloud.groups["bulk-group"]["managedInstancesState"] = {"targetSize": "1"}
+            return result
+
+        host.cloud.get = changing
+    host.journal.save()
+    before = release.Journal(host.journal.path).data
+    with pytest.raises(ValueError):
+        release.execute(
+            "preflight",
+            tmp_path,
+            path,
+            manifest["checksum"],
+            "ghcr.io/example/photo-prjct:" + "c" * 40,
+        )
+    assert release.Journal(host.journal.path).data == before
+    assert not host.cloud.writes
 
 
 @pytest.mark.parametrize(

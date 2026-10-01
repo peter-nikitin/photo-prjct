@@ -95,6 +95,41 @@ package independently, commit once, create PR, require green CI, merge and build
 Prepare the new manifest from a fresh read-only baseline while preserving resource scope. Run
 canonical stage and existing acceptance sequence. Report actual live proof separately from CI.
 
+### 4. Correct the observed zero-target boundary before retry
+
+The first forward stage on merge `68dfd5b` retained the healthy corrected web and original worker
+VMs, but failed before coordinator staging or cloud writes: `observe_cloud` indexed an omitted
+`managedInstancesState.targetSize`. Yandex's int64 ProtoJSON field omits its zero default. This
+case is required for bulk scale-to-zero, not an optional compatibility path.
+
+Files: `src/backend/processing/services/worker_pool_observation.py`, its tests in
+`src/backend/processing/tests/test_worker_pool_cloud.py`, `deploy/worker-pools/release.py`,
+`deploy/run-remote.sh`, their existing tests and worker runbook.
+
+- Add a failing observation test using the actual managed-state shape with runningActualCount
+  and omitted targetSize. Require a present valid managed-state object; interpret its omitted
+  target as zero while retaining strict 0/1/2 validation and complete identity/membership checks.
+- Admit a corrected candidate from `staging` only when the previous candidate never started its
+  worker transition: retained staged_predecessor exists, no pending cloud write or expanded pool,
+  both coordinator active builds equal that predecessor with staged builds null, remote claims
+  paused/local enabled and no remote live work. Verify actual prior running web against the
+  current candidate proof, not the older worker proof.
+- For this staging-supersession case, independently read the complete current member list and
+  each actual running instance's build/digest: all must belong to the retained worker predecessor,
+  with coherent read-back. Reject a launched intermediate-build member even if the journal says
+  no expansion. Existing disk fences remain mandatory before any later cloud mutation.
+- Verify actual provider fields against that retained worker predecessor (only the existing
+  floor-one variant is permitted), with exact fresh baselines and unchanged scope. Preserve
+  staged_predecessor as worker origin, retain the superseded web-only candidate separately, and
+  observe only the original worker build plus the new corrective build. Started or mixed
+  transitions must reject a changed candidate and continue only through same-candidate retry.
+- Add RED/GREEN tests for this exact second-correction state and rejection of started transition,
+  wrong prior web proof, live work and provider drift. Run selector-required suites, independent
+  review and root `make check`, then a separate correction PR and immutable canonical stage.
+
+No application rollback, group recreation, manual journal/DB rewrite or runtime hotpatch is used.
+The numeric Monitoring acknowledgement fix was separately confirmed live with published=true.
+
 ### Final task: Architecture and ADR reconciliation
 
 Confirm one-SHA release, group/cap preservation and existing data contracts after verification.

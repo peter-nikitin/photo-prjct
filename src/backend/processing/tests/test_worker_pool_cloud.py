@@ -25,7 +25,7 @@ class CloudObservationTests(TestCase):
                 "b" * 40: "ghcr.io/example/photo-prjct-worker@sha256:" + "b" * 64,
             },
         }
-        self.group = {
+        self.group: dict[str, Any] = {
             "id": "bulk-group",
             "folderId": "folder",
             "allocationPolicy": {"zones": [{"zoneId": "ru-central1-a"}]},
@@ -90,6 +90,60 @@ class CloudObservationTests(TestCase):
                 {"instance_id": "", "status": "CREATING_INSTANCE", "worker_build": ""},
             ],
         )
+
+    def test_omitted_zero_target_records_actual_running_member(self):
+        from processing.services.worker_pool_observation import observe_cloud
+
+        self.group["managedInstancesState"] = {"runningActualCount": "1"}
+        self.group["instanceTemplate"]["metadata"] = self.instance["metadata"]
+
+        def zero_target(path, **parameters):
+            if path == "instanceGroups/bulk-group/instances":
+                return {
+                    "instances": [
+                        {
+                            "instanceId": "old-node",
+                            "zoneId": "ru-central1-a",
+                            "status": "RUNNING_ACTUAL",
+                        }
+                    ]
+                }
+            return self.get(path, **parameters)
+
+        reader = CloudReader("fake-token")
+        with patch.object(reader, "get", side_effect=zero_target):
+            self.assertTrue(observe_cloud("bulk", self.config, reader=reader))
+        pool = WorkerPool.objects.get(name="bulk")
+        self.assertEqual(pool.target_size, 0)
+        self.assertEqual(
+            pool.observed_members,
+            [
+                {
+                    "instance_id": "old-node",
+                    "status": "RUNNING_ACTUAL",
+                    "worker_build": "a" * 40,
+                }
+            ],
+        )
+
+    def test_missing_or_malformed_managed_state_never_records_implicit_zero(self):
+        from processing.services.worker_pool_observation import observe_cloud
+
+        reader = CloudReader("fake-token")
+        invalid_states: tuple[Any, ...] = (None, [], "0")
+        for managed in invalid_states:
+            self.group["managedInstancesState"] = managed
+            with (
+                self.subTest(managed=managed),
+                patch.object(reader, "get", side_effect=self.get),
+                self.assertRaises((ValueError, TypeError)),
+            ):
+                observe_cloud("bulk", self.config, reader=reader)
+            self.assertEqual(WorkerPool.objects.get(name="bulk").observation_sequence, 0)
+        del self.group["managedInstancesState"]
+        with patch.object(reader, "get", side_effect=self.get), self.assertRaises(KeyError):
+            observe_cloud("bulk", self.config, reader=reader)
+        self.assertEqual(WorkerPool.objects.get(name="bulk").observation_sequence, 0)
 
     def test_worker_instance_and_disk_must_belong_to_worker_folder(self):
         from processing.services.worker_pool_observation import observe_cloud

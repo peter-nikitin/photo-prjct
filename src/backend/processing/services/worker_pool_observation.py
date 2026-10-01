@@ -80,7 +80,10 @@ def observe_cloud(name: str, config: dict[str, Any], *, reader: CloudReader | No
         or template["bootDiskSpec"]["diskSpec"]["imageId"] != config["boot_image_id"]
     ):
         raise ValueError("unknown group template")
-    target = group["managedInstancesState"]["targetSize"]
+    managed = group["managedInstancesState"]
+    if not isinstance(managed, dict):
+        raise ValueError("invalid managed instance state")
+    target = managed.get("targetSize", "0")
     if target not in {"0", "1", "2"}:
         raise ValueError("cloud target exceeds hard maximum")
     rows = reader.pages(f"instanceGroups/{group_id}/instances", "instances")

@@ -450,7 +450,10 @@ if pending:
         def revision_scope(row):
             return {key: ({name: {'id': entry['id']} for name, entry in value.items()} if key == 'groups' else value)
                     for key, value in row['configuration'].items() if key not in {'worker_build', 'worker_image'}}
-        forward = (action == 'stage' and phase in {'staged', 'rolled-back-local'}
+        never_started = (phase == 'staging' and receipt.get('staged_predecessor')
+                         and not receipt.get('expanded_pool')
+                         and revision_scope(receipt['staged_predecessor']['manifest']) == revision_scope(candidate['manifest']))
+        forward = (action == 'stage' and (phase in {'staged', 'rolled-back-local'} or never_started)
                    and not receipt.get('pending')
                    and not (root / 'worker-pools-current.json').exists()
                    and revision_scope(manifest) == revision_scope(candidate['manifest']))

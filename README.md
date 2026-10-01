@@ -418,6 +418,11 @@ runs **Deploy**, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, and ap
 project `photo-prjct` using `docker-compose.deployment.yml` plus `docker-compose.https.yml`. The
 workflow verifies the immutable image and `https://findme-photo.ru/health/`.
 
+The worker alert profile in [`deploy/monitoring/prometheus/environment.json`](deploy/monitoring/prometheus/environment.json)
+is enabled in Git to prepare the next worker launch. This change has not applied those rules to
+live Managed Prometheus and does not establish live alert delivery or remote worker acceptance.
+The reviewed, exact-revision Monitoring workflow and its live evidence gates still govern activation.
+
 One Lockbox manifest, [`deploy/environment-secrets.json`](deploy/environment-secrets.json), supplies
 secret projections to `deploy`, `remote-check`, `public-monitor`, and `local-web`. Non-secret
 configuration is held in repository variables. There is no GitHub Environment and no

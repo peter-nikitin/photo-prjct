@@ -99,8 +99,8 @@ positive Prometheus grid steps, matching source/target kinds and references, res
 promtool syntax and behavior scenarios. It wraps the actual rendered Prometheus dashboard queries
 as temporary recording rules, then runs five dashboard fixtures for independent queue/cloud
 freshness, idle zero versus no data, combined runtime source age, disjoint histogram intervals and
-accepted-preview zero versus a missing source. It validates both the committed disabled worker profile
-and an explicitly enabled profile against the same base rules plus worker saturation, reset, missing-source,
+accepted-preview zero versus a missing source. It validates both the committed enabled worker profile
+and an explicitly disabled profile against the same base rules plus worker saturation, reset, missing-source,
 sender-outage and idle-zero fixtures. No credential or network call to Yandex is
 needed; Docker may pull the pinned tool image. Yandex's receiver extension is checked structurally
 by the renderer and accepted by the service on explicit PUT; upstream Alertmanager does not
@@ -260,11 +260,12 @@ Only the diagnostic route uses `channel.pipe.filter`, plugin `transform_metric_l
 The [Prometheus agent contract](https://yandex.cloud/en/docs/monitoring/operations/prometheus/ingestion/prometheus-agent)
 describes generated job/instance labels and metadata IAM. The backend already constrains source
 labels to pool/instance_id/zone_id and runtime kind/outcome/le. Shared-channel and native/Linux,
-HTTP, Commerce and public routes keep their existing labels. The committed Git profile withholds
-worker alert rules while remote worker launch remains unaccepted.
+HTTP, Commerce and public routes keep their existing labels. The committed Git profile includes
+worker alert rules for preparation while remote worker launch remains unaccepted.
 
-`environment.json` keeps `worker_alerts_enabled` false after the failed 2026-10-01 worker launch.
-No worker alert profile was applied live during that attempt. The enabled profile adds the reviewed
+`environment.json` sets `worker_alerts_enabled` true for the next launch preparation.
+No worker alert profile was applied live during the failed 2026-10-01 attempt, and this Git change
+does not apply the profile live. The enabled profile adds the reviewed
 `findme-workers` group to the same owned rule file and existing email+Telegram receiver; it does
 not add a workspace, channel or route. `check` and `apply` then require fresh 90-second queue,
 complete cloud-membership and successful native-publication source clocks for both pools, finite

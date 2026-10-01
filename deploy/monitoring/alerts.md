@@ -131,7 +131,8 @@ Worker rules are owned by the existing [Prometheus package](prometheus/README.md
 [ADR 0048](../../docs/adr/0048-reuse-managed-prometheus-for-worker-alerts.md). Do not create a
 second native worker-alert lifecycle or use the retired ceiling-two predicate.
 
-The worker profile is disabled in Git until separately approved fleet activation. It covers
+The worker profile is enabled in Git for preparation, but has not been applied live and remote
+workers have not been accepted. It covers
 cap-one saturation, overdue work, queue/cloud/native-publisher observation loss and missing
 expected-node diagnostics. Queue age must exceed 300 seconds and keep growing for five minutes
 at fresh actual running capacity >=1 to qualify as cap-one saturation. Missing/stale observations

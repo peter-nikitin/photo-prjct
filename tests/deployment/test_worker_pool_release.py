@@ -113,6 +113,8 @@ def test_remote_install_trap_retains_compatible_package_after_failed_fleet_recov
         ("receiver", "receiver-staged", True, False),
         ("stage", "receiver-staged", True, False),
         ("stage", "receiver-staged", False, True),
+        ("stage", "rolled-back-local", True, False),
+        ("stage", "rolled-back-local", False, True),
     ],
 )
 def test_pending_stage_install_gate_rejects_unrelated_deploy_before_package_swap(
@@ -159,6 +161,13 @@ def test_pending_stage_install_gate_rejects_unrelated_deploy_before_package_swap
         },
     }
     manifest_path = tmp_path / "manifest.json"
+    prior_manifest = deepcopy(manifest)
+    if phase == "rolled-back-local":
+        manifest["configuration"]["worker_build"] = "c" * 40
+        manifest["configuration"]["worker_image"] = "ghcr.io/example/worker@sha256:" + "c" * 64
+        manifest["configuration"]["groups"]["bulk"]["baseline"] = "fresh"
+        if drift:
+            prior_manifest["configuration"]["worker_sa_id"] = "worker-sa"
     selected_manifest = creation if activation == "receiver" else manifest
     manifest_path.write_text(json.dumps(selected_manifest))
     (tmp_path / "worker-pools-release.json").write_text(
@@ -166,7 +175,11 @@ def test_pending_stage_install_gate_rejects_unrelated_deploy_before_package_swap
             {
                 "phase": phase,
                 "candidate": {
-                    "manifest": manifest if phase == "staged" else None,
+                    "manifest": prior_manifest
+                    if phase == "rolled-back-local"
+                    else manifest
+                    if phase == "staged"
+                    else None,
                     "creation_manifest": creation,
                     "worker_build": "a" * 40,
                     "worker_image": manifest["configuration"]["worker_image"],
@@ -200,7 +213,8 @@ def test_pending_stage_install_gate_rejects_unrelated_deploy_before_package_swap
             "PATH": str(binary) + ":" + os.environ["PATH"],
             "DEPLOYMENT_ARCHIVE_NAME": ".deployment-candidate.fixture.tar",
             "WORKER_POOL_ACTIVATION": activation,
-            "APP_IMAGE": "ghcr.io/example/photo-prjct:" + "a" * 40,
+            "APP_IMAGE": "ghcr.io/example/photo-prjct:"
+            + selected_manifest["configuration"]["worker_build"],
             "WORKER_POOL_RELEASE_MANIFEST": str(manifest_path),
             "WORKER_POOL_RELEASE_CHECKSUM": selected_manifest["checksum"],
             "WORKER_POOL_WORKER_DIGEST": manifest["configuration"]["worker_image"],
@@ -1441,10 +1455,25 @@ def capped_fleet(tmp_path, monkeypatch, *, initial=False):
             elif operation == "promote":
                 snapshot["active_build"], snapshot["staged_build"] = args["staged_build"], None
                 for member in snapshot["members"]:
-                    member["serving"] = member["worker_build"] == snapshot["active_build"]
+                    member["serving"] = (
+                        not snapshot["claims_paused"]
+                        and member["worker_build"] == snapshot["active_build"]
+                    )
             elif operation == "retire":
                 victim = args["identity"]["instance_id"]
-                assert any(m["instance_id"] != victim and m["serving"] for m in snapshot["members"])
+                assert any(
+                    m["instance_id"] != victim
+                    and (
+                        m["serving"]
+                        or (
+                            snapshot["claims_paused"]
+                            and not snapshot["local_claims_paused"]
+                            and m["warm"]
+                            and m["worker_build"] == snapshot["active_build"]
+                        )
+                    )
+                    for m in snapshot["members"]
+                )
                 assert cloud.groups[name + "-group"]["scalePolicy"]["autoScale"]["maxSize"] == "1"
                 assert victim + "-disk" in release.Journal(journal.path).data["worker_disks"]
                 for key in ("members", "observed_members"):
@@ -1496,6 +1525,35 @@ def test_capped_forward_and_rollback_restore_each_pool_before_next_expansion(tmp
                 == manifest["groups"][name]["scalePolicy"]
             )
             assert host.states[name]["active_build"] == manifest["configuration"]["worker_build"]
+
+
+def test_transition_allows_observed_provider_boot_and_warmup_before_retirement(
+    tmp_path, monkeypatch
+):
+    release, host, new, _ = capped_fleet(tmp_path, monkeypatch)
+    elapsed = 0
+    observe = host.observe
+
+    def delayed_ready():
+        snapshot = observe()
+        if elapsed < 1000:
+            for member in snapshot["bulk"]["members"]:
+                if member["worker_build"] == "b" * 40:
+                    member["warm"] = False
+                    member["serving"] = False
+        return snapshot
+
+    def advance(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr(release.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(release.time, "sleep", advance)
+    host.observe = delayed_ready
+    release.transition(host, "bulk", new)
+    assert 1000 <= elapsed < 1800
+    assert host.states["bulk"]["active_build"] == "b" * 40
+    assert len(host.states["bulk"]["members"]) == 1
 
 
 @pytest.mark.parametrize("mode", ["rollout", "rollback"])
@@ -1636,6 +1694,201 @@ def test_failed_activation_can_rewarm_same_stage_after_local_rollback(tmp_path, 
     assert all(
         row["claims_paused"] and not row["local_claims_paused"] for row in host.states.values()
     )
+
+
+def forward_initial_fleet(tmp_path, monkeypatch, *, phase="rolled-back-local", warmed=True):
+    release, host, new, old = capped_fleet(tmp_path, monkeypatch)
+    provision = release_module().provision_module()
+    for name, row in host.states.items():
+        row.update(claims_paused=True, local_claims_paused=False, local_live_attempts=0)
+        row["members"][0]["serving"] = False
+        if warmed:
+            host.cloud.groups[name + "-group"]["scalePolicy"]["autoScale"]["minZoneSize"] = "1"
+        elif name == "bulk":
+            host.cloud.groups[name + "-group"]["scalePolicy"]["autoScale"].pop("minZoneSize")
+    origin = {
+        "manifest": old,
+        "proof": {
+            "web_image": "ghcr.io/example/photo-prjct@sha256:" + "a" * 64,
+            "web_id": "old-web",
+            "worker_id": "old-worker",
+        },
+    }
+    host.journal.data.update(
+        phase=phase,
+        previous=None,
+        candidate=origin,
+        worker_disks={"bulk-old-disk": {"pool": "bulk", "instance_id": "bulk-old"}},
+    )
+    host.journal.save()
+    recovery = tmp_path / ".deployment-recovery"
+    recovery.mkdir()
+    (recovery / "previous.env").write_text("original-local-environment")
+    for name, row in new["configuration"]["groups"].items():
+        row["baseline"] = provision.managed_baseline(host.cloud.groups[name + "-group"])
+    new = provision.prepare(new["configuration"])
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(new))
+
+    def inspect(configuration, cloud):
+        for name, row in configuration["groups"].items():
+            if row["baseline"] != provision.managed_baseline(cloud.groups[name + "-group"]):
+                raise ValueError("managed target drift")
+
+    provision.inspect = inspect
+    provision.Cloud = lambda token: host.cloud
+    monkeypatch.setattr(release, "provision_module", lambda: provision)
+    host.running_web_id = "old-web"
+
+    def inspect_web(command, **kwargs):
+        if command[-3:] == ["ps", "-q", "web"]:
+            return SimpleNamespace(stdout="web-container\n")
+        assert command == ["docker", "inspect", "web-container"]
+        return SimpleNamespace(
+            stdout=json.dumps(
+                [
+                    {
+                        "Image": host.running_web_id,
+                        "State": {"Running": True},
+                    }
+                ]
+            )
+        )
+
+    host.run = inspect_web
+    host.verify_web = release_module().Host.verify_web.__get__(host)
+    monkeypatch.setattr(
+        release,
+        "image_proof",
+        lambda manifest, image: {
+            "web_image": "ghcr.io/example/photo-prjct@sha256:" + "b" * 64,
+            "web_id": "new-web",
+            "worker_id": "new-worker",
+        },
+    )
+    monkeypatch.setenv("WORKER_POOL_ACTIVATION", "stage")
+    return release, host, new, origin, path
+
+
+@pytest.mark.parametrize("phase", ["rolled-back-local", "staged"])
+@pytest.mark.parametrize("warmed", [True, False])
+def test_forward_initial_stage_preserves_origin_and_replaces_paused_members_serially(
+    tmp_path, monkeypatch, phase, warmed
+):
+    release, host, new, origin, path = forward_initial_fleet(
+        tmp_path, monkeypatch, phase=phase, warmed=warmed
+    )
+    release.execute(
+        "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
+    )
+    receipt = release.Journal(host.journal.path).data
+    assert receipt["previous"] is None
+    assert receipt["staged_predecessor"] == origin
+    assert "bulk-old-disk" in receipt["worker_disks"]
+    assert json.loads((tmp_path / "worker-pools-observation.json").read_text())["releases"] == {
+        "a" * 40: origin["manifest"]["configuration"]["worker_image"],
+        "b" * 40: new["configuration"]["worker_image"],
+    }
+    host.running_web_id = "new-web"
+    release.execute("stage", tmp_path, None, None, None)
+    assert host.journal.data["phase"] == "staged"
+    assert host.events.index(("template", "bulk", 1)) < host.events.index(("template", "selfie", 2))
+    assert len(host.cloud.disks) == 2
+    assert all(
+        row["claims_paused"] and not row["local_claims_paused"] and row["active_build"] == "b" * 40
+        for row in host.states.values()
+    )
+    assert (
+        tmp_path / ".deployment-recovery/previous.env"
+    ).read_text() == "original-local-environment"
+    assert not (tmp_path / "worker-pools-current.json").exists()
+    final_receipt = release.Journal(host.journal.path).data
+    release.execute(
+        "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
+    )
+    assert release.Journal(host.journal.path).data == final_receipt
+
+
+def test_forward_initial_stage_resumes_interrupted_second_pool(tmp_path, monkeypatch):
+    release, host, new, origin, path = forward_initial_fleet(tmp_path, monkeypatch)
+    release.execute(
+        "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
+    )
+    host.running_web_id = "new-web"
+    host.interrupt_pool = "selfie"
+    with pytest.raises(TimeoutError):
+        release.execute("stage", tmp_path, None, None, None)
+    host.events.clear()
+    release.execute(
+        "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
+    )
+    release.execute("stage", tmp_path, None, None, None)
+    assert host.events[0][1] == "selfie"
+    assert host.journal.data["staged_predecessor"] == origin
+    assert len(host.cloud.disks) == 2
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "claiming",
+        "local-paused",
+        "remote-lease",
+        "pending",
+        "group",
+        "scope",
+        "provider-drift",
+        "scale-drift",
+        "proof",
+        "stale-proof",
+        "build",
+    ],
+)
+def test_forward_initial_stage_rejects_unsafe_state_without_replacing_receipt(
+    tmp_path, monkeypatch, problem
+):
+    release, host, new, _, path = forward_initial_fleet(tmp_path, monkeypatch)
+    if problem == "claiming":
+        host.states["bulk"]["claims_paused"] = False
+    elif problem == "local-paused":
+        host.states["bulk"]["local_claims_paused"] = True
+    elif problem == "remote-lease":
+        host.states["bulk"]["live_attempts"] = 1
+    elif problem == "pending":
+        host.journal.data["pending"] = {"group": "bulk-group", "body": {}}
+        host.journal.save()
+    elif problem == "build":
+        host.states["bulk"]["active_build"] = "c" * 40
+    elif problem == "proof":
+        monkeypatch.setattr(release, "image_proof", Mock(side_effect=ValueError("digest mismatch")))
+    elif problem == "stale-proof":
+        host.journal.data["candidate"]["proof"]["web_id"] = "different-running-web"
+        host.journal.save()
+    else:
+        config = deepcopy(new["configuration"])
+        if problem == "group":
+            config["groups"]["bulk"]["id"] = "different-group"
+        elif problem == "scope":
+            config["worker_sa_id"] = "different-worker-sa"
+        else:
+            if problem == "scale-drift":
+                host.cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["maxSize"] = "2"
+            else:
+                host.cloud.groups["bulk-group"]["instanceTemplate"]["resourcesSpec"]["memory"] = (
+                    "17179869184"
+                )
+            config["groups"]["bulk"]["baseline"] = release.provision_module().managed_baseline(
+                host.cloud.groups["bulk-group"]
+            )
+        new = release.provision_module().prepare(config)
+        path.write_text(json.dumps(new))
+    before = release.Journal(host.journal.path).data
+    with pytest.raises(ValueError):
+        release.execute(
+            "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
+        )
+    assert release.Journal(host.journal.path).data == before
+    assert not host.cloud.writes
 
 
 @pytest.mark.parametrize("change", ["checksum", "sha", "manifest", "web-digest"])

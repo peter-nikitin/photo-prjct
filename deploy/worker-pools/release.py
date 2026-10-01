@@ -47,7 +47,12 @@ def next_step(snapshot, build):
                 return "retire", next((m for m in eligible if m["draining"]), eligible[0])
         return "wait", None
     if old:
-        if any(m["serving"] for m in candidates):
+        if any(m["serving"] for m in candidates) or (
+            snapshot["claims_paused"]
+            and not snapshot["local_claims_paused"]
+            and snapshot["live_attempts"] == snapshot.get("local_live_attempts", 0)
+            and candidates
+        ):
             return "retire", old[0]
         return "wait", None
     if candidates:
@@ -246,7 +251,7 @@ def retire(gateway, name, snapshot, member):
     )
 
 
-def transition(gateway, name, manifest, *, timeout=900, pause=5):
+def transition(gateway, name, manifest, *, timeout=1800, pause=5):
     build = manifest["configuration"]["worker_build"]
     capped = manifest["configuration"]["pool_max_size"] == 1
     snapshot = gateway.observe()[name]
@@ -255,7 +260,7 @@ def transition(gateway, name, manifest, *, timeout=900, pause=5):
             "stage", pool=name, active_build=snapshot["active_build"], staged_build=build
         )
     # Re-entry after promotion must not allocate another replacement for the retired VM.
-    floor = 1 if snapshot["claims_paused"] or (capped and snapshot["active_build"] == build) else 2
+    floor = 1 if snapshot["active_build"] == build and (capped or snapshot["claims_paused"]) else 2
     gateway.template(name, manifest, floor)
     deadline = time.monotonic() + timeout
     while True:
@@ -376,6 +381,38 @@ def same_receiver_scope(creation, bound):
     initial.pop("groups")
     final.pop("groups")
     return initial == final
+
+
+def same_initial_revision_scope(old, new):
+    def scope(manifest):
+        config = deepcopy(manifest["configuration"])
+        for key in ("worker_build", "worker_image"):
+            config.pop(key)
+        for entry in config["groups"].values():
+            entry.pop("baseline")
+        return config
+
+    return scope(old) == scope(new)
+
+
+def validate_initial_state(snapshot, manifest, predecessor=None):
+    build = manifest["configuration"]["worker_build"]
+    builds = {build}
+    if predecessor:
+        builds.add(predecessor["manifest"]["configuration"]["worker_build"])
+    for name in ("bulk", "selfie"):
+        row = snapshot.get(name)
+        if (
+            row is None
+            or row["group_id"] != manifest["configuration"]["groups"][name]["id"]
+            or row["active_build"] not in builds
+            or row["staged_build"] not in {None, build}
+            or not row["claims_paused"]
+            or row["local_claims_paused"]
+            or row["live_attempts"] != row.get("local_live_attempts", 0)
+            or any(m["grant"] and not m["reconciled"] for m in row["members"])
+        ):
+            raise ValueError("unsafe existing coordinator state for initial stage")
 
 
 class Host:
@@ -888,8 +925,60 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
             or provision.prepare(manifest["configuration"]) != manifest
         ):
             raise ValueError("candidate differs from reviewed package")
-        if receipt.exists():
-            prior = Journal(receipt)
+        prior = Journal(receipt) if receipt.exists() else None
+        initial_stage = (
+            prior is not None
+            and os.environ.get("WORKER_POOL_ACTIVATION") == "stage"
+            and prior.data.get("previous") is None
+            and not marker.exists()
+        )
+        if initial_stage and manifest == prior.data["candidate"]["manifest"]:
+            execute("guard", root, manifest_path, checksum, app_image)
+            execute("verify-candidate", root, manifest_path, checksum, app_image)
+            return
+        if initial_stage:
+            if (
+                prior.data.get("pending")
+                or prior.data["phase"] not in {"staged", "rolled-back-local"}
+                or not (root / ".deployment-recovery").is_dir()
+                or not same_initial_revision_scope(prior.data["candidate"]["manifest"], manifest)
+            ):
+                raise ValueError("initial forward revision requires settled same-scope stage")
+            cloud = provision.Cloud(metadata_token())
+            host = Host(root, cloud, prior)
+            host.verify_web(prior.data["candidate"]["proof"])
+            validate_initial_state(host.control("status"), prior.data["candidate"]["manifest"])
+            provision.inspect(manifest["configuration"], cloud)
+            old = prior.data["candidate"]["manifest"]
+            for name in ("bulk", "selfie"):
+                actual = cloud.get(
+                    f"instanceGroups/{manifest['configuration']['groups'][name]['id']}", view="FULL"
+                )
+                expected = deepcopy(old["groups"][name])
+                warm_scale = deepcopy(expected["scalePolicy"])
+                warm_scale["autoScale"]["minZoneSize"] = "1"
+                if any(
+                    not provider_field_matches(key, actual.get(key), expected.get(key))
+                    and not (
+                        key == "scalePolicy"
+                        and provider_field_matches(key, actual.get(key), warm_scale)
+                    )
+                    for key in provision.MANAGED_FIELDS
+                ):
+                    raise ValueError("initial staged provider configuration drift")
+            proof = image_proof(manifest, app_image)
+            predecessor = prior.data["candidate"]
+            config = observation_config(manifest, predecessor)
+            prior.data.update(
+                phase="prepared",
+                verified=[],
+                staged_predecessor=predecessor,
+                candidate={"manifest": manifest, "proof": proof},
+            )
+            prior.save()
+            Journal(root / "worker-pools-observation.json", config)
+            return
+        if prior:
             if prior.data.get("pending") or prior.data["phase"] not in {
                 "committed",
                 "rolled-back",
@@ -957,6 +1046,11 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
         return
     if mode in {"rollout", "rollback", "stage", "activate"} and journal.data.get("previous"):
         observation_config(journal.data["candidate"]["manifest"], journal.data["previous"])
+    if mode in {"stage", "activate"} and journal.data.get("staged_predecessor"):
+        config = observation_config(
+            journal.data["candidate"]["manifest"], journal.data["staged_predecessor"]
+        )
+        Journal(root / "worker-pools-observation.json", config)
     cloud = provision.Cloud(metadata_token()) if mode != "status" else None
     host = Host(root, cloud, journal)
     candidate = journal.data["candidate"]
@@ -1008,6 +1102,9 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
         }:
             raise ValueError("staged release is not resumable")
         existing = host.control("status")
+        predecessor = journal.data.get("staged_predecessor")
+        if mode == "stage" and predecessor:
+            validate_initial_state(existing, manifest, predecessor)
         for name in ("bulk", "selfie"):
             if name not in existing:
                 if manifest["configuration"].get("predecessors") is not None:
@@ -1032,6 +1129,7 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
                 )
             elif (
                 mode == "stage"
+                and not predecessor
                 and existing[name]["active_build"] != manifest["configuration"]["worker_build"]
             ):
                 raise ValueError("initial staged coordinator build differs from candidate")
@@ -1041,7 +1139,12 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
                 and (
                     not existing[name]["claims_paused"]
                     or existing[name]["local_claims_paused"]
-                    or existing[name]["staged_build"] is not None
+                    or existing[name]["staged_build"]
+                    not in (
+                        {None, manifest["configuration"]["worker_build"]} if predecessor else {None}
+                    )
+                    or existing[name]["live_attempts"]
+                    != existing[name].get("local_live_attempts", 0)
                 )
             ):
                 raise ValueError("unsafe existing coordinator state for initial stage")

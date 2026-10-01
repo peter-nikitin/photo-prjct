@@ -537,6 +537,19 @@ def _grant(member: WorkerPoolMember) -> dict[str, str]:
     }
 
 
+def _release_survivor(pool: WorkerPool, member: WorkerPoolMember, now: datetime) -> bool:
+    return _serving(pool, member, now) or bool(
+        pool.claims_paused
+        and not pool.local_claims_paused
+        and member.ready
+        and not member.draining
+        and member.retirement_grant is None
+        and member.worker_build == pool.active_build
+        and _fresh(member.heartbeat_at, now, HEARTBEAT_MAX_AGE)
+        and _running(pool, member, now)
+    )
+
+
 def _reserve(
     pool: WorkerPool, member: WorkerPoolMember, now: datetime, *, release: bool
 ) -> dict[str, str] | None:
@@ -556,7 +569,14 @@ def _reserve(
     # One irreversible permission at a time, including release retries and cloud replacement.
     if outstanding or any(row["status"] not in RUNNING | STOPPED for row in pool.observed_members):
         return None
-    survivors = sum(other.pk != member.pk and _serving(pool, other, now) for other in members)
+    paused_release = release and pool.claims_paused and not pool.local_claims_paused
+    if paused_release and any(_has_live(other, now) for other in members):
+        return None
+    survivors = sum(
+        other.pk != member.pk
+        and (_release_survivor(pool, other, now) if release else _serving(pool, other, now))
+        for other in members
+    )
     floor = 1 if pool.name == "selfie" else 0
     if survivors < floor or not _running(pool, member, now):
         return None
@@ -738,7 +758,7 @@ def reserve_release_retirement(
     if any(other.retirement_grant is not None and other.reconciled_at is None for other in others):
         return None
     floor = 1 if pool.name == "selfie" else 0
-    if sum(_serving(pool, other, now) for other in others) < floor or not _running(
+    if sum(_release_survivor(pool, other, now) for other in others) < floor or not _running(
         pool, member, now
     ):
         return None

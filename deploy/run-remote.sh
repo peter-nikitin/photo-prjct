@@ -447,8 +447,15 @@ if pending:
         if not manifest_path.is_file():
             raise SystemExit(1)
         manifest = json.loads(manifest_path.read_text())
+        def revision_scope(row):
+            return {key: ({name: {'id': entry['id']} for name, entry in value.items()} if key == 'groups' else value)
+                    for key, value in row['configuration'].items() if key not in {'worker_build', 'worker_image'}}
+        forward = (action == 'stage' and phase in {'staged', 'rolled-back-local'}
+                   and not receipt.get('pending')
+                   and not (root / 'worker-pools-current.json').exists()
+                   and revision_scope(manifest) == revision_scope(candidate['manifest']))
         if (
-            manifest != candidate['manifest']
+            (manifest != candidate['manifest'] and not forward)
             or manifest['checksum'] != os.environ.get('WORKER_POOL_RELEASE_CHECKSUM')
             or os.environ.get('APP_IMAGE', '').rsplit(':', 1)[-1]
             != manifest['configuration']['worker_build']

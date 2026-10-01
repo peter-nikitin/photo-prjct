@@ -13,6 +13,55 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("activation", ["stage", "activate", "complete"])
+@pytest.mark.parametrize("observability_installed", ["0", "1"])
+def test_failed_explicit_initial_activation_preserves_candidate_without_automatic_recovery(
+    tmp_path, activation, observability_installed
+):
+    source = (ROOT / "deploy/apply-deployment.sh").read_text()
+    function = list(re.finditer(r"^on_exit\(\) \{\n.*?^\}", source, re.M | re.S))[-1][0]
+    helper = tmp_path / "sudo"
+    helper.write_text('#!/bin/sh\nprintf rollback > "$DEPLOY_ROOT/observability-rollback"\n')
+    helper.chmod(0o755)
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            function
+            + """
+recover_previous_deployment() { printf recovered > "$DEPLOY_ROOT/recovered"; }
+cleanup() { :; }
+elapsed_seconds() { printf 0; }
+diagnostics() { :; }
+trap on_exit EXIT
+exit 1
+""",
+        ],
+        env={
+            **os.environ,
+            "PATH": str(tmp_path) + ":" + os.environ["PATH"],
+            "DEPLOY_ROOT": str(tmp_path),
+            "worker_pool_activation": activation,
+            "mutation_started": "1",
+            "deployment_committed": "0",
+            "recovery_in_progress": "0",
+            "observability_installed": observability_installed,
+            "observability_helper": "/fixture-observability-helper",
+            "fleet_prepared": "1",
+            "deployment_phase": "worker-health",
+            "previous_cart_cleanup_present": "False",
+            "previous_upload_enabled": "False",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert not (tmp_path / "recovered").exists()
+    assert not (tmp_path / "observability-rollback").exists()
+    assert "DEPLOY_RESULT=failure" in result.stdout
+    assert "rollback=not-needed" in result.stdout
+
+
 @pytest.mark.parametrize("previous_placement", ["local", "remote"])
 @pytest.mark.parametrize("requested_commerce", ["True", "False"])
 @pytest.mark.parametrize("previous_commerce", ["True", "False"])
@@ -1495,6 +1544,7 @@ exec """
     if decision == "complete-public-failure":
         assert finished.returncode != 0
         assert "fleet commit" not in _apply_log(tmp_path)
+        assert "fleet rollback" not in _apply_log(tmp_path)
         assert (recovery / "previous.env").read_bytes() == original_env
         assert original_package.is_dir()
         return
@@ -1594,17 +1644,9 @@ def test_failed_receiver_recovery_preserves_original_package_in_durable_gate(
     assert (recovery / "package-path").read_text() == str(original) + "\n"
 
 
-@pytest.mark.parametrize(
-    "rollback_fails,scenario",
-    [
-        (False, "success"),
-        (True, "success"),
-        (False, "migration-plan-failure"),
-        (False, "public-failure"),
-    ],
-)
+@pytest.mark.parametrize("scenario", ["success", "migration-plan-failure", "public-failure"])
 def test_remote_cutover_never_force_removes_local_workers_and_gates_image_marker(
-    tmp_path: Path, fake_bin: Path, rollback_fails: bool, scenario: str
+    tmp_path: Path, fake_bin: Path, scenario: str
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario=scenario)
     env.update(
@@ -1614,7 +1656,7 @@ def test_remote_cutover_never_force_removes_local_workers_and_gates_image_marker
         WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
         WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
         WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
-        FLEET_ROLLBACK_FAILS="1" if rollback_fails else "0",
+        FLEET_ROLLBACK_FAILS="1",
     )
     original_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
     staged_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
@@ -1645,9 +1687,9 @@ exec """
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode != 0
     log = _apply_log(tmp_path)
+    assert "fleet rollback" not in log
     assert ("fleet activate" in log) == (scenario == "success"), result.stderr
     if scenario == "success":
-        assert "fleet rollback" in log
         assert log.index("verify-public-edge") < log.index("fleet activate")
         assert log.index("verify-selfie-observability") < log.index("fleet activate")
     assert not any("rm -sf worker" in line for line in log)
@@ -1664,16 +1706,10 @@ exec """
         assert "--remove-orphans" not in database_start
     assert (tmp_path / "deployed-image").read_text() == "old-image\n"
     recovery = tmp_path / ".deployment-recovery"
-    if rollback_fails:
-        assert (recovery / "previous.env").read_bytes() == original_env
-        assert (recovery / "deployed-image").read_text() == "old-image\n"
-        assert (tmp_path / ".env").read_bytes() != original_env
-    else:
-        assert (recovery / "previous.env").read_bytes() == original_env
-        assert (recovery / "deployed-image").read_text() == "old-image\n"
-        assert (tmp_path / ".env").read_bytes() == staged_env
-        if scenario == "success":
-            assert any("--profile worker up -d --no-deps" in line for line in log)
+    assert (recovery / "previous.env").read_bytes() == original_env
+    assert (recovery / "deployed-image").read_text() == "old-image\n"
+    assert (tmp_path / ".env").read_bytes() != original_env
+    assert not any("--profile worker up -d --no-deps" in line for line in log)
 
 
 def _render_gallery_environment(env_file: Path) -> tuple[dict[str, str], str]:

@@ -308,6 +308,7 @@ class LifecycleTests(TransactionTestCase):
                 {"instance_id": "instance-1", "status": "RUNNING_OUTDATED", "worker_build": NEXT},
             ],
         )
+
         self.observe(
             sequence=4,
             started_at=timezone.now(),
@@ -322,6 +323,83 @@ class LifecycleTests(TransactionTestCase):
         lifecycle.promote_build("selfie", active_build=NEXT, staged_build=BUILD)
         with lifecycle.claim_admission((1, "selfie_query", 2), rollback) as admission:
             self.assertTrue(admission.allowed)
+
+    def paused_replacement(self):
+        lifecycle.set_claims_paused("selfie", paused=True)
+        lifecycle.set_claims_paused("selfie", paused=False, local=True)
+        lifecycle.stage_build("selfie", active_build=BUILD, staged_build=NEXT)
+        self.observe(
+            sequence=2,
+            target=1,
+            members=[
+                {"instance_id": "instance-0", "status": "RUNNING_OUTDATED", "worker_build": BUILD},
+                {"instance_id": "instance-1", "status": "RUNNING_ACTUAL", "worker_build": NEXT},
+            ],
+        )
+        candidate = self.register_session(
+            lifecycle.MemberIdentity("selfie", "instance-1", uuid4(), NEXT)
+        )
+        lifecycle.heartbeat(candidate, ready=True, draining=False)
+        lifecycle.promote_build("selfie", active_build=BUILD, staged_build=NEXT)
+        return candidate
+
+    def test_paused_release_retires_old_with_warm_new_member_and_local_claims(self):
+        candidate = self.paused_replacement()
+        self.assertIsNone(lifecycle.request_retirement(candidate))
+        grant = lifecycle.reserve_release_retirement(
+            self.envelopes[0], active_build=NEXT, staged_build=None
+        )
+        self.assertIsNotNone(grant)
+        pool = WorkerPool.objects.get(pk=self.pool.pk)
+        self.assertTrue(pool.claims_paused)
+        self.assertFalse(pool.local_claims_paused)
+        self.assertEqual(
+            lifecycle.reserve_release_retirement(
+                self.envelopes[0], active_build=NEXT, staged_build=None
+            ),
+            grant,
+        )
+
+    def test_paused_release_keeps_remote_live_work_fenced(self):
+        candidate = self.paused_replacement()
+        attempt = self.make_attempt()
+        WorkerPoolMember.objects.filter(instance_id=candidate.instance_id).update(
+            active_selfie_attempt=attempt
+        )
+        self.assertIsNone(
+            lifecycle.reserve_release_retirement(
+                self.envelopes[0], active_build=NEXT, staged_build=None
+            )
+        )
+
+    def test_paused_release_can_replace_workers_while_local_work_continues(self):
+        self.paused_replacement()
+        self.make_attempt()
+        self.assertEqual(lifecycle.local_live_leases("selfie"), 1)
+        self.assertIsNotNone(
+            lifecycle.reserve_release_retirement(
+                self.envelopes[0], active_build=NEXT, staged_build=None
+            )
+        )
+
+    def test_paused_release_requires_ready_fresh_active_survivor_and_local_claims(self):
+        candidate = self.paused_replacement()
+        for problem in ("local-paused", "unready", "stale", "draining", "wrong-build"):
+            with self.subTest(problem=problem):
+                lifecycle.set_claims_paused("selfie", paused=problem == "local-paused", local=True)
+                WorkerPoolMember.objects.filter(instance_id=candidate.instance_id).update(
+                    ready=problem != "unready",
+                    draining=problem == "draining",
+                    heartbeat_at=timezone.now() - timedelta(minutes=5)
+                    if problem == "stale"
+                    else timezone.now(),
+                    worker_build=BUILD if problem == "wrong-build" else NEXT,
+                )
+                self.assertIsNone(
+                    lifecycle.reserve_release_retirement(
+                        self.envelopes[0], active_build=NEXT, staged_build=None
+                    )
+                )
 
     def test_local_pause_and_unconfigured_fleet_fail_closed(self):
         lifecycle.set_claims_paused("selfie", paused=True, local=True)

@@ -228,6 +228,28 @@ class CloudTransportTests(SimpleTestCase):
                         with self.assertRaises(ValueError):
                             write_metrics("folder", metrics)
 
+    def test_writer_accepts_observed_numeric_monitoring_success(self):
+        from processing.services.worker_pool_cloud import write_metrics
+
+        metrics = [
+            {
+                "name": "worker_pool_workload",
+                "type": "DGAUGE",
+                "value": 0,
+                "labels": {"pool": "bulk", "zone_id": "ru-central1-a"},
+            }
+        ]
+        with (
+            patch(
+                "processing.services.worker_pool_cloud.metadata_token", return_value="short-token"
+            ),
+            patch(
+                "processing.services.worker_pool_cloud.request_json",
+                return_value={"writtenMetricsCount": 1},
+            ),
+        ):
+            write_metrics("folder", metrics)
+
     def test_transport_rejects_oversized_or_non_success_response(self):
         from urllib.request import Request
 

@@ -105,5 +105,9 @@ def write_metrics(folder_id: str, metrics: list[dict[str, object]]) -> None:
             method="POST",
         )
     )
-    if result.get("writtenMetricsCount") != str(len(metrics)) or result.get("errorMessage", ""):
+    written_count = result.get("writtenMetricsCount")
+    count_matches = (type(written_count) is int and written_count == len(metrics)) or (
+        type(written_count) is str and written_count == str(len(metrics))
+    )
+    if not count_matches or result.get("errorMessage", ""):
         raise ValueError("incomplete metric publication")

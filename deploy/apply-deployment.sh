@@ -1088,7 +1088,11 @@ on_exit() {
 
     if [ "$mutation_started" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
         [ "$status" -ne 0 ] || status=1
-        if [ "$recovery_in_progress" -eq 0 ]; then
+        if [ "$worker_pool_activation" = stage ] || [ "$worker_pool_activation" = activate ] || \
+           [ "$worker_pool_activation" = complete ]; then
+            echo "Initial activation failed; candidate, fleet and recovery retained for explicit retry" >&2
+            diagnostics
+        elif [ "$recovery_in_progress" -eq 0 ]; then
             recovery_in_progress=1
             if ! recover_previous_deployment; then
                 rollback_result=failed
@@ -1115,7 +1119,9 @@ on_exit() {
                 fi
             fi
         fi
-        if [ "$observability_installed" -eq 1 ]; then
+        if [ "$observability_installed" -eq 1 ] && \
+           [ "$worker_pool_activation" != stage ] && [ "$worker_pool_activation" != activate ] && \
+           [ "$worker_pool_activation" != complete ]; then
             sudo -n "$observability_helper" rollback || \
                 {
                     rollback_result=failed
@@ -1482,7 +1488,7 @@ if [ "$requested_worker_placement" = remote ]; then
                 if [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["phase"])' "$DEPLOY_ROOT/worker-pools-release.json")" = receiver-staged ]; then
                     fleet_phase bind-stage || fail "Receiver/fleet binding failed"
                 else
-                    fleet_phase guard || fail "Staged candidate pin changed"
+                    fleet_phase preflight || fail "Initial forward stage admission failed"
                 fi
             else
                 fail "Receiver must be staged before fleet warm-up"

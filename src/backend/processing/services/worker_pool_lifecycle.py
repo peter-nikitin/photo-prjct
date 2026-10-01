@@ -232,6 +232,85 @@ def configure_pool(name: str, *, group_id: str, active_build: str) -> WorkerPool
 
 
 @transaction.atomic
+def reactivation_eligible(predecessors: dict[str, dict[str, str]] | None) -> bool:
+    """Read current canonical authority for an exact, locally rolled-back predecessor."""
+    _enabled()
+    pools = {pool.name: pool for pool in WorkerPool.objects.select_for_update().order_by("name")}
+    if predecessors is None:
+        if pools:
+            raise AdmissionDenied()
+        return True
+    if not isinstance(predecessors, dict) or set(predecessors) != {"bulk", "selfie"}:
+        raise AdmissionDenied()
+    if set(pools) != set(predecessors):
+        raise AdmissionDenied()
+    for name, expected in predecessors.items():
+        if (
+            not isinstance(expected, dict)
+            or set(expected) != {"group_id", "active_build"}
+            or not _identifier(expected["group_id"])
+            or not _build(expected["active_build"])
+        ):
+            raise AdmissionDenied()
+        pool = pools[name]
+        if (
+            pool.group_id != expected["group_id"]
+            or pool.active_build != expected["active_build"]
+            or pool.staged_build is not None
+            or not pool.claims_paused
+            or pool.local_claims_paused
+            or pool.members.select_for_update().exists()
+            or _live_attempts(name, timezone.now()).exists()
+        ):
+            raise AdmissionDenied()
+    return True
+
+
+@transaction.atomic
+def rebind_pool(
+    name: str, *, old_group_id: str, old_build: str, group_id: str, active_build: str
+) -> WorkerPool:
+    """Move only a cleaned pool's infrastructure identity, leaving product data intact."""
+    if (
+        name not in {"bulk", "selfie"}
+        or not all(
+            (
+                _identifier(old_group_id),
+                _build(old_build),
+                _identifier(group_id),
+                _build(active_build),
+            )
+        )
+        or old_group_id == group_id
+    ):
+        raise AdmissionDenied()
+    pool = _pool(name)
+    if pool.group_id == group_id and pool.active_build == active_build:
+        return pool
+    if pool.group_id != old_group_id or pool.active_build != old_build:
+        raise AdmissionDenied()
+    if (
+        pool.staged_build is not None
+        or not pool.claims_paused
+        or pool.local_claims_paused
+        or pool.members.select_for_update().exists()
+        or _live_attempts(name, timezone.now()).exists()
+    ):
+        raise AdmissionDenied()
+    pool.group_id = group_id
+    pool.active_build = active_build
+    pool.observation_sequence = 0
+    pool.observation_started_at = None
+    pool.observation_completed_at = None
+    pool.target_size = 0
+    pool.observed_members = []
+    pool.queue_observed_at = None
+    pool.endpoint_available = False
+    pool.save()
+    return pool
+
+
+@transaction.atomic
 def record_cloud_snapshot(
     name: str,
     *,

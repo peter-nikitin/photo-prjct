@@ -412,6 +412,13 @@ before journal or provider mutation.
 expected absence for initial creation. For updates, use the exact existing group ID and the
 managed-configuration baseline obtained by `--status`. Image is an immutable GHCR worker digest;
 Docker/Compose versions refer to binaries already installed in the explicitly reviewed OS image.
+For reactivation after a completed local abort and deletion of both former groups, add the
+optional checksum-bound `predecessors` object to the **null-ID creation** config. It names each
+old coordinator `group_id` and `active_build` exactly, for example
+`{"bulk":{"group_id":"<OLD_BULK_GROUP_ID>","active_build":"<OLD_40_HEX_SHA>"},"selfie":{"group_id":"<OLD_SELFIE_GROUP_ID>","active_build":"<OLD_40_HEX_SHA>"}}`.
+These are inspection inputs, never defaults; obtain them from fresh canonical status. Omit
+`predecessors` only when neither coordinator row exists. A changed or partially populated
+predecessor is not eligible for this path.
 The following is the **complete nonsecret JSON shape**, with deliberately invalid placeholders
 for resources that do not yet exist. Materialize it only after exact creation outputs and
 fresh read-back; never run cloud commands with placeholders. The listed canonical VM/VPC/folder
@@ -490,6 +497,31 @@ and writes a durable private receipt **before** each mutation. Receipts record r
 and group IDs plus both folder IDs; submission is not rollout success. Existing receipt paths
 refuse resubmission. Changing either folder changes the configuration checksum. Keep private
 config, receipt, release journal and any token out of Git and shared logs.
+For a null-ID create, `--apply` additionally requires `--canonical-ssh-target <user@host>`,
+`--canonical-root <absolute-deploy-root>` and
+`--canonical-manifest <absolute-path-to-the-exact-receiver-creation-manifest>`. The supported
+order after `receiver` is: inspect the reviewed creation config, read the canonical eligibility
+below, then run the operator-owned `--apply` with those three arguments. For example, with
+private paths and a reviewed checksum already substituted:
+
+```sh
+python3 deploy/worker-pools/provision.py --config '<creation.json>' --inspect --profile '<yc-profile>'
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes '<user@canonical-host>' 'sudo -n python3 /opt/photo-prjct/deploy/worker-pools/release.py eligibility --root /opt/photo-prjct --manifest /opt/photo-prjct/<creation.json> --checksum <reviewed-sha256>'
+python3 deploy/worker-pools/provision.py --config '<creation.json>' --apply '<reviewed-sha256>' --profile '<yc-profile>' --receipt '<fresh-private-receipt>' --canonical-ssh-target '<user@canonical-host>' --canonical-root /opt/photo-prjct --canonical-manifest '/opt/photo-prjct/<creation.json>'
+```
+
+The canonical `eligibility` operation is read-only and requires the exact `receiver-staged`
+receipt, manifest/checksum, actual metadata VM identity, and current coordinator state.
+For a reactivation, both old groups must match `predecessors`, remote claims must be paused,
+local claims enabled, no release staged, no member rows and no current unfinished attempts.
+This conservative attempt check may require a bounded quiet period for local processing.
+The operator-owned apply runs that fresh canonical check before each create and reads complete
+group, VM and disk inventory in the explicit worker folder. The folder must be empty before
+the first create, including the old group IDs and any retained disks. Before the second create,
+only the first receipt-owned group and its proven members/disks may exist; the script waits up
+to two minutes for its asynchronous inventory to settle. Unknown resources, incomplete or
+forbidden reads, or an unavailable canonical SSH check stop before the next POST. A check made
+earlier by hand is useful inspection, not authority for a later create.
 For a lost response or partial two-group creation, keep the receipt, use read-only `--status`
 to resolve the exact names/IDs, and inspect the recorded provider operations. Do not invent a new
 receipt or retry an uncertain create until the original operation has been reconciled. No
@@ -630,6 +662,13 @@ networking, and collector bootstrap remain separate approved operator actions.
    otherwise identical immutable configuration, bind its exact IDs,
    both folder IDs and checksum, and set `WORKER_POOL_RELEASE_MANIFEST` and
    `WORKER_POOL_RELEASE_CHECKSUM` to its reviewed canonical path and checksum.
+   `bind-stage` rereads canonical eligibility after creation and validates exact new group
+   ownership before binding. `stage` then changes only the eligible pool infrastructure
+   identity under coordinator locks, clears old cloud/queue/endpoint observations, and observes
+   the new group before any remote admission. Ordinary same-group releases retain their
+   staged-build path. Repeating the exact candidate does not clear later valid observations
+   or members. Jobs, terminal attempts, results, artifacts and pgvector rows remain durable,
+   and local processing continues during this step.
 3. Run `gh workflow run deploy.yml --ref main -f deployment_sha=<SHA> -f worker_pool_activation=stage -f worker_pool_worker_digest=sha256:<DIGEST>`.
    This binds the manifest to the receiver receipt, verifies provider ownership and private-edge
    prerequisites, warms both paused pools, starts the native collector, and leaves local workers
@@ -699,6 +738,11 @@ abort, restore the GitHub Deploy variable to its prior local/default state (remo
 was absent before activation) before the next ordinary
 push. Independently of that operator step, ordinary remote Deploy refuses to recreate first
 activation when no committed fleet marker exists.
+After a completed local abort, remote claims stay paused and local claims enabled. Repeating
+activation after both groups and their VMs/disks are fully deleted requires a new reviewed
+null-ID manifest with the then-current exact predecessor identities and a fresh provision
+receipt; old readiness observations are never restored as authority. This repository path
+does not authorize a live retry, deletion, new IAM grant or paid create.
 The three live inventory reads reject unknown/partial results; they do not certify an outstanding
 provider operation has finished. The operator must reconcile every provisioning-receipt operation
 to a terminal provider result before the absence-proven receiver abort.

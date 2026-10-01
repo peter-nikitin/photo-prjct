@@ -225,10 +225,12 @@ def release_module():
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("stale", [False, True])
 def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
-    tmp_path, monkeypatch, settings
+    tmp_path, monkeypatch, settings, stale
 ):
     from django.core.management import call_command
+    from django.utils import timezone
     from processing.models import WorkerPool
     from processing.services import worker_pool_lifecycle as lifecycle
 
@@ -264,6 +266,30 @@ def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
         },
         "groups": groups,
     }
+    if stale:
+        old = "c" * 40
+        manifest["configuration"]["predecessors"] = {
+            name: {"group_id": name + "-old", "active_build": old} for name in ("bulk", "selfie")
+        }
+        now = timezone.now()
+        for name in ("bulk", "selfie"):
+            lifecycle.configure_pool(name, group_id=name + "-old", active_build=old)
+            lifecycle.record_cloud_snapshot(
+                name,
+                group_id=name + "-old",
+                sequence=5,
+                started_at=now,
+                completed_at=now,
+                target_size=1,
+                complete=True,
+                members=[
+                    {
+                        "instance_id": name + "-stale",
+                        "status": "RUNNING_ACTUAL",
+                        "worker_build": old,
+                    }
+                ],
+            )
     config = {
         "folder_id": "folder",
         "canonical_folder_id": "canonical-folder",
@@ -363,8 +389,13 @@ def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
             events.append("stop-local")
 
     monkeypatch.setattr(release, "Host", Host)
-    assert not WorkerPool.objects.exists()
+    assert WorkerPool.objects.exists() is stale
     release.execute("stage", tmp_path, None, None, None)
+    if stale:
+        assert dict(WorkerPool.objects.values_list("name", "group_id")) == {
+            "bulk": "bulk-group",
+            "selfie": "selfie-group",
+        }
     release.execute("activate", tmp_path, None, None, None)
     assert events[0] == "verified-web"
     assert "stop-local" in events
@@ -1358,6 +1389,7 @@ def capped_fleet(tmp_path, monkeypatch, *, initial=False):
             self.states = {}
             for name in ("bulk", "selfie"):
                 snapshot = state(("b" if initial else "a") * 40)
+                snapshot["group_id"] = name + "-group"
                 snapshot["active_build"] = ("b" if initial else "a") * 40
                 snapshot["claims_paused"] = initial
                 for key in ("members", "observed_members"):
@@ -1538,6 +1570,20 @@ def test_first_activation_stage_warms_fleet_without_stopping_or_pausing_local(
     )
 
 
+def test_initial_stage_refuses_unpaused_existing_candidate_before_observation(
+    tmp_path, monkeypatch
+):
+    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
+    host.journal.data["phase"] = "prepared"
+    host.journal.save()
+    for row in host.states.values():
+        row["local_claims_paused"] = False
+    host.states["bulk"]["claims_paused"] = False
+    with pytest.raises(ValueError, match="unsafe existing"):
+        release.execute("stage", tmp_path, None, None, None)
+    assert not host.cloud.writes
+
+
 def test_staged_activation_drains_local_then_requires_explicit_completion(
     tmp_path, monkeypatch, capsys
 ):
@@ -1650,8 +1696,14 @@ def test_receiver_is_pinned_before_group_ids_exist_then_stage_binds_reviewed_gro
     }
     monkeypatch.setattr(release, "image_proof", lambda *args: proof)
     monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
+    eligible = [False]
     monkeypatch.setattr(
-        release, "Host", lambda *args: SimpleNamespace(verify_web=lambda proof: None)
+        release,
+        "Host",
+        lambda *args: SimpleNamespace(
+            verify_web=lambda proof: None,
+            control=lambda operation, **kwargs: {"eligible": eligible[0]},
+        ),
     )
     provision = release.provision_module()
     monkeypatch.setattr(provision, "inspect", lambda *args: None)
@@ -1695,11 +1747,80 @@ def test_receiver_is_pinned_before_group_ids_exist_then_stage_binds_reviewed_gro
     with pytest.raises(ValueError, match="receiver and reviewed fleet candidate differ"):
         release.execute("bind-stage", tmp_path, path, changed["checksum"], app_image, worker_digest)
     path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="unexpected coordinator rows before bind"):
+        release.execute(
+            "bind-stage", tmp_path, path, manifest["checksum"], app_image, worker_digest
+        )
+    assert (
+        release.Journal(tmp_path / "worker-pools-release.json").data["phase"] == "receiver-staged"
+    )
+    eligible[0] = True
     release.execute("bind-stage", tmp_path, path, manifest["checksum"], app_image, worker_digest)
     receipt = release.Journal(tmp_path / "worker-pools-release.json").data
     assert receipt["phase"] == "prepared"
     assert receipt["candidate"]["manifest"] == manifest
     assert (tmp_path / "worker-pools-observation.json").exists()
+
+
+@pytest.mark.django_db
+def test_receiver_eligibility_reads_real_stale_coordinator_and_checks_canonical_identity(
+    tmp_path, monkeypatch, settings
+):
+    from processing.management.commands.control_worker_pools import execute as control
+    from processing.models import WorkerPoolMember
+    from processing.services import worker_pool_lifecycle as lifecycle
+
+    from tests.deployment.test_worker_pool_provisioning import config
+
+    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = True
+    release = release_module()
+    provision = release.provision_module()
+    old = "c" * 40
+    conf = config(1) | {
+        "predecessors": {
+            name: {"group_id": name + "-old", "active_build": old} for name in ("bulk", "selfie")
+        }
+    }
+    creation = provision.prepare(conf)
+    manifest_path = tmp_path / "creation.json"
+    manifest_path.write_text(json.dumps(creation))
+    release.Journal(
+        tmp_path / "worker-pools-release.json",
+        {
+            "phase": "receiver-staged",
+            "previous": None,
+            "candidate": {"creation_manifest": creation},
+        },
+    )
+    for name in ("bulk", "selfie"):
+        lifecycle.configure_pool(name, group_id=name + "-old", active_build=old)
+    monkeypatch.setattr(release, "canonical_instance_id", lambda: "canonical")
+    monkeypatch.setattr(
+        release,
+        "Host",
+        lambda *args: SimpleNamespace(
+            control=lambda operation, **args: control({"operation": operation, **args})
+        ),
+    )
+    assert release.execute("eligibility", tmp_path, manifest_path, creation["checksum"], None) == {
+        "eligible": True,
+        "checksum": creation["checksum"],
+        "predecessors": conf["predecessors"],
+    }
+    monkeypatch.setattr(release, "canonical_instance_id", lambda: "wrong")
+    with pytest.raises(ValueError, match="canonical VM"):
+        release.execute("eligibility", tmp_path, manifest_path, creation["checksum"], None)
+    monkeypatch.setattr(release, "canonical_instance_id", lambda: "canonical")
+    from processing.models import WorkerPool
+
+    WorkerPoolMember.objects.create(
+        pool=WorkerPool.objects.get(name="bulk"),
+        instance_id="still-active",
+        boot_id=uuid4(),
+        worker_build=old,
+    )
+    with pytest.raises(ValueError):
+        release.execute("eligibility", tmp_path, manifest_path, creation["checksum"], None)
 
 
 @pytest.mark.parametrize("occupied", [None, "instanceGroups", "instances", "disks", "read-error"])

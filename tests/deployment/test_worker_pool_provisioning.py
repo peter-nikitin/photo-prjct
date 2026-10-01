@@ -919,6 +919,11 @@ def test_initial_creation_records_exact_ids_and_never_writes_prerequisites(tmp_p
         provision.prepare(conf)["checksum"],
         cloud=cloud,
         receipt_path=tmp_path / "receipt.json",
+        eligibility=lambda candidate, sha: {
+            "eligible": True,
+            "checksum": sha,
+            "predecessors": None,
+        },
     )
     assert [call[:2] for call in cloud.calls] == [
         ("POST", "instanceGroups"),
@@ -979,7 +984,17 @@ def test_partial_creation_or_uncertain_response_requires_reconciliation_not_auto
     path = tmp_path / "receipt.json"
     checksum = provision.prepare(conf)["checksum"]
     with pytest.raises(TimeoutError):
-        provision.apply(conf, checksum, cloud=cloud, receipt_path=path)
+        provision.apply(
+            conf,
+            checksum,
+            cloud=cloud,
+            receipt_path=path,
+            eligibility=lambda candidate, sha: {
+                "eligible": True,
+                "checksum": sha,
+                "predecessors": None,
+            },
+        )
     receipt = json.loads(path.read_text())
     assert receipt["groups"]["bulk"]["state"] == "submitted"
     assert receipt["groups"]["selfie"]["state"] == "submission_uncertain"
@@ -989,6 +1004,151 @@ def test_partial_creation_or_uncertain_response_requires_reconciliation_not_auto
     assert len(cloud.calls) == 2
     assert path.read_bytes() == before
     assert provision.status(conf, cloud)["bulk"]["id"] == "bulk-group"
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing", "stale", "unknown", "predecessor-group", "orphan-disk"]
+)
+def test_create_requires_fresh_canonical_eligibility_and_complete_clean_inventory(
+    tmp_path, failure
+):
+    provision = module("provision")
+    conf = config(1) | {
+        "predecessors": {
+            name: {"group_id": f"{name}-old", "active_build": "c" * 40}
+            for name in ("bulk", "selfie")
+        }
+    }
+    cloud = FakeCloud(provision, conf)
+    if failure == "predecessor-group":
+        cloud.groups = [{"id": "bulk-old", "name": "retired", "folderId": "worker-folder"}]
+    if failure == "orphan-disk":
+        original_pages = cloud.pages
+        cloud.pages = lambda path, key, **kw: (
+            [{"id": "orphan-disk"}] if path == "disks" else original_pages(path, key, **kw)
+        )
+    checksum = provision.prepare(conf)["checksum"]
+
+    def eligibility(candidate, sha):
+        if failure == "unknown":
+            raise OSError("canonical unavailable")
+        return {
+            "eligible": True,
+            "checksum": "0" * 64 if failure == "stale" else sha,
+            "predecessors": candidate.get("predecessors"),
+        }
+
+    with pytest.raises((ValueError, OSError)):
+        provision.apply(
+            conf,
+            checksum,
+            cloud=cloud,
+            receipt_path=tmp_path / "receipt.json",
+            eligibility=None if failure == "missing" else eligibility,
+        )
+    assert cloud.calls == []
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_operator_create_queries_pinned_canonical_receiver_over_bounded_ssh():
+    provision = module("provision")
+    conf = config(1)
+    checksum = provision.prepare(conf)["checksum"]
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Mock(
+            stdout=json.dumps({"eligible": True, "checksum": checksum, "predecessors": None})
+        )
+
+    result = provision.ssh_eligibility(
+        conf,
+        checksum,
+        target="operator@111.88.151.64",
+        root=Path("/opt/photo-prjct"),
+        manifest=Path("/opt/photo-prjct/creation.json"),
+        run=run,
+    )
+    assert result["eligible"] is True
+    command, kwargs = calls[0]
+    assert command[:2] == ["ssh", "-T"]
+    assert "BatchMode=yes" in command and "StrictHostKeyChecking=yes" in command
+    assert command[-2] == "operator@111.88.151.64"
+    assert (
+        "sudo -n python3 /opt/photo-prjct/deploy/worker-pools/release.py eligibility" in command[-1]
+    )
+    assert checksum in command[-1]
+    assert kwargs["timeout"] <= 45 and kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["check"] is True
+    with pytest.raises(ValueError):
+        provision.ssh_eligibility(
+            conf,
+            checksum,
+            target="-oProxyCommand=bad",
+            root=Path("/opt/photo-prjct"),
+            manifest=Path("/opt/photo-prjct/creation.json"),
+            run=run,
+        )
+
+
+def test_second_create_waits_for_receipt_owned_first_group_inventory_to_settle(
+    tmp_path, monkeypatch
+):
+    provision = module("provision")
+    conf = config(1)
+
+    class SettlingCloud(FakeCloud):
+        def __init__(self):
+            super().__init__(provision, conf)
+            self.incomplete_reads = 0
+
+        def pages(self, path, key, **parameters):
+            if path == "instanceGroups" and self.groups:
+                return [{"id": row["id"], "name": row["name"]} for row in self.groups]
+            if path == "instanceGroups/bulk-group/instances":
+                self.incomplete_reads += 1
+                if self.incomplete_reads == 1:
+                    return [{"status": "CREATING_INSTANCE", "instanceId": ""}]
+                return [{"status": "RUNNING_ACTUAL", "instanceId": "bulk-node"}]
+            if path == "instances" and self.groups:
+                return [{"id": "bulk-node"}]
+            if path == "disks" and self.groups:
+                return [{"id": "bulk-disk"}]
+            return super().pages(path, key, **parameters)
+
+        def get(self, path, **parameters):
+            if path == "instances/bulk-node":
+                return {
+                    "id": "bulk-node",
+                    "folderId": "worker-folder",
+                    "bootDisk": {"diskId": "bulk-disk"},
+                    "secondaryDisks": [],
+                }
+            return super().get(path, **parameters)
+
+    cloud = SettlingCloud()
+    settle = provision.settle_create_inventory
+    monkeypatch.setattr(
+        provision,
+        "settle_create_inventory",
+        lambda *args: settle(*args, timeout=1, pause=0, sleep=lambda _: None),
+    )
+    checksum = provision.prepare(conf)["checksum"]
+    receipt = provision.apply(
+        conf,
+        checksum,
+        cloud=cloud,
+        receipt_path=tmp_path / "receipt.json",
+        eligibility=lambda candidate, sha: {
+            "eligible": True,
+            "checksum": sha,
+            "predecessors": None,
+        },
+    )
+    assert cloud.incomplete_reads >= 2
+    assert [call[0] for call in cloud.calls] == ["POST", "POST"]
+    assert receipt["groups"]["selfie"]["state"] == "submitted"
 
 
 def test_existing_unknown_duplicate_and_drifted_targets_are_rejected_before_mutation(tmp_path):

@@ -79,8 +79,11 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
     operation = request.pop("operation")
     if operation == "status" and not request:
         return status()
+    if operation == "reactivation-eligible" and set(request) == {"predecessors"}:
+        return {"eligible": lifecycle.reactivation_eligible(request["predecessors"])}
     fields = {
         "configure": {"pool", "group_id", "active_build"},
+        "rebind": {"pool", "old_group_id", "old_build", "group_id", "active_build"},
         "pause": {"pool", "paused", "local"},
         "drain-local": {"pool", "timeout_seconds"},
         "stage": {"pool", "active_build", "staged_build"},
@@ -99,6 +102,8 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("invalid pool")
     if operation == "configure":
         lifecycle.configure_pool(name, **request)
+    elif operation == "rebind":
+        lifecycle.rebind_pool(name, **request)
     elif operation == "pause":
         if type(request["paused"]) is not bool or type(request["local"]) is not bool:
             raise ValueError("invalid pause")

@@ -1320,15 +1320,30 @@ def test_abort_restores_original_local_package_env_workers_and_public_health(
     env.update(
         PHOTO_WORKER_PLACEMENT="remote",
         WORKER_POOL_ACTIVATION="abort",
+        PUBLIC_DOMAIN="candidate.example",
+        PUBLIC_DOMAIN_ALIAS="alias.candidate.example",
         PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
         WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
         WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
         WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
     )
-    original_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
-    staged_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
+    original_env = (
+        PREVIOUS_ENV.replace(
+            b"PUBLIC_DOMAIN=old.example\n",
+            b"PUBLIC_DOMAIN=old.example\nPUBLIC_DOMAIN_ALIAS=alias.old.example\n",
+        )
+        + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
+    )
+    staged_env = (
+        PREVIOUS_ENV.replace(
+            b"PUBLIC_DOMAIN=old.example\n",
+            b"PUBLIC_DOMAIN=candidate.example\nPUBLIC_DOMAIN_ALIAS=alias.candidate.example\n",
+        )
+        + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
+    )
     (tmp_path / ".env").write_bytes(staged_env)
     (tmp_path / "previous-env.expected").write_bytes(staged_env)
+    shutil.copy2(ROOT / "deploy/verify-public-edge.sh", tmp_path / "deploy/verify-public-edge.sh")
     original_package = tmp_path / ".deployment-previous.original"
     original_package.mkdir()
     for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
@@ -1358,6 +1373,20 @@ exec """
 """,
     )
     env["FLEET_ROLLBACK_FAILS"] = "1" if rollback_fails else "0"
+    _write_executable(
+        fake_bin / "curl",
+        """
+for url do :; done
+printf 'edge-curl %s\n' "$url" >> "$COMMAND_LOG"
+case "$url" in
+  http://old.example/*|http://alias.old.example/*|https://alias.old.example/*)
+    printf '308\nhttps://old.example/__edge_verify__?source=deploy\n' ;;
+  https://old.example/health/)
+    if [ "$APPLY_SCENARIO" = public-failure ]; then printf '503\n'; else printf '200\n'; fi ;;
+  *) exit 1 ;;
+esac
+""",
+    )
     result = _run("deploy/apply-deployment.sh", env=env)
     if rollback_fails:
         assert result.returncode != 0
@@ -1395,7 +1424,10 @@ exec """
     else:
         assert "fleet rollback" in log
     assert any("--profile worker up -d --no-deps" in line for line in log)
-    assert "verify-public-edge" in log
+    assert "edge-curl http://old.example/__edge_verify__?source=deploy" in log
+    assert "edge-curl http://alias.old.example/__edge_verify__?source=deploy" in log
+    assert "edge-curl https://alias.old.example/__edge_verify__?source=deploy" in log
+    assert not any(line.startswith("edge-curl ") and "candidate.example" in line for line in log)
     assert ("worker-metrics-remove" in log) is not receiver_only
 
 

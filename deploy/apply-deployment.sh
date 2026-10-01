@@ -1072,6 +1072,14 @@ recover_previous_deployment() {
     echo "Previous application and worker profile reconciled" >&2
 }
 
+verify_recovered_public_edge() {
+    recovered_public_domain="$(sed -n 's/^PUBLIC_DOMAIN=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    [ -n "$recovered_public_domain" ] || return 1
+    recovered_public_domain_alias="$(sed -n 's/^PUBLIC_DOMAIN_ALIAS=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    PUBLIC_DOMAIN="$recovered_public_domain" PUBLIC_DOMAIN_ALIAS="$recovered_public_domain_alias" \
+        sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"
+}
+
 on_exit() {
     status=$?
     rollback_result=not-needed
@@ -1260,7 +1268,7 @@ if [ "$worker_pool_activation" = abort ]; then
         fleet_phase receiver-absence || fail "Receiver worker-folder absence is unproved"
         fleet_phase receiver-close || fail "Receiver abort receipt could not be closed"
         recover_previous_deployment || fail "Pre-mutation receiver package recovery failed"
-        sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh" || fail "Restored public endpoint failed health verification"
+        verify_recovered_public_edge || fail "Restored public endpoint failed health verification"
         deployment_committed=1
         exit 0
     fi
@@ -1303,7 +1311,7 @@ if [ "$worker_pool_activation" = abort ]; then
     cp "$recovery_gate/deployed-image" "$previous_deployed_image_tmp" || fail "Could not copy original image marker"
     if [ "$receiver_only" -eq 0 ]; then fleet_prepared=1; fi
     recover_previous_deployment || fail "Local stage recovery failed"
-    if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
+    if ! verify_recovered_public_edge; then
         fail "Restored public endpoint failed health verification"
     fi
     if [ "$receiver_only" -eq 0 ]; then

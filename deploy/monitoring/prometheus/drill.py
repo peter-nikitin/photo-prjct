@@ -669,7 +669,7 @@ def main() -> int:
             if args.output is None:
                 raise DrillError("render requires --output")
             args.output.mkdir(parents=True, exist_ok=True)
-            rules = render_rules(control, config, "123456", 0)
+            rules = render_rules(control, {**config, "worker_alerts_enabled": True}, "123456", 0)
             path = args.output / DRILL_RULES
             path.write_text(rules)
             write_promtool_fixture(path)

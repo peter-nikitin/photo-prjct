@@ -28,6 +28,18 @@ except ImportError:
 KEYS = {"PHOTO_PROCESSING_FLEET_TOKEN", "IMAGE_PULL_AUTH"}
 
 
+def failure_category(error):
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(error, subprocess.CalledProcessError):
+        return "command-exit"
+    if isinstance(error, OSError):
+        return "io-error"
+    if isinstance(error, subprocess.SubprocessError):
+        return "subprocess-error"
+    return "invalid-data"
+
+
 def validate_payload(payload, version):
     if (
         not isinstance(payload, dict)
@@ -79,7 +91,12 @@ def private_file(path, content, *, mode=0o600):
         stream.write(content)
 
 
-def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run):
+def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run, report_phase=None):
+    def mark_phase(name):
+        if report_phase is not None:
+            report_phase(name)
+
+    mark_phase("image-identity")
     identifier(instance_id)
     pool = config["pool"]
     if pool not in {"bulk", "selfie"}:
@@ -128,6 +145,7 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run)
     def invoke(args):
         return run(args, check=True, capture_output=True, text=True, timeout=300, env=environment)
 
+    mark_phase("docker-version")
     if (
         invoke(["docker", "version", "--format", "{{.Server.Version}}"]).stdout.strip()
         != config["docker_version"]
@@ -138,7 +156,9 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run)
         != config["compose_version"]
     ):
         raise ValueError("unreviewed Compose version")
+    mark_phase("docker-pull")
     invoke(["docker", "pull", image])
+    mark_phase("image-identity")
     actual = invoke(
         [
             "docker",
@@ -151,6 +171,7 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run)
     ).stdout.strip()
     if actual != config["worker_build"]:
         raise ValueError("worker OCI revision mismatch")
+    mark_phase("compose-prepare")
     hosts = root / "etc/hosts"
     original = hosts.read_text() if hosts.exists() else ""
     if any(
@@ -158,6 +179,7 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run)
     ):
         raise ValueError("unexpected canonical host mapping")
     hosts.write_text(original + f"\n{config['private_api_ipv4']} findme-photo.ru\n")
+    mark_phase("compose-start")
     invoke(
         [
             "docker",
@@ -172,6 +194,7 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run)
             "-d",
         ]
     )
+    mark_phase("service-start")
     invoke(["systemctl", "daemon-reload"])
     invoke(["systemctl", "enable", "--now", "findme-worker-retire.timer"])
     if telemetry_enabled:
@@ -219,9 +242,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
+    phase = "config"
+
+    def report_phase(name):
+        nonlocal phase
+        phase = name
+
     try:
         config = json.loads(args.config.read_text())
+        report_phase("metadata-token")
         token = metadata_token()
+        report_phase("lockbox-request")
         secret = identifier(config["bootstrap_secret_id"])
         version = identifier(config["bootstrap_version_id"])
         payload = request_json(
@@ -231,7 +262,9 @@ def main():
                 headers={"Authorization": f"Bearer {token}"},
             )
         )
+        report_phase("lockbox-validation")
         values = validate_payload(payload, version)
+        report_phase("metadata-instance")
         instance = (
             request_bytes(
                 Request(
@@ -243,9 +276,9 @@ def main():
             .decode()
             .strip()
         )
-        activate(config, values, instance)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-        print("worker bootstrap failed")
+        activate(config, values, instance, report_phase=report_phase)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print(f"worker bootstrap failed phase={phase} category={failure_category(error)}")
         return 1
     print("worker bootstrap complete; coordinator readiness still required")
     return 0

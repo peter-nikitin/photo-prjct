@@ -841,6 +841,9 @@ and durable retirement grants. Bulk subsequently returns to floor zero, selfie t
 During initial local cutover, paused bulk retains floor one until remote claims open.
 Each pool settles before the next expands; at most three worker boot disks may be allocated,
 including stopped/transitional instances. The other pool keeps its reviewed ceiling.
+The per-pool image transition allows 30 minutes for provider provisioning, worker bootstrap
+and readiness: the observed initial creation took about 17 minutes to reach `RUNNING_ACTUAL`.
+This bounded allowance does not change the existing 900-second attempt/local drain limits.
 
 `worker-pools-release.json` records `expanded_pool` before expansion and the identified
 `worker_disks` with owner identities before VM retirement. Complete stable group, folder-VM
@@ -869,12 +872,32 @@ Partial group failure never advances the remote fleet marker. Receiver and stage
 `deployed-image` for a healthy compatible web while local workers still serve. Both enabled
 pools and running web must verify before `complete` commits the remote fleet marker. A pending
 or failed release remains explicit; do not delete its receipt to bypass reconciliation.
-If activation fails after local drain starts, canonical recovery fences and drains remote
-claims, restarts local workers under the still-compatible staged receiver, and keeps the
-original local package/environment in `.deployment-recovery`. A same-candidate `stage`
-run can re-warm from `rolled-back-local` before another `activate`; alternatively run the
-bound `abort`. A pre-mutation failure leaves the stage and gate intact. Fleet-only `rollout`
+An explicit initial `stage`, `activate` or `complete` failure retains the current compatible
+application, fleet, observability files, release receipt and original `.deployment-recovery`.
+It does not automatically roll back the application or reopen local claims. Inspect actual
+claims and leases after a partial activation before resuming the same pinned action. Explicit
+`abort` remains the separately authorized recovery path. Fleet-only `rollout`
 rejects a local predecessor and cannot bypass canonical Deploy health gates.
+
+An uncommitted initial `staged` or `rolled-back-local` release can accept a reviewed forward
+SHA through canonical Deploy `stage`. Both remote pools must remain paused, local claims
+must be open, no remote attempt may be live, and no cloud operation may be pending. The
+candidate retains the same group IDs, folders, network, IAM, runtime, image shape, processing
+contracts and ceilings. Only the app/worker revision and freshly inspected group baselines
+change. The provider baseline must match either the prior reviewed configuration or its
+paused warm floor of one; an arbitrary resource change cannot be authorized by a new hash.
+`previous` remains null for the original local predecessor. `staged_predecessor` records the
+prior staged candidate separately, and observation accepts exactly the old and new immutable
+worker images while existing disk receipts and original local recovery remain retained.
+Re-entry with the same forward candidate preserves these receipts and resumes the recorded
+expanded pool first. A changed candidate is rejected during an unfinished transition.
+
+Paused replacement temporarily warms two members in one pool, promotes the exact candidate,
+restores its cap/floor to one, and then retires the old boot before expanding the other pool.
+A fresh ready new-build member can protect release retirement while remote claims are paused,
+local claims are open and no remote work is live. Ordinary serving retirement still requires
+serving capacity. No claims are opened just to replace a paused worker, and no success marker
+is written until the existing health and acceptance gates pass.
 
 The bounded fleet-only inspection interface uses the same host lock. Through the existing narrow
 remote-check secret wrapper, set `WORKER_POOL_OPERATION=status` and invoke
@@ -899,7 +922,7 @@ Before promotion, rollback restores the verified prior template, retires staged 
 waits for fresh complete post-grant reconciliation, then invokes guarded cancellation. After
 promotion, rollback stages fresh capacity from the recorded prior compatible digest. It never
 reactivates a drained/granted boot. A first cutover has no previous fleet-compatible production
-release: legacy local images are not relabelled. Its failure fences both remote pools and waits
+release: legacy local images are not relabelled. Explicit abort fences both remote pools and waits
 for durable attempt recovery/drain before restoring local claims and the previous local web.
 If fencing/drain fails, retain compatible candidate web and report failed recovery. Initially
 created VMs may remain fenced and billable; stopping/reprovisioning them is a separate approved
@@ -910,11 +933,12 @@ the previous image marker and the exact package-backup path. An interrupted or f
 keeps that directory, the candidate tooling and the previous package; ordinary Deploy fails closed.
 Only the pinned receiver/stage/activate/complete/abort action may resume this first activation,
 with `activate` limited to the staged/pre-verification transition.
-Use the fleet status/rollback operation to resolve ownership first. Then an authorized operator
+Use the fleet status operation to inspect ownership first. For an explicitly authorized abort, an operator
 must reconcile the preserved prior app package/environment under the same host lock and verify
 health before clearing this recovery gate. Do not delete the gate or restore old web while
-remote drain remains uncertain. A failed initial cutover must be retried with the same reviewed
-candidate or separately reconcile its fenced VMs/coordinator before reviewing another build.
+remote drain remains uncertain. Resume the same candidate after interruption; a reviewed forward
+candidate is allowed only from the settled paused initial states described above. Successful
+repository tests or CI do not establish live worker acceptance.
 
 ## Functional evidence versus live acceptance
 

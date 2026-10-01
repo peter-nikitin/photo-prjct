@@ -452,17 +452,31 @@ def _preflight_workers(
     *,
     now: float | None,
 ) -> None:
+    metrics = tuple(WORKER_POOL_METRICS.values()) + WORKER_NODE_METRICS
+    # One evaluation prevents a collector tick from splitting pool and node membership.
+    samples = _fresh_matrix(
+        transport,
+        f"{{__name__=~{json.dumps('|'.join(metrics))},"
+        f"pool=~{json.dumps('|'.join(WORKER_POOLS))}}}[{WORKER_SOURCE_MAX_AGE}s]",
+        key="worker_snapshot",
+        max_age=WORKER_SOURCE_MAX_AGE,
+        now=now,
+    )
+    snapshot: dict[str, dict[str, list[tuple[dict[str, Any], float]]]] = {
+        pool: {metric: [] for metric in metrics} for pool in WORKER_POOLS
+    }
+    for labels, value in samples:
+        pool, metric = labels.get("pool"), labels.get("__name__")
+        if pool not in snapshot or metric not in snapshot[pool]:
+            raise ControlError("worker snapshot identity invalid")
+        snapshot[pool][metric].append((labels, value))
     for pool in WORKER_POOLS:
         values: dict[str, float] = {}
         for key, metric in WORKER_POOL_METRICS.items():
-            samples = _fresh_matrix(
-                transport,
-                f"{metric}{{pool={json.dumps(pool)}}}[{WORKER_SOURCE_MAX_AGE}s]",
-                key=f"worker_{pool}_{key}",
-                max_age=WORKER_SOURCE_MAX_AGE,
-                now=now,
-            )
-            if len(samples) != 1 or samples[0][0].get("pool", pool) != pool:
+            samples = snapshot[pool][metric]
+            if not samples:
+                raise ControlError(f"expected sample missing: worker_{pool}_{key}")
+            if len(samples) != 1:
                 raise ControlError(f"worker sample identity invalid: {pool}_{key}")
             values[key] = samples[0][1]
         observed_at = time.time() if now is None else now
@@ -480,19 +494,17 @@ def _preflight_workers(
             continue
         identities: set[tuple[str, str]] | None = None
         for metric in WORKER_NODE_METRICS:
-            samples = _fresh_matrix(
-                transport,
-                f"{metric}{{pool={json.dumps(pool)}}}[{WORKER_SOURCE_MAX_AGE}s]",
-                key=f"worker_{pool}_{metric}",
-                max_age=WORKER_SOURCE_MAX_AGE,
-                now=now,
-            )
+            samples = snapshot[pool][metric]
             current = {
                 (str(labels.get("instance_id", "")), str(labels.get("zone_id", "")))
                 for labels, value in samples
                 if metric == "worker_node_cloud_observation_timestamp_seconds" or value in (0, 1)
             }
-            if len(current) != expected or any(not all(identity) for identity in current):
+            if (
+                len(samples) != expected
+                or len(current) != expected
+                or any(not all(identity) for identity in current)
+            ):
                 raise ControlError(f"worker node diagnostics invalid: {pool}")
             if metric == "worker_node_cloud_observation_timestamp_seconds" and any(
                 value != values["cloud_timestamp"] for _, value in samples

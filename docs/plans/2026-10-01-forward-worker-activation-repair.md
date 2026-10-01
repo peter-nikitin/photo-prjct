@@ -130,6 +130,27 @@ Files: `src/backend/processing/services/worker_pool_observation.py`, its tests i
 No application rollback, group recreation, manual journal/DB rewrite or runtime hotpatch is used.
 The numeric Monitoring acknowledgement fix was separately confirmed live with published=true.
 
+### 5. Read one coherent worker monitoring snapshot
+
+Both pools reached staged revision `71cd60d` with fresh host/runtime/cloud telemetry and old
+VM/disks absent. Monitoring check `36939603280` rejected `worker node membership stale: bulk`.
+The preflight reads pool and node timestamps in separate unpinned instant queries, allowing a
+collector update between them. A single live Prometheus query returned identical fresh pool/node
+timestamps for both exact current VM identities. Do not weaken timestamp equality or freshness.
+
+Files: `deploy/monitoring/prometheus/control.py` and
+`tests/monitoring/test_prometheus_control.py`; adapt SDK contract fixtures only if required.
+Use a single bounded matrix query for the known worker metric names and both exact pools, then
+partition and validate the returned samples with the existing identity, cardinality, numeric,
+source-age and node/pool timestamp constraints. Preserve idle-zero semantics. No fallback query,
+timestamp tolerance, synthetic data or skipped acceptance. Add RED/GREEN coverage reproducing
+the collector-update boundary and strict missing/stale/mismatched/duplicate rejection.
+
+Deliver through independent review, final selected suites and root `make check`, PR and green CI.
+Apply only the reviewed Monitoring tooling through its exact-main workflow; retain staged worker
+revision/VMs, manifest, limits and claim placement. Do not trigger another worker image transition
+for a monitoring-only validation fix. Re-run cloud check, then existing apply/drill/cutover gates.
+
 ### Final task: Architecture and ADR reconciliation
 
 Confirm one-SHA release, group/cap preservation and existing data contracts after verification.

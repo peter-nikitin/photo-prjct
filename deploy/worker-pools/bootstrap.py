@@ -142,8 +142,10 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run,
         "DOCKER_CONFIG": str(base / "docker"),
     }
 
-    def invoke(args):
-        return run(args, check=True, capture_output=True, text=True, timeout=300, env=environment)
+    def invoke(args, *, timeout=300):
+        return run(
+            args, check=True, capture_output=True, text=True, timeout=timeout, env=environment
+        )
 
     mark_phase("docker-version")
     if (
@@ -157,7 +159,7 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run,
     ):
         raise ValueError("unreviewed Compose version")
     mark_phase("docker-pull")
-    invoke(["docker", "pull", image])
+    invoke(["docker", "pull", image], timeout=900)
     mark_phase("image-identity")
     actual = invoke(
         [

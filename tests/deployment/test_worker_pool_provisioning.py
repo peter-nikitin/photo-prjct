@@ -361,6 +361,39 @@ def test_bootstrap_private_files_and_real_oci_revision_gate(tmp_path):
     assert (tmp_path / "etc/findme-worker/instance-id").read_text() == "instance-1\n"
 
 
+def test_bootstrap_allows_slow_pull_and_keeps_other_commands_bounded(tmp_path):
+    bootstrap = module("bootstrap")
+    conf = config() | {"pool": "bulk", "identities": "1/capture_metadata/2"}
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[1] == "pull" and kwargs["timeout"] < 301:
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        if args[1:3] == ["image", "inspect"]:
+            return Mock(stdout=conf["worker_build"] + "\n")
+        if args[1] == "version":
+            return Mock(stdout="27.5.1\n")
+        if args[1:3] == ["compose", "version"]:
+            return Mock(stdout="2.32.4\n")
+        return Mock(stdout="")
+
+    bootstrap.activate(
+        conf,
+        {"PHOTO_PROCESSING_FLEET_TOKEN": "fleet-token", "IMAGE_PULL_AUTH": "pull-auth"},
+        "instance-1",
+        root=tmp_path,
+        run=run,
+    )
+
+    pull_calls = [call for call in calls if call[0][1] == "pull"]
+    assert len(pull_calls) == 1
+    assert pull_calls[0][1]["timeout"] == 900
+    assert any(args[1:3] == ["image", "inspect"] for args, _kwargs in calls)
+    assert any("up" in args for args, _kwargs in calls)
+    assert all(kwargs["timeout"] == 300 for args, kwargs in calls if args[1] != "pull")
+
+
 @pytest.mark.parametrize(
     ("failure", "phase", "category"),
     [
@@ -392,7 +425,10 @@ def test_bootstrap_reports_safe_docker_failure_phase_and_category(
     )
     monkeypatch.setattr(bootstrap, "request_bytes", lambda request, **kwargs: b"instance-1")
 
+    calls = []
+
     def run(args, **kwargs):
+        calls.append((args, kwargs))
         if args[1] == "pull":
             if failure == "pull-timeout":
                 raise subprocess.TimeoutExpired(args, 300, output=secret, stderr=secret)
@@ -425,6 +461,11 @@ def test_bootstrap_reports_safe_docker_failure_phase_and_category(
     assert output.out == f"worker bootstrap failed phase={phase} category={category}\n"
     assert output.err == ""
     assert secret not in output.out + output.err
+    pull_calls = [call for call in calls if call[0][1] == "pull"]
+    assert len(pull_calls) == 1
+    assert pull_calls[0][1]["timeout"] == 900
+    if failure.startswith("pull-"):
+        assert not any("up" in args for args, _kwargs in calls)
 
 
 @pytest.mark.parametrize(

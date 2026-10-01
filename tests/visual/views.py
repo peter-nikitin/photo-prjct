@@ -1504,6 +1504,8 @@ ADMIN_PHOTOS = (
         "folder_id": "8",
         "capture_time": datetime(2026, 6, 8, 9, 18),
         "processing": {"category_label": "Обработано", "stages": []},
+        "bib_readings": ({"id": 1, "number": "1048"}, {"id": 2, "number": "2026"}),
+        "bib_editable": True,
     },
     {
         "id": "maxim-finish",
@@ -1530,6 +1532,8 @@ ADMIN_PHOTOS = (
         "folder_id": "8",
         "capture_time": None,
         "processing": {"category_label": "Обработано", "stages": []},
+        "bib_readings": (),
+        "bib_editable": True,
     },
     {
         "id": "error-unfiled",
@@ -1584,6 +1588,13 @@ def _visual_filter_form(folders, data: QueryDict):
             required=False,
             choices=(("all", "Все"), ("visible", "Видимые"), ("hidden", "Скрытые")),
         )
+        without_bib = forms.TypedChoiceField(
+            required=False,
+            choices=((False, ""), (True, "Без номера")),
+            coerce=lambda value: value == "True",
+            empty_value=False,
+            widget=forms.CheckboxInput(attrs={"value": "1"}),
+        )
         processing = forms.MultipleChoiceField(
             required=False,
             choices=(
@@ -1600,6 +1611,7 @@ def _visual_filter_form(folders, data: QueryDict):
 
         def __init__(self) -> None:
             super().__init__(data=data)
+            self.fields["bib"] = BibSearchForm().fields["bib"]
             self.fields["from"] = self.fields.pop("from_")
             for name in ("from", "to"):
                 self.fields[name].widget.attrs.update(
@@ -1613,7 +1625,15 @@ def _canonical_visual_query(data: QueryDict) -> str:
     values = []
     for name in ("folder", "uploader", "processing"):
         values.extend((name, value) for value in data.getlist(name) if value)
-    for name in ("unfiled", "uploader_unknown", "from", "to", "without_capture_time"):
+    for name in (
+        "unfiled",
+        "uploader_unknown",
+        "from",
+        "to",
+        "without_capture_time",
+        "bib",
+        "without_bib",
+    ):
         value = data.get(name)
         if value:
             values.append((name, value))

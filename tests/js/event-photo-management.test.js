@@ -131,12 +131,22 @@ function controllerHarness(initialFragment, initialUrl = 'https://example.test/m
       this.listeners.set(type, listener);
     },
     createElement(tag) {
-      assert.equal(tag, 'template');
+      if (tag === 'template') {
+        return {
+          content: { firstElementChild: null },
+          set innerHTML(_value) {
+            this.content.firstElementChild = pendingFragments.shift();
+          },
+        };
+      }
       return {
-        content: { firstElementChild: null },
-        set innerHTML(_value) {
-          this.content.firstElementChild = pendingFragments.shift();
-        },
+        tag,
+        name: '',
+        value: '',
+        textContent: '',
+        dataset: {},
+        children: [],
+        append(...nodes) { this.children.push(...nodes); },
       };
     },
     dispatchEvent(event) {
@@ -227,6 +237,185 @@ function filterInput(filterForm) {
     },
   };
 }
+
+function bibCard(document, initialNumbers, photoId = 'photo-a') {
+  const makeContainer = () => ({
+    children: [],
+    append(node) { this.children.push(node); },
+    replaceChildren(...nodes) { this.children = nodes; },
+  });
+  const readings = makeContainer();
+  const existing = makeContainer();
+  const added = makeContainer();
+  const errors = { textContent: '' };
+  const save = { disabled: false };
+  const editor = { hidden: true };
+  const root = {
+    dataset: { photoBibSaveUrl: `/manage/events/42/photos/${photoId}/bibs/` },
+    querySelector(selector) {
+      return {
+        '[data-photo-bib-readings]': readings,
+        '[data-photo-bib-existing]': existing,
+        '[data-photo-bib-added]': added,
+        '[data-photo-bib-editor]': editor,
+        '[data-photo-bib-save]': save,
+        '[data-photo-bib-errors]': errors,
+        '[data-photo-bib-new-row]': template,
+      }[selector] || null;
+    },
+  };
+  const button = (selector) => ({
+    matches: (requested) => selectorMatches(selector, requested),
+    closest(requested) {
+      if (requested === 'a, button, input') return this;
+      if (requested === '[data-photo-bib-root]') return root;
+      return null;
+    },
+  });
+  const edit = button('[data-photo-bib-edit]');
+  const add = button('[data-photo-bib-add]');
+  const template = {
+    content: {
+      cloneNode() {
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        input.name = 'added_number';
+        label.append(input);
+        return label;
+      },
+    },
+  };
+  const form = {
+    action: root.dataset.photoBibSaveUrl,
+    matches: (requested) => selectorMatches('[data-photo-bib-form]', requested),
+    closest: (requested) => requested === '[data-photo-bib-root]' ? root : null,
+    querySelector(selector) {
+      return {
+        '[data-photo-bib-new-row]': template,
+        '[data-photo-bib-errors]': errors,
+        '[data-photo-bib-save]': save,
+      }[selector] || null;
+    },
+    get formEntries() {
+      const entries = [['csrfmiddlewaretoken', 'csrf-test-token']];
+      for (const row of existing.children) {
+        for (const input of row.children) entries.push([input.name, input.value]);
+      }
+      for (const row of added.children) {
+        for (const input of row.children) entries.push([input.name, input.value]);
+      }
+      return entries;
+    },
+  };
+  for (const number of initialNumbers) {
+    const row = document.createElement('label');
+    const id = document.createElement('input');
+    id.name = 'existing_id';
+    id.value = String(number.id);
+    const value = document.createElement('input');
+    value.name = 'existing_number';
+    value.value = number.number;
+    row.append(id, value);
+    existing.append(row);
+  }
+  return { root, edit, add, editor, form, readings, existing, added, errors, save };
+}
+
+function nodeValues(container, name) {
+  return container.children.flatMap((row) => row.children || [])
+    .filter((node) => node.name === name).map((node) => node.value);
+}
+
+test('bib editor opens and adds one blank input without closing another card', async () => {
+  const harness = controllerHarness(fragment());
+  harness.bind();
+  const first = bibCard(harness.document, [{ id: 7, number: '101' }]);
+  const second = bibCard(harness.document, [{ id: 8, number: '202' }], 'photo-b');
+
+  await harness.rootListeners.get('click')(clickEvent(first.edit));
+  await harness.rootListeners.get('click')(clickEvent(second.edit));
+  await harness.rootListeners.get('click')(clickEvent(first.add));
+
+  assert.equal(first.editor.hidden, false);
+  assert.equal(second.editor.hidden, false);
+  assert.deepEqual(nodeValues(first.added, 'added_number'), ['']);
+  assert.equal(second.added.children.length, 0);
+});
+
+test('bib save submits blank existing value as a paired deletion and leaves other cards intact', async () => {
+  const harness = controllerHarness(fragment());
+  harness.bind();
+  const first = bibCard(harness.document, [{ id: 7, number: '101' }]);
+  const second = bibCard(harness.document, [{ id: 8, number: '202' }], 'photo-b');
+  first.existing.children[0].children[1].value = '';
+  first.editor.hidden = false;
+  second.editor.hidden = false;
+  harness.queueJson({ numbers: [] });
+
+  await harness.rootListeners.get('submit')({ target: first.form, preventDefault() {} });
+
+  assert.equal(harness.requests[0].url, first.form.action);
+  assert.deepEqual(harness.requests[0].options.body.getAll('existing_id'), ['7']);
+  assert.deepEqual(harness.requests[0].options.body.getAll('existing_number'), ['']);
+  assert.equal(first.readings.children[0].textContent, 'Номера не найдены');
+  assert.equal(first.editor.hidden, true);
+  assert.equal(second.editor.hidden, false);
+  assert.deepEqual(nodeValues(second.existing, 'existing_number'), ['202']);
+});
+
+test('validation failure keeps edited values and added row visible with inline errors', async () => {
+  const harness = controllerHarness(fragment());
+  harness.bind();
+  const card = bibCard(harness.document, [{ id: 7, number: '101' }]);
+  card.editor.hidden = false;
+  await harness.rootListeners.get('click')(clickEvent(card.add));
+  card.added.children[0].children[0].value = 'bad';
+  harness.queueJson({ errors: { numbers: ['Только цифры.'] } }, 422);
+
+  await harness.rootListeners.get('submit')({ target: card.form, preventDefault() {} });
+
+  assert.equal(card.editor.hidden, false);
+  assert.equal(card.save.disabled, false);
+  assert.equal(card.errors.textContent, 'Только цифры.');
+  assert.deepEqual(nodeValues(card.added, 'added_number'), ['bad']);
+  assert.deepEqual(nodeValues(card.existing, 'existing_number'), ['101']);
+});
+
+test('network failure keeps editor open and restores save control', async () => {
+  const harness = controllerHarness(fragment());
+  harness.bind();
+  const card = bibCard(harness.document, [{ id: 7, number: '101' }]);
+  card.editor.hidden = false;
+  harness.environment.fetch = async () => { throw new Error('offline'); };
+
+  await harness.rootListeners.get('submit')({ target: card.form, preventDefault() {} });
+
+  assert.equal(card.editor.hidden, false);
+  assert.equal(card.save.disabled, false);
+  assert.match(card.errors.textContent, /Не удалось сохранить/);
+  assert.deepEqual(nodeValues(card.existing, 'existing_number'), ['101']);
+});
+
+test('successful bib save rerenders complete list and inputs, clears additions, and closes', async () => {
+  const harness = controllerHarness(fragment());
+  harness.bind();
+  const card = bibCard(harness.document, [{ id: 7, number: '101' }]);
+  card.editor.hidden = false;
+  card.errors.textContent = 'old error';
+  await harness.rootListeners.get('click')(clickEvent(card.add));
+  card.added.children[0].children[0].value = '202';
+  harness.queueJson({ numbers: [{ id: 7, number: '111' }, { id: 9, number: '202' }] });
+
+  await harness.rootListeners.get('submit')({ target: card.form, preventDefault() {} });
+
+  assert.deepEqual(card.readings.children.map((node) => node.textContent), ['111', '202']);
+  assert.deepEqual(nodeValues(card.existing, 'existing_id'), ['7', '9']);
+  assert.deepEqual(nodeValues(card.existing, 'existing_number'), ['111', '202']);
+  assert.equal(card.added.children.length, 0);
+  assert.equal(card.errors.textContent, '');
+  assert.equal(card.editor.hidden, true);
+  assert.equal(card.save.disabled, false);
+});
 
 test('selection keeps explicit IDs across pages and page selection unions the current page', () => {
   const selection = new SelectionModel();

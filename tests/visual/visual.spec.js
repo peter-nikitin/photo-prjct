@@ -660,7 +660,106 @@ test('canonical admin states keep filtered totals aligned with displayed results
     await page.goto(path);
     await expect(page.locator('[data-event-photo-filtered-count]')).toHaveText(filtered);
     await expect(page.locator('[data-photo-status-id]')).toHaveCount(cards);
+    await expect(page.locator('input[name="bib"]')).toHaveCount(1);
+    await expect(page.locator('input[type="checkbox"][name="without_bib"]')).toHaveCount(1);
   }
+});
+
+test('admin without-bib checkbox only submits 1 when selected', async ({ page }) => {
+  await page.goto('/__visual__/workspace/photos/');
+  const values = await page.locator('[data-event-photo-filter-form]').evaluate((form) => {
+    const checkbox = form.querySelector('[name="without_bib"]');
+    const unchecked = new FormData(form).getAll('without_bib');
+    checkbox.checked = true;
+    const checked = new FormData(form).getAll('without_bib');
+    return { unchecked, checked };
+  });
+  expect(values).toEqual({ unchecked: [], checked: ['1'] });
+});
+
+test('desktop exact bib filter input stays inside its fieldset', async ({ page }) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await page.goto('/__visual__/workspace/photos/');
+  const bounds = await page.locator('.event-photo-filter-grid input[name="bib"]').evaluate((input) => {
+    const fieldset = input.closest('fieldset').getBoundingClientRect();
+    const control = input.getBoundingClientRect();
+    return { fieldsetLeft: fieldset.left, fieldsetRight: fieldset.right,
+      controlLeft: control.left, controlRight: control.right };
+  });
+
+  expect(bounds.controlLeft).toBeGreaterThanOrEqual(bounds.fieldsetLeft);
+  expect(bounds.controlRight).toBeLessThanOrEqual(bounds.fieldsetRight);
+});
+
+test('bib editor opens below its card without moving the photo grid', async ({ page }) => {
+  for (const viewport of [DESKTOP_VIEWPORT, MOBILE_VIEWPORT]) {
+    await page.setViewportSize(viewport);
+    await page.goto('/__visual__/workspace/photos/');
+    const first = page.locator('[data-photo-status-id="anna-finish-a"]');
+    const next = page.locator('[data-photo-status-id="maxim-finish"]');
+    const before = await next.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      return { top: box.top + window.scrollY, left: box.left, width: box.width, height: box.height };
+    });
+    await first.locator('[data-photo-bib-edit]').click();
+    const editor = first.locator('[data-photo-bib-editor]');
+    await expect(editor).toBeVisible();
+    const cardBox = await first.boundingBox();
+    const editorBox = await editor.boundingBox();
+    const after = await next.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      return { top: box.top + window.scrollY, left: box.left, width: box.width, height: box.height };
+    });
+    expect(after).toEqual(before);
+    expect(editorBox.y).toBeGreaterThanOrEqual(cardBox.y + cardBox.height);
+    expect(editorBox.width).toBeLessThanOrEqual(cardBox.width);
+    if (viewport === MOBILE_VIEWPORT) {
+      expect(cardBox.width - editorBox.width).toBeLessThan(3);
+    }
+    await editor.locator('[data-photo-bib-add]').click();
+    await expect(editor.locator('input[name="added_number"]')).toHaveCount(1);
+  }
+});
+
+test('two mobile bib editors keep the first overlay interactive above the later card', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await page.goto('/__visual__/workspace/photos/');
+  const first = page.locator('[data-photo-status-id="anna-finish-a"]');
+  const later = page.locator('[data-photo-status-id="hidden-finish"]');
+  const laterTop = await later.evaluate((node) => node.getBoundingClientRect().top + window.scrollY);
+
+  await later.locator('[data-photo-bib-edit]').click();
+  await first.locator('[data-photo-bib-edit]').click();
+  await page.evaluate(() => {
+    const add = document.querySelector('[data-photo-status-id="anna-finish-a"] [data-photo-bib-add]');
+    for (let index = 0; index < 20; index += 1) add.click();
+  });
+
+  const overlapIndex = await page.evaluate(() => {
+    const laterCard = document.querySelector('[data-photo-status-id="hidden-finish"]');
+    const laterBox = laterCard.getBoundingClientRect();
+    const inputs = document.querySelectorAll(
+      '[data-photo-status-id="anna-finish-a"] input[name="added_number"]',
+    );
+    return [...inputs].findIndex((input) => {
+      const box = input.getBoundingClientRect();
+      return box.top >= laterBox.top && box.bottom <= laterBox.bottom;
+    });
+  });
+  expect(overlapIndex).toBeGreaterThanOrEqual(0);
+  const input = first.locator('input[name="added_number"]').nth(overlapIndex);
+  await input.scrollIntoViewIfNeeded();
+  const receivesPointer = await input.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === node;
+  });
+
+  expect(receivesPointer).toBe(true);
+  await input.fill('555');
+  await expect(input).toHaveValue('555');
+  await expect(first.locator('[data-photo-bib-editor]')).toBeVisible();
+  await expect(later.locator('[data-photo-bib-editor]')).toBeVisible();
+  expect(await later.evaluate((node) => node.getBoundingClientRect().top + window.scrollY)).toBe(laterTop);
 });
 
 test('admin explicit selection survives canonical numbered pages', async ({ page }) => {

@@ -2,6 +2,7 @@ import json
 from math import isfinite
 from uuid import uuid4
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
@@ -416,6 +417,85 @@ class BibReading(models.Model):  # noqa: DJ008
                     )
                 }
             )
+
+
+class BibReadingChange(models.Model):  # noqa: DJ008
+    photo = models.ForeignKey(Photo, on_delete=models.PROTECT, related_name="bib_reading_changes")
+    source_attempt = models.ForeignKey(
+        ProcessingAttempt, on_delete=models.PROTECT, related_name="bib_reading_changes"
+    )
+    before_number = models.CharField(  # noqa: DJ001 - NULL distinguishes add and delete
+        max_length=16,
+        null=True,
+        blank=True,
+        validators=[RegexValidator(regex=r"\A[0-9]{1,16}\Z")],
+    )
+    after_number = models.CharField(  # noqa: DJ001 - NULL distinguishes add and delete
+        max_length=16,
+        null=True,
+        blank=True,
+        validators=[RegexValidator(regex=r"\A[0-9]{1,16}\Z")],
+    )
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="bib_reading_changes"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(before_number__isnull=True, after_number__isnull=False)
+                    | models.Q(before_number__isnull=False, after_number__isnull=True)
+                    | (
+                        models.Q(before_number__isnull=False, after_number__isnull=False)
+                        & ~models.Q(before_number=models.F("after_number"))
+                    )
+                ),
+                name="proc_bib_change_shape_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(before_number__isnull=True)
+                | models.Q(before_number__regex=r"^[0-9]{1,16}$"),
+                name="proc_bib_change_before_chk",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(after_number__isnull=True)
+                | models.Q(after_number__regex=r"^[0-9]{1,16}$"),
+                name="proc_bib_change_after_chk",
+            ),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Bib reading changes are immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Bib reading changes are immutable.")
+        super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.before_number is None and self.after_number is None:
+            errors["after_number"] = "A change must have a before or after number."
+        elif self.before_number is not None and self.before_number == self.after_number:
+            errors["after_number"] = "A replacement must change the number."
+        if self.source_attempt_id:
+            attempt = self.source_attempt
+            if (
+                attempt.photo_id != self.photo_id
+                or attempt.processor_type != BIB_RECOGNITION_PROCESSOR
+                or attempt.status != ProcessingAttempt.Status.SUCCEEDED
+                or not attempt.accepted
+            ):
+                errors["source_attempt"] = (
+                    "The source attempt must be the accepted successful bib attempt for this photo."
+                )
+        if errors:
+            raise ValidationError(errors)
 
 
 class PhotoDerivative(models.Model):  # noqa: DJ008

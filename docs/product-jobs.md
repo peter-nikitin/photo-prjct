@@ -168,8 +168,12 @@ quickly.
   recorded in [future work](future-work/2026-09-25-bib-apparel-number-filtering.md). See also the
   [approved design](superpowers/specs/2026-09-12-bib-number-production-search-design.md),
   [local acceptance contract](../experiments/bib_search/README.md), and
-  [activation runbook](runbooks/bib-number-recognition.md).
-- Last updated: 2026-09-25
+  [activation runbook](runbooks/bib-number-recognition.md). The repository now also includes local
+  private-workspace editing of current bib numbers, append-only change evidence for later analytics,
+  and management filters for exact `bib` and bib-applicable photos `without_bib=1`. Search reads
+  current numbers directly; worker recognition does not consult operator changes. This addition has
+  local implementation evidence only; no deployment or customer-use validation is claimed for editing.
+- Last updated: 2026-10-01
 
 ### PJ-008 — Customer — Find photos by face
 
@@ -402,4 +406,5 @@ This log is append-only.
 | 2026-09-07 | PJ-005 | Validated | Validated | Local product-flow evidence adds reversible hiding across current public gallery, selfie, archive, cart, and checkout paths while preserving immutable paid-order media and archive authority. Historical delivery evidence remains unchanged; no current deployment or customer claim is added. |
 | 2026-09-13 | PJ-007 | Candidate | In progress | The disabled-default repository path and one 37-photo local full cycle pass recognition-quality, publication, exact-search, leading-zero, and event-isolation checks. Docker Desktop swap keeps the production-equivalent Linux resource gate, canonical activation, first/second event observations, and customer outcome incomplete. |
 | 2026-09-25 | PJ-007 | In progress | Validated | Canonical production completed 37/37 Istra and 28/28 Gagarin/Metelsky bib jobs without error or retry, and the operator verified public exact-number search. Three apparel `65` false positives are accepted for the opt-in first version and recorded with concrete revisit triggers in future work. |
+| 2026-10-01 | PJ-007 | Validated | Validated | Local repository addition lets authorized operators edit current bib readings in the private event photo workspace and records append-only analytics changes. Management exact `bib` and `without_bib=1` filters use current readings; public exact search keeps its existing current-row contract. No new deployment or customer-use evidence is claimed. |
 | 2026-09-15 | PJ-005 | Validated | Validated | Repository implementation of ADR 0036 issues six-hour exact-object small-preview capabilities only for accepted normal-gallery derivatives. Legacy, large, download, result, private, archive, and purchased-media routes remain application-authorized; no CI, deployment, direct-transfer, or customer-outcome evidence is claimed. |

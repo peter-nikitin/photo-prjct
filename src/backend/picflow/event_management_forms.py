@@ -20,7 +20,7 @@ from processing.photo_status import (
     CATEGORY_SUCCEEDED,
 )
 
-from picflow.forms import EventGalleryTimeFilterForm
+from picflow.forms import BibSearchForm, EventGalleryTimeFilterForm
 from picflow.models import Event, EventFolder, Photo
 
 PROCESSING_CATEGORY_CHOICES = (
@@ -55,6 +55,8 @@ class EventPhotoFilters:
     without_capture_time: bool = False
     visibility: str = VISIBILITY_ALL
     processing_categories: tuple[str, ...] = ()
+    bib: str = ""
+    without_bib: bool = False
 
     def __post_init__(self) -> None:
         if self.visibility not in {VISIBILITY_ALL, VISIBILITY_VISIBLE, VISIBILITY_HIDDEN}:
@@ -63,6 +65,12 @@ class EventPhotoFilters:
             raise ValueError("Unsupported processing filter.")
         if self.without_capture_time and self.capture_time_bounds is not None:
             raise ValueError("Missing capture time cannot be combined with a time range.")
+        if self.bib:
+            bib_form = BibSearchForm({"bib": self.bib})
+            if not bib_form.is_valid() or bib_form.cleaned_data["bib"] != self.bib:
+                raise ValueError("Bib filter must be a validated, normalized number.")
+        if self.bib and self.without_bib:
+            raise ValueError("Bib and missing-bib filters cannot be combined.")
 
 
 class EventPhotoFilterForm(forms.Form):
@@ -100,11 +108,20 @@ class EventPhotoFilterForm(forms.Form):
         choices=PROCESSING_CATEGORY_CHOICES,
         widget=forms.CheckboxSelectMultiple,
     )
+    without_bib = forms.TypedChoiceField(
+        required=False,
+        choices=((False, ""), (True, "Без номера")),
+        coerce=lambda value: value == "True",
+        empty_value=False,
+        widget=forms.CheckboxInput(attrs={"value": "1"}),
+    )
 
     def __init__(self, event: Event, data=None, **kwargs) -> None:
         self.event = event
         super().__init__(data=data, **kwargs)
         self._time_form = EventGalleryTimeFilterForm(event, data=data)
+        self._bib_form = BibSearchForm(data=data)
+        self.fields["bib"] = self._bib_form.fields["bib"]
         self.fields["from"] = self._time_form.fields["from"]
         self.fields["to"] = self._time_form.fields["to"]
         self.fields["to"].widget.attrs.update(self.fields["from"].widget.attrs)
@@ -147,6 +164,10 @@ class EventPhotoFilterForm(forms.Form):
         if filters.visibility != VISIBILITY_ALL:
             values.append(("visibility", filters.visibility))
         values.extend(("processing", category) for category in filters.processing_categories)
+        if filters.bib:
+            values.append(("bib", filters.bib))
+        if filters.without_bib:
+            values.append(("without_bib", "1"))
         return urlencode(values)
 
     def clean(self):
@@ -156,9 +177,12 @@ class EventPhotoFilterForm(forms.Form):
             "uploader_unknown",
             "without_capture_time",
             "visibility",
+            "without_bib",
         ):
             if hasattr(self.data, "getlist") and len(self.data.getlist(field_name)) > 1:
                 self.add_error(field_name, "Укажите значение только один раз.")
+        if "without_bib" in self.data and self.data.get("without_bib") != "1":
+            self.add_error("without_bib", "Выберите допустимое значение.")
 
         if self._time_form.is_requested and not self.event.timezone_name:
             for field_name in ("from", "to"):
@@ -177,6 +201,15 @@ class EventPhotoFilterForm(forms.Form):
                 target = None if field_name == forms.forms.NON_FIELD_ERRORS else field_name
                 for error in errors:
                     self.add_error(target, error)
+
+        if not self._bib_form.is_valid():
+            for error in self._bib_form.errors.as_data().get("bib", ()):
+                if "bib" not in self.errors:
+                    self.add_error("bib", error)
+
+        without_bib = bool(cleaned_data.get("without_bib"))
+        if without_bib and cleaned_data.get("bib"):
+            self.add_error("without_bib", "Фильтр без номера нельзя объединить с номером.")
 
         without_capture_time = bool(cleaned_data.get("without_capture_time"))
         if without_capture_time and self._time_form.is_requested:
@@ -197,6 +230,8 @@ class EventPhotoFilterForm(forms.Form):
             without_capture_time=without_capture_time,
             visibility=cleaned_data.get("visibility") or VISIBILITY_ALL,
             processing_categories=tuple(sorted(set(cleaned_data.get("processing", ())))),
+            bib=self._bib_form.cleaned_data.get("bib", ""),
+            without_bib=without_bib,
         )
         return cleaned_data
 

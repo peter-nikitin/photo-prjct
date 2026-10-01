@@ -217,6 +217,17 @@
     async onClick(event) {
       const target = event.target.closest?.('a, button, input');
       if (!target) return;
+      if (target.matches('[data-photo-bib-edit]')) {
+        const editor = target.closest('[data-photo-bib-root]')?.querySelector('[data-photo-bib-editor]');
+        if (editor) editor.hidden = false;
+        return;
+      }
+      if (target.matches('[data-photo-bib-add]')) {
+        const root = target.closest('[data-photo-bib-root]');
+        const template = root?.querySelector('[data-photo-bib-new-row]');
+        root?.querySelector('[data-photo-bib-added]')?.append(template.content.cloneNode(true));
+        return;
+      }
       if (target.matches('[data-photo-select]')) {
         if (this.filtersDirty || this.fragment().dataset.filterValid !== 'true') {
           this.renderSelection();
@@ -257,6 +268,11 @@
 
     async onSubmit(event) {
       const form = event.target;
+      if (form.matches('[data-photo-bib-form]')) {
+        event.preventDefault();
+        await this.submitBibForm(form);
+        return;
+      }
       if (form.matches('[data-event-photo-filter-form]')) {
         event.preventDefault();
         this.filtersDirty = true;
@@ -383,6 +399,70 @@
       this.clearSelection();
       this.showMessage(`Изменено фотографий: ${result.changed_count}.`);
       await this.refreshFromManagementUrl(this.environment.location.href, 'replace');
+    }
+
+    async submitBibForm(form) {
+      const root = form.closest('[data-photo-bib-root]');
+      const save = form.querySelector('[data-photo-bib-save]');
+      const errors = form.querySelector('[data-photo-bib-errors]');
+      if (save.disabled) return;
+      save.disabled = true;
+      errors.textContent = '';
+      try {
+        const response = await this.request(form.action, {
+          method: 'POST',
+          body: new this.environment.FormData(form),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          errors.textContent = errorText(payload);
+          return;
+        }
+        this.renderBibNumbers(root, payload.numbers);
+        root.querySelector('[data-photo-bib-added]').replaceChildren();
+        root.querySelector('[data-photo-bib-editor]').hidden = true;
+      } catch (_error) {
+        errors.textContent = 'Не удалось сохранить номера. Попробуйте ещё раз.';
+      } finally {
+        save.disabled = false;
+      }
+    }
+
+    renderBibNumbers(root, numbers) {
+      const readings = root.querySelector('[data-photo-bib-readings]');
+      const existing = root.querySelector('[data-photo-bib-existing]');
+      const labels = [];
+      const rows = [];
+      for (const reading of numbers) {
+        const label = this.document.createElement('span');
+        label.className = 'event-photo-bib-label';
+        label.textContent = reading.number;
+        labels.push(label);
+
+        const row = this.document.createElement('label');
+        row.textContent = 'Номер ';
+        const id = this.document.createElement('input');
+        id.type = 'hidden';
+        id.name = 'existing_id';
+        id.value = String(reading.id);
+        const input = this.document.createElement('input');
+        input.type = 'text';
+        input.name = 'existing_number';
+        input.value = reading.number;
+        input.inputMode = 'numeric';
+        input.pattern = '[0-9]{1,16}';
+        input.maxLength = 16;
+        row.append(id, input);
+        rows.push(row);
+      }
+      if (!labels.length) {
+        const empty = this.document.createElement('span');
+        empty.dataset.photoBibEmpty = '';
+        empty.textContent = 'Номера не найдены';
+        labels.push(empty);
+      }
+      readings.replaceChildren(...labels);
+      existing.replaceChildren(...rows);
     }
 
     showFormError(form, message) {

@@ -6,6 +6,7 @@ from picflow.event_management_views import (
     event_management,
     event_management_action,
     event_management_batch_history,
+    event_management_bib_save,
     event_management_folder_create,
     event_management_folder_delete,
     event_management_folder_rename,
@@ -43,6 +44,11 @@ urlpatterns = [
         "manage/events/<int:event_id>/photos/actions/",
         event_management_action,
         name="event_management_action",
+    ),
+    path(
+        "manage/events/<int:event_id>/photos/<str:photo_id>/bibs/",
+        event_management_bib_save,
+        name="event_management_bib_save",
     ),
     path(
         "manage/events/<int:event_id>/photos/status/",

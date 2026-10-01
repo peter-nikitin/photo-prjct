@@ -15,6 +15,7 @@ import tempfile
 import time
 from copy import deepcopy
 from pathlib import Path
+from urllib.request import Request
 
 RUNNING = {"RUNNING_ACTUAL", "RUNNING_OUTDATED"}
 TERMINAL = {"STOPPED", "DELETED"}
@@ -322,6 +323,19 @@ def provision_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def canonical_instance_id():
+    from processing.services.worker_pool_cloud import identifier, request_bytes
+
+    raw = request_bytes(
+        Request(
+            "http://169.254.169.254/computeMetadata/v1/instance/id",
+            headers={"Metadata-Flavor": "Google"},
+        ),
+        max_body=128,
+    )
+    return identifier(raw.decode().strip())
 
 
 def validate_manifest(manifest):
@@ -716,6 +730,29 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
     provision = provision_module()
     from processing.services.worker_pool_cloud import metadata_token
 
+    if mode == "eligibility":
+        manifest = json.loads(Path(manifest_path).read_text())
+        validate_receiver_manifest(manifest)
+        if checksum != manifest["checksum"]:
+            raise ValueError("reviewed creation checksum mismatch")
+        journal = Journal(receipt)
+        if (
+            marker.exists()
+            or journal.data.get("phase") != "receiver-staged"
+            or journal.data.get("previous") is not None
+            or journal.data.get("candidate", {}).get("creation_manifest") != manifest
+        ):
+            raise ValueError("receiver candidate is not staged")
+        if canonical_instance_id() != manifest["configuration"]["canonical_vm_id"]:
+            raise ValueError("wrong canonical VM")
+        predecessors = manifest["configuration"].get("predecessors")
+        result = Host(root, None, journal).control(
+            "reactivation-eligible", predecessors=predecessors
+        )
+        if result != {"eligible": True}:
+            raise ValueError("coordinator reactivation eligibility rejected")
+        return {"eligible": True, "checksum": checksum, "predecessors": predecessors}
+
     if mode == "receiver-preflight":
         if marker.exists():
             raise ValueError("receiver staging requires a clean local predecessor")
@@ -796,6 +833,16 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
             raise ValueError("receiver and reviewed fleet candidate differ")
         cloud = provision.Cloud(metadata_token())
         provision.inspect(manifest["configuration"], cloud)
+        if candidate["creation_manifest"]["configuration"].get("predecessors") is not None:
+            if Host(root, None, journal).control(
+                "reactivation-eligible",
+                predecessors=candidate["creation_manifest"]["configuration"]["predecessors"],
+            ) != {"eligible": True}:
+                raise ValueError("coordinator changed before bind")
+        elif Host(root, None, journal).control("reactivation-eligible", predecessors=None) != {
+            "eligible": True
+        }:
+            raise ValueError("unexpected coordinator rows before bind")
         candidate["manifest"] = manifest
         Journal(root / "worker-pools-observation.json", observation_config(manifest, None))
         journal.data["phase"] = "prepared"
@@ -960,17 +1007,46 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
             "rolled-back-local",
         }:
             raise ValueError("staged release is not resumable")
-        journal.data["phase"] = "staging" if mode == "stage" else "rolling"
-        journal.save()
         existing = host.control("status")
         for name in ("bulk", "selfie"):
             if name not in existing:
+                if manifest["configuration"].get("predecessors") is not None:
+                    raise ValueError("expected predecessor row is missing")
                 host.control(
                     "configure",
                     pool=name,
                     group_id=manifest["configuration"]["groups"][name]["id"],
                     active_build=manifest["configuration"]["worker_build"],
                 )
+            elif existing[name]["group_id"] != manifest["configuration"]["groups"][name]["id"]:
+                predecessors = manifest["configuration"].get("predecessors")
+                if mode != "stage" or predecessors is None:
+                    raise ValueError("existing coordinator identity differs from candidate")
+                host.control(
+                    "rebind",
+                    pool=name,
+                    old_group_id=predecessors[name]["group_id"],
+                    old_build=predecessors[name]["active_build"],
+                    group_id=manifest["configuration"]["groups"][name]["id"],
+                    active_build=manifest["configuration"]["worker_build"],
+                )
+            elif (
+                mode == "stage"
+                and existing[name]["active_build"] != manifest["configuration"]["worker_build"]
+            ):
+                raise ValueError("initial staged coordinator build differs from candidate")
+            if (
+                mode == "stage"
+                and name in existing
+                and (
+                    not existing[name]["claims_paused"]
+                    or existing[name]["local_claims_paused"]
+                    or existing[name]["staged_build"] is not None
+                )
+            ):
+                raise ValueError("unsafe existing coordinator state for initial stage")
+        journal.data["phase"] = "staging" if mode == "stage" else "rolling"
+        journal.save()
         for name in order:
             transition(host, name, manifest)
             if capped:
@@ -1045,6 +1121,7 @@ def main():
     parser.add_argument(
         "mode",
         choices=(
+            "eligibility",
             "receiver-preflight",
             "receiver-stage",
             "receiver-absence",
@@ -1083,7 +1160,7 @@ def main():
         else:
             lock_fd = os.open(args.root / ".deployment.lock", os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        execute(
+        result = execute(
             args.mode, args.root, args.manifest, args.checksum, args.app_image, args.worker_image
         )
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
@@ -1092,7 +1169,9 @@ def main():
             file=sys.stderr,
         )
         return 1
-    if args.mode != "status":
+    if args.mode == "eligibility":
+        print(json.dumps(result, sort_keys=True))
+    elif args.mode != "status":
         print("canonical worker release phase complete")
     return 0
 

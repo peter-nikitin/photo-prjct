@@ -15,8 +15,10 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.request import Request
 
@@ -75,8 +77,28 @@ def digest(value):
 
 
 def validate(config):
-    if not isinstance(config, dict) or set(config) - {"telemetry_enabled"} != FIELDS:
+    if (
+        not isinstance(config, dict)
+        or set(config) - {"telemetry_enabled", "predecessors"} != FIELDS
+    ):
         raise ValueError("unsupported provisioning input")
+    predecessors = config.get("predecessors")
+    if predecessors is not None:
+        if (
+            not isinstance(predecessors, dict)
+            or set(predecessors) != {"bulk", "selfie"}
+            or any(
+                not isinstance(row, dict)
+                or set(row) != {"group_id", "active_build"}
+                or not isinstance(row["active_build"], str)
+                or re.fullmatch(r"[0-9a-f]{40}", row["active_build"]) is None
+                or not identifier(row["group_id"])
+                for row in predecessors.values()
+            )
+        ):
+            raise ValueError("invalid predecessor identities")
+        if len({row["group_id"] for row in predecessors.values()}) != 2:
+            raise ValueError("duplicate predecessor group")
     if type(config.get("telemetry_enabled", False)) is not bool:
         raise ValueError("explicit boolean telemetry opt-in required")
     if type(config["pool_max_size"]) is not int or config["pool_max_size"] not in {1, 2}:
@@ -136,6 +158,14 @@ def validate(config):
                 raise ValueError("update requires exact inspected baseline")
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate group IDs")
+    if predecessors is not None and any(
+        entry["id"] is not None for entry in config["groups"].values()
+    ):
+        if any(
+            entry["id"] in {row["group_id"] for row in predecessors.values()}
+            for entry in config["groups"].values()
+        ):
+            raise ValueError("predecessor cannot be a candidate group")
 
 
 def cloud_init(config, pool):
@@ -591,13 +621,150 @@ def write_receipt(path, value, *, exclusive=False):
         os.fsync(stream.fileno())
 
 
-def apply(config, checksum, *, cloud, receipt_path=None):
+def create_inventory(config, cloud, submitted):
+    """Require complete worker-folder inventory attributable only to this creation."""
+    folder = config["folder_id"]
+    groups = cloud.pages("instanceGroups", "instanceGroups", folderId=folder)
+    instances = cloud.pages("instances", "instances", folderId=folder)
+    disks = cloud.pages("disks", "disks", folderId=folder)
+    expected = {row["id"] for row in submitted.values()}
+    actual = {identifier(row.get("id")) for row in groups}
+    if actual - expected or len(groups) != len(actual):
+        raise ValueError("worker folder has unreviewed group")
+    if actual != expected:
+        raise InventoryPending("receipt group not yet visible")
+    for group in groups:
+        name = next(name for name, row in submitted.items() if row["id"] == group["id"])
+        full = cloud.get(f"instanceGroups/{group['id']}", view="FULL")
+        if (
+            full.get("id") != group["id"]
+            or full.get("folderId") != folder
+            or full.get("name") != f"findme-photo-worker-{name}"
+            or full.get("labels") != LABELS | {"pool": name}
+        ):
+            raise ValueError("receipt group ownership differs")
+    if not expected:
+        if instances or disks:
+            raise ValueError("predecessor resources remain in worker folder")
+        return
+    owned_instances = set()
+    owned_disks = set()
+    for group_id in expected:
+        for member in cloud.pages(f"instanceGroups/{group_id}/instances", "instances"):
+            if not member.get("instanceId"):
+                raise InventoryPending("receipt group member still allocating")
+            instance_id = identifier(member.get("instanceId"))
+            owned_instances.add(instance_id)
+            instance = cloud.get(f"instances/{instance_id}")
+            if instance.get("id") != instance_id or instance.get("folderId") != folder:
+                raise ValueError("group member outside worker folder")
+            attachments = [instance.get("bootDisk", {})] + instance.get("secondaryDisks", [])
+            owned_disks.update(identifier(row.get("diskId")) for row in attachments)
+    actual_instances = {identifier(row.get("id")) for row in instances}
+    actual_disks = {identifier(row.get("id")) for row in disks}
+    if actual_instances - owned_instances or actual_disks - owned_disks:
+        raise ValueError("unexplained worker resource before create")
+    if actual_instances != owned_instances or actual_disks != owned_disks:
+        raise InventoryPending("receipt group inventory still settling")
+
+
+class InventoryPending(ValueError):
+    """An owned first submission is not fully visible in read-only inventory yet."""
+
+
+def settle_create_inventory(
+    config, cloud, submitted, *, timeout=120, pause=5, monotonic=time.monotonic, sleep=time.sleep
+):
+    deadline = monotonic() + timeout
+    while True:
+        try:
+            create_inventory(config, cloud, submitted)
+            return
+        except InventoryPending:
+            if monotonic() >= deadline:
+                raise ValueError("receipt group inventory did not settle") from None
+            sleep(pause)
+
+
+def confirm_eligibility(config, checksum, eligibility):
+    if eligibility is None:
+        raise ValueError("fresh canonical eligibility required for creation")
+    result = eligibility(config, checksum)
+    if result != {
+        "eligible": True,
+        "checksum": checksum,
+        "predecessors": config.get("predecessors"),
+    }:
+        raise ValueError("canonical eligibility differs from reviewed candidate")
+
+
+def ssh_eligibility(config, checksum, *, target, root, manifest, run=subprocess.run):
+    """Read the pinned receiver state on the actual canonical host for every create."""
+    if (
+        not isinstance(target, str)
+        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*@[A-Za-z0-9][A-Za-z0-9.:-]{0,252}", target) is None
+    ):
+        raise ValueError("explicit canonical SSH user and host required")
+    root, manifest = Path(root), Path(manifest)
+    if not root.is_absolute() or not manifest.is_absolute():
+        raise ValueError("absolute canonical paths required")
+    command = shlex.join(
+        [
+            "sudo",
+            "-n",
+            "python3",
+            str(root / "deploy/worker-pools/release.py"),
+            "eligibility",
+            "--root",
+            str(root),
+            "--manifest",
+            str(manifest),
+            "--checksum",
+            checksum,
+        ]
+    )
+    result = run(
+        [
+            "ssh",
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "ConnectTimeout=10",
+            target,
+            command,
+        ],
+        stdin=subprocess.DEVNULL,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if len(result.stdout) > 4096:
+        raise ValueError("canonical eligibility response too large")
+    response = json.loads(result.stdout)
+    if response != {
+        "eligible": True,
+        "checksum": checksum,
+        "predecessors": config.get("predecessors"),
+    }:
+        raise ValueError("canonical eligibility differs from reviewed candidate")
+    return response
+
+
+def apply(config, checksum, *, cloud, receipt_path=None, eligibility=None):
     plan = prepare(config)
     if checksum != plan["checksum"]:
         raise ValueError("reviewed checksum mismatch")
     if receipt_path is None or Path(receipt_path).exists():
         raise ValueError("fresh durable receipt required; reconcile prior submission first")
     inspect(config, cloud)
+    creating = any(entry["id"] is None for entry in config["groups"].values())
+    if creating:
+        create_inventory(config, cloud, {})
+        confirm_eligibility(config, checksum, eligibility)
     receipt = {
         "checksum": checksum,
         "folder_id": config["folder_id"],
@@ -610,11 +777,21 @@ def apply(config, checksum, *, cloud, receipt_path=None):
         # Recheck each concrete target immediately before its submission, including after
         # a preceding group create. Any concurrent operator drift aborts the remainder.
         if entry["id"] is None:
+            settle_create_inventory(
+                config,
+                cloud,
+                {
+                    name: row
+                    for name, row in receipt["groups"].items()
+                    if row["state"] == "submitted"
+                },
+            )
             candidates = cloud.pages(
                 "instanceGroups", "instanceGroups", folderId=config["folder_id"]
             )
             if any(row.get("name") == body["name"] for row in candidates):
                 raise ValueError("creation target appeared after inspection")
+            confirm_eligibility(config, checksum, eligibility)
         elif (
             managed_baseline(cloud.get(f"instanceGroups/{entry['id']}", view="FULL"))
             != entry["baseline"]
@@ -682,6 +859,9 @@ def main():
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--apply", metavar="REVIEWED_SHA256")
     parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--canonical-ssh-target")
+    parser.add_argument("--canonical-root", type=Path)
+    parser.add_argument("--canonical-manifest", type=Path)
     args = parser.parse_args()
     try:
         config = json.loads(args.config.read_text())
@@ -703,8 +883,30 @@ def main():
             if not token or any(c.isspace() for c in token):
                 raise ValueError("cloud identity unavailable")
             cloud = Cloud(token)
+            eligibility = None
+            if args.apply and any(entry["id"] is None for entry in config["groups"].values()):
+                if not all(
+                    (args.canonical_ssh_target, args.canonical_root, args.canonical_manifest)
+                ):
+                    raise ValueError("canonical eligibility endpoint required for create")
+
+                def eligibility(candidate, sha):
+                    return ssh_eligibility(
+                        candidate,
+                        sha,
+                        target=args.canonical_ssh_target,
+                        root=args.canonical_root,
+                        manifest=args.canonical_manifest,
+                    )
+
             result = (
-                apply(config, args.apply, cloud=cloud, receipt_path=args.receipt)
+                apply(
+                    config,
+                    args.apply,
+                    cloud=cloud,
+                    receipt_path=args.receipt,
+                    eligibility=eligibility,
+                )
                 if args.apply
                 else status(config, cloud)
                 if args.status

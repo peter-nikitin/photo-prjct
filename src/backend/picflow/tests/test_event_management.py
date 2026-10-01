@@ -8,8 +8,10 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from ingestion.models import UploadBatch, UploadItem
 from processing.models import (
+    BIB_RECOGNITION_PROCESSOR,
     CAPTURE_METADATA_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
+    BibReading,
     EventProcessingRun,
     PhotoProcessingState,
     ProcessingJob,
@@ -31,7 +33,9 @@ from picflow.event_management_forms import (
     EventFolderDeleteForm,
     EventFolderRenameForm,
     EventPhotoFilterForm,
+    EventPhotoFilters,
 )
+from picflow.forms import BibSearchForm
 from picflow.models import Event, EventFolder, Photo
 from picflow.tests.event_management_helpers import (
     accepted_attempt,
@@ -163,6 +167,68 @@ class EventPhotoFilterFormTests(EventManagementTestCase):
         self.assertTrue(missing_time.is_valid(), missing_time.errors)
         self.assertTrue(missing_time.filters.without_capture_time)
 
+    def test_bib_filter_reuses_public_normalization_and_validation(self) -> None:
+        valid = self.form("bib=%20%2000123%20%20")
+        public = BibSearchForm(QueryDict("bib=%20%2000123%20%20"))
+        self.assertTrue(valid.is_valid(), valid.errors)
+        self.assertTrue(public.is_valid(), public.errors)
+        self.assertEqual(valid.filters.bib, public.cleaned_data["bib"])
+        self.assertEqual(valid.canonical_query, "bib=00123")
+
+        for value in ("12x", "１２３", "12345678901234567"):
+            with self.subTest(value=value):
+                query = QueryDict(mutable=True)
+                query["bib"] = value
+                management = EventPhotoFilterForm(self.event, query)
+                public = BibSearchForm(query)
+                self.assertFalse(management.is_valid())
+                self.assertFalse(public.is_valid())
+                self.assertEqual(management.errors["bib"], public.errors["bib"])
+
+    def test_bib_and_without_bib_are_mutually_exclusive_and_canonical(self) -> None:
+        absent = self.form("without_bib=1")
+        self.assertTrue(absent.is_valid(), absent.errors)
+        self.assertTrue(absent.filters.without_bib)
+        self.assertEqual(absent.canonical_query, "without_bib=1")
+
+        for query in (
+            "bib=00123&without_bib=1",
+            "without_bib=maybe",
+            "without_bib=1&without_bib=1",
+        ):
+            with self.subTest(query=query):
+                invalid = self.form(query)
+                self.assertFalse(invalid.is_valid())
+                self.assertIn("without_bib", invalid.errors)
+
+    def test_without_bib_control_is_unchecked_by_default_and_submits_one(self) -> None:
+        default = self.form()
+        self.assertTrue(default.is_valid(), default.errors)
+        self.assertFalse(default.filters.without_bib)
+        self.assertEqual(default.canonical_query, "")
+        control = str(default["without_bib"])
+        self.assertIn('type="checkbox"', control)
+        self.assertIn('name="without_bib"', control)
+        self.assertIn('value="1"', control)
+        self.assertNotIn("checked", control)
+
+        selected = self.form("without_bib=1")
+        self.assertTrue(selected.is_valid(), selected.errors)
+        self.assertTrue(selected.filters.without_bib)
+        self.assertIn("checked", str(selected["without_bib"]))
+        self.assertEqual(selected.canonical_query, "without_bib=1")
+
+        for value in ("on", "0", "False", ""):
+            with self.subTest(value=value):
+                invalid = self.form(f"without_bib={value}")
+                self.assertFalse(invalid.is_valid())
+                self.assertIn("without_bib", invalid.errors)
+
+    def test_direct_filter_object_rejects_unvalidated_bib(self) -> None:
+        for value in ("abc", "１２３", " 00123 "):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                EventPhotoFilters(bib=value)
+
 
 class EventPhotoQuerysetTests(EventManagementTestCase):
     """These tests catch OR/AND mistakes, time inference, duplicate rows, and unstable pages."""
@@ -244,6 +310,50 @@ class EventPhotoQuerysetTests(EventManagementTestCase):
         self.assertEqual(
             list(event_photo_queryset(self.event, form.filters).values_list("pk", flat=True)),
             [missing.pk],
+        )
+
+    def test_exact_bib_filter_keeps_private_matches_and_leading_zeroes(self) -> None:
+        matching = private_photo(self.event, self.alice, is_hidden=True)
+        plain = private_photo(self.event, self.alice)
+        source = accepted_attempt(matching, processor_type=BIB_RECOGNITION_PROCESSOR)
+        BibReading.objects.create(photo=matching, source_attempt=source, number="00123")
+        BibReading.objects.create(photo=matching, source_attempt=source, number="00456")
+        other_source = accepted_attempt(plain, processor_type=BIB_RECOGNITION_PROCESSOR)
+        BibReading.objects.create(photo=plain, source_attempt=other_source, number="123")
+
+        form = self.form("bib=00123")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            list(event_photo_queryset(self.event, form.filters).values_list("pk", flat=True)),
+            [matching.pk],
+        )
+
+    def test_without_bib_requires_immutable_policy_and_no_current_rows(self) -> None:
+        empty = private_photo(
+            self.event,
+            self.alice,
+            bib_processing_policy=Photo.BibProcessingPolicy.ORIGINAL_V1,
+            is_hidden=True,
+        )
+        numbered = private_photo(
+            self.event,
+            self.alice,
+            bib_processing_policy=Photo.BibProcessingPolicy.ORIGINAL_V1,
+        )
+        private_photo(self.event, self.alice)
+        source = accepted_attempt(numbered, processor_type=BIB_RECOGNITION_PROCESSOR)
+        reading = BibReading.objects.create(photo=numbered, source_attempt=source, number="007")
+        form = self.form("without_bib=1")
+        self.assertTrue(form.is_valid(), form.errors)
+
+        self.assertEqual(
+            list(event_photo_queryset(self.event, form.filters).values_list("pk", flat=True)),
+            [empty.pk],
+        )
+        reading.delete()
+        self.assertEqual(
+            set(event_photo_queryset(self.event, form.filters).values_list("pk", flat=True)),
+            {empty.pk, numbered.pk},
         )
 
     def test_processing_filter_returns_each_photo_once_with_multiple_states(self) -> None:
@@ -369,6 +479,29 @@ class EventPhotoActionTests(EventManagementTestCase):
             set(Photo.objects.filter(is_hidden=True).values_list("pk", flat=True)),
             {first.pk, second.pk},
         )
+
+    def test_all_filtered_without_bib_uses_current_readings_at_action_time(self) -> None:
+        first = private_photo(
+            self.event,
+            self.alice,
+            bib_processing_policy=Photo.BibProcessingPolicy.ORIGINAL_V1,
+        )
+        second = private_photo(
+            self.event,
+            self.alice,
+            bib_processing_policy=Photo.BibProcessingPolicy.ORIGINAL_V1,
+        )
+        form = self.form("without_bib=1")
+        self.assertTrue(form.is_valid(), form.errors)
+        selection = EventPhotoSelection.all_filtered(form.filters)
+        source = accepted_attempt(first, processor_type=BIB_RECOGNITION_PROCESSOR)
+        BibReading.objects.create(photo=first, source_attempt=source, number="007")
+
+        self.assertEqual(apply_event_photo_action(self.event, selection, "hide", None), 1)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertFalse(first.is_hidden)
+        self.assertTrue(second.is_hidden)
 
     def test_explicit_selection_is_fixed_and_cross_event_ids_reject_atomically(self) -> None:
         local = self.legacy_photo("local")

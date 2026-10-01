@@ -35,6 +35,11 @@
       </fieldset>
       <fieldset><legend>Видимость</legend>{{ filter_form.visibility }}{{ filter_form.visibility.errors }}</fieldset>
       <fieldset><legend>Обработка</legend>{{ filter_form.processing }}{{ filter_form.processing.errors }}</fieldset>
+      <fieldset><legend>Номер участника</legend>
+        <label for="{{ filter_form.bib.id_for_label }}">Точный номер</label>{{ filter_form.bib }}
+        <label>Без номера {{ filter_form.without_bib }}</label>
+        {{ filter_form.bib.errors }}{{ filter_form.without_bib.errors }}
+      </fieldset>
     </div>
     {{ page_form.page.errors }}{{ filter_form.non_field_errors }}
     <button class="button" type="submit">Применить фильтры</button>
@@ -83,6 +88,28 @@
           {% if photo.thumbnail_url %}<img src="{{ photo.thumbnail_url }}" alt="{{ photo.filename }}" loading="lazy">{% else %}<span>Превью пока нет</span>{% endif %}
         </a>
         <div class="workspace-photo-copy"><strong>{{ photo.filename }}</strong><p>{% if photo.capture_time %}{% timezone event.timezone_name|default:"UTC" %}{{ photo.capture_time|date:"d.m.Y H:i" }}{% endtimezone %}{% if not event.timezone_name %} UTC{% endif %}{% else %}Без времени{% endif %}</p><p>{{ photo.photographer|default:"Фотограф не указан" }} · {{ photo.folder_name|default:"Без папки" }}</p><p>{% if photo.is_hidden %}<strong>Скрыто</strong>{% else %}Видимо{% endif %}</p><p data-photo-status-category>{{ photo.processing.category_label }}</p><p data-photo-status-stages>{% for stage in photo.processing.stages %}{{ stage.label }}: {{ stage.status_label }}{% if not forloop.last %} · {% endif %}{% endfor %}</p></div>
+        <div class="event-photo-bibs" data-photo-bib-root{% if photo.bib_editable %} data-photo-bib-save-url="{% url 'event_management_bib_save' event.pk photo.id %}"{% endif %}>
+          <div data-photo-bib-readings aria-live="polite">
+            {% if photo.bib_readings %}{% for reading in photo.bib_readings %}<span class="event-photo-bib-label">{{ reading.number }}</span>{% endfor %}{% else %}<span data-photo-bib-empty>Номера не найдены</span>{% endif %}
+          </div>
+          {% if photo.bib_editable %}
+          <button type="button" data-photo-bib-edit>Редактировать</button>
+          <div data-photo-bib-editor hidden>
+            <form method="post" action="{% url 'event_management_bib_save' event.pk photo.id %}" data-photo-bib-form>{% csrf_token %}
+              <div data-photo-bib-existing>
+                {% for reading in photo.bib_readings %}
+                <label>Номер <input type="hidden" name="existing_id" value="{{ reading.id }}"><input type="text" name="existing_number" value="{{ reading.number }}" inputmode="numeric" pattern="[0-9]{1,16}" maxlength="16"></label>
+                {% endfor %}
+              </div>
+              <div data-photo-bib-added></div>
+              <template data-photo-bib-new-row><label>Новый номер <input type="text" name="added_number" inputmode="numeric" pattern="[0-9]{1,16}" maxlength="16"></label></template>
+              <button type="button" data-photo-bib-add>Добавить номер</button>
+              <button type="submit" data-photo-bib-save>Сохранить</button>
+              <p data-photo-bib-errors role="alert" aria-live="assertive"></p>
+            </form>
+          </div>
+          {% endif %}
+        </div>
       </article>
       {% empty %}<div class="event-photo-empty"><p><strong>По этим условиям фотографий нет.</strong></p><a href="{% url 'event_management' event.pk %}" data-event-photo-filter-reset>Сбросить фильтры</a></div>{% endfor %}
     </div>

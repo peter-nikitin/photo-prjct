@@ -20,6 +20,12 @@ from ingestion.services.batch_history import (
 )
 from ingestion.services.resume import list_unfinished_batches
 from ingestion.workspace_context import upload_workspace_context
+from processing.models import (
+    BIB_RECOGNITION_PROCESSOR,
+    BibReading,
+    PhotoProcessingState,
+    ProcessingAttempt,
+)
 from processing.photo_status import (
     PhotoProcessingDetail,
     photo_processing_details,
@@ -36,6 +42,7 @@ from picflow.event_management_access import (
     can_upload_event_photos,
     event_management_denial,
 )
+from picflow.event_management_bibs import save_event_photo_bibs
 from picflow.event_management_forms import (
     EventFolderCreateForm,
     EventFolderDeleteForm,
@@ -60,9 +67,19 @@ class AdminPhotoCard:
     thumbnail_url: str | None
     original_url: str
     processing: PhotoProcessingDetail
+    bib_readings: tuple["AdminBibReading", ...]
+    bib_editable: bool
 
 
-def admin_photo_page(photos: QuerySet[Photo], *, page: str | int = 1) -> Page[AdminPhotoCard]:
+@dataclass(frozen=True)
+class AdminBibReading:
+    id: int
+    number: str
+
+
+def admin_photo_page(
+    photos: QuerySet[Photo], *, page: str | int = 1, can_change_photos: bool = False
+) -> Page[AdminPhotoCard]:
     """Materialize one authorized page with application URLs and no storage identities."""
     selected = Paginator(
         photos.select_related("folder", "uploaded_by").order_by(
@@ -71,9 +88,32 @@ def admin_photo_page(photos: QuerySet[Photo], *, page: str | int = 1) -> Page[Ad
         100,
     ).get_page(page)
     rows = list(selected)
-    page_photos = Photo.objects.filter(pk__in=[photo.pk for photo in rows])
+    photo_ids = [photo.pk for photo in rows]
+    page_photos = Photo.objects.filter(pk__in=photo_ids)
     thumbnails = set(with_admin_thumbnail(page_photos).values_list("pk", flat=True))
     details = {row["photo_id"]: row for row in photo_processing_details(page_photos)}
+    readings: dict[str, list[AdminBibReading]] = {photo_id: [] for photo_id in photo_ids}
+    for reading in (
+        BibReading.objects.filter(photo_id__in=photo_ids)
+        .only("pk", "photo_id", "number")
+        .order_by("number", "pk")
+    ):
+        readings[reading.photo_id].append(AdminBibReading(reading.pk, reading.number))
+    editable_ids = (
+        set(
+            PhotoProcessingState.objects.filter(
+                photo_id__in=photo_ids,
+                processor_type=BIB_RECOGNITION_PROCESSOR,
+                status=PhotoProcessingState.Status.SUCCEEDED,
+                accepted_attempt__photo_id=F("photo_id"),
+                accepted_attempt__processor_type=BIB_RECOGNITION_PROCESSOR,
+                accepted_attempt__status=ProcessingAttempt.Status.SUCCEEDED,
+                accepted_attempt__accepted=True,
+            ).values_list("photo_id", flat=True)
+        )
+        if can_change_photos
+        else set()
+    )
     cards = [
         AdminPhotoCard(
             id=photo.pk,
@@ -92,6 +132,12 @@ def admin_photo_page(photos: QuerySet[Photo], *, page: str | int = 1) -> Page[Ad
                 "event_management_media", args=[photo.event_id, photo.pk, "original"]
             ),
             processing=details[photo.pk],
+            bib_readings=tuple(readings[photo.pk]),
+            bib_editable=(
+                can_change_photos
+                and photo.bib_processing_policy == Photo.BibProcessingPolicy.ORIGINAL_V1
+                and photo.pk in editable_ids
+            ),
         )
         for photo in rows
     ]
@@ -124,7 +170,11 @@ def _admin_results_context(
     filters_valid = filter_form.is_valid() and page_form.is_valid()
     if filters_valid:
         photos = event_photo_queryset(event, filter_form.filters)
-        photo_page = admin_photo_page(photos, page=page_form.cleaned_data["page"])
+        photo_page = admin_photo_page(
+            photos,
+            page=page_form.cleaned_data["page"],
+            can_change_photos=capabilities.can_change_photos,
+        )
         canonical_query = filter_form.canonical_query
     else:
         photo_page = admin_photo_page(Photo.objects.none())
@@ -341,3 +391,41 @@ def event_management_action(request: HttpRequest, event_id: int) -> HttpResponse
     except ValidationError as validation_error:
         return JsonResponse({"errors": {"selection": validation_error.messages}}, status=422)
     return JsonResponse({"changed_count": changed_count})
+
+
+@never_cache
+@require_POST
+def event_management_bib_save(request: HttpRequest, event_id: int, photo_id: str) -> HttpResponse:
+    event, error = _private_event(request, event_id)
+    if error is not None:
+        return error
+    assert event is not None
+    if not event_management_capabilities(request.user).can_change_photos:
+        return HttpResponseForbidden()
+    if not Photo.objects.filter(pk=photo_id, event=event).exists():
+        return HttpResponse(status=404)
+
+    ids = request.POST.getlist("existing_id")
+    values = request.POST.getlist("existing_number")
+    if len(ids) != len(values) or any(not value.isascii() or not value.isdigit() for value in ids):
+        return JsonResponse({"errors": {"existing": ["Некорректный список номеров."]}}, status=422)
+    try:
+        existing = {int(reading_id): number for reading_id, number in zip(ids, values, strict=True)}
+    except ValueError:
+        return JsonResponse({"errors": {"existing": ["Некорректный список номеров."]}}, status=422)
+    if len(existing) != len(ids) or any(reading_id <= 0 for reading_id in existing):
+        return JsonResponse({"errors": {"existing": ["Некорректный список номеров."]}}, status=422)
+
+    try:
+        readings = save_event_photo_bibs(
+            event_id=event.pk,
+            photo_id=photo_id,
+            existing=existing,
+            added=request.POST.getlist("added_number"),
+            changed_by=request.user,
+        )
+    except ValidationError as validation_error:
+        return JsonResponse({"errors": {"numbers": validation_error.messages}}, status=422)
+    return JsonResponse(
+        {"numbers": [{"id": reading.pk, "number": reading.number} for reading in readings]}
+    )

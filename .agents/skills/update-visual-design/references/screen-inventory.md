@@ -141,3 +141,10 @@ On 2026-09-13, the fixed-event upload workspace grouped device selection and Yan
 inside one `Новая загрузка` panel. The existing desktop and 390px mobile upload baselines were
 refreshed: enabled imports render the two source cards side by side on desktop and stacked on
 mobile, while gate-off fixtures retain the device-only source card.
+
+On 2026-10-01, the production event-photo workspace baselines were refreshed for compact bib-number
+labels and eligible-card edit controls. The populated fixture includes an editable card with two
+numbers and an editable card with no numbers; the hidden state covers the latter separately. A
+browser geometry check covers the downward editor overlay at desktop and 390px mobile widths. All
+eight administrative workspace baselines also render the exact `bib` input and explicit
+`without_bib` control in the deterministic filter form.

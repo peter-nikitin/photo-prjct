@@ -145,7 +145,12 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   owns bib jobs while the fixed selfie service remains separate. Django independently validates
   the bounded result and atomically projects only accepted exact ASCII digit strings into indexed
   `BibReading` rows; attempts, rejected/uncertain
-  evidence, and sanitized failures remain durable. Empty success or terminal failure leaves the
+  evidence, and sanitized failures remain durable. In the private event photo workspace, an
+  authorized photo editor can directly add, replace, merge, or remove current numbers after a
+  successful accepted bib attempt, including an empty result. Each manual mutation writes
+  append-only `BibReadingChange` evidence with actor, source attempt, time, and before/after
+  numbers. The worker and public search do not consult that evidence; no manual backfill or repeat
+  recognition path is implemented. Empty success or terminal failure leaves the
   already published photo in the gallery. The public `?bib=` form is separate from selfie search
   and filters the ordinary eligible gallery by exact event-scoped equality, preserving leading
   zeros. The canonical deployment completed opt-in 37-photo Istra and 28-photo Gagarin/Metelsky
@@ -616,9 +621,10 @@ broker, vector engine, and ML implementations shown for later processing require
    face-version-4 activation is claimed.
 7. Search indexes are updated only within the photo's event scope. Accepted current bib decisions
    replace the photo's indexed `BibReading` projection atomically; rejected, uncertain, failed, and
-   historical attempts never enter public search.
-8. Operators can correct or suppress candidates where a moderation workflow exists. Bib correction
-   and suppression are outside the current release.
+   historical attempts never enter public search. Authorized edits of current `BibReading` rows
+   immediately affect the same exact-search projection and keep append-only change evidence.
+8. Operators can correct current bib numbers in the private event photo workspace after an accepted
+   successful attempt. The editor does not alter immutable processing evidence or processing status.
 9. Failures remain visible and retryable without re-uploading the original.
 
 ### Public event-gallery filtering
@@ -692,10 +698,13 @@ and gallery-source dependencies with independent vector eligibility and establis
 boundary; current parallel validation deliberately expects matching old evidence.
 
 1. The customer selects an event before searching.
-2. A bib query is a separate GET request using `?bib=<1-16 ASCII digits>` and matches only current
-   accepted `BibReading` rows by exact string equality after the ordinary eligible event gallery is
+2. A bib query is a separate GET request using `?bib=<1-16 ASCII digits>` and matches current
+   `BibReading` rows by exact string equality after the ordinary eligible event gallery is
    built. Leading zeros are significant, and the event checkbox controls field visibility directly.
-   There is no manual bib correction or combined bib/selfie request in this release. A face query
+   The private event photo workspace uses the same `bib` validator and exact predicate on its
+   authorized photo queryset. Its `without_bib=1` filter selects bib-applicable photos with zero
+   current readings. Neither filter reads the append-only change log. A combined bib/selfie request
+   is not supported. A face query
    uses either an uploaded selfie, which creates a temporary query embedding through the existing
    worker, or one explicitly selected current compatible accepted embedding from an eligible
    gallery photo. The selected reader performs exact comparison and Django publishes an immutable probable-match

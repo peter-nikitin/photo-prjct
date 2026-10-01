@@ -129,6 +129,13 @@ def event_photo_queryset(event: Event, filters: EventPhotoFilters) -> QuerySet[P
         photos = photos.filter(is_hidden=False)
     elif filters.visibility == VISIBILITY_HIDDEN:
         photos = photos.filter(is_hidden=True)
+    if filters.bib:
+        photos = photos.filter(bib_readings__number=filters.bib)
+    elif filters.without_bib:
+        photos = photos.filter(
+            bib_processing_policy=Photo.BibProcessingPolicy.ORIGINAL_V1,
+            bib_readings__isnull=True,
+        )
     if filters.processing_categories:
         selected_processing_categories = frozenset(filters.processing_categories)
         if selected_processing_categories <= {CATEGORY_PROCESSING, CATEGORY_QUEUED}:

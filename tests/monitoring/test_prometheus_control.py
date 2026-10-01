@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -349,38 +350,61 @@ def test_stale_or_nan_samples_block_activation(control):
         control.preflight(cfg, transport, now=1000)
 
 
-def worker_preflight_transport(control, cfg, *, source_override=None, omit=None):
+def worker_preflight_transport(control, cfg, *, source_override=None, omit=None, ticking=False):
     transport = FakeTransport(control, cfg)
     original = transport.request
     source_override = source_override or {}
+    worker_queries = 0
 
     def request(method, path, body=None):
+        nonlocal worker_queries
         query = parse_qs(urlsplit(path).query).get("query", [""])[0]
-        if query.startswith("worker_") and query.endswith("[90s]"):
+        combined = query.startswith('{__name__=~"worker_')
+        if (query.startswith("worker_") or combined) and query.endswith("[90s]"):
             transport.events.append((method, path, body))
-            metric = query.split("{", 1)[0]
-            pool = "selfie" if 'pool="selfie"' in query else "bulk"
-            if (metric, pool) == omit:
-                return {"status": "success", "data": {"resultType": "matrix", "result": []}}
+            worker_queries += 1
+            if combined:
+                metrics = re.search(r'__name__=~"([^"]+)"', query)[1].split("|")
+                pools = re.search(r'pool=~"([^"]+)"', query)[1].split("|")
+            else:
+                metrics = [query.split("{", 1)[0]]
+                pools = ["selfie" if 'pool="selfie"' in query else "bulk"]
             timestamps = {
                 "worker_pool_queue_observation_timestamp_seconds",
                 "worker_pool_cloud_observation_timestamp_seconds",
                 "worker_pool_native_publisher_success_timestamp_seconds",
                 "worker_node_cloud_observation_timestamp_seconds",
             }
-            value = source_override.get((metric, pool), 1000 if metric in timestamps else 0)
-            if metric == "worker_pool_queue_observation_available":
-                value = 1
-            if metric in {"worker_pool_running_instances", "worker_pool_expected_instances"}:
-                value = int(pool == "selfie")
-            labels = {"pool": pool}
-            if not metric.startswith("worker_pool_"):
-                labels |= {"instance_id": "node-1", "zone_id": "ru-central1-a"}
+            rows = []
+            for pool in pools:
+                expected = source_override.get(
+                    ("worker_pool_expected_instances", pool), int(pool == "selfie")
+                )
+                for metric in metrics:
+                    if (metric, pool) == omit or (
+                        not metric.startswith("worker_pool_") and expected == 0
+                    ):
+                        continue
+                    value = 999 + worker_queries / 1000 if ticking else 1000
+                    if metric not in timestamps:
+                        value = 0
+                    if metric == "worker_pool_queue_observation_available":
+                        value = 1
+                    if metric in {
+                        "worker_pool_running_instances",
+                        "worker_pool_expected_instances",
+                    }:
+                        value = expected
+                    value = source_override.get((metric, pool), value)
+                    labels = {"__name__": metric, "pool": pool}
+                    if not metric.startswith("worker_pool_"):
+                        labels |= {"instance_id": pool + "-node", "zone_id": "ru-central1-a"}
+                    rows.append({"metric": labels, "values": [[1000, str(value)]]})
             return {
                 "status": "success",
                 "data": {
                     "resultType": "matrix",
-                    "result": [{"metric": labels, "values": [[1000, str(value)]]}],
+                    "result": rows,
                 },
             }
         return original(method, path, body)
@@ -401,8 +425,87 @@ def test_enabled_worker_preflight_requires_sources_and_skips_idle_bulk_nodes(con
         for method, path, _ in transport.events
         if method == "GET" and "/api/v1/query?" in path
     ]
-    assert not any(query.startswith("worker_host_") and 'pool="bulk"' in query for query in queries)
-    assert any(query.startswith("worker_host_") and 'pool="selfie"' in query for query in queries)
+    worker_queries = [
+        query for query in queries if query.endswith("[90s]") and "worker_pool_" in query
+    ]
+    assert len(worker_queries) == 1
+    assert 'pool=~"bulk|selfie"' in worker_queries[0]
+
+
+def test_worker_preflight_collector_tick_cannot_split_pool_and_node_snapshot(control):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(
+        control, cfg, source_override={("worker_pool_expected_instances", "bulk"): 1}, ticking=True
+    )
+
+    control.preflight(cfg, transport, now=1000)
+
+    queries = [
+        parse_qs(urlsplit(path).query)["query"][0]
+        for method, path, _ in transport.events
+        if method == "GET"
+        and "/api/v1/query?" in path
+        and parse_qs(urlsplit(path).query)["query"][0].endswith("[90s]")
+    ]
+    assert len(queries) == 1
+    names = re.search(r'__name__=~"([^"]+)"', queries[0])[1].split("|")
+    assert set(names) == set(control.WORKER_POOL_METRICS.values()) | set(
+        control.WORKER_NODE_METRICS
+    )
+    assert queries[0].endswith("[90s]")
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "missing-node",
+        "stale-sample",
+        "duplicate-pool",
+        "duplicate-node",
+        "wrong-pool",
+        "wrong-node",
+        "nonfinite-node",
+    ],
+)
+def test_worker_snapshot_rejects_incomplete_or_inconsistent_samples(control, problem):
+    cfg = config(control)
+    cfg["worker_alerts_enabled"] = True
+    transport = worker_preflight_transport(control, cfg)
+    request = transport.request
+
+    def corrupted(method, path, body=None):
+        response = request(method, path, body)
+        query = parse_qs(urlsplit(path).query).get("query", [""])[0]
+        if query.startswith('{__name__=~"worker_'):
+            rows = response["data"]["result"]
+            name = (
+                "worker_pool_cloud_observation_timestamp_seconds"
+                if problem == "duplicate-pool"
+                else "worker_host_observation_fresh"
+            )
+            row = next(
+                row
+                for row in rows
+                if row["metric"]["__name__"] == name and row["metric"]["pool"] == "selfie"
+            )
+            if problem == "missing-node":
+                rows.remove(row)
+            elif problem in {"duplicate-pool", "duplicate-node"}:
+                rows.append(row)
+            elif problem == "stale-sample":
+                row["values"][0][0] = 909
+            elif problem == "wrong-pool":
+                row["metric"]["pool"] = "unknown"
+            elif problem == "wrong-node":
+                row["metric"]["instance_id"] = "previous-node"
+            else:
+                row["values"][0][1] = "NaN"
+        return response
+
+    transport.request = corrupted
+    with pytest.raises(control.ControlError, match="worker|sample"):
+        control.preflight(cfg, transport, now=1000)
 
 
 @pytest.mark.parametrize(

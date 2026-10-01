@@ -184,22 +184,23 @@ def test_alert_selectors_use_folder_as_request_context_not_metric_label() -> Non
     assert all("folderId=" not in selector for selector in selectors)
 
 
-def test_worker_pool_alerts_are_git_disabled_with_reviewed_enabled_cap_one_rules() -> None:
+def test_worker_pool_alerts_are_git_enabled_with_reviewed_cap_one_rules() -> None:
     manifest = (ROOT / "deploy/monitoring/alerts.md").read_text()
     runbook = (ROOT / "docs/runbooks/worker-pools.md").read_text()
     section = manifest.split("## Worker pool alerts\n", 1)[1]
     control = load_prometheus_control()
     config = control.load_config()
 
-    assert config["worker_alerts_enabled"] is False
-    disabled = yaml.safe_load(control.render(config)["rules.yml"])
+    assert config["worker_alerts_enabled"] is True
+    enabled = yaml.safe_load(control.render(config)["rules.yml"])
+    worker = next(group for group in enabled["groups"] if group["name"] == "findme-workers")
+
+    disabled_config = {**config, "worker_alerts_enabled": False}
+    disabled = yaml.safe_load(control.render(disabled_config)["rules.yml"])
     assert [group["name"] for group in disabled["groups"]] == [
         "findme-photo",
         "findme-image-origin",
     ]
-    enabled_config = {**config, "worker_alerts_enabled": True}
-    enabled = yaml.safe_load(control.render(enabled_config)["rules.yml"])
-    worker = next(group for group in enabled["groups"] if group["name"] == "findme-workers")
 
     saturation = next(rule for rule in worker["rules"] if rule["alert"] == "WorkerPoolSaturated")
     expression = saturation["expr"]
@@ -216,7 +217,6 @@ def test_worker_pool_alerts_are_git_disabled_with_reviewed_enabled_cap_one_rules
     ):
         assert required in expression
     assert saturation["for"] == "5m"
-    assert "disabled in Git" in section
     assert "cap-one saturation" in section
     assert "Missing/stale observations" in section
     assert "Bulk with fresh actual zero members" in section

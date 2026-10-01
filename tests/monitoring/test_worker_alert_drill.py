@@ -36,14 +36,25 @@ def config(control):
     return value
 
 
-def test_offline_cli_renders_enabled_drill_from_disabled_git_profile_but_live_prepare_rejects(
+def test_offline_cli_renders_enabled_drill_from_explicit_disabled_profile_but_live_prepare_rejects(
     tmp_path,
 ):
     control = load("control")
-    assert control.load_config()["worker_alerts_enabled"] is False
+    git_config = control.load_config()
+    assert git_config["worker_alerts_enabled"] is True
+    disabled_config = tmp_path / "disabled-environment.json"
+    disabled_config.write_text(json.dumps({**git_config, "worker_alerts_enabled": False}))
     rendered = tmp_path / "rendered"
     offline = subprocess.run(
-        [sys.executable, str(SOURCE / "drill.py"), "render", "--output", str(rendered)],
+        [
+            sys.executable,
+            str(SOURCE / "drill.py"),
+            "render",
+            "--config",
+            str(disabled_config),
+            "--output",
+            str(rendered),
+        ],
         capture_output=True,
         text=True,
     )
@@ -58,6 +69,8 @@ def test_offline_cli_renders_enabled_drill_from_disabled_git_profile_but_live_pr
             sys.executable,
             str(SOURCE / "drill.py"),
             "prepare",
+            "--config",
+            str(disabled_config),
             "--receipt",
             str(receipt),
             "--run-id",

@@ -1,0 +1,29 @@
+{
+  "pool_max_size": 1,
+  "telemetry_enabled": true,
+  "cloud_id": "b1gmcsmr51o5kvp86l55",
+  "folder_id": "b1gvs3prcd72lnivvdea",
+  "canonical_folder_id": "b1g2qttgfhb4gdunvlge",
+  "zone": "ru-central1-b",
+  "network_id": "enpevjgdgdavmrv9ahb8",
+  "subnet_id": "e2lp2s94oh6cdl9uefj8",
+  "worker_sg_id": "enphe9sidnbnrmfk49eu",
+  "canonical_vm_id": "epdr5g3p24tdns9890nr",
+  "private_api_ipv4": "10.129.0.34",
+  "worker_sa_id": "ajecj75jr98l9j5ndo18",
+  "manager_sa_id": "aje21huml8igbm1llshe",
+  "bootstrap_secret_id": "e6qimj7tffu1d2ur06o4",
+  "bootstrap_version_id": "e6qbc24hltjhvtq1evqa",
+  "application_secret_id": "e6q85jjl76r45maigtfb",
+  "boot_image_id": "fd8kaqq1av9l38kt7kun",
+  "docker_version": "29.6.0",
+  "compose_version": "5.1.4",
+  "worker_build": "UNRESOLVED_REVIEWED_RELEASE_SHA",
+  "worker_image": "UNRESOLVED_REVIEWED_WORKER_DIGEST",
+  "egress_gateway_id": "enpkq1495sj7v645q2j8",
+  "route_table_id": "enpu17uahu8el4k7jadk",
+  "groups": {
+    "bulk": {"id": null, "baseline": null},
+    "selfie": {"id": null, "baseline": null}
+  }
+}

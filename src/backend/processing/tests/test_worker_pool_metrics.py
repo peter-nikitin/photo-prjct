@@ -69,6 +69,73 @@ class WorkerPoolMetricsTests(WorkerPoolStateCommandTests):
         self.assertEqual(expired.status, ProcessingAttempt.Status.IN_PROGRESS)
 
     @override_settings(PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True)
+    def test_cloud_commit_during_queue_read_keeps_capacity_and_actual_queue_timestamp(self):
+        from processing.services import worker_pool_metrics as metrics
+        from processing.services.worker_pool_lifecycle import configure_pool
+
+        for name in ("bulk", "selfie"):
+            configure_pool(name, group_id=f"{name}-group", active_build="a" * 40)
+        clock = [self.now]
+        build = metrics.build_worker_pool_state
+        completed = self.now + timedelta(seconds=4)
+
+        def queue_crossing_cloud_commit():
+            state = build()
+            for name in ("bulk", "selfie"):
+                WorkerPool.objects.filter(name=name).update(
+                    observation_sequence=1,
+                    observation_completed_at=completed,
+                    observed_members=[
+                        {
+                            "instance_id": name + "-node",
+                            "status": "RUNNING_ACTUAL",
+                            "worker_build": "a" * 40,
+                        }
+                    ],
+                )
+            clock[0] = completed
+            return state
+
+        with (
+            patch("django.utils.timezone.now", side_effect=lambda: clock[0]),
+            patch.object(
+                metrics, "build_worker_pool_state", side_effect=queue_crossing_cloud_commit
+            ),
+        ):
+            observation = metrics.observe_pool_state()
+
+        self.assertEqual(observation["observed_at"], self.now.isoformat())
+        for pool in observation["pools"].values():
+            self.assertEqual(pool["cloud_observed_at"], completed)
+            self.assertEqual(pool["metrics"].get("worker_pool_running_instances"), 1)
+            self.assertEqual(pool["expected_instances"], 1)
+
+    @override_settings(PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True)
+    def test_capacity_clock_still_rejects_actually_future_or_expired_rows(self):
+        from processing.services import worker_pool_metrics as metrics
+        from processing.services.worker_pool_lifecycle import configure_pool
+
+        configure_pool("bulk", group_id="bulk-group", active_build="a" * 40)
+        for offset in (1, -91):
+            with self.subTest(offset=offset):
+                WorkerPool.objects.filter(name="bulk").update(
+                    observation_sequence=1,
+                    observation_completed_at=self.now + timedelta(seconds=offset),
+                    observed_members=[
+                        {
+                            "instance_id": "node",
+                            "status": "RUNNING_ACTUAL",
+                            "worker_build": "a" * 40,
+                        }
+                    ],
+                )
+                with patch("django.utils.timezone.now", return_value=self.now):
+                    pool = metrics.observe_pool_state()["pools"]["bulk"]
+                self.assertEqual(pool["metrics"]["worker_pool_capacity_fresh"], 0)
+                self.assertNotIn("worker_pool_running_instances", pool["metrics"])
+                self.assertIsNone(pool["expected_instances"])
+
+    @override_settings(PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True)
     def test_capacity_uses_only_current_complete_running_membership_not_target_or_history(self):
         from django.utils import timezone
 

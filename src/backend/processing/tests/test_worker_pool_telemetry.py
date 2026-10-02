@@ -204,6 +204,72 @@ class TelemetryTests(TestCase):
             )
         )
 
+    def test_cloud_commit_between_pool_and_node_export_uses_one_materialized_membership(self):
+        from processing.services import worker_pool_telemetry as telemetry
+
+        observe = telemetry.observe_pool_state
+        clock = [self.now]
+
+        def commit_after_pool_observation(*args, **kwargs):
+            observation = observe(*args, **kwargs)
+            clock[0] = self.now + timedelta(seconds=4)
+            WorkerPool.objects.filter(name="selfie").update(
+                observation_sequence=2,
+                observation_completed_at=clock[0],
+                observed_members=[
+                    {"instance_id": "node-2", "status": "RUNNING_ACTUAL", "worker_build": BUILD}
+                ],
+            )
+            return observation
+
+        with (
+            patch("django.utils.timezone.now", side_effect=lambda: clock[0]),
+            patch.object(
+                telemetry, "observe_pool_state", side_effect=commit_after_pool_observation
+            ),
+        ):
+            samples = self.all_samples()
+        pool_timestamp = next(
+            sample.value
+            for sample in samples
+            if sample.name == "worker_pool_cloud_observation_timestamp_seconds"
+            and sample.labels["pool"] == "selfie"
+        )
+        node_timestamps = [
+            sample
+            for sample in samples
+            if sample.name == "worker_node_cloud_observation_timestamp_seconds"
+        ]
+        self.assertEqual(len(node_timestamps), 1)
+        self.assertEqual(node_timestamps[0].value, pool_timestamp)
+        self.assertEqual(node_timestamps[0].labels["instance_id"], "node-1")
+        self.assertEqual(WorkerPool.objects.get(name="selfie").observation_sequence, 2)
+
+    def test_unavailable_queue_does_not_suppress_independent_fresh_node_diagnostics(self):
+        with patch("django.utils.timezone.now", return_value=self.now):
+            self.assertEqual(self.submit().status_code, 200)
+            with override_settings(PHOTO_PROCESSING_ENABLED=False):
+                samples = self.samples()
+        self.assertEqual(samples["worker_pool_queue_observation_available"].value, 0)
+        self.assertNotIn("worker_pool_running_instances", samples)
+        self.assertEqual(samples["worker_cloud_observation_fresh"].value, 1)
+        self.assertEqual(samples["worker_host_observation_fresh"].value, 1)
+        self.assertEqual(samples["worker_runtime_observation_fresh"].value, 1)
+
+    def test_actually_future_cloud_row_never_exports_fresh_capacity_or_node_flags(self):
+        with patch("django.utils.timezone.now", return_value=self.now):
+            self.assertEqual(self.submit().status_code, 200)
+        WorkerPool.objects.filter(name="selfie").update(
+            observation_completed_at=self.now + timedelta(seconds=1)
+        )
+        with patch("django.utils.timezone.now", return_value=self.now):
+            samples = self.samples()
+        self.assertNotIn("worker_pool_running_instances", samples)
+        self.assertNotIn("worker_pool_expected_instances", samples)
+        self.assertEqual(samples["worker_cloud_observation_fresh"].value, 0)
+        self.assertEqual(samples["worker_host_observation_fresh"].value, 0)
+        self.assertEqual(samples["worker_runtime_observation_fresh"].value, 0)
+
     def test_receipt_is_separate_and_never_changes_admission_or_native_metrics(self):
         from config.metrics import generate_metrics
 

@@ -289,7 +289,6 @@ def receive(data: dict[str, Any]) -> bool:
 def generate_diagnostic_metrics() -> bytes:
     """Dedicated registry; never contributes to native queue or public application metrics."""
     registry = CollectorRegistry()
-    now = timezone.now()
     families: dict[str, Any] = {}
 
     def gauge(name: str, value: float, labels: list[str]) -> None:
@@ -300,10 +299,12 @@ def generate_diagnostic_metrics() -> bytes:
         family = families.setdefault(name, GaugeMetricFamily(name, name, labels=["pool"]))
         family.add_metric([pool], value)
 
+    pools = list(WorkerPool.objects.prefetch_related("telemetry", "members"))
     try:
-        pool_observation = observe_pool_state()
+        pool_observation = observe_pool_state(capacity=pools)
     except ValueError:
         pool_observation = None
+    now = timezone.now()
     for pool_name in ("bulk", "selfie"):
         pool_gauge(
             "worker_pool_queue_observation_available",
@@ -350,7 +351,7 @@ def generate_diagnostic_metrics() -> bytes:
                 pool_name,
             )
 
-    for pool in WorkerPool.objects.prefetch_related("telemetry", "members"):
+    for pool in pools:
         cloud_fresh = lifecycle._cloud_fresh(pool, now)
         rows = {row.instance_id: row for row in pool.telemetry.all()}
         members = {member.instance_id: member for member in pool.members.all()}

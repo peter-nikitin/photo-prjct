@@ -151,6 +151,35 @@ Apply only the reviewed Monitoring tooling through its exact-main workflow; reta
 revision/VMs, manifest, limits and claim placement. Do not trigger another worker image transition
 for a monitoring-only validation fix. Re-run cloud check, then existing apply/drill/cutover gates.
 
+### 6. Publish a coherent canonical capacity snapshot
+
+Live post-apply evidence exposed a producer race: queue observation starts before the roughly
+eight-second aggregate, but capacity is read afterwards. A concurrently committed cloud row
+then appears newer than the queue clock and is rejected as future; running/expected gauges
+disappear while queue/cloud/publisher timestamps remain fresh. The diagnostic exporter also
+reads pool membership separately from its pool-level gauges. This is a real current-path bug.
+
+Files: `src/backend/processing/services/worker_pool_metrics.py`,
+`src/backend/processing/services/worker_pool_telemetry.py`, and their focused tests.
+Read capacity and diagnostic membership once for the export, and evaluate those materialized
+rows against an observation clock taken after their reads. Keep queue provenance distinct;
+do not move its timestamp forward to hide collection duration. Reuse the same pool snapshot
+for pool-level and node-level cloud timestamps. Preserve strict rejection of actually future
+or expired observations, missing/stale capacity omission, idle-zero and all lease/claim gates.
+No database writes, migrations, broad transaction locks, fake capacity, retry polling, age
+tolerance, or alternate runtime are part of this correction.
+
+Reproduce both clock crossing and pool/node read crossing deterministically before fixing;
+retain regression coverage for genuinely future/stale rows and queue-unavailable diagnostics.
+Use independent review, final selected suites/root `make check`, one PR and green CI.
+
+The existing fully-staged forward-revision admission supports delivery without an additional
+release mode. A canonical-only backend image would violate the accepted one-SHA contract.
+Deploy one corrective immutable application/worker revision through the existing same-scope
+stage, preserving original recovery, groups, caps and local serving. Replace each worker only
+as required by that corrected revision, serially within the existing three-disk ceiling; no
+group recreation or rollback. Then repeat real source/alert/processing acceptance.
+
 ### Final task: Architecture and ADR reconciliation
 
 Confirm one-SHA release, group/cap preservation and existing data contracts after verification.

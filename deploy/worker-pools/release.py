@@ -311,6 +311,17 @@ def transition(gateway, name, manifest, *, timeout=1800, pause=5):
             floor = 1
             snapshot = gateway.observe()[name]
         step, member = next_step(snapshot, build)
+        if (
+            name == "bulk"
+            and snapshot["fresh"]
+            and snapshot["active_build"] == build
+            and snapshot["staged_build"] is None
+            and not snapshot["claims_paused"]
+            and snapshot.get("target_size") == 0
+            and all(row["status"] == "DELETED" for row in snapshot["observed_members"])
+            and all(not m["grant"] or m["reconciled"] for m in snapshot["members"])
+        ):
+            return
         if step == "verified":
             return
         if step == "retire":

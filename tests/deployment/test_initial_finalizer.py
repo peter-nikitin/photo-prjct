@@ -180,7 +180,54 @@ def test_health_gates_fail_closed(tmp_path, gate, monkeypatch):
         return SimpleNamespace(stdout="")
 
     with pytest.raises(ValueError):
-        finalizer.health_gates(tmp_path, SimpleNamespace(run=run, compose=["docker", "compose"]))
+        finalizer.health_gates(
+            tmp_path,
+            SimpleNamespace(
+                run=run,
+                compose=["docker", "compose"],
+                journal=SimpleNamespace(
+                    data={
+                        "candidate": {
+                            "manifest": {"configuration": {"private_api_ipv4": "10.20.30.40"}}
+                        }
+                    }
+                ),
+            ),
+        )
+
+
+def test_private_health_probe_uses_receipt_manifest_address(tmp_path, monkeypatch):
+    finalizer = module()
+    monkeypatch.setattr(finalizer.time, "time", lambda: 1000)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[:2] == ["systemctl", "show"]:
+            return SimpleNamespace(
+                stdout="Result=success\nExecMainStatus=0\nExecMainExitTimestamp=recent\n"
+            )
+        if command[0] == "date":
+            return SimpleNamespace(stdout="999")
+        if command[0] == "curl":
+            return SimpleNamespace(stdout="401")
+        if command[0] == "docker" and command[1] == "inspect":
+            return SimpleNamespace(stdout="journald|findme.service=" + command[-1])
+        if "ps" in command:
+            return SimpleNamespace(stdout=command[-1])
+        return SimpleNamespace(stdout="")
+
+    host = SimpleNamespace(
+        run=run,
+        compose=["docker", "compose"],
+        journal=SimpleNamespace(
+            data={"candidate": {"manifest": {"configuration": {"private_api_ipv4": "10.20.30.40"}}}}
+        ),
+    )
+    finalizer.health_gates(tmp_path, host)
+    private = next(command for command in commands if command[0] == "curl")
+    assert private[private.index("--resolve") + 1] == "findme-photo.ru:8443:10.20.30.40"
+    assert private[-1] == "https://findme-photo.ru:8443/internal/photo-processing/v1/claim"
 
 
 def test_workflow_finalizer_bypasses_deployment_jobs():

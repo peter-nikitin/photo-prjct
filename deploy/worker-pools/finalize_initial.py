@@ -83,6 +83,9 @@ def cleanup_owned(root, scope):
 
 
 def health_gates(root, host):
+    private_api_ipv4 = host.journal.data["candidate"]["manifest"]["configuration"][
+        "private_api_ipv4"
+    ]
     env = {
         **os.environ,
         "DEPLOY_ROOT": str(root),
@@ -146,7 +149,7 @@ def health_gates(root, host):
             "--max-time",
             "15",
             "--resolve",
-            "findme-photo.ru:8443:127.0.0.1",
+            f"findme-photo.ru:8443:{private_api_ipv4}",
             "--output",
             "/dev/null",
             "--write-out",

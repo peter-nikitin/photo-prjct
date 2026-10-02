@@ -29,6 +29,7 @@ STALE_END = 21 * 60
 RECOVERED_END = 25 * 60
 RUN_END = 29 * 60
 EXPIRY_SECONDS = 32 * 60
+EVALUATION_DELAY_SECONDS = 120  # Documented global Managed Prometheus rule evaluation delay.
 EVALUATION_MAX_AGE = 300  # Includes the provider's two-minute evaluation delay.
 POLL_SECONDS = 30
 REQUIRED_EVIDENCE = frozenset(
@@ -550,17 +551,19 @@ def status(
                 {"alert": key[0], "pool": key[1], "state": key[2], "sample_at": sample_time}
             )
     _production(control_module, config, transport)
+    predicate_at = evaluated_at - EVALUATION_DELAY_SECONDS
     return {
         "run_id": run_id,
         "evaluated_at": evaluated_at,
-        "phase": _scenario(receipt["started_at"], evaluated_at),
+        "predicate_at": predicate_at,
+        "phase": _scenario(receipt["started_at"], predicate_at),
         "alerts": sorted(alerts, key=lambda item: (item["alert"], item["pool"])),
         "delivery": "unverified",
     }
 
 
 def audit_observation(start: int, observation: dict[str, Any], seen: set[str]) -> None:
-    elapsed = observation["evaluated_at"] - start
+    elapsed = observation["predicate_at"] - start
     states = {(item["alert"], item["pool"], item["state"]) for item in observation["alerts"]}
     pools = ("bulk", "selfie")
     if 120 <= elapsed < HEALTHY_END and not states:

@@ -339,13 +339,111 @@ def test_status_requires_fresh_exact_evaluation_and_never_claims_delivery(
         drill.status(control, cfg, transport, path, "123456", "a" * 40, now=evaluation + 150)
 
 
+def test_status_audits_complete_captured_trace_with_effective_predicate_clock(
+    modules, tmp_path, monkeypatch
+):
+    # Complete elapsed timestamps/active states from cleaned-up live drill 36956138231.
+    start = 1790908473
+    control, drill, cfg, transport, path, _, _ = alert_status_fixture(
+        modules, tmp_path, monkeypatch, start=start
+    )
+    pools = ("bulk", "selfie")
+    ready = [("WorkerReadyWorkOverdue", pool, "firing") for pool in pools]
+    source = (
+        "WorkerCloudObservationMissing",
+        "WorkerNativePublisherMissing",
+        "WorkerQueueObservationMissing",
+    )
+    diagnostics = ("WorkerHostDiagnosticsMissing", "WorkerRuntimeDiagnosticsMissing")
+    patterns = (
+        [],
+        ready,
+        [("WorkerPoolSaturated", pool, "pending") for pool in pools] + ready,
+        [("WorkerPoolSaturated", pool, "firing") for pool in pools] + ready,
+        [(alert, "bulk", "firing") for alert in source]
+        + [(alert, "selfie", "firing") for alert in diagnostics],
+        [(alert, pool, "firing") for alert in diagnostics for pool in pools],
+        [(alert, "selfie", "firing") for alert in source]
+        + [(alert, "bulk", "firing") for alert in diagnostics],
+    )
+    trace = (
+        (7, 0),
+        (94, 0),
+        (124, 0),
+        (184, 0),
+        (245, 0),
+        (302, 0),
+        (381, 1),
+        (425, 2),
+        (484, 2),
+        (541, 2),
+        (604, 2),
+        (694, 3),
+        (721, 3),
+        (783, 3),
+        (842, 3),
+        (903, 4),
+        (961, 4),
+        (1021, 4),
+        (1082, 4),
+        (1144, 5),
+        (1212, 5),
+        (1263, 6),
+        (1325, 6),
+        (1384, 0),
+        (1442, 0),
+        (1503, 0),
+        (1564, 0),
+        (1622, 0),
+        (1681, 0),
+    )
+    labels = transport.alerts["data"]["result"][0]["metric"]
+    seen, first, observations = set(), {}, []
+    for elapsed, pattern in trace:
+        evaluated_at = start + elapsed
+        for entry in transport.snapshot["snapshotByGroup"]["findme-worker-activation-drill"]:
+            entry["evaluatedAtTimeEpochMs"] = evaluated_at * 1000
+        transport.alerts["data"]["result"] = [
+            {
+                "metric": {**labels, "alertname": alert, "pool": pool, "alertstate": state},
+                "value": [evaluated_at, "1"],
+            }
+            for alert, pool, state in patterns[pattern]
+        ]
+        observed = drill.status(
+            control, cfg, transport, path, "123456", "a" * 40, now=evaluated_at + 150
+        )
+        assert transport.calls[-2][1].endswith(f"&time={evaluated_at}")
+        observations.append(observed)
+        before = seen.copy()
+        drill.audit_observation(start, observed, seen)
+        for evidence in seen - before:
+            first[evidence] = elapsed
+    assert seen == drill.REQUIRED_EVIDENCE
+    assert first == {
+        "healthy": 245,
+        "saturation-pending": 425,
+        "saturation-firing": 721,
+        "source-missing": 1021,
+        "retained-stale": 1263,
+        "recovered": 1503,
+    }
+    for observed in observations:
+        assert observed["predicate_at"] == observed["evaluated_at"] - 120
+        assert observed["phase"] == drill._scenario(start, observed["predicate_at"])
+        assert all(item["sample_at"] == observed["evaluated_at"] for item in observed["alerts"])
+        assert observed["delivery"] == "unverified"
+    assert observations[0]["predicate_at"] < start
+
+
 def test_finite_audit_requires_both_pool_pending_firing_missing_stale_and_recovery(modules):
     _, drill = modules
     seen = set()
 
     def observed(minute, state_rows):
         return {
-            "evaluated_at": 1_000_000_000 + minute * 60,
+            "evaluated_at": 1_000_000_000 + minute * 60 + 120,
+            "predicate_at": 1_000_000_000 + minute * 60,
             "alerts": [
                 {"alert": alert, "pool": pool, "state": state, "sample_at": 0}
                 for alert, pool, state in state_rows
@@ -384,15 +482,41 @@ def test_finite_audit_requires_both_pool_pending_firing_missing_stale_and_recove
     assert seen == drill.REQUIRED_EVIDENCE
 
 
-def alert_status_fixture(modules, tmp_path, monkeypatch, *, minute=11):
+@pytest.mark.parametrize(
+    "elapsed,problem",
+    [(1139, "stale"), (1260, "stale"), (1143, "pool"), (1143, "pending"), (1379, "recovery")],
+)
+def test_effective_clock_does_not_credit_early_or_wrong_state_evidence(modules, elapsed, problem):
+    _, drill = modules
+    start = 1_000_000_000
+    states = [
+        {"alert": alert, "pool": "selfie", "state": "firing"}
+        for alert in drill.EXPECTED_ALERTS[2:5]
+    ] + [{"alert": alert, "pool": "bulk", "state": "firing"} for alert in drill.EXPECTED_ALERTS[5:]]
+    if problem == "pool":
+        for item in states:
+            item["pool"] = "bulk" if item["pool"] == "selfie" else "selfie"
+    elif problem == "pending":
+        states[0]["state"] = "pending"
+    elif problem == "recovery":
+        states = []
+    seen = set()
+    drill.audit_observation(
+        start,
+        {"evaluated_at": start + elapsed + 120, "predicate_at": start + elapsed, "alerts": states},
+        seen,
+    )
+    assert seen == set()
+
+
+def alert_status_fixture(modules, tmp_path, monkeypatch, *, minute=11, start=1_000_000_000):
     control, drill = modules
     cfg = config(control)
     transport = Transport(control, cfg)
     monkeypatch.setattr(control, "_preflight_workers", lambda *_args, **_kwargs: None)
     path = tmp_path / "receipt.json"
-    start = 1_000_000_000
     drill.start_run(control, cfg, transport, path, "123456", "a" * 40, now=start)
-    evaluation = start + minute * 60
+    evaluation = start + minute * 60 + 120
     transport.snapshot = {
         "snapshotByGroup": {
             "findme-worker-activation-drill": [

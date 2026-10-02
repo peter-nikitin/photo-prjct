@@ -1566,6 +1566,69 @@ def test_transition_allows_observed_provider_boot_and_warmup_before_retirement(
     assert len(host.states["bulk"]["members"]) == 1
 
 
+def test_transition_waits_for_granted_retirement_without_reapplying_floor(tmp_path, monkeypatch):
+    release, host, new, _ = capped_fleet(tmp_path, monkeypatch)
+    for snapshot in host.states.values():
+        snapshot["claims_paused"] = True
+        snapshot["local_claims_paused"] = False
+        snapshot["members"][0]["serving"] = False
+    observe, control = host.observe, host.control
+    pending = None
+    stopping_polls = 0
+    elapsed = 0
+
+    def grant_retirement(operation, **args):
+        nonlocal pending
+        if operation != "retire":
+            return control(operation, **args)
+        assert pending is None
+        pending = args
+        victim = args["identity"]["instance_id"]
+        member = next(m for m in host.states["bulk"]["members"] if m["instance_id"] == victim)
+        member.update(grant="retirement-grant", draining=True, warm=False, serving=False)
+        host.cloud.instances[victim]["status"] = "STOPPING"
+        for row in host.cloud.members["bulk-group"]:
+            if row["instanceId"] == victim:
+                row["status"] = "STOPPING_INSTANCE"
+        for row in host.states["bulk"]["observed_members"]:
+            if row["instance_id"] == victim:
+                row["status"] = "STOPPING_INSTANCE"
+        return {"ok": True}
+
+    def observe_retirement():
+        nonlocal stopping_polls, pending
+        if pending is not None:
+            stopping_polls += 1
+            if stopping_polls == 1:
+                assert release.next_step(observe()["bulk"], "b" * 40) == ("wait", None)
+                with pytest.raises(ValueError, match="stopped or transitional"):
+                    host.disk_fence(new)
+            else:
+                control("retire", **pending)
+                pending = None
+        return observe()
+
+    def advance(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    host.control, host.observe = grant_retirement, observe_retirement
+    monkeypatch.setattr(release.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(release.time, "sleep", advance)
+    release.transition(host, "bulk", new)
+    assert stopping_polls == 2
+    assert 0 < elapsed < 1800
+    assert [event for event in host.events if event[0] == "template"] == [
+        ("template", "bulk", 2),
+        ("template", "bulk", 1),
+    ]
+    assert host.states["bulk"]["active_build"] == "b" * 40
+    assert len(host.states["bulk"]["members"]) == 1
+    assert "bulk-old" not in host.cloud.instances
+    assert "bulk-old-disk" not in host.cloud.disks
+    assert len(host.cloud.disks) == 2
+
+
 @pytest.mark.parametrize("mode", ["rollout", "rollback"])
 def test_retained_disk_blocks_next_pool_and_reentry_until_complete_absence(
     tmp_path, monkeypatch, mode

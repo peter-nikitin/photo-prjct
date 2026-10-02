@@ -180,6 +180,26 @@ stage, preserving original recovery, groups, caps and local serving. Replace eac
 as required by that corrected revision, serially within the existing three-disk ceiling; no
 group recreation or rollback. Then repeat real source/alert/processing acceptance.
 
+### 7. Keep the approved retirement wait reachable
+
+A deterministic reproduction of the previously observed post-promotion stop reaches:
+stage, floor two, promote, floor one, strict pre-retirement disk fence, retirement grant,
+old VM stopping. `next_step` correctly requests waiting, but `transition` first calls the
+already-applied floor-one template again; its strict disk fence rejects that expected
+transitional allocation. This prevents the existing bounded wait from running.
+
+Files: `deploy/worker-pools/release.py` and `tests/deployment/test_worker_pool_release.py`.
+Track the successfully applied floor within the current transition invocation using its
+existing floor variable. Lower to one once after promotion, then continue observing/waiting
+without redundant template calls. Preserve the initial/re-entry template reconciliation,
+the strict pre-retirement disk fence, the transition timeout and final settled disk fence.
+Do not suppress inventory errors, relax ownership/capacity checks, add a new retry framework
+or change final disk-absence acceptance. Test the exact stop/wait sequence RED/GREEN and
+retain re-entry no-expansion and strict fence-failure regressions.
+
+Deliver this separate corrective task in the same pending PR/release as Task 6, with a final
+combined package review, selector-required suites and root `make check` before merge.
+
 ### Final task: Architecture and ADR reconciliation
 
 Confirm one-SHA release, group/cap preservation and existing data contracts after verification.

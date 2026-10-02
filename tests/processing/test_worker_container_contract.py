@@ -275,29 +275,18 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
     assert "capture_metadata" not in selfie["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
 
 
-def test_deployment_worker_profile_is_bounded_and_isolated_from_web_configuration() -> None:
-    """The deployed worker has only its private API contract and declared resource bounds."""
+def test_deployment_has_only_remote_photo_workers_and_preserves_shared_services() -> None:
+    """Production Compose cannot grant local photo claims, but keeps shared services."""
     compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
-    bulk = compose["services"]["worker-bulk"]
-    selfie = compose["services"]["worker-selfie"]
-
-    for worker in (bulk, selfie):
-        assert worker["image"] == "${WORKER_IMAGE:-}"
-        assert worker["profiles"] == ["worker"]
-        assert worker.get("ports") is None
-        assert worker.get("env_file") is None
-        assert worker["depends_on"] == {"web": {"condition": "service_healthy"}}
-        assert worker["restart"] == "unless-stopped"
-        assert worker["cpus"] == "${PHOTO_WORKER_CPUS:-1.0}"
-        assert worker["mem_limit"] == "${PHOTO_WORKER_MEMORY_LIMIT:-2g}"
-        assert worker["pids_limit"] == 64
-        assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
-    assert bulk["environment"]["PHOTO_WORKER_HTTP_TIMEOUT_SECONDS"] == (
-        "${PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS:-180}"
+    services = compose["services"]
+    assert set(services) == {"db", "web", "import-worker", "commerce-worker"}
+    assert services["import-worker"]["profiles"] == ["import"]
+    assert services["commerce-worker"]["profiles"] == ["commerce"]
+    assert services["web"]["environment"]["PHOTO_PROCESSING_FLEET_TOKEN"] == (
+        "${PHOTO_PROCESSING_FLEET_TOKEN:-}"
     )
-    assert selfie["environment"]["PHOTO_WORKER_HTTP_TIMEOUT_SECONDS"] == (
-        "${PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS:-900}"
-    )
+    for service in services.values():
+        assert "PHOTO_PROCESSING_WORKER_TOKEN" not in service.get("environment", {})
 
 
 def test_default_compose_config_interpolates_example_without_enabling_the_worker() -> None:

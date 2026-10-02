@@ -222,7 +222,8 @@ class SubmissionTests(TestCase):
         detection_id: UUID | None = None,
         geometry: dict[str, object] | None = None,
         input_fingerprint: dict[str, int | str | None] | None = None,
-    ) -> FaceEmbedding:
+        vector_only: bool = False,
+    ) -> FaceEmbedding | FaceEmbeddingVector:
         configuration = configuration if configuration is not None else FACE_EMBEDDING_CONFIGURATION
         configuration_hash = (
             configuration_hash
@@ -301,7 +302,8 @@ class SubmissionTests(TestCase):
                 }
             ),
         )
-        embedding = FaceEmbedding.objects.create(
+        store = FaceEmbeddingVector if vector_only else FaceEmbedding
+        embedding = store.objects.create(
             detection=detection,
             model_version=model,
             vector=vector if vector is not None else [0.0] * dimensions,
@@ -316,6 +318,47 @@ class SubmissionTests(TestCase):
                 accepted_attempt=attempt,
             )
         return embedding
+
+    def test_vector_only_gallery_source_presentation_submission_and_completion(self) -> None:
+        from processing.services.face_quality import adaface_face_embedding_generations
+
+        generation = adaface_face_embedding_generations()[0]
+        configuration = generation["configuration"]
+        assert isinstance(configuration, dict)
+        configuration["embedding_storage"] = "vector_only"
+        generation["configuration_hash"] = hashlib.sha256(
+            json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        configuration_hash = generation["configuration_hash"]
+        assert isinstance(configuration_hash, str)
+        native = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="vector-only-source",
+            model="adaface-ir18-webface4m",
+            dimensions=512,
+            vector=[1.0] + [0.0] * 511,
+            contract_version=3,
+            processor_version=5,
+            configuration=configuration,
+            configuration_hash=configuration_hash,
+            vector_only=True,
+        )
+        photo = native.detection.attempt.photo
+        with patch(
+            "selfie_search.services.submission._face_embedding_generations",
+            return_value=(generation,),
+        ):
+            faces = gallery_search_faces_by_photo(event=self.event, photos=(photo,))
+            self.assertEqual(
+                [crop.detection_id for crop in faces.get(photo.pk, ())], [str(native.detection_id)]
+            )
+            created = submit_gallery_photo_search(
+                event=self.event, photo=photo, detection_id=native.detection_id, user=self.user
+            )
+            result = process_gallery_photo_search(search=created.search)
+        self.assertEqual(result.status, SelfieSearch.Status.READY)
+        self.assertEqual(result.results.get().photo_id, photo.pk)
+        self.assertFalse(FaceEmbedding.objects.exists())
 
     def test_staff_context_is_server_only_frozen_and_callback_uses_current_gate(self) -> None:
         self.user.is_staff = True
@@ -1102,6 +1145,25 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.user = get_user_model().objects.create_user(username="gallery-search-owner")
         self.event = self.make_event("gallery", "free")
         self.other_event = self.make_event("other-gallery", "free")
+
+    def test_gallery_submission_locks_event_before_freezing_generation(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="event-lock-source", vector=[1.0] + [0.0] * 127
+        )
+        with CaptureQueriesContext(connection) as queries:
+            created = submit_gallery_photo_search(
+                event=self.event,
+                photo=embedding.detection.attempt.photo,
+                detection_id=embedding.detection_id,
+                user=self.user,
+            )
+        self.assertEqual(created.search.status, "queued")
+        self.assertTrue(
+            any(
+                '"picflow_event"' in query["sql"] and "FOR UPDATE" in query["sql"]
+                for query in queries
+            )
+        )
 
     def make_photo(self, *, event: Event, photo_id: str) -> Photo:
         return Photo.objects.create(

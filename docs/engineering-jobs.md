@@ -61,7 +61,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-027 | Maintainer | Gate bib-recognition activation | Validated | 2026-09-25 |
 | EJ-028 | Maintainer | Issue bounded direct gallery preview capabilities | In progress | 2026-09-15 |
 | EJ-030 | Maintainer | Move exact face search into PostgreSQL with controlled reading | In progress | 2026-09-27 |
-| EJ-031 | Operator | Isolate and autoscale photo-worker capacity | In progress | 2026-09-29 |
+| EJ-031 | Operator | Isolate and autoscale photo-worker capacity | In progress | 2026-10-02 |
 
 ## Job details
 
@@ -653,35 +653,34 @@ work does not consume the public web/database host's resources and idle bulk cap
 
 - Status: In progress
 - Evidence: [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md) and the
-  [approved implementation plan](plans/2026-09-27-autoscaled-worker-isolation.md) govern repository
-  preparation. Private transport, durable admission/retirement, read-only demand publication and
-  bounded fleet templates and canonical release integration are implemented. Repository
-  verification does not establish paid resources, IAM/network and
-  certificate acceptance, production cutover or native autoscaler behavior; those remain unverified.
-  The main VM, import/commerce placement, recognition features and historical events are not
-  changed by repository preparation.
+  [remote-only plan](plans/2026-10-02-remote-only-photo-worker-operations.md) govern the current
+  release. Private transport, durable admission/retirement, demand publication, bounded fleet
+  templates and canonical remote release integration are implemented. The last production read
+  showed both remote pools serving under the initial `verified` receipt, with no local
+  photo/selfie containers; that receipt is not yet `committed`. The new repository package adds
+  an exact one-time finalizer and removes production local worker/recovery branches. Its finalizer
+  operation, cleanup, remote-only Deploy and fresh live acceptance remain pending. The main VM
+  continues to host web/DB, import and Commerce paths; historical backfill has not started.
   The [capped activation plan](plans/2026-09-29-capped-worker-pool-activation.md) preserves native
   workload scaling with bulk 0..1/selfie 1..1, rather than a fixed-capacity deployment. Serial
   release/rollback restores the reviewed ceiling and fences expansion on complete provider
-  inventory and obsolete-disk absence; these repository controls do not prove provider behavior.
-  Fresh quota, real provider lifecycle and production cutover remain separate live gates.
+  inventory and obsolete-disk absence. Fresh quota, lifecycle and actual scale-to-zero/return
+  remain live read-back gates.
   The [phase-one telemetry plan](plans/2026-09-28-worker-telemetry-collection.md) adds default-off
   runtime/host diagnostics through a private authenticated receiver and the existing canonical
   Managed Prometheus channel. Actual local TLS/container, renewal-under-ingestion-failure and
   isolated previous-snapshot additive migration rehearsals cover repository behavior only.
-  Missing/stale observations remain unknown, not healthy zeros. No worker VM telemetry, cloud
-  ingestion, diagnostic alert or notification acceptance is claimed.
+  Missing/stale observations remain unknown, not healthy zeros. Fresh metric timestamps and
+  recipient notification evidence must be checked separately for the new release.
   [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) and the
   [approved folder specification](superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
   add repository support for distinct worker/canonical folder ownership, scoped direct IAM
   prerequisite checks, canonical native-metric publication, and two-folder immutable release
   inputs. Local provision/observation/release fixtures exercise the cap-one disk and recovery
   fences. The [dated handoff](operations/2026-09-30-worker-folder-operational-handoff.md)
-  identifies unresolved new resource IDs, effective organization policy, exact SG/IAM/secret
-  approvals, real provider lifecycle, Git-owned cap-one alert delivery, ADR 0043 workspace/API
-  gates and live processing/cutover proof. Current local placement is not evidence of any of
-  those remote capabilities.
-- Last updated: 2026-09-30
+  is historical preparation; fresh group/claim/lease, provider/disk, collector and health reads
+  govern the pending production transition.
+- Last updated: 2026-10-02
 
 ## Status log
 

@@ -2,10 +2,7 @@ import base64
 import importlib.util
 import json
 import os
-import shlex
 import subprocess
-import sys
-import tarfile
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import Mock
@@ -697,7 +694,11 @@ class FakeCloud:
         if pool == "selfie" and self.fail_second:
             raise TimeoutError("lost response")
         resource = f"{pool}-group"
-        self.groups.append(body | {"id": resource, "status": "ACTIVE"})
+        if method == "PATCH":
+            target = next(row for row in self.groups if row["id"] == resource)
+            target.update({key: value for key, value in body.items() if key != "updateMask"})
+        else:
+            self.groups.append(body | {"id": resource, "status": "ACTIVE"})
         return {"id": f"{pool}-operation", "metadata": {"instanceGroupId": resource}}
 
 
@@ -912,44 +913,6 @@ def test_inspection_rejects_redundant_worker_folder_vpc_grant():
         provision.inspect(conf, cloud)
 
 
-@pytest.mark.parametrize("pool_max_size", [1, 2])
-def test_initial_creation_records_exact_ids_and_never_writes_prerequisites(tmp_path, pool_max_size):
-    provision = module("provision")
-    conf = config(pool_max_size)
-    cloud = FakeCloud(provision, conf)
-    receipt = provision.apply(
-        conf,
-        provision.prepare(conf)["checksum"],
-        cloud=cloud,
-        receipt_path=tmp_path / "receipt.json",
-        eligibility=lambda candidate, sha: {
-            "eligible": True,
-            "checksum": sha,
-            "predecessors": None,
-        },
-    )
-    assert [call[:2] for call in cloud.calls] == [
-        ("POST", "instanceGroups"),
-        ("POST", "instanceGroups"),
-    ]
-    assert receipt["groups"]["bulk"]["id"] == "bulk-group"
-    assert receipt["groups"]["selfie"]["id"] == "selfie-group"
-    assert receipt["folder_id"] == "worker-folder"
-    assert receipt["canonical_folder_id"] == "canonical-folder"
-    assert json.loads((tmp_path / "receipt.json").read_text()) == receipt
-    read_back = provision.status(conf, cloud)
-    for pool in ("bulk", "selfie"):
-        assert read_back[pool]["id"] == f"{pool}-group"
-        assert (
-            read_back[pool]["scale_policy"]
-            == provision.prepare(conf)["groups"][pool]["scalePolicy"]
-        )
-        assert read_back[pool]["baseline"] == provision.managed_baseline(
-            cloud.groups[0 if pool == "bulk" else 1]
-        )
-    assert len(cloud.calls) == 2
-
-
 def test_cap_one_inspection_and_status_are_read_only_and_policy_drift_blocks_apply(tmp_path):
     provision = module("provision")
     conf = config(1)
@@ -977,12 +940,19 @@ def test_cap_one_inspection_and_status_are_read_only_and_policy_drift_blocks_app
     assert not (tmp_path / "receipt.json").exists()
 
 
-def test_partial_creation_or_uncertain_response_requires_reconciliation_not_automatic_retry(
+def test_partial_update_or_uncertain_response_requires_reconciliation_not_automatic_retry(
     tmp_path,
 ):
     provision = module("provision")
     conf = config()
     cloud = FakeCloud(provision, conf)
+    cloud.groups = [
+        body | {"id": f"{pool}-group"} for pool, body in provision.prepare(conf)["groups"].items()
+    ]
+    conf["groups"] = {
+        pool: {"id": f"{pool}-group", "baseline": provision.managed_baseline(cloud.groups[index])}
+        for index, pool in enumerate(("bulk", "selfie"))
+    }
     cloud.fail_second = True
     path = tmp_path / "receipt.json"
     checksum = provision.prepare(conf)["checksum"]
@@ -992,11 +962,6 @@ def test_partial_creation_or_uncertain_response_requires_reconciliation_not_auto
             checksum,
             cloud=cloud,
             receipt_path=path,
-            eligibility=lambda candidate, sha: {
-                "eligible": True,
-                "checksum": sha,
-                "predecessors": None,
-            },
         )
     receipt = json.loads(path.read_text())
     assert receipt["groups"]["bulk"]["state"] == "submitted"
@@ -1009,203 +974,19 @@ def test_partial_creation_or_uncertain_response_requires_reconciliation_not_auto
     assert provision.status(conf, cloud)["bulk"]["id"] == "bulk-group"
 
 
-@pytest.mark.parametrize(
-    "failure", ["missing", "stale", "unknown", "predecessor-group", "orphan-disk"]
-)
-def test_create_requires_fresh_canonical_eligibility_and_complete_clean_inventory(
-    tmp_path, failure
-):
+def test_initial_creation_is_rejected_without_cloud_or_receipt_mutation(tmp_path):
     provision = module("provision")
-    conf = config(1) | {
-        "predecessors": {
-            name: {"group_id": f"{name}-old", "active_build": "c" * 40}
-            for name in ("bulk", "selfie")
-        }
-    }
+    conf = config()
     cloud = FakeCloud(provision, conf)
-    if failure == "predecessor-group":
-        cloud.groups = [{"id": "bulk-old", "name": "retired", "folderId": "worker-folder"}]
-    if failure == "orphan-disk":
-        original_pages = cloud.pages
-        cloud.pages = lambda path, key, **kw: (
-            [{"id": "orphan-disk"}] if path == "disks" else original_pages(path, key, **kw)
-        )
-    checksum = provision.prepare(conf)["checksum"]
-
-    def eligibility(candidate, sha):
-        if failure == "unknown":
-            raise OSError("canonical unavailable")
-        return {
-            "eligible": True,
-            "checksum": "0" * 64 if failure == "stale" else sha,
-            "predecessors": candidate.get("predecessors"),
-        }
-
-    with pytest.raises((ValueError, OSError)):
+    with pytest.raises(ValueError, match="existing managed group IDs required"):
         provision.apply(
             conf,
-            checksum,
+            provision.prepare(conf)["checksum"],
             cloud=cloud,
             receipt_path=tmp_path / "receipt.json",
-            eligibility=None if failure == "missing" else eligibility,
         )
     assert cloud.calls == []
     assert not (tmp_path / "receipt.json").exists()
-
-
-def test_operator_create_queries_pinned_canonical_receiver_over_bounded_ssh():
-    provision = module("provision")
-    conf = config(1)
-    checksum = provision.prepare(conf)["checksum"]
-    calls = []
-
-    def run(command, **kwargs):
-        calls.append((command, kwargs))
-        return Mock(
-            stdout=json.dumps({"eligible": True, "checksum": checksum, "predecessors": None})
-        )
-
-    result = provision.ssh_eligibility(
-        conf,
-        checksum,
-        target="operator@111.88.151.64",
-        root=Path("/opt/photo-prjct"),
-        manifest=Path("/opt/photo-prjct/creation.json"),
-        run=run,
-    )
-    assert result["eligible"] is True
-    command, kwargs = calls[0]
-    assert command[:2] == ["ssh", "-T"]
-    assert "BatchMode=yes" in command and "StrictHostKeyChecking=yes" in command
-    assert command[-2] == "operator@111.88.151.64"
-    assert (
-        "sudo -n env PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical "
-        "python3 -B /opt/photo-prjct/deploy/worker-pools/release.py eligibility" in command[-1]
-    )
-    assert checksum in command[-1]
-    assert kwargs["timeout"] <= 45 and kwargs["stdin"] is subprocess.DEVNULL
-    assert kwargs["check"] is True
-    with pytest.raises(ValueError):
-        provision.ssh_eligibility(
-            conf,
-            checksum,
-            target="-oProxyCommand=bad",
-            root=Path("/opt/photo-prjct"),
-            manifest=Path("/opt/photo-prjct/creation.json"),
-            run=run,
-        )
-
-
-def test_canonical_eligibility_command_reaches_validation_from_package_only_layout(tmp_path):
-    archive = tmp_path / "package.tar"
-    packaged = subprocess.run(
-        ["sh", str(ROOT / "deploy/package-deployment.sh"), str(archive)],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert packaged.returncode == 0, packaged.stderr
-    installed = tmp_path / "installed"
-    installed.mkdir()
-    with tarfile.open(archive) as package:
-        package.extractall(installed, filter="data")
-    assert not (installed / "src/backend/processing").exists()
-    manifest = installed / "creation.json"
-    manifest.write_text("{}")
-
-    provision = module("provision")
-    commands = []
-
-    def capture(command, **_kwargs):
-        commands.append(command)
-        return Mock(
-            stdout=json.dumps({"eligible": True, "checksum": "reviewed", "predecessors": None})
-        )
-
-    provision.ssh_eligibility(
-        config(1),
-        "reviewed",
-        target="operator@canonical.example",
-        root=installed,
-        manifest=manifest,
-        run=capture,
-    )
-    remote = shlex.split(commands[0][-1])
-    assert remote[:2] == ["sudo", "-n"]
-    remote[remote.index("python3")] = sys.executable
-    clean_env = {"PATH": os.environ["PATH"]}
-    result = subprocess.run(
-        remote[2:],
-        cwd=tmp_path,
-        env=clean_env,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 1
-    assert result.stderr.strip() == (
-        "canonical worker release failed; inspect durable receipt and retain compatible web"
-    )
-    assert not list(installed.rglob("__pycache__"))
-    assert not list(installed.rglob("*.pyc"))
-
-
-def test_second_create_waits_for_receipt_owned_first_group_inventory_to_settle(
-    tmp_path, monkeypatch
-):
-    provision = module("provision")
-    conf = config(1)
-
-    class SettlingCloud(FakeCloud):
-        def __init__(self):
-            super().__init__(provision, conf)
-            self.incomplete_reads = 0
-
-        def pages(self, path, key, **parameters):
-            if path == "instanceGroups" and self.groups:
-                return [{"id": row["id"], "name": row["name"]} for row in self.groups]
-            if path == "instanceGroups/bulk-group/instances":
-                self.incomplete_reads += 1
-                if self.incomplete_reads == 1:
-                    return [{"status": "CREATING_INSTANCE", "instanceId": ""}]
-                return [{"status": "RUNNING_ACTUAL", "instanceId": "bulk-node"}]
-            if path == "instances" and self.groups:
-                return [{"id": "bulk-node"}]
-            if path == "disks" and self.groups:
-                return [{"id": "bulk-disk"}]
-            return super().pages(path, key, **parameters)
-
-        def get(self, path, **parameters):
-            if path == "instances/bulk-node":
-                return {
-                    "id": "bulk-node",
-                    "folderId": "worker-folder",
-                    "bootDisk": {"diskId": "bulk-disk"},
-                    "secondaryDisks": [],
-                }
-            return super().get(path, **parameters)
-
-    cloud = SettlingCloud()
-    settle = provision.settle_create_inventory
-    monkeypatch.setattr(
-        provision,
-        "settle_create_inventory",
-        lambda *args: settle(*args, timeout=1, pause=0, sleep=lambda _: None),
-    )
-    checksum = provision.prepare(conf)["checksum"]
-    receipt = provision.apply(
-        conf,
-        checksum,
-        cloud=cloud,
-        receipt_path=tmp_path / "receipt.json",
-        eligibility=lambda candidate, sha: {
-            "eligible": True,
-            "checksum": sha,
-            "predecessors": None,
-        },
-    )
-    assert cloud.incomplete_reads >= 2
-    assert [call[0] for call in cloud.calls] == ["POST", "POST"]
-    assert receipt["groups"]["selfie"]["state"] == "submitted"
 
 
 def test_existing_unknown_duplicate_and_drifted_targets_are_rejected_before_mutation(tmp_path):

@@ -6,7 +6,8 @@
 - Supersedes: ADR 0003 and ADR 0028 for photo-worker placement on the designated VM only;
   ADR 0017 for a separate pre-activation capacity-measurement requirement for this relocation;
   ADR 0018 for observation-only monitoring metrics used by these worker autoscalers only
-- Superseded by: none
+- Superseded by: [ADR 0049](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
+  only for post-acceptance recovery through on-host photo workers
 
 ## Context
 

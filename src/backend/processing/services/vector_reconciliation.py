@@ -14,6 +14,7 @@ from picflow.models import Event
 from processing.models import FaceEmbedding, FaceEmbeddingVector
 from processing.services.face_cohort import eligible_face_detections
 from processing.services.vector_embeddings import (
+    generation_uses_vector_only_storage,
     non_vector_metadata,
     validate_embedding,
     vector_values,
@@ -118,8 +119,8 @@ def iter_reconciliation_rows(
 ) -> Iterator[dict[str, Any]]:
     """Both representations and their scalar identity in one SQL statement/snapshot.
 
-    Rows stay private to validation; callers must never log their payload. A missing legacy
-    source is invalid during the parallel-store transition. Eligibility itself has no legacy FK.
+    Rows stay private to validation; callers must never log their payload. Frozen native
+    generations may omit JSON evidence; every other generation still requires parallel proof.
     """
     yield from (
         eligible_face_detections(event, generations)
@@ -129,6 +130,10 @@ def iter_reconciliation_rows(
             "attempt__event_id",
             "attempt__contract_version",
             "attempt__processor_version",
+            "attempt__processor_type",
+            "attempt__configuration",
+            "attempt__job__configuration",
+            "attempt__run__configuration",
             "attempt__job__configuration_hash",
             "embedding__id",
             "embedding__model_version",
@@ -158,8 +163,13 @@ def verify_embeddings(
         for generation in generations or ()
     }
     for row in iter_reconciliation_rows(event, generations):
+        configuration = row["attempt__job__configuration"]
+        frozen_model = configuration.get("face_embedding", {}).get("model")
         model = (
-            row["embedding__model_version"] or row["embedding_vector__model_version"] or "unknown"
+            row["embedding__model_version"]
+            or row["embedding_vector__model_version"]
+            or frozen_model
+            or "unknown"
         )
         key = str(row["attempt__event_id"]), model
         group = groups.setdefault(
@@ -175,6 +185,38 @@ def verify_embeddings(
         )
         if expected_model is not None and model != expected_model:
             group["invalid"] += 1
+            continue
+        generation = {
+            "contract_version": row["attempt__contract_version"],
+            "processor_type": row["attempt__processor_type"],
+            "processor_version": row["attempt__processor_version"],
+            "configuration": configuration,
+            "configuration_hash": row["attempt__job__configuration_hash"],
+            "model": frozen_model,
+        }
+        try:
+            native = generation_uses_vector_only_storage(generation)
+        except ValueError:
+            group["invalid"] += 1
+            continue
+        if native and (
+            row["attempt__configuration"] != configuration
+            or row["attempt__run__configuration"] != configuration
+        ):
+            group["invalid"] += 1
+            continue
+        if native and row["embedding__id"] is None:
+            if row["embedding_vector__id"] is None:
+                group["missing"] += 1
+            elif model != frozen_model:
+                group["invalid"] += 1
+            else:
+                try:
+                    validate_embedding(
+                        vector_values(row["embedding_vector__vector"]), model_version=model
+                    )
+                except ValueError:
+                    group["invalid"] += 1
             continue
         try:
             values = validate_embedding(row["embedding__vector"], model_version=model)
@@ -270,18 +312,25 @@ def vector_identity_gap_predicates(
 ) -> tuple[Q, Q]:
     """Share scalar store completeness with the native reader's single snapshot."""
     unexpected_model = Q()
+    vector_only = Q(pk__in=[])
     for generation in generations:
-        unexpected_model |= Q(
+        identity = Q(
             attempt__contract_version=generation["contract_version"],
             attempt__processor_version=generation["processor_version"],
             attempt__job__configuration_hash=generation["configuration_hash"],
-        ) & ~Q(embedding_vector__model_version=generation["model"])
+        )
+        unexpected_model |= identity & ~Q(embedding_vector__model_version=generation["model"])
+        if generation_uses_vector_only_storage(generation):
+            vector_only |= identity
     return (
         Q(embedding_vector__isnull=True),
         Q(embedding_vector__isnull=False)
         & (
-            Q(embedding__isnull=True)
-            | ~Q(embedding_vector__model_version=F("embedding__model_version"))
+            (Q(embedding__isnull=True) & ~vector_only)
+            | (
+                Q(embedding__isnull=False)
+                & ~Q(embedding_vector__model_version=F("embedding__model_version"))
+            )
             | unexpected_model
         ),
     )

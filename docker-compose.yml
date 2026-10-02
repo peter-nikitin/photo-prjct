@@ -27,6 +27,9 @@ services:
         required: false
     restart: unless-stopped
 
+  # Retain initial recovery until fleet complete AND historical live acceptance.
+  # Future reviewed retirement removes both local services; canonical Deploy's
+  # permanent retirement receipt prevents later local placement from reviving them.
   worker-bulk:
     build:
       context: .

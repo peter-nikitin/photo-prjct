@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from django.db import IntegrityError, transaction
+from django.db.models import Case, QuerySet, Value, When
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -38,7 +39,7 @@ from processing.services.face_quality import (
     quality_face_result_geometry,
     validate_quality_face_result,
 )
-from processing.services.vector_embeddings import persist_parallel_embedding
+from processing.services.vector_embeddings import persist_accepted_embedding
 
 DEFAULT_LEASE_SECONDS = 120
 DEFAULT_RECOVERY_LIMIT = 25
@@ -87,11 +88,10 @@ def claim_job(
                 candidates = candidates.filter(event_id=event_id)
             if configuration_hash is not None:
                 candidates = candidates.filter(configuration_hash=configuration_hash)
-            candidate = (
-                candidates.exclude(pk__in=tried)
-                .order_by("available_at", "created_at", "id")
-                .first()
-            )
+            candidates = candidates.order_by("available_at", "created_at", "id")
+            if (contract_version, processor_type, processor_version) == (3, "face_embedding", 5):
+                candidates = _prioritize_foreground(candidates)
+            candidate = candidates.exclude(pk__in=tried).first()
             if candidate is None:
                 return EmptyClaim()
             tried.add(candidate.id)
@@ -147,6 +147,31 @@ def claim_job(
                 next_attempt_at=None,
             )
             return ClaimedJob(job=job, attempt=attempt)
+
+
+def _prioritize_foreground(candidates: QuerySet[ProcessingJob]) -> QuerySet[ProcessingJob]:
+    # New photos after activation use the same vector-only configuration. Only the durable,
+    # validated enrollment receipt makes work historical; do not load biometric run reports.
+    from processing.services.historical_adaface import (
+        BACKFILL_REPORT_KEY,
+        validate_backfill_receipt,
+    )
+
+    historical_runs = []
+    for run_id, receipt in (
+        candidates.filter(run__report__has_key=BACKFILL_REPORT_KEY)
+        .order_by()
+        .values_list("run_id", f"run__report__{BACKFILL_REPORT_KEY}")
+        .distinct()
+    ):
+        try:
+            validate_backfill_receipt(receipt)
+        except ValueError:
+            continue
+        historical_runs.append(run_id)
+    return candidates.annotate(
+        historical_priority=Case(When(run_id__in=historical_runs, then=Value(1)), default=Value(0))
+    ).order_by("historical_priority", "available_at", "created_at", "id")
 
 
 def heartbeat_attempt(
@@ -662,7 +687,7 @@ def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str,
         )
         embedding = record.get("embedding")
         if embedding is not None:
-            persist_parallel_embedding(
+            persist_accepted_embedding(
                 detection=detection,
                 model_version=model,
                 vector=embedding,
@@ -722,7 +747,7 @@ def _persist_quality_face_result(
             features=features,
         )
         if face.embedding is not None:
-            persist_parallel_embedding(
+            persist_accepted_embedding(
                 detection=detection,
                 model_version=result.model,
                 vector=face.embedding,

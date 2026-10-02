@@ -326,7 +326,7 @@ class LifecycleTests(TransactionTestCase):
 
     def paused_replacement(self):
         lifecycle.set_claims_paused("selfie", paused=True)
-        lifecycle.set_claims_paused("selfie", paused=False, local=True)
+        lifecycle.set_claims_paused("selfie", paused=True, local=True)
         lifecycle.stage_build("selfie", active_build=BUILD, staged_build=NEXT)
         self.observe(
             sequence=2,
@@ -343,7 +343,7 @@ class LifecycleTests(TransactionTestCase):
         lifecycle.promote_build("selfie", active_build=BUILD, staged_build=NEXT)
         return candidate
 
-    def test_paused_release_retires_old_with_warm_new_member_and_local_claims(self):
+    def test_paused_release_retires_old_with_warm_new_member_and_local_claims_paused(self):
         candidate = self.paused_replacement()
         self.assertIsNone(lifecycle.request_retirement(candidate))
         grant = lifecycle.reserve_release_retirement(
@@ -352,7 +352,7 @@ class LifecycleTests(TransactionTestCase):
         self.assertIsNotNone(grant)
         pool = WorkerPool.objects.get(pk=self.pool.pk)
         self.assertTrue(pool.claims_paused)
-        self.assertFalse(pool.local_claims_paused)
+        self.assertTrue(pool.local_claims_paused)
         self.assertEqual(
             lifecycle.reserve_release_retirement(
                 self.envelopes[0], active_build=NEXT, staged_build=None
@@ -372,21 +372,39 @@ class LifecycleTests(TransactionTestCase):
             )
         )
 
-    def test_paused_release_can_replace_workers_while_local_work_continues(self):
+    def test_paused_selfie_release_denies_retirement_when_local_pause_is_open(self):
+        self.paused_replacement()
+        lifecycle.set_claims_paused("selfie", paused=False, local=True)
+        self.assertIsNone(
+            lifecycle.reserve_release_retirement(
+                self.envelopes[0], active_build=NEXT, staged_build=None
+            )
+        )
+        self.assertFalse(WorkerPoolMember.objects.filter(retirement_grant__isnull=False).exists())
+
+    def test_paused_bulk_release_denies_retirement_when_local_pause_is_open(self):
+        member = self.bulk_members()[0]
+        lifecycle.set_claims_paused("bulk", paused=True)
+        lifecycle.set_claims_paused("bulk", paused=False, local=True)
+        self.assertIsNone(
+            lifecycle.reserve_release_retirement(member, active_build=BUILD, staged_build=None)
+        )
+        self.assertFalse(WorkerPoolMember.objects.filter(retirement_grant__isnull=False).exists())
+
+    def test_paused_release_denies_retirement_while_unbound_live_work_continues(self):
         self.paused_replacement()
         self.make_attempt()
         self.assertEqual(lifecycle.local_live_leases("selfie"), 1)
-        self.assertIsNotNone(
+        self.assertIsNone(
             lifecycle.reserve_release_retirement(
                 self.envelopes[0], active_build=NEXT, staged_build=None
             )
         )
 
-    def test_paused_release_requires_ready_fresh_active_survivor_and_local_claims(self):
+    def test_paused_release_requires_ready_fresh_active_survivor(self):
         candidate = self.paused_replacement()
-        for problem in ("local-paused", "unready", "stale", "draining", "wrong-build"):
+        for problem in ("unready", "stale", "draining", "wrong-build"):
             with self.subTest(problem=problem):
-                lifecycle.set_claims_paused("selfie", paused=problem == "local-paused", local=True)
                 WorkerPoolMember.objects.filter(instance_id=candidate.instance_id).update(
                     ready=problem != "unready",
                     draining=problem == "draining",
@@ -406,13 +424,22 @@ class LifecycleTests(TransactionTestCase):
         with lifecycle.claim_admission((1, "selfie_query", 2), None) as admission:
             self.assertFalse(admission.allowed)
         with self.assertRaises(lifecycle.AdmissionDenied):
-            with lifecycle.claim_admission((1, "capture_metadata", 2), None):
+            with lifecycle.claim_admission((1, "capture_metadata", 2), self.envelopes[0]):
                 pass
-        with override_settings(PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False):
+        with override_settings(DEBUG=True, PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False):
             with lifecycle.claim_admission((1, "unknown", 9), None) as admission:
                 self.assertTrue(admission.allowed)
             with self.assertRaises(lifecycle.AdmissionDenied):
                 lifecycle.register(self.envelopes[0])
+
+    @override_settings(DEBUG=False)
+    def test_production_local_admission_is_denied_even_when_local_pause_is_open(self):
+        lifecycle.set_claims_paused("selfie", paused=False, local=True)
+        with lifecycle.claim_admission((1, "selfie_query", 2), None) as admission:
+            self.assertFalse(admission.allowed)
+        with override_settings(PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False):
+            with lifecycle.claim_admission((1, "selfie_query", 2), None) as admission:
+                self.assertFalse(admission.allowed)
 
     def test_same_boot_restart_is_cold_until_new_process_warms(self):
         current = self.register_session(self.envelopes[0])
@@ -514,9 +541,10 @@ class LifecycleTests(TransactionTestCase):
             self.assertFalse(admission.allowed)
         with override_settings(PHOTO_WORKER_SELFIE_CLAIM_LIMIT=2):
             with lifecycle.claim_admission((1, "selfie_query", 2), None) as admission:
-                self.assertTrue(admission.allowed)
+                self.assertFalse(admission.allowed)
 
     @override_settings(
+        DEBUG=False,
         PHOTO_PROCESSING_ENABLED=True,
         PHOTO_PROCESSING_WORKER_TOKEN="local",
         PHOTO_PROCESSING_FLEET_TOKEN="fleet",
@@ -534,6 +562,14 @@ class LifecycleTests(TransactionTestCase):
             "HTTP_AUTHORIZATION": "Bearer fleet",
             "HTTP_X_FINDME_WORKER_TRANSPORT": "private-tls",
         }
+        for processor, version in (("capture_metadata", 2), ("selfie_query", 2)):
+            response = self.client.post(
+                base + "claim",
+                body | {"processor_type": processor, "processor_version": version},
+                content_type="application/json",
+                HTTP_AUTHORIZATION="Bearer local",
+            )
+            self.assertEqual(response.status_code, 401)
         response = self.client.post(
             base + "claim", body, content_type="application/json", **headers
         )
@@ -783,71 +819,13 @@ class LifecycleTests(TransactionTestCase):
         with lifecycle.claim_admission((1, "selfie_query", 2), self.envelopes[1]) as admission:
             self.assertTrue(admission.allowed)
 
-    def test_local_pause_waits_for_admitted_claim_commit_then_excludes_remote_work(self):
-        identity, path, storage = self.queued_claim("selfie")
-        entered, release, paused = ThreadEvent(), ThreadEvent(), ThreadEvent()
-        normal_sign = storage.create_download_grant
-
-        def sign(**kwargs):
-            entered.set()
-            self.assertTrue(release.wait(5))
-            return normal_sign(**kwargs)
-
-        storage.create_download_grant = sign
-        body = {
-            "contract_version": identity[0],
-            "processor_type": identity[1],
-            "processor_version": identity[2],
-            "worker_build": "on-host",
-            "lease_seconds": 120,
-        }
-
-        def claim():
-            close_old_connections()
-            try:
-                return _claim_with_grant(body)
-            finally:
-                close_old_connections()
-
-        def pause():
-            close_old_connections()
-            try:
-                paused.set()
-                lifecycle.set_claims_paused("selfie", paused=True, local=True)
-            finally:
-                close_old_connections()
-
-        with patch(path, return_value=storage), ThreadPoolExecutor(max_workers=2) as executor:
-            claimant = executor.submit(claim)
-            self.assertTrue(entered.wait(5))
-            pauser = executor.submit(pause)
-            self.assertTrue(paused.wait(5))
-            self.assertFalse(pauser.done())
-            release.set()
-            payload = claimant.result(timeout=5)
-            pauser.result(timeout=5)
-            self.assertFalse(payload["empty"])
-            self.assertEqual(lifecycle.local_live_leases("selfie"), 1)
-            self.assertTrue(_claim_with_grant(body)["empty"])
-
     def test_bounded_local_drain_recovers_expired_attempt_or_aborts_on_live_timeout(self):
-        identity, path, storage = self.queued_claim("selfie")
-        body = {
-            "contract_version": identity[0],
-            "processor_type": identity[1],
-            "processor_version": identity[2],
-            "worker_build": "on-host",
-            "lease_seconds": 120,
-        }
-        with patch(path, return_value=storage):
-            payload = _claim_with_grant(body)
+        attempt = self.make_attempt()
         lifecycle.set_claims_paused("selfie", paused=True, local=True)
         self.assertFalse(
             lifecycle.wait_for_local_drain("selfie", timeout_seconds=0.01, poll_seconds=0.01)
         )
-        job = payload["job"]
-        assert isinstance(job, dict)
-        SelfieSearchAttempt.objects.filter(pk=job["attempt_id"]).update(
+        SelfieSearchAttempt.objects.filter(pk=attempt.pk).update(
             lease_expires_at=self.now - timedelta(seconds=1)
         )
         self.assertTrue(

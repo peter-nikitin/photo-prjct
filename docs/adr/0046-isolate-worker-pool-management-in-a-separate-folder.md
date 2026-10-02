@@ -4,7 +4,8 @@
 - Date: 2026-09-30
 - Deciders: project maintainer; explicitly selected a separate worker folder and approved the shared-VPC design in conversation on 2026-09-30
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0049](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
+  only for post-acceptance recovery through on-host photo workers
 
 ## Context
 

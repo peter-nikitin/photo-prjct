@@ -10,7 +10,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from django.conf import settings
 from django.db import transaction
@@ -778,6 +778,16 @@ def local_adaface_face_embedding_generations() -> tuple[dict[str, object], ...]:
     return adaface_face_embedding_generations()
 
 
+def historical_adaface_face_embedding_generations() -> tuple[dict[str, object], ...]:
+    """Pinned production historical candidate; never changes the existing AdaFace identity."""
+    generation = adaface_face_embedding_generations()[0]
+    configuration = dict(cast(dict[str, object], generation["configuration"]))
+    configuration["embedding_storage"] = "vector_only"
+    generation["configuration"] = configuration
+    generation["configuration_hash"] = _canonical_hash(configuration)
+    return (generation,)
+
+
 def candidate_face_embedding_status(event: Event) -> dict[str, object]:
     """Return privacy-safe exact v4 candidate processing and projection aggregates."""
     return _face_embedding_generation_status(event, candidate_face_embedding_generations()[0])
@@ -904,6 +914,12 @@ def active_face_embedding_generations(event: Event) -> tuple[dict[str, object], 
     generations = validate_face_embedding_generations(activation.generations)
     if activation.generation_set_hash != _canonical_hash(list(generations)):
         raise ValueError("invalid face-embedding activation record")
+    if generations == historical_adaface_face_embedding_generations() and (
+        event.face_search_generation != Event.FaceSearchGeneration.ADAFACE_V5
+        or activation.approved_configuration_hash != generations[0]["configuration_hash"]
+        or not _is_sha256(activation.approved_evaluation_report_hash)
+    ):
+        raise ValueError("historical AdaFace activation and event model disagree")
     if generations in (
         historical_baseline_face_embedding_generations(),
         baseline_face_embedding_generations(),
@@ -963,6 +979,17 @@ def activate_face_embedding_generation(
     generation_set_hash = _canonical_hash(serialized_generations)
     with transaction.atomic():
         locked_event = Event.objects.select_for_update().get(pk=event.pk)
+        previous = (
+            EventFaceEmbeddingActivation.objects.filter(event=locked_event)
+            .order_by("-activated_at", "-id")
+            .first()
+        )
+        if (
+            previous is not None
+            and previous.generations == list(historical_adaface_face_embedding_generations())
+            and selected != historical_adaface_face_embedding_generations()
+        ):
+            raise ValueError("historical AdaFace activation forbids an old-reader rollback")
         if (
             getattr(settings, "ADAFACE_LOCAL_EXPERIMENT_ENABLED", False) is True
             and locked_event.slug == "cyclingrace-vechernee-sadovoe"
@@ -1014,6 +1041,7 @@ def validate_face_embedding_generations(
     if len(normalized) != len(generations):
         raise ValueError("invalid face-embedding generation set")
     known_generations: tuple[tuple[dict[str, object], ...], ...] = (
+        historical_adaface_face_embedding_generations(),
         historical_baseline_face_embedding_generations(),
         baseline_face_embedding_generations(),
         historical_quality_face_embedding_generations(),

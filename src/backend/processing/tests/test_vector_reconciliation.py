@@ -9,6 +9,7 @@ from django.core.management.base import CommandError
 from django.utils import timezone
 
 from processing.models import FaceEmbedding, FaceEmbeddingVector, PhotoFaceEmbeddingProjection
+from processing.services.face_quality import historical_adaface_face_embedding_generations
 from processing.services.vector_reconciliation import backfill_embeddings, verify_embeddings
 from processing.tests.test_vector_embeddings import detection  # noqa: F401
 
@@ -40,6 +41,82 @@ def historical(request):
         vector=getattr(request, "param", {}).get("vector", [1.0] + [0.0] * 127),
         metadata={"embedding": [1.0], "quality": 0.9},
     )
+
+
+@pytest.fixture
+def native_detection(detection):  # noqa: F811 - imported pytest fixture dependency
+    source_detection = detection
+    photo = source_detection.attempt.photo
+    photo.src = ""
+    photo.original_key = "private/original.jpg"
+    photo.original_size = 1
+    photo.original_filename = "original.jpg"
+    photo.original_content_type = "image/jpeg"
+    photo.uploaded_by = get_user_model().objects.create_user(username="native-owner")
+    photo.uploaded_at = timezone.now()
+    photo.save()
+    PhotoFaceEmbeddingProjection.objects.create(
+        photo=photo,
+        accepted_attempt=source_detection.attempt,
+        contract_version=source_detection.attempt.contract_version,
+        processor_version=source_detection.attempt.processor_version,
+        configuration_hash=source_detection.attempt.job.configuration_hash,
+    )
+    return source_detection
+
+
+def test_unmarked_native_vector_without_json_remains_invalid(native_detection):
+    FaceEmbeddingVector.objects.create(
+        detection=native_detection,
+        model_version="sface",
+        vector=[1.0] + [0.0] * 127,
+    )
+    assert verify_embeddings()["groups"][0]["invalid"] == 1
+
+
+@pytest.mark.parametrize("detection", ["vector_only"], indirect=True)
+@pytest.mark.parametrize("explicit_generation", [False, True])
+def test_native_only_reconciliation_admits_exact_marked_generation(
+    native_detection, explicit_generation
+):
+    FaceEmbeddingVector.objects.create(
+        detection=native_detection,
+        model_version="adaface-ir18-webface4m",
+        vector=[1.0] + [0.0] * 511,
+        metadata={"quality": 0.9},
+    )
+    generations = historical_adaface_face_embedding_generations() if explicit_generation else None
+    report = verify_embeddings(native_detection.attempt.event, generations)
+    assert report["groups"] == [
+        {
+            "event": str(native_detection.attempt.event_id),
+            "model": "adaface-ir18-webface4m",
+            "eligible": 1,
+            "missing": 0,
+            "invalid": 0,
+            "divergent": 0,
+        }
+    ]
+    assert not FaceEmbedding.objects.exists()
+    call_command("verify_pgvector_face_embeddings", stdout=StringIO())
+
+
+@pytest.mark.parametrize("detection", ["vector_only"], indirect=True)
+@pytest.mark.parametrize("native_model", [None, "sface"])
+def test_native_reconciliation_rejects_missing_or_wrong_model(native_detection, native_model):
+    if native_model:
+        FaceEmbeddingVector.objects.create(
+            detection=native_detection,
+            model_version=native_model,
+            vector=[1.0] + [0.0] * 127,
+        )
+    report = verify_embeddings(
+        native_detection.attempt.event, historical_adaface_face_embedding_generations()
+    )
+    group = report["groups"][0]
+    assert group["missing"] + group["invalid"] + group["divergent"] == 1
+    with pytest.raises(CommandError):
+        call_command("verify_pgvector_face_embeddings", stdout=StringIO())
 
 
 def test_dry_run_bounds_resume_idempotence_and_sanitizer(historical):

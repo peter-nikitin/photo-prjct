@@ -10,11 +10,7 @@ for command in docker python3 sed sudo; do
 done
 
 compose() { APP_ENV_FILE="$DEPLOY_ROOT/.env" docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ROOT/.env" -f "$DEPLOY_ROOT/docker-compose.deployment.yml" -f "$DEPLOY_ROOT/docker-compose.https.yml" "$@"; }
-processing_enabled="$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
 services="web nginx"
-if [ "$processing_enabled" = True ]; then
-    services="$services worker-bulk worker-selfie"
-fi
 for service in $services; do
     containers="$(compose ps -q "$service")"
     if [ -z "$containers" ]; then

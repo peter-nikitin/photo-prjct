@@ -67,9 +67,9 @@ def test_failed_candidate_stops_import_before_restoring_web(tmp_path, fake_bin):
     assert result.returncode != 0
     commands = "\n".join(_apply_log(tmp_path))
     assert commands.rindex("label=com.docker.compose.service=import-worker") < commands.rindex(
-        "up -d --remove-orphans"
+        "up -d --no-deps web nginx"
     )
-    assert commands.rindex("import-lease-probe") < commands.rindex("up -d --remove-orphans")
+    assert commands.rindex("import-lease-probe") < commands.rindex("up -d --no-deps web nginx")
 
 
 def test_import_token_projection_is_optional_and_edge_denies_internal_api():
@@ -172,12 +172,12 @@ def test_previous_enabled_import_container_with_no_live_lease_proceeds_without_s
     assert (
         commands.index("rm -f import-fixture-id")
         < commands.index("import-lease-probe")
-        < commands.index("up -d --remove-orphans")
+        < commands.index("up -d --no-deps web nginx")
     )
     assert (
         "sleep "
         not in commands[
-            commands.index("rm -f import-fixture-id") : commands.index("up -d --remove-orphans")
+            commands.index("rm -f import-fixture-id") : commands.index("up -d --no-deps web nginx")
         ]
     )
     assert "yandex-disk-import" not in commands
@@ -204,7 +204,7 @@ def test_previous_enabled_import_waits_only_while_a_lease_is_live(tmp_path, fake
         "import-lease-probe", commands.index("sleep 5")
     )
     assert commands.index("import-lease-probe", commands.index("sleep 5")) < commands.index(
-        "up -d --remove-orphans"
+        "up -d --no-deps web nginx"
     )
 
 
@@ -221,7 +221,7 @@ def test_import_lease_probe_failure_blocks_web_replacement(tmp_path, fake_bin):
 
     assert result.returncode != 0
     assert "Import worker stop failed" in result.stderr
-    assert "up -d --remove-orphans" not in "\n".join(_apply_log(tmp_path))
+    assert "up -d --no-deps web nginx" not in "\n".join(_apply_log(tmp_path))
 
 
 def test_failed_candidate_before_import_start_needs_no_lease_probe(tmp_path, fake_bin):

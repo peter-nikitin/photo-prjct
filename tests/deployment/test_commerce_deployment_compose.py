@@ -19,7 +19,6 @@ def _render_all_deployment_profiles(extra_environment: dict[str, str]) -> dict:
     environment = {
         **os.environ,
         "APP_IMAGE": "review-app-image",
-        "WORKER_IMAGE": "review-worker-image",
         "IMPORT_WORKER_IMAGE": "review-import-image",
         "SECRET_KEY": "secret-key",
         "DEBUG": "False",
@@ -41,8 +40,6 @@ def _render_all_deployment_profiles(extra_environment: dict[str, str]) -> dict:
             "docker-compose.deployment.yml",
             "-f",
             "docker-compose.https.yml",
-            "--profile",
-            "worker",
             "--profile",
             "import",
             "--profile",
@@ -110,7 +107,7 @@ def test_deployment_compose_projects_postbox_credentials_only_to_commerce_worker
     environment = {
         **os.environ,
         "APP_IMAGE": "review-app-image",
-        "WORKER_IMAGE": "review-worker-image",
+        "IMPORT_WORKER_IMAGE": "review-import-image",
         "SECRET_KEY": "secret-key",
         "DEBUG": "False",
         "ALLOWED_HOSTS": "findme-photo.ru,web",
@@ -144,7 +141,7 @@ def test_deployment_compose_projects_postbox_credentials_only_to_commerce_worker
             "-f",
             "docker-compose.deployment.yml",
             "--profile",
-            "worker",
+            "import",
             "--profile",
             "commerce",
             "config",
@@ -178,7 +175,9 @@ def test_deployment_compose_projects_postbox_credentials_only_to_commerce_worker
     assert commerce_environment["COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS"] == "777"
     assert commerce_environment["COMMERCE_WORKER_ENABLED"] == "True"
 
-    for service_name in ("db", "worker-bulk", "worker-selfie"):
+    assert "worker-bulk" not in compose["services"]
+    assert "worker-selfie" not in compose["services"]
+    for service_name in ("db", "import-worker"):
         assert "COMMERCE_POSTBOX_API_KEY_ID" not in (
             compose["services"][service_name].get("environment") or {}
         )

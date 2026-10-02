@@ -23,6 +23,7 @@ from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 from selfie_search.models import SelfieSearchAttempt
 
+from processing.auth import local_worker_enabled
 from processing.models import PhotoProcessingState, ProcessingAttempt, WorkerPool, WorkerPoolMember
 from processing.services.worker_pool_state import BULK_IDENTITIES, SELFIE_IDENTITIES, Identity
 
@@ -500,8 +501,8 @@ class ClaimAdmission:
 
 @contextmanager
 def claim_admission(identity: Identity, remote: MemberIdentity | None) -> Iterator[ClaimAdmission]:
-    if remote is None and not settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED:
-        yield ClaimAdmission(True)
+    if remote is None:
+        yield ClaimAdmission(local_worker_enabled())
         return
     name = (
         "bulk"
@@ -510,22 +511,19 @@ def claim_admission(identity: Identity, remote: MemberIdentity | None) -> Iterat
         if identity in SELFIE_IDENTITIES
         else None
     )
-    if name is None or (remote is not None and remote.pool != name):
+    if name is None or remote.pool != name:
         raise AdmissionDenied()
     with transaction.atomic():
         pool = _pool(name)
         now = timezone.now()
-        member = _member(pool, remote, process=True) if remote else None
+        member = _member(pool, remote, process=True)
         limit = 2 if name == "bulk" else settings.PHOTO_WORKER_SELFIE_CLAIM_LIMIT
         allowed = (
             type(limit) is int and limit in {1, 2} and _live_attempts(name, now).count() < limit
         )
-        if member:
-            allowed = allowed and _serving(pool, member, now) and not _has_live(member, now)
-            _idle(pool, member, now)
-            member.save(update_fields=["idle_since"])
-        else:
-            allowed = allowed and not pool.local_claims_paused
+        allowed = allowed and _serving(pool, member, now) and not _has_live(member, now)
+        _idle(pool, member, now)
+        member.save(update_fields=["idle_since"])
         yield ClaimAdmission(allowed, member)
 
 
@@ -540,7 +538,7 @@ def _grant(member: WorkerPoolMember) -> dict[str, str]:
 def _release_survivor(pool: WorkerPool, member: WorkerPoolMember, now: datetime) -> bool:
     return _serving(pool, member, now) or bool(
         pool.claims_paused
-        and not pool.local_claims_paused
+        and pool.local_claims_paused
         and member.ready
         and not member.draining
         and member.retirement_grant is None
@@ -569,8 +567,8 @@ def _reserve(
     # One irreversible permission at a time, including release retries and cloud replacement.
     if outstanding or any(row["status"] not in RUNNING | STOPPED for row in pool.observed_members):
         return None
-    paused_release = release and pool.claims_paused and not pool.local_claims_paused
-    if paused_release and any(_has_live(other, now) for other in members):
+    paused_release = release and pool.claims_paused
+    if paused_release and (not pool.local_claims_paused or _live_attempts(pool.name, now).exists()):
         return None
     survivors = sum(
         other.pk != member.pk

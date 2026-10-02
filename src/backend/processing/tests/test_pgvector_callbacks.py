@@ -65,8 +65,11 @@ def _remote_session(client, settings, pool):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("dimensions,remote", [(128, False), (512, False), (512, True)])
-def test_maximum_gallery_callback_dual_publication(client, settings, dimensions, remote):
+@pytest.mark.parametrize(
+    "dimensions,remote,vector_only",
+    [(128, False, False), (512, False, False), (512, True, False), (512, True, True)],
+)
+def test_maximum_gallery_callback_publication(client, settings, dimensions, remote, vector_only):
     from processing.models import FaceEmbedding, FaceEmbeddingVector, ProcessingAttempt
     from processing.services.enrollment import (
         FACE_EMBEDDING_QUALITY_CONFIGURATION,
@@ -78,6 +81,8 @@ def test_maximum_gallery_callback_dual_publication(client, settings, dimensions,
     settings.PHOTO_PROCESSING_ENABLED = True
     settings.PHOTO_PROCESSING_FACE_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "worker-secret"
+    settings.DEBUG = True
+    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = False
     h = test_views.WorkerApiTests()
     h.client = client
     h.setUp()
@@ -92,6 +97,8 @@ def test_maximum_gallery_callback_dual_publication(client, settings, dimensions,
         if dimensions == 512
         else FACE_EMBEDDING_QUALITY_CONFIGURATION
     )
+    if vector_only:
+        configuration["embedding_storage"] = "vector_only"
     request_processor(
         photo,
         processor_type="face_embedding",
@@ -165,11 +172,13 @@ def test_maximum_gallery_callback_dual_publication(client, settings, dimensions,
     assert ProcessingAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease
     complete = h.post(f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body)
     assert complete.status_code == 200, complete.json()
-    assert FaceEmbedding.objects.count() == FaceEmbeddingVector.objects.count() == 32
+    assert FaceEmbedding.objects.count() == (0 if vector_only else 32)
+    assert FaceEmbeddingVector.objects.count() == 32
     assert ProcessingAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease
     replay = h.post(f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body)
     assert replay.status_code == 200 and replay.json()["idempotent"]
-    assert FaceEmbedding.objects.count() == FaceEmbeddingVector.objects.count() == 32
+    assert FaceEmbedding.objects.count() == (0 if vector_only else 32)
+    assert FaceEmbeddingVector.objects.count() == 32
 
 
 @pytest.mark.django_db
@@ -245,6 +254,8 @@ def test_maximum_selfie_callback_cleanup_and_wire(client, settings):
 
     settings.PHOTO_PROCESSING_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "worker-secret"
+    settings.DEBUG = True
+    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = False
     h = test_views.SelfieWorkerApiTests()
     h.client = client
     h.setUp()

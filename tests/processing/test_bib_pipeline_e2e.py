@@ -15,7 +15,11 @@ from processing.services.enrollment import request_bib_recognition
 from processing.services.jobs import claim_job
 
 
-@override_settings(PHOTO_PROCESSING_WORKER_TOKEN="worker-secret")
+@override_settings(
+    DEBUG=True,
+    PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False,
+    PHOTO_PROCESSING_WORKER_TOKEN="worker-secret",
+)
 class BibPipelineEndToEndTests(TestCase):
     def test_applicable_published_photo_flows_from_enrollment_to_exact_projection(self) -> None:
         owner = get_user_model().objects.create_user(username="bib-e2e-owner")

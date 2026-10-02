@@ -547,12 +547,14 @@ def _initial_deployment_helper(tmp_path: Path, *, apply_status: int) -> tuple[Pa
     deploy_dir.mkdir(parents=True)
     helper = deploy_dir / "run-remote.sh"
     shutil.copy2(HELPER, helper)
+    (deploy_dir / "worker-pools").mkdir()
+    (deploy_dir / "worker-pools/release.py").write_text("def deployment_guard(*args): pass\n")
     shutil.copy2(ROOT / "deploy/package-deployment.sh", deploy_dir / "package-deployment.sh")
     for name in ("__init__.py", "services/__init__.py", "services/worker_pool_cloud.py"):
         target = project_root / "src/backend/processing" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "src/backend/processing" / name, target)
-    candidate_compose = b"services:\n  worker-bulk:\n    image: ${WORKER_IMAGE}\n"
+    candidate_compose = b"services:\n  web:\n    image: ${APP_IMAGE}\n"
     (project_root / "docker-compose.deployment.yml").write_bytes(candidate_compose)
     (project_root / "docker-compose.https.yml").write_text(
         "services:\n  nginx:\n    image: nginx:candidate\n", encoding="utf-8"
@@ -576,67 +578,56 @@ def _initial_deployment_environment(
     return environment, sentinel
 
 
-def test_first_deployment_installer_reaches_apply_without_a_previous_package(
+def test_installer_rejects_missing_remote_marker_before_package_replacement(
     tmp_path: Path, remote_boundary: Path
+) -> None:
+    helper, apply_log, _candidate_compose = _initial_deployment_helper(tmp_path, apply_status=0)
+    environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
+    result = _run_helper(["deploy"], environment, helper=helper)
+    assert result.returncode == 2
+    assert not apply_log.exists()
+    remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
+    assert not (remote_root / "docker-compose.deployment.yml").exists()
+    assert not (remote_root / "deploy").exists()
+
+
+@pytest.mark.parametrize("compatible", [True, False])
+def test_first_remote_only_upgrade_runs_candidate_guard_with_legacy_installed_helper(
+    tmp_path: Path, remote_boundary: Path, compatible: bool
 ) -> None:
     helper, apply_log, candidate_compose = _initial_deployment_helper(tmp_path, apply_status=0)
     environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
-
-    result = _run_helper(["deploy"], environment, helper=helper)
-
-    assert result.returncode == 0, result.stderr
-    assert apply_log.read_text(encoding="utf-8") == "apply-invoked\n"
     remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
-    assert (remote_root / "docker-compose.deployment.yml").read_bytes() == candidate_compose
-    assert (remote_root / "deploy" / "apply-deployment.sh").is_file()
-    assert list(remote_root.glob(".deployment-*")) == []
-
-
-def test_failed_first_deployment_installer_restores_previous_package_absence(
-    tmp_path: Path, remote_boundary: Path
-) -> None:
-    helper, apply_log, _candidate_compose = _initial_deployment_helper(tmp_path, apply_status=23)
-    environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
-
+    legacy = remote_root / "deploy/worker-pools"
+    legacy.mkdir(parents=True)
+    (legacy / "release.py").write_text("LEGACY_RELEASE = True\n")
+    (remote_root / "deploy/package-version").write_text("previous\n")
+    (remote_root / "docker-compose.deployment.yml").write_text("previous-compose\n")
+    (remote_root / "docker-compose.https.yml").write_text("previous-overlay\n")
+    (remote_root / "worker-pools-current.json").write_text("{}")
+    (remote_root / "worker-pools-release.json").write_text('{"phase":"committed"}')
+    guard_log = tmp_path / "candidate-guard.log"
+    candidate = helper.parent / "worker-pools"
+    (candidate / "release.py").write_text(
+        "from pathlib import Path\n"
+        "def deployment_guard(root, app_image, worker_image, manifest):\n"
+        "    assert (root / 'deploy/package-version').read_text() == 'previous\\n'\n"
+        "    assert (root / 'deploy/worker-pools/release.py').read_text() "
+        "== 'LEGACY_RELEASE = True\\n'\n"
+        f"    Path({str(guard_log)!r}).write_text('candidate-guard\\n')\n"
+        + ("    raise ValueError('incompatible native release')\n" if not compatible else "")
+    )
     result = _run_helper(["deploy"], environment, helper=helper)
-
-    assert result.returncode == 2
-    assert apply_log.read_text(encoding="utf-8") == "apply-invoked\n"
-    remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
-    assert not (remote_root / "docker-compose.deployment.yml").exists()
-    assert not (remote_root / "docker-compose.https.yml").exists()
-    assert not (remote_root / "deploy").exists()
-    assert list(remote_root.glob(".deployment-*")) == []
-
-
-def test_failed_no_env_deployment_installer_restores_the_bootstrap_package(
-    tmp_path: Path, remote_boundary: Path
-) -> None:
-    helper, apply_log, _candidate_compose = _initial_deployment_helper(tmp_path, apply_status=23)
-    environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
-    remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
-    remote_deploy = remote_root / "deploy"
-    remote_deploy.mkdir()
-    (remote_root / "docker-compose.deployment.yml").write_text(
-        "services:\n  worker:\n    image: ${WORKER_IMAGE}\n", encoding="utf-8"
+    assert guard_log.exists(), result.stderr
+    assert guard_log.read_text() == "candidate-guard\n"
+    assert result.returncode == (0 if compatible else 2), result.stderr
+    assert apply_log.exists() is compatible
+    assert (remote_root / "docker-compose.deployment.yml").read_bytes() == (
+        candidate_compose if compatible else b"previous-compose\n"
     )
-    (remote_root / "docker-compose.https.yml").write_text(
-        "services:\n  nginx:\n    image: nginx:previous\n", encoding="utf-8"
-    )
-    (remote_deploy / "package-version").write_text("previous\n", encoding="utf-8")
-    previous_compose = (remote_root / "docker-compose.deployment.yml").read_bytes()
-    previous_overlay = (remote_root / "docker-compose.https.yml").read_bytes()
-
-    result = _run_helper(["deploy"], environment, helper=helper)
-
-    assert result.returncode == 2
-    assert apply_log.read_text(encoding="utf-8") == "apply-invoked\n"
-    assert (remote_root / "docker-compose.deployment.yml").read_bytes() == previous_compose
-    assert (remote_root / "docker-compose.https.yml").read_bytes() == previous_overlay
-    assert (remote_root / "deploy" / "package-version").read_text(encoding="utf-8") == (
-        "previous\n"
-    )
-    assert list(remote_root.glob(".deployment-*")) == []
+    if not compatible:
+        assert (remote_root / "deploy/package-version").read_text() == "previous\n"
+    assert not list(remote_root.glob(".deployment-*"))
 
 
 def test_partial_candidate_install_failure_preserves_untouched_predecessor_entries(
@@ -647,6 +638,12 @@ def test_partial_candidate_install_failure_preserves_untouched_predecessor_entri
     remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
     remote_deploy = remote_root / "deploy"
     remote_deploy.mkdir()
+    (remote_deploy / "worker-pools").mkdir()
+    (remote_deploy / "worker-pools/release.py").write_text(
+        "def require_native_compatible_release(*args): pass\n"
+    )
+    (remote_root / "worker-pools-current.json").write_text("{}")
+    (remote_root / "worker-pools-release.json").write_text('{"phase":"committed"}')
     previous_compose = b"previous main compose\n"
     previous_overlay = b"previous https compose\n"
     previous_helper = b"previous helpers\n"
@@ -704,11 +701,11 @@ def test_failed_deploy_relays_only_safe_phase_markers_before_sanitized_error(
 def test_deploy_helper_preserves_the_existing_deployment_apply_boundary() -> None:
     source = HELPER.read_text(encoding="utf-8")
 
-    assert "DEPLOY_ROOT=/opt/photo-prjct" in source
+    assert 'DEPLOY_ROOT="$deployment_root"' in source
     assert "COMPOSE_PROJECT_NAME=photo-prjct" in source
     assert 'sh "$deployment_root/deploy/apply-deployment.sh"' in source
     assert 'PREVIOUS_DEPLOYMENT_PACKAGE_ROOT="$previous_package"' in source
-    assert 'PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY="$previous_worker_topology"' in source
+    assert "PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY" not in source
 
 
 def test_deploy_workflow_supplies_commerce_runtime_without_provider_secrets() -> None:
@@ -764,33 +761,6 @@ def test_deploy_workflow_supplies_only_the_non_secret_gallery_origin() -> None:
         }
         & run_deployment["env"].keys()
     )
-
-
-def test_manual_compose_cutover_is_an_exact_secret_safe_remote_operation(
-    tmp_path: Path, remote_boundary: Path
-) -> None:
-    environment, sentinel = _remote_environment(tmp_path, remote_boundary)
-    environment["COMPOSE_IDENTITY_CUTOVER_CONFIRMATION"] = (
-        "confirm-canonical-compose-identity-cutover"
-    )
-
-    result = _run_helper(["cutover-compose-identity"], environment)
-
-    assert result.returncode == 0, result.stderr
-    remote_environment = Path(environment["SSH_STDIN"]).read_text(encoding="utf-8")
-    assert "COMPOSE_IDENTITY_CUTOVER_CONFIRMATION" in remote_environment
-    assert sentinel not in result.stdout + result.stderr
-    assert "cutover-compose-identity.sh" in HELPER.read_text(encoding="utf-8")
-    workflow = _workflow("deploy.yml")
-    assert workflow[True]["workflow_dispatch"]["inputs"]["cutover_compose_identity"] == {
-        "description": "Run the one-time canonical Compose identity cutover",
-        "required": True,
-        "default": False,
-        "type": "boolean",
-    }
-    run = _step(workflow["jobs"]["deploy"], "Run deployment")["run"]
-    assert "inputs.cutover_compose_identity" in run
-    assert "deploy/run-remote.sh cutover-compose-identity" in run
 
 
 def test_helper_falls_back_to_gnu_stat_when_stat_f_is_not_a_file_mode(

@@ -17,6 +17,7 @@ from selfie_search.models import (
     SelfieSearchResult,
 )
 
+from processing.auth import worker_endpoint_enabled
 from processing.models import (
     BibReading,
     EventProcessingRun,
@@ -207,9 +208,7 @@ def build_worker_pool_state(
     return {
         "schema_version": 1,
         "observed_at": now.isoformat(),
-        "endpoint_enabled": bool(
-            settings.PHOTO_PROCESSING_ENABLED and settings.PHOTO_PROCESSING_WORKER_TOKEN
-        ),
+        "endpoint_enabled": worker_endpoint_enabled(),
         "enrollment_flags": {
             "face_enabled": bool(settings.PHOTO_PROCESSING_FACE_ENABLED),
             "preview_enabled": bool(settings.PHOTO_PROCESSING_PREVIEW_ENABLED),

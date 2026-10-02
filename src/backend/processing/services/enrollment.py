@@ -837,22 +837,30 @@ def request_bib_recognition(
     )
 
 
+@transaction.atomic
 def request_face_embedding_enqueue(
     photo: Photo, *, verified_source_etag: str | None = None
 ) -> PhotoProcessingState:
     """Queue a face-embedding job if the feature flag is enabled."""
+    photo.event = Event.objects.select_for_update().get(pk=photo.event_id)
     preview = _accepted_preview(photo)
     if photo.processing_generation in {
         Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
         Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
     }:
         if photo.event.face_search_generation == Event.FaceSearchGeneration.ADAFACE_V5:
+            from processing.services.face_quality import active_face_embedding_generations
+
+            configuration = cast(
+                dict[str, object],
+                active_face_embedding_generations(photo.event)[0]["configuration"],
+            )
             return request_processor(
                 photo=photo,
                 processor_type=FACE_EMBEDDING_PROCESSOR,
                 contract_version=QUALITY_FACE_CONTRACT_VERSION,
                 processor_version=LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
-                configuration=LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+                configuration=configuration,
                 input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
                 enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
                 and preview is not None,
@@ -1055,6 +1063,7 @@ def request_processor(
     enabled: bool = True,
     event: Event | None = None,
     replace_terminal_generation: bool = False,
+    historical_adaface_receipt: dict[str, object] | None = None,
 ) -> PhotoProcessingState:
     """Queue the first compatible job exactly once for an eligible photo."""
     with transaction.atomic():
@@ -1076,6 +1085,7 @@ def request_processor(
             contract_version=contract_version,
             processor_type=processor_type,
             processor_version=processor_version,
+            historical_adaface_receipt=historical_adaface_receipt,
         )
         existing_job = (
             ProcessingJob.objects.select_for_update()
@@ -1445,6 +1455,7 @@ def _locked_collecting_run(
     contract_version: int,
     processor_type: str,
     processor_version: int,
+    historical_adaface_receipt: dict[str, object] | None = None,
 ):
     """Return a collecting run under lock so a concurrent claim seals an exact cohort."""
     query = EventProcessingRun.objects.select_for_update().filter(
@@ -1455,6 +1466,13 @@ def _locked_collecting_run(
         configuration_hash=configuration_hash,
         status=EventProcessingRun.Status.COLLECTING,
     )
+    if historical_adaface_receipt is None:
+        query = query.filter(report__historical_adaface_backfill__isnull=True)
+    else:
+        from processing.services.historical_adaface import validate_backfill_receipt
+
+        validate_backfill_receipt(historical_adaface_receipt)
+        query = query.filter(report__historical_adaface_backfill=historical_adaface_receipt)
     configured_maximum = configuration["max_cohort_size"]
     if not isinstance(configured_maximum, int):
         raise ValueError("max_cohort_size must be an integer")
@@ -1469,4 +1487,9 @@ def _locked_collecting_run(
         configuration=configuration,
         configuration_hash=configuration_hash,
         status=EventProcessingRun.Status.COLLECTING,
+        report=(
+            {"historical_adaface_backfill": historical_adaface_receipt}
+            if historical_adaface_receipt
+            else {}
+        ),
     )

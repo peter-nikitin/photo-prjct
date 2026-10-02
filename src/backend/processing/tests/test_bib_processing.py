@@ -167,7 +167,11 @@ def test_validation_result_size_is_bounded_without_truncation() -> None:
         validate(value)
 
 
-@override_settings(PHOTO_PROCESSING_WORKER_TOKEN="worker-secret")
+@override_settings(
+    DEBUG=True,
+    PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False,
+    PHOTO_PROCESSING_WORKER_TOKEN="worker-secret",
+)
 class BibCompletionTests(TestCase):
     def setUp(self) -> None:
         user = get_user_model().objects.create_user(username="bib-completion-owner")

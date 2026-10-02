@@ -124,11 +124,10 @@ def test_public_services_use_journald_stable_nonsecret_tags_only() -> None:
     https = yaml.safe_load((ROOT / "docker-compose.https.yml").read_text(encoding="utf-8"))
     services = {
         "web": product["services"]["web"],
-        "worker-bulk": product["services"]["worker-bulk"],
-        "worker-selfie": product["services"]["worker-selfie"],
         "nginx": https["services"]["nginx"],
     }
 
+    assert {"worker-bulk", "worker-selfie"}.isdisjoint(product["services"])
     for name, service in services.items():
         assert service["logging"] == {
             "driver": "journald",
@@ -172,8 +171,14 @@ def test_deployment_workflow_uses_canonical_compose_tags(tmp_path: Path) -> None
         'test "$(cat "$DEPLOY_ROOT/docker-compose.https.yml")" = "candidate https"\n'
         'printf "%s\\n%s\\n" "$DEPLOY_ROOT" "$COMPOSE_PROJECT_NAME"\n'
     )
+    (candidate / "deploy" / "worker-pools").mkdir()
+    (candidate / "deploy" / "worker-pools" / "release.py").write_text(
+        "def deployment_guard(*args): pass\n"
+    )
     deployment_root = tmp_path / "deployment"
     deployment_root.mkdir()
+    (deployment_root / "worker-pools-current.json").write_text("{}")
+    (deployment_root / "worker-pools-release.json").write_text('{"phase": "committed"}')
     with tarfile.open(deployment_root / ".deployment-candidate.fixture.tar", "w") as archive:
         for entry in candidate.iterdir():
             archive.add(entry, arcname=entry.name)

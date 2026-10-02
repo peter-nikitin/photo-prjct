@@ -12,6 +12,43 @@ from processing.auth import has_worker_token, require_worker_token
     PHOTO_PROCESSING_FLEET_TOKEN="fleet-secret",
 )
 class FleetTokenAuthenticationTests(SimpleTestCase):
+    @override_settings(
+        DEBUG=False,
+        PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True,
+        PHOTO_PROCESSING_WORKER_TOKEN="fleet-secret",
+    )
+    def test_equal_stale_local_setting_does_not_disable_production_private_fleet(self):
+        request = RequestFactory().post(
+            "/",
+            HTTP_AUTHORIZATION="Bearer fleet-secret",
+            HTTP_X_FINDME_WORKER_TRANSPORT="private-tls",
+        )
+        self.assertTrue(has_worker_token(request))
+        request = RequestFactory().post("/", HTTP_AUTHORIZATION="Bearer fleet-secret")
+        self.assertFalse(has_worker_token(request))
+
+    @override_settings(DEBUG=False, PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True)
+    def test_production_accepts_only_private_fleet_even_with_stale_local_token(self):
+        for marker, token, expected in (
+            ("", "local-secret", False),
+            ("", "fleet-secret", False),
+            ("private-tls", "local-secret", False),
+            ("private-tls", "fleet-secret", True),
+        ):
+            with self.subTest(marker=marker, token=token):
+                request = RequestFactory().post(
+                    "/",
+                    HTTP_AUTHORIZATION=f"Bearer {token}",
+                    HTTP_X_FINDME_WORKER_TRANSPORT=marker,
+                )
+                self.assertEqual(has_worker_token(request), expected)
+
+    @override_settings(DEBUG=True, PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True)
+    def test_coordinator_disables_local_development_authorization(self):
+        request = RequestFactory().post("/", HTTP_AUTHORIZATION="Bearer local-secret")
+        self.assertFalse(has_worker_token(request))
+
+    @override_settings(DEBUG=True, PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False)
     def test_transport_credentials_are_disjoint(self):
         factory = RequestFactory()
         for marker, token, expected in (
@@ -29,7 +66,8 @@ class FleetTokenAuthenticationTests(SimpleTestCase):
                 )
                 self.assertEqual(has_worker_token(request), expected)
 
-    def test_private_transport_fails_closed_on_missing_or_equal_fleet_token(self):
+    @override_settings(DEBUG=True, PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False)
+    def test_private_transport_fails_closed_on_missing_or_equal_development_token(self):
         request = RequestFactory().post(
             "/",
             HTTP_AUTHORIZATION="Bearer local-secret",
@@ -47,6 +85,7 @@ class FleetTokenAuthenticationTests(SimpleTestCase):
         self.assertTrue(_safe_durable_string("a" * 40))
 
 
+@override_settings(DEBUG=True, PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False)
 class WorkerTokenAuthenticationTests(SimpleTestCase):
     """The production break caught here is accepting a missing or non-bearer credential."""
 

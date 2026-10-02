@@ -424,6 +424,7 @@ class ProcessorConfiguration:
             "worker",
         }
         expected_adaface_face = expected_face | {"adaface", "scrfd"}
+        expected_vector_only_face = expected_adaface_face | {"embedding_storage"}
         expected_benchmark = expected_face | {"benchmark"}
         expected_preview = {
             "retry_policy",
@@ -467,7 +468,9 @@ class ProcessorConfiguration:
             watermark_config = None
             selfie_config = None
             configuration_kind = "capture_metadata"
-        elif set(value) == expected_face or set(value) == expected_adaface_face:
+        elif set(value) in (expected_face, expected_adaface_face, expected_vector_only_face):
+            if "embedding_storage" in value and value["embedding_storage"] != "vector_only":
+                raise ContractError("invalid embedding storage")
             capture = None
             face_config = value["face_embedding"]
             preview_config = None

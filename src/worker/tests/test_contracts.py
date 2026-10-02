@@ -729,6 +729,35 @@ def test_v5_adaface_quality_claim_requires_its_pinned_generation_identity() -> N
         Claim.from_response(payload)
 
 
+def test_vector_only_adaface_claim_is_accepted_without_changing_inference_contract() -> None:
+    payload = quality_preview_claim_payload(processor_version=5)
+    job = payload["job"]
+    assert isinstance(job, dict)
+    configuration = adaface_quality_configuration()
+    configuration["embedding_storage"] = "vector_only"
+    job["configuration"] = configuration
+    claim = Claim.from_response(payload)
+    assert claim.job is not None
+    assert claim.job.configuration.model == "adaface-ir18-webface4m"
+    assert claim.job.configuration.embedding_dimensions == 512
+
+
+@pytest.mark.parametrize("processor_version,storage", [(4, "vector_only"), (5, "parallel")])
+def test_embedding_storage_marker_cannot_enable_an_unapproved_worker_contract(
+    processor_version, storage
+) -> None:
+    payload = quality_preview_claim_payload(processor_version=processor_version)
+    job = payload["job"]
+    assert isinstance(job, dict)
+    configuration = (
+        adaface_quality_configuration() if processor_version == 5 else quality_configuration()
+    )
+    configuration["embedding_storage"] = storage
+    job["configuration"] = configuration
+    with pytest.raises(ContractError):
+        Claim.from_response(payload)
+
+
 def test_v3_quality_face_claim_rejects_a_preview_key_for_another_photo() -> None:
     payload = quality_preview_claim_payload()
     job = payload["job"]

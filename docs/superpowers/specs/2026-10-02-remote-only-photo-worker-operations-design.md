@@ -1,6 +1,6 @@
 # Remote-only photo-worker operations
 
-- **Status:** Proposed; reviewed design boundary in conversation on 2026-10-02, pending written review
+- **Status:** Approved for implementation planning on 2026-10-02; production transition still requires an exact operation review
 - **Date:** 2026-10-02
 - **Owner:** FindMe Photo
 - **Related architecture:** [Current worker placement](../../architecture.md#current-architecture--implemented),

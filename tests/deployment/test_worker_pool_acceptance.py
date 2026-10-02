@@ -428,7 +428,7 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
 
     # A previous durable snapshot spans historical terminals, a future retry, a stale
     # attempt, current owned work, and an un-enrolled photo. Only current expired work
-    # may change through the existing recovery authority during the cutover drain.
+    # may change through the current remote-pool recovery authority.
     historical = state_fixtures.WorkerPoolStateCommandTests()
     historical.now = timezone.now()
     historical.event = fixture.event
@@ -453,18 +453,17 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
     assert all(row["status"] == "not_requested" for row in never_states)
     assert not ProcessingJob.objects.filter(photo=never).exists()
     active = historical.bulk_attempt(
-        historical.bulk_job("processing", photo=old_photo("active-local"))
+        historical.bulk_job("processing", photo=old_photo("active-remote"))
     )
     expired = historical.bulk_attempt(
-        historical.bulk_job("processing", photo=old_photo("expired-local")), expired=True
+        historical.bulk_job("processing", photo=old_photo("expired-remote")), expired=True
     )
     before_attempts = list(
         ProcessingAttempt.objects.filter(pk__in=immutable_ids).order_by("pk").values()
     )
     job_ids = [row["job_id"] for row in before_attempts]
     before_jobs = list(ProcessingJob.objects.filter(pk__in=job_ids).order_by("pk").values())
-    control({"operation": "pause", "pool": "bulk", "paused": True, "local": True})
-    assert not lifecycle.wait_for_local_drain("bulk", timeout_seconds=0.01, poll_seconds=0.01)
+    control({"operation": "recover", "pool": "bulk"})
     expired.refresh_from_db()
     assert expired.status == "expired"
     active.refresh_from_db()
@@ -497,7 +496,6 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
     WorkerPool.objects.filter(name="bulk").update(queue_observed_at=now - timedelta(seconds=91))
     assert not control({"operation": "status"})["bulk"]["fresh"]
     control({"operation": "recover", "pool": "bulk"})
-    assert lifecycle.wait_for_local_drain("bulk", timeout_seconds=1)
     active.refresh_from_db()
     assert active.status == "expired"
     assert (

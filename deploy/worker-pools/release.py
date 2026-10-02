@@ -265,9 +265,10 @@ def transition(gateway, name, manifest, *, timeout=1800, pause=5):
     deadline = time.monotonic() + timeout
     while True:
         snapshot = gateway.observe()[name]
-        if capped and snapshot["active_build"] == build:
+        if capped and snapshot["active_build"] == build and floor != 1:
             # Bound replenishment before granting retirement, then refresh survivor evidence.
             gateway.template(name, manifest, 1)
+            floor = 1
             snapshot = gateway.observe()[name]
         step, member = next_step(snapshot, build)
         if step == "verified":

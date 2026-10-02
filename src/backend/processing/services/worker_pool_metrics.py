@@ -19,7 +19,7 @@ from processing.services.worker_pool_lifecycle import (
 from processing.services.worker_pool_state import build_worker_pool_state
 
 
-def observe_pool_state() -> dict[str, Any]:
+def observe_pool_state(*, capacity: list[WorkerPool] | None = None) -> dict[str, Any]:
     """Build one read-only queue/capacity observation for both supported pools."""
     state = build_worker_pool_state()
     if not state["endpoint_enabled"]:
@@ -29,8 +29,12 @@ def observe_pool_state() -> dict[str, Any]:
         or settings.PHOTO_PROCESSING_FLEET_TOKEN == settings.PHOTO_PROCESSING_WORKER_TOKEN
     ):
         raise ValueError("fleet endpoint unavailable")
-    observed_at = timezone.datetime.fromisoformat(state["observed_at"])
-    capacity = {pool.name: pool for pool in WorkerPool.objects.all()}
+    capacity_by_pool = {
+        pool.name: pool for pool in (capacity if capacity is not None else WorkerPool.objects.all())
+    }
+    # Queue provenance predates its aggregate reads; capacity may commit during those reads.
+    # Evaluate the materialized cloud rows against their own completed-read clock.
+    capacity_observed_at = timezone.now()
     pools: dict[str, dict[str, Any]] = {}
     for name, pool in state["pools"].items():
         leases = pool["leases"]
@@ -47,8 +51,8 @@ def observe_pool_state() -> dict[str, Any]:
                 state["observed_at"]
             ).timestamp(),
         }
-        observation = capacity.get(name)
-        fresh = bool(observation and _cloud_fresh(observation, observed_at))
+        observation = capacity_by_pool.get(name)
+        fresh = bool(observation and _cloud_fresh(observation, capacity_observed_at))
         values["worker_pool_capacity_fresh"] = int(fresh)
         # Missing/stale membership is unknown, not zero actual capacity. Never use target size
         # or workload as a substitute for the trusted complete current cloud observation.

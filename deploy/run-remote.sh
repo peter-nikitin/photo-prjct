@@ -392,95 +392,20 @@ flock -n 9 || exit 1
 export FINDME_CANONICAL_LOCK=1
 python3 - "$deployment_root" <<'PY_STAGE_GUARD'
 import json
-import importlib.util
 import os
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-action = os.environ.get('WORKER_POOL_ACTIVATION', 'normal')
-helper = root / 'deploy/worker-pools/release.py'
-if helper.is_file():
-    spec = importlib.util.spec_from_file_location('canonical_release_guard', helper)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    if hasattr(module, 'deployment_guard'):
-        module.deployment_guard(root, os.environ.get('APP_IMAGE'), os.environ.get('WORKER_POOL_WORKER_DIGEST'), os.environ.get('WORKER_POOL_RELEASE_MANIFEST'))
-    elif (root / 'worker-pools-local-retired.json').exists():
-        raise SystemExit(1)
-elif (root / 'worker-pools-local-retired.json').exists():
-    raise SystemExit(1)
-if action not in {'normal', 'receiver', 'stage', 'activate', 'complete', 'abort'}:
+if os.environ.get('WORKER_POOL_ACTIVATION', 'normal') != 'normal':
     raise SystemExit(2)
+marker = root / 'worker-pools-current.json'
 receipt_path = root / 'worker-pools-release.json'
-recovery = root / '.deployment-recovery'
-receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else None
-phase = receipt.get('phase') if receipt else None
-pending = (phase in {'receiver-prepared', 'receiver-staged', 'prepared', 'staging', 'staged', 'activating', 'verified', 'rolling-back-local', 'rolled-back-local'} or (phase == 'receiver-aborted' and recovery.is_dir())) and receipt.get('previous') is None
-if pending:
-    allowed = {
-        'receiver-prepared': {'receiver', 'abort'},
-        'receiver-staged': {'receiver', 'stage', 'abort'},
-        'receiver-aborted': {'abort'},
-        'prepared': {'stage', 'abort'},
-        'staging': {'stage', 'abort'},
-        'staged': {'stage', 'activate', 'abort'},
-        'activating': {'activate', 'abort'},
-        'verified': {'complete', 'abort'},
-        'rolling-back-local': {'abort'},
-        'rolled-back-local': {'stage', 'abort'},
-    }
-    if action not in allowed[phase] or (phase != 'receiver-prepared' and not recovery.is_dir()):
-        raise SystemExit(1)
-    candidate = receipt['candidate']
-    if phase in {'receiver-prepared', 'receiver-staged', 'receiver-aborted'}:
-        if os.environ.get('APP_IMAGE', '').rsplit(':', 1)[-1] != candidate['worker_build']:
-            raise SystemExit(1)
-        manifest_path = Path(os.environ.get('WORKER_POOL_RELEASE_MANIFEST', ''))
-        if not manifest_path.is_file():
-            raise SystemExit(1)
-        manifest = json.loads(manifest_path.read_text())
-        initial = candidate['creation_manifest']
-        if (
-            manifest['checksum'] != os.environ.get('WORKER_POOL_RELEASE_CHECKSUM')
-            or manifest['configuration']['worker_build'] != candidate['worker_build']
-            or manifest['configuration']['worker_image'] != candidate['worker_image']
-            or os.environ.get('WORKER_POOL_WORKER_DIGEST') != candidate['worker_image']
-        ):
-            raise SystemExit(1)
-        if action == 'stage':
-            immutable = lambda row: {key: value for key, value in row['configuration'].items() if key != 'groups'}
-            if immutable(manifest) != immutable(initial):
-                raise SystemExit(1)
-        elif manifest != initial:
-            raise SystemExit(1)
-    else:
-        manifest_path = Path(os.environ.get('WORKER_POOL_RELEASE_MANIFEST', ''))
-        if not manifest_path.is_file():
-            raise SystemExit(1)
-        manifest = json.loads(manifest_path.read_text())
-        def revision_scope(row):
-            return {key: ({name: {'id': entry['id']} for name, entry in value.items()} if key == 'groups' else value)
-                    for key, value in row['configuration'].items() if key not in {'worker_build', 'worker_image'}}
-        never_started = (phase == 'staging' and receipt.get('staged_predecessor')
-                         and not receipt.get('expanded_pool')
-                         and revision_scope(receipt['staged_predecessor']['manifest']) == revision_scope(candidate['manifest']))
-        forward = (action == 'stage' and (phase in {'staged', 'rolled-back-local'} or never_started)
-                   and not receipt.get('pending')
-                   and not (root / 'worker-pools-current.json').exists()
-                   and revision_scope(manifest) == revision_scope(candidate['manifest']))
-        if (
-            (manifest != candidate['manifest'] and not forward)
-            or manifest['checksum'] != os.environ.get('WORKER_POOL_RELEASE_CHECKSUM')
-            or os.environ.get('APP_IMAGE', '').rsplit(':', 1)[-1]
-            != manifest['configuration']['worker_build']
-            or os.environ.get('WORKER_POOL_WORKER_DIGEST') != manifest['configuration']['worker_image']
-        ):
-            raise SystemExit(1)
-elif recovery.exists() or action in {'activate', 'complete', 'abort', 'stage'}:
-    raise SystemExit(1)
-if action == 'normal' and os.environ.get('PHOTO_WORKER_PLACEMENT') == 'remote' and not (root / 'worker-pools-current.json').is_file():
-    raise SystemExit(1)
+if not marker.is_file() or not receipt_path.is_file() or (root / '.deployment-recovery').exists():
+    raise SystemExit('committed remote fleet marker is required')
+receipt = json.loads(receipt_path.read_text())
+if receipt.get('phase') not in {'committed', 'rolled-back'}:
+    raise SystemExit('committed remote fleet release is required')
 PY_STAGE_GUARD
 case "$DEPLOYMENT_ARCHIVE_NAME" in
   *[!a-zA-Z0-9.-]*|'') exit 2 ;;
@@ -534,6 +459,19 @@ tar -xf "$candidate_archive" -C "$candidate_package"
 for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
   test -e "$candidate_package/$entry"
 done
+python3 - "$deployment_root" "$candidate_package" <<'PY_CANDIDATE_GUARD'
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+helper = Path(sys.argv[2]) / 'deploy/worker-pools/release.py'
+spec = importlib.util.spec_from_file_location('candidate_release_guard', helper)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.deployment_guard(root, os.environ.get('APP_IMAGE'), os.environ.get('WORKER_POOL_WORKER_DIGEST'), os.environ.get('WORKER_POOL_RELEASE_MANIFEST'))
+PY_CANDIDATE_GUARD
 previous_entry_count=0
 for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
   if [ -e "$deployment_root/$entry" ]; then
@@ -546,26 +484,8 @@ case "$previous_entry_count" in
   *) exit 1 ;;
 esac
 
-previous_worker_topology=''
 if [ -e "$deployment_root/.env" ]; then
   [ "$previous_package_exists" -eq 1 ] || exit 1
-  previous_services="$(
-    APP_ENV_FILE="$deployment_root/.env" docker compose --project-name photo-prjct \
-      --env-file "$deployment_root/.env" \
-      -f "$deployment_root/docker-compose.deployment.yml" \
-      -f "$deployment_root/docker-compose.https.yml" \
-      --profile worker config --services
-  )"
-  if printf '%s\n' "$previous_services" | grep -qx worker && \
-     ! printf '%s\n' "$previous_services" | grep -Eq '^worker-(bulk|selfie)$'; then
-    previous_worker_topology=shared
-  elif ! printf '%s\n' "$previous_services" | grep -qx worker && \
-       printf '%s\n' "$previous_services" | grep -qx worker-bulk && \
-       printf '%s\n' "$previous_services" | grep -qx worker-selfie; then
-    previous_worker_topology=split
-  else
-    exit 1
-  fi
 fi
 
 package_mutation_started=1
@@ -577,7 +497,6 @@ for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
 done
 if [ "$previous_package_exists" -eq 1 ]; then
   PREVIOUS_DEPLOYMENT_PACKAGE_ROOT="$previous_package" \
-  PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY="$previous_worker_topology" \
   DEPLOY_ROOT="$deployment_root" COMPOSE_PROJECT_NAME=photo-prjct \
     sh "$deployment_root/deploy/apply-deployment.sh"
 else
@@ -588,17 +507,17 @@ package_mutation_started=0'''
 
 commands = {
     'deploy': deployment_command,
+    'finalize-initial-workers': r'''set -eu
+exec python3 "$INITIAL_FINALIZER_REMOTE_PATH" \
+ --source-sha256 "$INITIAL_FINALIZER_SOURCE_SHA256" \
+ --expected-web-sha "$INITIAL_FINALIZER_WEB_SHA" \
+ --expected-worker-digest "$INITIAL_FINALIZER_WORKER_DIGEST" \
+ --expected-bulk-group "$INITIAL_FINALIZER_BULK_GROUP" \
+ --expected-selfie-group "$INITIAL_FINALIZER_SELFIE_GROUP"''',
     'worker-pools': r'''set -eu
 case "$WORKER_POOL_OPERATION" in status|rollout|rollback|verify) ;; *) exit 2 ;; esac
 export PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical
 exec python3 /opt/photo-prjct/deploy/worker-pools/release.py "$WORKER_POOL_OPERATION" --root /opt/photo-prjct''',
-    'cutover-compose-identity': r'''set -eu
-test "$COMPOSE_IDENTITY_CUTOVER_CONFIRMATION" = confirm-canonical-compose-identity-cutover
-cd /opt/photo-prjct
-DEPLOY_ROOT=/opt/photo-prjct COMPOSE_PROJECT_NAME=photo-prjct-staging \
-  exec sh /opt/photo-prjct/deploy/cutover-compose-identity.sh \
-    --confirm-canonical-compose-identity-cutover \
-    --backup-dir /opt/photo-prjct/backups/compose-identity-cutover''',
     'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
     'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
     'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
@@ -650,20 +569,18 @@ export TBANK_RECEIPT_TAXATION TBANK_RECEIPT_TAX TBANK_RECEIPT_PAYMENT_METHOD
 export TBANK_RECEIPT_PAYMENT_OBJECT TBANK_RECEIPT_MEASUREMENT_UNIT
 export TBANK_RECEIPT_CLOSING_REQUIRED
 
-PHOTO_WORKER_PLACEMENT="${PHOTO_WORKER_PLACEMENT:-local}"
 WORKER_POOL_ACTIVATION="${WORKER_POOL_ACTIVATION:-normal}"
 WORKER_POOL_PRIVATE_API_IPV4="${WORKER_POOL_PRIVATE_API_IPV4:-}"
 WORKER_POOL_RELEASE_MANIFEST="${WORKER_POOL_RELEASE_MANIFEST:-}"
 WORKER_POOL_RELEASE_CHECKSUM="${WORKER_POOL_RELEASE_CHECKSUM:-}"
 WORKER_POOL_WORKER_DIGEST="${WORKER_POOL_WORKER_DIGEST:-}"
-export PHOTO_WORKER_PLACEMENT WORKER_POOL_PRIVATE_API_IPV4
+export WORKER_POOL_PRIVATE_API_IPV4
 export WORKER_POOL_ACTIVATION WORKER_POOL_RELEASE_MANIFEST WORKER_POOL_RELEASE_CHECKSUM
 export WORKER_POOL_WORKER_DIGEST
 
 REMOTE_DEPLOYMENT_VALUES='
 APP_IMAGE
 WORKER_IMAGE
-PHOTO_WORKER_PLACEMENT
 WORKER_POOL_ACTIVATION
 WORKER_POOL_PRIVATE_API_IPV4
 WORKER_POOL_RELEASE_MANIFEST
@@ -704,9 +621,6 @@ PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS
 PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES
 PHOTO_WORKER_SELFIE_PROCESSOR_TYPES
 PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS
-PHOTO_WORKER_REPLICAS
-PHOTO_WORKER_CPUS
-PHOTO_WORKER_MEMORY_LIMIT
 SELFIE_SEARCH_MAX_UPLOAD_BYTES
 SELFIE_SEARCH_MAX_PIXELS
 SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS
@@ -804,17 +718,10 @@ PY
 
 [ "$#" = 1 ] || fail arguments invalid_arguments
 mode=$1
-case "$mode" in
-    cutover-compose-identity)
-        remote_deployment_values="$REMOTE_DEPLOYMENT_VALUES COMPOSE_IDENTITY_CUTOVER_CONFIRMATION"
-        ;;
-    *)
-        remote_deployment_values="$REMOTE_DEPLOYMENT_VALUES"
-        ;;
-esac
+remote_deployment_values="$REMOTE_DEPLOYMENT_VALUES"
 
 case "$mode" in
-    deploy|worker-pools|cutover-compose-identity|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
+    deploy|worker-pools|finalize-initial-workers|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
     *) fail arguments unknown_operation ;;
 esac
 
@@ -862,6 +769,18 @@ if [ "$mode" = stage-paused-observability-release ]; then
 fi
 
 case "$mode" in
+    finalize-initial-workers)
+        case "${INITIAL_FINALIZER_SOURCE_SHA256:-}" in ''|*[!0-9a-f]*) fail finalizer invalid_source_checksum ;; esac
+        [ "${#INITIAL_FINALIZER_SOURCE_SHA256}" -eq 64 ] || fail finalizer invalid_source_checksum
+        [ "$(sha256sum deploy/worker-pools/finalize_initial.py | cut -d ' ' -f 1)" = "$INITIAL_FINALIZER_SOURCE_SHA256" ] || fail finalizer source_checksum_mismatch
+        INITIAL_FINALIZER_REMOTE_PATH=/opt/photo-prjct/.initial-finalizer.$INITIAL_FINALIZER_SOURCE_SHA256.py
+        export INITIAL_FINALIZER_REMOTE_PATH
+        run_quietly copy copy_failed scp -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" deploy/worker-pools/finalize_initial.py "$remote_target:$INITIAL_FINALIZER_REMOTE_PATH"
+        remote_environment=$temporary_root/remote.env
+        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" INITIAL_FINALIZER_REMOTE_PATH INITIAL_FINALIZER_SOURCE_SHA256 INITIAL_FINALIZER_WEB_SHA INITIAL_FINALIZER_WORKER_DIGEST INITIAL_FINALIZER_BULK_GROUP INITIAL_FINALIZER_SELFIE_GROUP >"$command_output" 2>&1; then
+            fail environment materialization_failed
+        fi
+        ;;
     deploy)
         deployment_package=$temporary_root/deployment-package.tar
         DEPLOYMENT_ARCHIVE_NAME=".deployment-candidate.$(python3 -c 'import uuid; print(uuid.uuid4().hex)').tar"
@@ -879,14 +798,6 @@ case "$mode" in
     worker-pools)
         remote_environment=$temporary_root/remote.env
         if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" WORKER_POOL_OPERATION >"$command_output" 2>&1; then
-            fail environment materialization_failed
-        fi
-        ;;
-    cutover-compose-identity)
-        run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" docker-compose.deployment.yml docker-compose.https.yml deploy "$remote_target:/opt/photo-prjct/"
-        remote_environment=$temporary_root/remote.env
-        # shellcheck disable=SC2086
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" $remote_deployment_values >"$command_output" 2>&1; then
             fail environment materialization_failed
         fi
         ;;

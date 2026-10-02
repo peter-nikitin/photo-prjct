@@ -1,7 +1,7 @@
 # Remote-only Photo Worker Operations Implementation Plan
 
 - Date: 2026-10-02
-- Status: Draft for maintainer review; no production operation authorized
+- Status: Approved for implementation on 2026-10-02; no production operation authorized
 - Owner: project maintainer
 - Related specification: [remote-only photo-worker operations](../superpowers/specs/2026-10-02-remote-only-photo-worker-operations-design.md)
 - Related architecture: [current worker placement](../architecture.md#current-architecture--implemented), [accepted constraints](../architecture.md#accepted-constraints)
@@ -43,7 +43,7 @@ Execute approved tasks with `$execute-implementation-plan`; use `$select-verific
 - **Produces:** A one-time reviewed `workflow_dispatch` action executed from the PR ref, using its own reviewed source but the installed canonical release journal and existing lock; it does not package or deploy the pinned old application. The action accepts exact expected receipt/web SHA, worker digest and both group IDs, refuses any mismatch, runs the existing fleet verification plus web/private/public/collector/log-probe gates, commits the existing journal and cleans only the receipt-identified original recovery inputs. It can reconcile a post-commit cleanup interruption without repeating the commit.
 
 - [ ] Add failing tests for wrong pin/group, absent or non-`verified` receipt, stale/failed fleet or collector, unsettled bulk disk, active lease anomaly, missing web log probe, lock contention, pre-commit failure and post-commit cleanup retry. Assert no old package install, local worker start, scale-policy change or direct marker write outside `release.py`.
-- [ ] Run `make test TESTS="tests/deployment/test_worker_pool_release.py tests/deployment/test_deployment_scripts.py"`; observe the intended RED assertions.
+- [ ] Run `sh scripts/run-in-test-env.sh .venv/bin/pytest tests/deployment/test_worker_pool_release.py tests/deployment/test_deployment_scripts.py`; observe the intended RED assertions. These files are marked `operational`, so `make test` intentionally excludes them.
 - [ ] Implement the one-time workflow branch with the canonical deployment identity and serialization lock. Its remote helper must use a checksum-bound reviewed script and the installed release library; the normal Deploy build/install path is not invoked. Keep the transition action unavailable after the exact receipt is committed and cleaned.
 - [ ] Rerun the targeted suites; expect GREEN for both uninterrupted and interrupted commit/cleanup paths.
 
@@ -56,7 +56,7 @@ Execute approved tasks with `$execute-implementation-plan`; use `$select-verific
 - **Produces:** One normal remote fleet release path. No production local photo/selfie Compose service, claim credential, placement selector, container-health assertion or restoration/`abort` branch remains. Development worker-protocol fixtures may remain.
 
 - [ ] Add failing tests that ordinary Deploy cannot enable local photo claims or restore local services, fails safely when the remote marker is missing, verifies web/nginx log tags and the web probe without local worker containers, and preserves import/commerce/private API/DB/monitoring plus cap-one remote rollout/compatible rollback.
-- [ ] Run `make test TESTS="tests/deployment/test_deployment_scripts.py tests/deployment/test_worker_pool_release.py tests/deployment/test_adaface_local_compose.py"`; observe the intended RED assertions.
+- [ ] Run `sh scripts/run-in-test-env.sh .venv/bin/pytest tests/deployment/test_deployment_scripts.py tests/deployment/test_worker_pool_release.py tests/deployment/test_adaface_local_compose.py`; observe the intended RED assertions.
 - [ ] Remove the obsolete production branches and credentials instead of adding placement fallbacks. Keep immutable identity, provider/disk, queue/lease and remote-health checks that protect real failure paths; eliminate local-container assertions.
 - [ ] Rerun focused suites; expect GREEN with no local photo/selfie services in the rendered production Compose configuration.
 

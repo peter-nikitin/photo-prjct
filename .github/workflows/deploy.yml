@@ -6,6 +6,31 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      finalize_initial_workers:
+        description: Finalize only the pinned initial remote receipt without deploying
+        required: true
+        default: false
+        type: boolean
+      finalizer_source_sha256:
+        description: Exact reviewed finalize_initial.py SHA256
+        required: false
+        type: string
+      finalizer_web_sha:
+        description: Exact expected initial web SHA
+        required: false
+        type: string
+      finalizer_worker_digest:
+        description: Exact expected initial worker digest
+        required: false
+        type: string
+      finalizer_bulk_group:
+        description: Exact expected initial bulk group ID
+        required: false
+        type: string
+      finalizer_selfie_group:
+        description: Exact expected initial selfie group ID
+        required: false
+        type: string
       verify_private_storage:
         description: Run the confirmed real-storage contract probe after disabled deployment
         required: true
@@ -36,23 +61,6 @@ on:
         required: false
         default: ""
         type: string
-      worker_pool_activation:
-        description: First worker activation phase for the exact deployment_sha
-        required: true
-        default: normal
-        type: choice
-        options:
-          - normal
-          - receiver
-          - stage
-          - activate
-          - complete
-          - abort
-      worker_pool_worker_digest:
-        description: Exact sha256 digest from receiver receipt for every explicit activation phase
-        required: false
-        default: ""
-        type: string
       verify_paused_observability_release:
         description: Verify the staged privileged package for deployment_sha before deployment
         required: true
@@ -68,16 +76,49 @@ on:
         required: true
         default: false
         type: boolean
-      cutover_compose_identity:
-        description: Run the one-time canonical Compose identity cutover
-        required: true
-        default: false
-        type: boolean
 
 jobs:
+  finalize-initial-workers:
+    name: Finalize pinned initial remote receipt
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.finalize_initial_workers }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - name: Require reviewed branch dispatch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          test "$DISPATCH_REF" != refs/heads/main
+          test "${{ inputs.preflight }}" != true
+          test "${{ inputs.configure_monitoring_agent }}" != true
+          test "${{ inputs.validate_deploy_issue }}" != true
+          test "${{ inputs.stage_paused_observability_release }}" != true
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Finalize installed canonical release
+        env:
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+          INITIAL_FINALIZER_SOURCE_SHA256: ${{ inputs.finalizer_source_sha256 }}
+          INITIAL_FINALIZER_WEB_SHA: ${{ inputs.finalizer_web_sha }}
+          INITIAL_FINALIZER_WORKER_DIGEST: ${{ inputs.finalizer_worker_digest }}
+          INITIAL_FINALIZER_BULK_GROUP: ${{ inputs.finalizer_bulk_group }}
+          INITIAL_FINALIZER_SELFIE_GROUP: ${{ inputs.finalizer_selfie_group }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --consumer remote-check --identity github-oidc \
+            -- deploy/run-remote.sh finalize-initial-workers
   classify-release:
     name: Classify deployment release
-    if: ${{ !inputs.preflight }}
+    if: ${{ !inputs.preflight && !inputs.finalize_initial_workers }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -166,7 +207,7 @@ jobs:
 
   stage-observability-release:
     name: Stage privileged observability source
-    if: ${{ inputs.stage_paused_observability_release && !inputs.preflight }}
+    if: ${{ inputs.stage_paused_observability_release && !inputs.preflight && !inputs.finalize_initial_workers }}
     runs-on: ubuntu-latest
     needs: [classify-release]
     permissions:
@@ -209,7 +250,7 @@ jobs:
 
   build:
     name: Build immutable image
-    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release }}
+    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && !inputs.finalize_initial_workers }}
     runs-on: ubuntu-latest
     needs: [classify-release]
     permissions:
@@ -228,14 +269,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Log in to GHCR
-        if: ${{ github.event_name == 'push' || inputs.worker_pool_activation == 'normal' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Docker Buildx
-        if: ${{ github.event_name == 'push' || inputs.worker_pool_activation == 'normal' }}
         uses: docker/setup-buildx-action@v3
         with:
           driver: docker-container
@@ -247,7 +286,6 @@ jobs:
           echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" >> "$GITHUB_OUTPUT"
           echo "import_worker_image=ghcr.io/${GITHUB_REPOSITORY}-import-worker:${release_sha}" >> "$GITHUB_OUTPUT"
       - name: Build and push import image
-        if: ${{ github.event_name == 'push' || inputs.worker_pool_activation == 'normal' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -257,7 +295,6 @@ jobs:
           cache-from: type=gha,scope=import-worker
           cache-to: type=gha,mode=max,scope=import-worker,ignore-error=true
       - name: Build and push image
-        if: ${{ github.event_name == 'push' || inputs.worker_pool_activation == 'normal' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -268,7 +305,6 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web,ignore-error=true
       - name: Build and push worker image
-        if: ${{ github.event_name == 'push' || inputs.worker_pool_activation == 'normal' }}
         id: worker
         uses: docker/build-push-action@v6
         with:
@@ -283,13 +319,9 @@ jobs:
         id: worker_ref
         env:
           BUILT_DIGEST: ${{ steps.worker.outputs.digest }}
-          REVIEWED_DIGEST: ${{ inputs.worker_pool_worker_digest }}
         run: |
           set -eu
-          case "${{ inputs.worker_pool_activation || 'normal' }}" in
-            receiver|stage|activate|complete|abort) digest="$REVIEWED_DIGEST" ;;
-            *) digest="$BUILT_DIGEST" ;;
-          esac
+          digest="$BUILT_DIGEST"
           case "$digest" in sha256:*) ;; *) exit 2 ;; esac
           hash="${digest#sha256:}"
           test "${#hash}" -eq 64
@@ -298,7 +330,7 @@ jobs:
 
   deploy:
     name: Deploy
-    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release }}
+    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && !inputs.finalize_initial_workers }}
     runs-on: ubuntu-latest
     needs: [classify-release, build]
     permissions:
@@ -334,8 +366,6 @@ jobs:
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
           WORKER_IMAGE: ${{ needs.build.outputs.worker_image }}
-          PHOTO_WORKER_PLACEMENT: ${{ vars.PHOTO_WORKER_PLACEMENT || 'local' }}
-          WORKER_POOL_ACTIVATION: ${{ inputs.worker_pool_activation || 'normal' }}
           WORKER_POOL_PRIVATE_API_IPV4: ${{ vars.WORKER_POOL_PRIVATE_API_IPV4 }}
           WORKER_POOL_RELEASE_MANIFEST: ${{ vars.WORKER_POOL_RELEASE_MANIFEST }}
           WORKER_POOL_RELEASE_CHECKSUM: ${{ vars.WORKER_POOL_RELEASE_CHECKSUM }}
@@ -375,9 +405,6 @@ jobs:
           PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES || '1/selfie_query/2' }}
           PHOTO_WORKER_SELFIE_PROCESSOR_TYPES: ${{ vars.PHOTO_WORKER_SELFIE_PROCESSOR_TYPES || 'selfie_query' }}
           PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS: ${{ vars.PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS || '900' }}
-          PHOTO_WORKER_REPLICAS: ${{ vars.PHOTO_WORKER_REPLICAS || '1' }}
-          PHOTO_WORKER_CPUS: ${{ vars.PHOTO_WORKER_CPUS || '1.0' }}
-          PHOTO_WORKER_MEMORY_LIMIT: ${{ vars.PHOTO_WORKER_MEMORY_LIMIT || '2g' }}
           SELFIE_SEARCH_MAX_UPLOAD_BYTES: ${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}
           SELFIE_SEARCH_MAX_PIXELS: ${{ vars.SELFIE_SEARCH_MAX_PIXELS || '25000000' }}
           SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS: ${{ vars.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS || '120' }}
@@ -412,18 +439,10 @@ jobs:
           COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS: ${{ vars.COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS || '300' }}
           GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
         run: |
-          if [ "${{ inputs.cutover_compose_identity }}" = true ]; then
-            COMPOSE_IDENTITY_CUTOVER_CONFIRMATION=confirm-canonical-compose-identity-cutover \
-              python scripts/run-with-environment-secrets.py \
-                --consumer deploy \
-                --identity github-oidc \
-                -- deploy/run-remote.sh cutover-compose-identity
-          else
-            python scripts/run-with-environment-secrets.py \
-              --consumer deploy \
-              --identity github-oidc \
-              -- deploy/run-remote.sh deploy
-          fi
+          python scripts/run-with-environment-secrets.py \
+            --consumer deploy \
+            --identity github-oidc \
+            -- deploy/run-remote.sh deploy
       - name: Verify private upload storage contract
         if: ${{ inputs.verify_private_storage }}
         env:
@@ -464,7 +483,7 @@ jobs:
 
   reconcile-deploy-issue:
     name: Reconcile deployment issue
-    if: ${{ always() && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release }}
+    if: ${{ always() && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && !inputs.finalize_initial_workers }}
     runs-on: ubuntu-latest
     needs: [classify-release, build, deploy]
     permissions:
@@ -524,7 +543,7 @@ jobs:
 
   validate-deploy-issue:
     name: Validate deployment issue notification
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && !inputs.preflight }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && !inputs.preflight && !inputs.finalize_initial_workers }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -569,7 +588,7 @@ jobs:
 
   configure-monitoring-agent:
     name: Configure Unified Agent
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.finalize_initial_workers }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -593,7 +612,7 @@ jobs:
 
   lockbox-preflight:
     name: Validate Lockbox projections
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight && !inputs.finalize_initial_workers }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

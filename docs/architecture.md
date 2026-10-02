@@ -95,37 +95,33 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   evidence commits were not included. Neither automated result represents a canonical-deployment activation.
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
-- The repository prepares the isolated photo-worker boundary accepted by
+- The repository implements the isolated photo-worker boundary accepted by
   [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md): private verified TLS and separate
   fleet authorization, additive pool/member admission and boot-fenced retirement, aggregate
   queue metrics, and dry-run-first bounded fleet templates. Existing processing attempts and
-  artifacts remain authoritative. These code paths do not establish deployed multi-VM topology;
-  paid provisioning, canonical cutover and native scale-from-zero/retirement acceptance remain
-  pending under the [implementation plan](plans/2026-09-27-autoscaled-worker-isolation.md).
+  artifacts remain authoritative. The last production observation found serving remote pools,
+  with the initial receipt still `verified`; the new remote-only package has not been deployed.
   The [capped activation amendment](superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md)
   selects bulk 0..1 and selfie 1..1 before quota expansion, preserving workload-driven bulk-zero
   behavior. Repository tooling implements a checksum-bound ceiling and serial release
-  replacement with policy restoration and provider disk-absence fences. This does not establish
-  provisioned groups, physical provider replacement bounds or production acceptance; smaller
-  worker disks remain [unverified sizing candidates](operations/2026-09-29-worker-disk-sizing.md).
+  replacement with policy restoration and provider disk-absence fences. The existing groups use
+  the approved cap-one policy; fresh provider and disk read-back remains required before a release.
   [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) now has
   repository support for distinct worker and canonical folder inputs: worker-owned group,
   instance and disk inventory, immutable release/receipt binding and canonical-native
-  WORKLOAD metric selection and publication. Local fixtures verify this contract; they do not
-  establish a created worker folder, effective organization policy, alert delivery or cutover.
-  Canonical Deploy now supports a pinned receiver, warm paused stage, explicit health-gated
-  activation, explicit completion and local rollback gate. Stage retains local photo workers
-  while the private receiver and native collector run; activation drains local claims and opens
-  remote serving with original recovery retained. Only completion after real-work acceptance
-  commits the remote fleet marker. Repository support is not evidence that this protocol has run.
+  WORKLOAD metric selection and publication. Repository evidence does not establish current
+  effective organization policy or recipient alert delivery. Canonical Deploy now supports a
+  checksum-bound, branch-dispatched one-time finalizer for the already serving initial fleet;
+  the ordinary deployment and recovery path then uses only remote photo/selfie pools. The
+  finalizer must read back `committed` and clean its exact original recovery inputs before
+  ordinary Deploy of the new package. See the [operator runbook](runbooks/worker-pools.md).
   [ADR 0049](adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
-  accepts remote-only photo/selfie recovery after completed fleet acceptance, before
-  historical AdaFace enrollment. This branch prepares bounded vector-only AdaFace
-  enrollment, per-event reconciliation/activation, foreground scheduling, and release
-  guards, but does not run a
-  historical backfill or retire local workers. The current pending fleet receipt and
-  production cleanup still require separate live acceptance; no backfill or retirement
-  is live-proven by this code.
+  accepts remote-only photo/selfie recovery before historical AdaFace enrollment. This branch
+  removes the production local photo/selfie worker and recovery path, and prepares bounded
+  vector-only AdaFace enrollment, per-event reconciliation/activation, foreground scheduling,
+  and release guards. The initial receipt remains last-observed `verified`; its commitment,
+  original recovery cleanup, deployment of the new SHA and live remote-only read-back are
+  separate pending operations. No historical backfill or event activation is claimed.
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
   PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first

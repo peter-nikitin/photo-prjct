@@ -22,34 +22,6 @@ TERMINAL = {"STOPPED", "DELETED"}
 NATIVE_CAPABILITY = "ru.findme-photo.historical-adaface-contract"
 
 
-def guard_local_retirement(root, placement, activation):
-    """Consume a future reviewed retirement receipt; this package never creates it."""
-    root = Path(root)
-    marker = root / "worker-pools-local-retired.json"
-    if not marker.exists():
-        return
-    data = json.loads(marker.read_text())
-    if (
-        not isinstance(data, dict)
-        or set(data) != {"version", "phase", "release_build", "acceptance_sha256"}
-        or type(data["version"]) is not int
-        or data["version"] != 1
-        or data["phase"] != "retired"
-        or not isinstance(data["release_build"], str)
-        or re.fullmatch(r"[0-9a-f]{40}", data["release_build"]) is None
-        or not isinstance(data["acceptance_sha256"], str)
-        or re.fullmatch(r"[0-9a-f]{64}", data["acceptance_sha256"]) is None
-    ):
-        raise ValueError("invalid permanent local-worker retirement marker")
-    receipt = Journal(root / "worker-pools-release.json").data
-    if not (root / "worker-pools-current.json").is_file() or (
-        receipt.get("previous") is None and receipt.get("phase") != "committed"
-    ):
-        raise ValueError("fleet complete is required before local-worker retirement")
-    if placement != "remote" or activation != "normal":
-        raise ValueError("local workers are permanently retired; use remote release recovery")
-
-
 def require_native_compatible_release(root, app_image, worker_image, *, run=subprocess.run):
     """Read current canonical DB before changing any package, image or cloud template."""
     root = Path(root)
@@ -108,9 +80,16 @@ def require_native_compatible_release(root, app_image, worker_image, *, run=subp
 
 
 def deployment_guard(root, app_image=None, worker_image=None, manifest_path=None):
-    placement = os.environ.get("PHOTO_WORKER_PLACEMENT", "local")
-    activation = os.environ.get("WORKER_POOL_ACTIVATION", "normal")
-    guard_local_retirement(root, placement, activation)
+    root = Path(root)
+    marker = root / "worker-pools-current.json"
+    receipt_path = root / "worker-pools-release.json"
+    if not marker.is_file() or not receipt_path.is_file():
+        raise ValueError("committed remote fleet marker is required")
+    receipt = Journal(receipt_path).data
+    if receipt.get("pending"):
+        raise ValueError("unfinished release; uncertain cloud submission")
+    if receipt.get("phase") not in {"committed", "rolled-back"}:
+        raise ValueError("committed remote fleet release is required")
     if not worker_image and manifest_path and Path(manifest_path).is_file():
         worker_image = (
             json.loads(Path(manifest_path).read_text()).get("configuration", {}).get("worker_image")
@@ -119,9 +98,6 @@ def deployment_guard(root, app_image=None, worker_image=None, manifest_path=None
         worker_image = Journal(Path(root) / "worker-pools-current.json").data["manifest"][
             "configuration"
         ]["worker_image"]
-    # Initial local abort is valid only before any event publishes native-only evidence.
-    if placement != "remote" or activation == "abort":
-        app_image = worker_image = None
     require_native_compatible_release(root, app_image, worker_image)
 
 
@@ -153,8 +129,8 @@ def next_step(snapshot, build):
     if old:
         if any(m["serving"] for m in candidates) or (
             snapshot["claims_paused"]
-            and not snapshot["local_claims_paused"]
-            and snapshot["live_attempts"] == snapshot.get("local_live_attempts", 0)
+            and snapshot["local_claims_paused"]
+            and snapshot["live_attempts"] == 0
             and candidates
         ):
             return "retire", old[0]
@@ -272,51 +248,11 @@ def update_group(group, body, *, cloud, journal):
     # Desired configuration is re-read by the next poll, independently of operation response.
 
 
-def cutover(gateway):
-    for pool in ("bulk", "selfie"):
-        gateway.control("pause", pool=pool, paused=True, local=True)
-    for pool in ("bulk", "selfie"):
-        gateway.control("drain-local", pool=pool, timeout_seconds=900)
-    gateway.stop_local()
-    for pool in ("bulk", "selfie"):
-        gateway.control("pause", pool=pool, paused=False, local=False)
-
-
 def commit_release(journal, marker):
     if journal.data["phase"] != "verified" or set(journal.data["verified"]) != {"bulk", "selfie"}:
         raise ValueError("both pools must be verified before release commit")
     Journal(marker, journal.data["candidate"])
     journal.data["phase"] = "committed"
-    journal.save()
-
-
-def rollback_initial(gateway, journal, marker, *, timeout=900):
-    journal.data["phase"] = "rolling-back-local"
-    journal.save()
-    for pool in ("bulk", "selfie"):
-        gateway.control("pause", pool=pool, paused=True, local=False)
-    for pool in ("bulk", "selfie"):
-        gateway.control("pause", pool=pool, paused=True, local=True)
-    deadline = time.monotonic() + timeout
-    while True:
-        for pool in ("bulk", "selfie"):
-            gateway.control("recover", pool=pool)
-        snapshot = gateway.control("status")
-        if all(snapshot[name]["live_attempts"] == 0 for name in ("bulk", "selfie")):
-            break
-        if time.monotonic() >= deadline:
-            raise ValueError("remote drain timeout; keep compatible web and remote fence")
-        time.sleep(1)
-    for pool in ("bulk", "selfie"):
-        gateway.control("pause", pool=pool, paused=False, local=True)
-    # Restore the original absence before advertising completed local recovery.
-    Path(marker).unlink(missing_ok=True)
-    directory = os.open(Path(marker).parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-    journal.data["phase"] = "rolled-back-local"
     journal.save()
 
 
@@ -469,55 +405,6 @@ def validate_manifest(manifest):
             or group["deployPolicy"] != expected[name]["deployPolicy"]
         ):
             raise ValueError("unsafe fleet manifest")
-
-
-def validate_receiver_manifest(manifest):
-    provision = provision_module()
-    configuration = manifest["configuration"]
-    if provision.prepare(configuration) != manifest or any(
-        entry != {"id": None, "baseline": None} for entry in configuration["groups"].values()
-    ):
-        raise ValueError("receiver requires reviewed null-ID creation manifest")
-
-
-def same_receiver_scope(creation, bound):
-    initial = deepcopy(creation["configuration"])
-    final = deepcopy(bound["configuration"])
-    initial.pop("groups")
-    final.pop("groups")
-    return initial == final
-
-
-def same_initial_revision_scope(old, new):
-    def scope(manifest):
-        config = deepcopy(manifest["configuration"])
-        for key in ("worker_build", "worker_image"):
-            config.pop(key)
-        for entry in config["groups"].values():
-            entry.pop("baseline")
-        return config
-
-    return scope(old) == scope(new)
-
-
-def validate_initial_state(snapshot, manifest, predecessor=None):
-    build = manifest["configuration"]["worker_build"]
-    builds = {build}
-    if predecessor:
-        builds.add(predecessor["manifest"]["configuration"]["worker_build"])
-    for name in ("bulk", "selfie"):
-        row = snapshot.get(name)
-        if (
-            row is None
-            or row["group_id"] != manifest["configuration"]["groups"][name]["id"]
-            or row["active_build"] not in builds
-            or row["staged_build"] not in {None, build}
-            or not row["claims_paused"]
-            or row["local_claims_paused"]
-            or row["live_attempts"] != row.get("local_live_attempts", 0)
-            or any(m["grant"] and not m["reconciled"] for m in row["members"])
-        ):
-            raise ValueError("unsafe existing coordinator state for initial stage")
 
 
 class Host:
@@ -740,31 +627,6 @@ class Host:
                 self.journal.data["expanded_pool"] = None
                 self.journal.save()
 
-    def stop_local(self):
-        for name in ("worker", "worker-bulk", "worker-selfie"):
-            rows = self.run(
-                [
-                    "docker",
-                    "ps",
-                    "-q",
-                    "--filter",
-                    "label=com.docker.compose.project=photo-prjct",
-                    "--filter",
-                    f"label=com.docker.compose.service={name}",
-                ],
-                check=True,
-                text=True,
-                capture_output=True,
-                timeout=30,
-            ).stdout.split()
-            for container in rows:
-                self.run(
-                    ["docker", "stop", "--time", "960", container],
-                    check=True,
-                    capture_output=True,
-                    timeout=970,
-                )
-
 
 def image_proof(manifest, app_image, *, run=subprocess.run):
     config = manifest["configuration"]
@@ -833,212 +695,39 @@ def verify_fleet(host, manifest):
             host.disk_fence(manifest, settled=name)
 
 
-def verify_staged_fleet(host, manifest):
-    snapshot = host.observe()
-    build = manifest["configuration"]["worker_build"]
-    for name in ("bulk", "selfie"):
-        row = snapshot[name]
-        group_id = manifest["configuration"]["groups"][name]["id"]
-        group = host.cloud.get(f"instanceGroups/{group_id}", view="FULL")
-        staged_scale = deepcopy(manifest["groups"][name]["scalePolicy"])
-        staged_scale["autoScale"]["minZoneSize"] = "1"
-        if (
-            not row["fresh"]
-            or row["active_build"] != build
-            or row["staged_build"] is not None
-            or not row["claims_paused"]
-            or row["local_claims_paused"]
-            or not any(
-                member["worker_build"] == build and member["warm"] for member in row["members"]
-            )
-            or any(member["grant"] and not member["reconciled"] for member in row["members"])
-            or not provider_field_matches(
-                "instanceTemplate",
-                group["instanceTemplate"],
-                manifest["groups"][name]["instanceTemplate"],
-            )
-            or not provider_field_matches("scalePolicy", group["scalePolicy"], staged_scale)
-        ):
-            raise ValueError("staged pool is not warm and safely paused")
+def settle_remote_pool(host, name, manifest):
+    snapshot = host.observe()[name]
+    if not snapshot["local_claims_paused"]:
+        raise ValueError("local claims must remain paused")
+    if snapshot["claims_paused"]:
+        if snapshot["live_attempts"] != 0:
+            raise ValueError("paused remote repair still has live attempts")
+        host.control("pause", pool=name, paused=False, local=False)
+    host.template(name, manifest, 0 if name == "bulk" else 1)
     if manifest["configuration"]["pool_max_size"] == 1:
-        for name in ("bulk", "selfie"):
-            host.disk_fence(manifest, settled=name)
+        host.disk_fence(manifest, settled=name)
 
 
 def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
     root = Path(root)
     receipt = root / "worker-pools-release.json"
     marker = root / "worker-pools-current.json"
-    if mode != "status":
-        guard_local_retirement(root, "remote", "normal")
-    if (
-        mode == "rollback"
-        and (root / "worker-pools-local-retired.json").exists()
-        and Journal(receipt).data.get("previous") is None
-    ):
-        raise ValueError("local workers are retired; initial local rollback is forbidden")
+    if mode not in {"preflight", "rollout", "rollback", "status", "verify", "commit"}:
+        raise ValueError("unsupported remote release operation")
     if mode == "preflight":
         deployment_guard(root, app_image, worker_image, manifest_path)
-    elif mode in {"rollout", "rollback", "stage", "activate"} and (root / ".env").is_file():
+    elif mode in {"rollout", "rollback"}:
         data = Journal(receipt).data
         target = data.get("previous") if mode == "rollback" else data["candidate"]
+        if not target:
+            raise ValueError("committed remote predecessor is required")
         require_native_compatible_release(
             root,
-            target.get("proof", {}).get("web_image") if target else None,
-            target["manifest"]["configuration"]["worker_image"] if target else None,
+            target.get("proof", {}).get("web_image"),
+            target["manifest"]["configuration"]["worker_image"],
         )
     provision = provision_module()
     from processing.services.worker_pool_cloud import metadata_token
-
-    if mode == "eligibility":
-        manifest = json.loads(Path(manifest_path).read_text())
-        validate_receiver_manifest(manifest)
-        if checksum != manifest["checksum"]:
-            raise ValueError("reviewed creation checksum mismatch")
-        journal = Journal(receipt)
-        if (
-            marker.exists()
-            or journal.data.get("phase") != "receiver-staged"
-            or journal.data.get("previous") is not None
-            or journal.data.get("candidate", {}).get("creation_manifest") != manifest
-        ):
-            raise ValueError("receiver candidate is not staged")
-        if canonical_instance_id() != manifest["configuration"]["canonical_vm_id"]:
-            raise ValueError("wrong canonical VM")
-        predecessors = manifest["configuration"].get("predecessors")
-        result = Host(root, None, journal).control(
-            "reactivation-eligible", predecessors=predecessors
-        )
-        if result != {"eligible": True}:
-            raise ValueError("coordinator reactivation eligibility rejected")
-        return {"eligible": True, "checksum": checksum, "predecessors": predecessors}
-
-    if mode == "receiver-preflight":
-        if marker.exists():
-            raise ValueError("receiver staging requires a clean local predecessor")
-        manifest = json.loads(Path(manifest_path).read_text())
-        validate_receiver_manifest(manifest)
-        build = app_image.rsplit(":", 1)[-1]
-        if (
-            checksum != manifest["checksum"]
-            or re.fullmatch(r"[0-9a-f]{40}", build) is None
-            or build != manifest["configuration"]["worker_build"]
-            or worker_image != manifest["configuration"]["worker_image"]
-        ):
-            raise ValueError("receiver candidate SHA or worker digest missing")
-        proof = image_proof(manifest, app_image)
-        if receipt.exists():
-            existing = Journal(receipt).data
-            candidate = existing["candidate"]
-            if (
-                existing["phase"] == "receiver-aborted"
-                and not (root / ".deployment-recovery").exists()
-            ):
-                pass
-            elif (
-                existing["phase"] not in {"receiver-prepared", "receiver-staged"}
-                or existing.get("previous") is not None
-                or candidate["creation_manifest"] != manifest
-                or candidate["worker_build"] != build
-                or candidate["worker_image"] != worker_image
-                or candidate["proof"] != proof
-            ):
-                raise ValueError("receiver candidate pin mismatch")
-            else:
-                return
-        cloud = provision.Cloud(metadata_token())
-        provision.inspect(manifest["configuration"], cloud)
-        Journal(
-            receipt,
-            {
-                "phase": "receiver-prepared",
-                "pending": None,
-                "previous": None,
-                "verified": [],
-                "candidate": {
-                    "manifest": None,
-                    "creation_manifest": manifest,
-                    "proof": proof,
-                    "worker_build": build,
-                    "worker_image": worker_image,
-                },
-            },
-        )
-        return
-    if mode == "receiver-stage":
-        journal = Journal(receipt)
-        if journal.data["phase"] not in {"receiver-prepared", "receiver-staged"}:
-            raise ValueError("receiver release is not resumable")
-        Host(root, None, journal).verify_web(journal.data["candidate"]["proof"])
-        journal.data["phase"] = "receiver-staged"
-        journal.save()
-        return
-    if mode == "bind-stage":
-        journal = Journal(receipt)
-        if journal.data["phase"] != "receiver-staged":
-            raise ValueError("receiver must be staged before binding groups")
-        manifest = json.loads(Path(manifest_path).read_text())
-        validate_manifest(manifest)
-        candidate = journal.data["candidate"]
-        if (
-            checksum != manifest["checksum"]
-            or provision.prepare(manifest["configuration"]) != manifest
-            or candidate["worker_build"] != manifest["configuration"]["worker_build"]
-            or candidate["worker_image"] != manifest["configuration"]["worker_image"]
-            or not same_receiver_scope(candidate["creation_manifest"], manifest)
-            or app_image.rsplit(":", 1)[-1] != candidate["worker_build"]
-            or worker_image != candidate["worker_image"]
-            or image_proof(manifest, app_image) != candidate["proof"]
-        ):
-            raise ValueError("receiver and reviewed fleet candidate differ")
-        cloud = provision.Cloud(metadata_token())
-        provision.inspect(manifest["configuration"], cloud)
-        if candidate["creation_manifest"]["configuration"].get("predecessors") is not None:
-            if Host(root, None, journal).control(
-                "reactivation-eligible",
-                predecessors=candidate["creation_manifest"]["configuration"]["predecessors"],
-            ) != {"eligible": True}:
-                raise ValueError("coordinator changed before bind")
-        elif Host(root, None, journal).control("reactivation-eligible", predecessors=None) != {
-            "eligible": True
-        }:
-            raise ValueError("unexpected coordinator rows before bind")
-        candidate["manifest"] = manifest
-        Journal(root / "worker-pools-observation.json", observation_config(manifest, None))
-        journal.data["phase"] = "prepared"
-        journal.save()
-        return
-
-    if mode in {"receiver-absence", "receiver-close"}:
-        journal = Journal(receipt)
-        if journal.data["phase"] not in {
-            "receiver-prepared",
-            "receiver-staged",
-            "receiver-aborted",
-        }:
-            raise ValueError("receiver is not eligible for absence-proven abort")
-        manifest = json.loads(Path(manifest_path).read_text())
-        validate_receiver_manifest(manifest)
-        candidate = journal.data["candidate"]
-        if (
-            candidate["creation_manifest"] != manifest
-            or checksum != manifest["checksum"]
-            or worker_image != candidate["worker_image"]
-            or image_proof(manifest, app_image) != candidate["proof"]
-        ):
-            raise ValueError("receiver abort candidate pin mismatch")
-        config = manifest["configuration"]
-        cloud = provision.Cloud(metadata_token())
-        folder = cloud.resource("resourcemanager", "folders", config["folder_id"])
-        if folder.get("id") != config["folder_id"] or folder.get("cloudId") != config["cloud_id"]:
-            raise ValueError("receiver abort worker-folder identity changed")
-        for collection in ("instanceGroups", "instances", "disks"):
-            if cloud.pages(collection, collection, folderId=config["folder_id"]):
-                raise ValueError("receiver abort requires empty worker folder inventory")
-        if mode == "receiver-close":
-            journal.data["phase"] = "receiver-aborted"
-            journal.save()
-        return
 
     if mode == "preflight":
         manifest = json.loads(Path(manifest_path).read_text())
@@ -1048,116 +737,12 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
             or provision.prepare(manifest["configuration"]) != manifest
         ):
             raise ValueError("candidate differs from reviewed package")
-        prior = Journal(receipt) if receipt.exists() else None
-        initial_stage = (
-            prior is not None
-            and os.environ.get("WORKER_POOL_ACTIVATION") == "stage"
-            and prior.data.get("previous") is None
-            and not marker.exists()
+        previous = json.loads(marker.read_text())
+        validate_manifest(previous["manifest"])
+        verify_image(
+            previous["manifest"]["configuration"]["worker_image"],
+            previous["manifest"]["configuration"]["worker_build"],
         )
-        if initial_stage and manifest == prior.data["candidate"]["manifest"]:
-            execute("guard", root, manifest_path, checksum, app_image)
-            execute("verify-candidate", root, manifest_path, checksum, app_image)
-            return
-        if initial_stage:
-            never_started = prior.data["phase"] == "staging"
-            predecessor = (
-                prior.data.get("staged_predecessor") if never_started else prior.data["candidate"]
-            )
-            if (
-                prior.data.get("pending")
-                or prior.data["phase"] not in {"staged", "rolled-back-local", "staging"}
-                or not (root / ".deployment-recovery").is_dir()
-                or not same_initial_revision_scope(prior.data["candidate"]["manifest"], manifest)
-                or (never_started and (not predecessor or prior.data.get("expanded_pool")))
-            ):
-                raise ValueError("initial forward revision requires settled same-scope stage")
-            if never_started:
-                validate_manifest(predecessor["manifest"])
-                if not same_initial_revision_scope(
-                    predecessor["manifest"], prior.data["candidate"]["manifest"]
-                ):
-                    raise ValueError("initial worker origin scope differs")
-            cloud = provision.Cloud(metadata_token())
-            host = Host(root, cloud, prior)
-            host.verify_web(prior.data["candidate"]["proof"])
-            existing = host.control("status")
-            validate_initial_state(existing, predecessor["manifest"])
-            if never_started and any(
-                existing[name]["staged_build"] is not None for name in ("bulk", "selfie")
-            ):
-                raise ValueError("initial worker transition already started")
-            provision.inspect(manifest["configuration"], cloud)
-            old = predecessor["manifest"]
-            for name in ("bulk", "selfie"):
-                actual = cloud.get(
-                    f"instanceGroups/{manifest['configuration']['groups'][name]['id']}", view="FULL"
-                )
-                expected = deepcopy(old["groups"][name])
-                warm_scale = deepcopy(expected["scalePolicy"])
-                warm_scale["autoScale"]["minZoneSize"] = "1"
-                if any(
-                    not provider_field_matches(key, actual.get(key), expected.get(key))
-                    and not (
-                        key == "scalePolicy"
-                        and provider_field_matches(key, actual.get(key), warm_scale)
-                    )
-                    for key in provision.MANAGED_FIELDS
-                ):
-                    raise ValueError("initial staged provider configuration drift")
-                if never_started:
-                    group_id = manifest["configuration"]["groups"][name]["id"]
-                    for row in cloud.pages(f"instanceGroups/{group_id}/instances", "instances"):
-                        if row.get("status") == "DELETED":
-                            continue
-                        if row.get("status") not in RUNNING:
-                            raise ValueError("initial worker membership is not settled")
-                        instance_id = provision.identifier(row.get("instanceId"))
-                        instance = cloud.get(f"instances/{instance_id}", view="FULL")
-                        metadata = instance.get("metadata", {})
-                        if (
-                            instance.get("id") != instance_id
-                            or instance.get("status") != "RUNNING"
-                            or instance.get("folderId") != old["configuration"]["folder_id"]
-                            or instance.get("zoneId") != old["configuration"]["zone"]
-                            or row.get("zoneId") != old["configuration"]["zone"]
-                            or metadata.get("findme-worker-build")
-                            != old["configuration"]["worker_build"]
-                            or metadata.get("findme-worker-image")
-                            != old["configuration"]["worker_image"]
-                        ):
-                            raise ValueError("initial worker origin differs from actual member")
-                    if cloud.get(f"instanceGroups/{group_id}", view="FULL") != actual:
-                        raise ValueError("initial worker group changed during inspection")
-            proof = image_proof(manifest, app_image)
-            config = observation_config(manifest, predecessor)
-            if never_started:
-                prior.data["superseded_candidate"] = prior.data["candidate"]
-            prior.data.update(
-                phase="prepared",
-                verified=[],
-                staged_predecessor=predecessor,
-                candidate={"manifest": manifest, "proof": proof},
-            )
-            prior.save()
-            Journal(root / "worker-pools-observation.json", config)
-            return
-        if prior:
-            if prior.data.get("pending") or prior.data["phase"] not in {
-                "committed",
-                "rolled-back",
-                "rolled-back-local",
-            }:
-                raise ValueError(
-                    "unfinished release; use status/rollback before another deployment"
-                )
-        previous = json.loads(marker.read_text()) if marker.exists() else None
-        if previous:
-            validate_manifest(previous["manifest"])
-            verify_image(
-                previous["manifest"]["configuration"]["worker_image"],
-                previous["manifest"]["configuration"]["worker_build"],
-            )
         config = observation_config(manifest, previous)
         cloud = provision.Cloud(metadata_token())
         provision.inspect(manifest["configuration"], cloud)
@@ -1175,46 +760,12 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
         Journal(root / "worker-pools-observation.json", config)
         return
     journal = Journal(receipt)
-    if mode == "rollout" and journal.data.get("previous") is None:
-        raise ValueError("first remote rollout requires staged activation through Deploy")
-    if mode in {"guard", "verify-candidate"}:
-        candidate = journal.data["candidate"]
-        manifest = json.loads(Path(manifest_path).read_text())
-        validate_manifest(manifest)
-        build = candidate["manifest"]["configuration"]["worker_build"]
-        repository = app_image.rsplit(":", 1)[0]
-        if (
-            journal.data["phase"]
-            not in {
-                "prepared",
-                "staging",
-                "staged",
-                "activating",
-                "verified",
-                "rolling-back-local",
-                "rolled-back-local",
-            }
-            or journal.data.get("previous") is not None
-            or manifest != candidate["manifest"]
-            or checksum != manifest["checksum"]
-            or app_image.rsplit(":", 1)[-1] != build
-            or not candidate["proof"]["web_image"].startswith(repository + "@sha256:")
-        ):
-            raise ValueError("staged candidate pin mismatch")
-        if mode == "verify-candidate" and image_proof(manifest, app_image) != candidate["proof"]:
-            raise ValueError("staged candidate digest mismatch")
-        return
     if mode == "rollback" and journal.data["phase"] == "prepared":
         journal.data["phase"] = "rolled-back"
         journal.save()
         return
-    if mode in {"rollout", "rollback", "stage", "activate"} and journal.data.get("previous"):
+    if mode in {"rollout", "rollback"}:
         observation_config(journal.data["candidate"]["manifest"], journal.data["previous"])
-    if mode in {"stage", "activate"} and journal.data.get("staged_predecessor"):
-        config = observation_config(
-            journal.data["candidate"]["manifest"], journal.data["staged_predecessor"]
-        )
-        Journal(root / "worker-pools-observation.json", config)
     cloud = provision.Cloud(metadata_token()) if mode != "status" else None
     host = Host(root, cloud, journal)
     candidate = journal.data["candidate"]
@@ -1225,16 +776,7 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
                 {
                     "phase": journal.data["phase"],
                     "pending": journal.data.get("pending") is not None,
-                    "placement": (
-                        "local-staged"
-                        if journal.data["phase"] in {"staging", "staged", "activating"}
-                        else "remote-pending-acceptance"
-                        if journal.data["phase"] == "verified"
-                        and journal.data.get("previous") is None
-                        else "remote"
-                        if journal.data["phase"] in {"verified", "committed"}
-                        else "local"
-                    ),
+                    "placement": "remote",
                     "pools": host.control("status"),
                 },
                 sort_keys=True,
@@ -1244,9 +786,7 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
     host.verify_web(candidate["proof"])
     capped = manifest["configuration"]["pool_max_size"] == 1
     order = ["bulk", "selfie"]
-    if capped and (
-        mode in {"rollout", "stage"} or (mode == "rollback" and journal.data["previous"])
-    ):
+    if capped and mode in {"rollout", "rollback"}:
         host.reconcile_pending()
         expanded = journal.data.get("expanded_pool")
         if expanded:
@@ -1254,129 +794,39 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
                 raise ValueError("invalid expanded pool receipt")
             order.remove(expanded)
             order.insert(0, expanded)
-    if mode in {"rollout", "stage"}:
-        # Re-entry after a lost response follows durable CAS and the write-ahead cloud receipt.
-        if mode == "stage" and journal.data.get("previous") is not None:
-            raise ValueError("first activation requires a local predecessor")
-        if mode == "stage" and journal.data["phase"] not in {
-            "prepared",
-            "staging",
-            "staged",
-            "rolled-back-local",
-        }:
-            raise ValueError("staged release is not resumable")
+    if mode == "rollout":
         existing = host.control("status")
-        predecessor = journal.data.get("staged_predecessor")
-        if mode == "stage" and predecessor:
-            validate_initial_state(existing, manifest, predecessor)
-        for name in ("bulk", "selfie"):
-            if name not in existing:
-                if manifest["configuration"].get("predecessors") is not None:
-                    raise ValueError("expected predecessor row is missing")
-                host.control(
-                    "configure",
-                    pool=name,
-                    group_id=manifest["configuration"]["groups"][name]["id"],
-                    active_build=manifest["configuration"]["worker_build"],
-                )
-            elif existing[name]["group_id"] != manifest["configuration"]["groups"][name]["id"]:
-                predecessors = manifest["configuration"].get("predecessors")
-                if mode != "stage" or predecessors is None:
-                    raise ValueError("existing coordinator identity differs from candidate")
-                host.control(
-                    "rebind",
-                    pool=name,
-                    old_group_id=predecessors[name]["group_id"],
-                    old_build=predecessors[name]["active_build"],
-                    group_id=manifest["configuration"]["groups"][name]["id"],
-                    active_build=manifest["configuration"]["worker_build"],
-                )
-            elif (
-                mode == "stage"
-                and not predecessor
-                and existing[name]["active_build"] != manifest["configuration"]["worker_build"]
-            ):
-                raise ValueError("initial staged coordinator build differs from candidate")
+        for name in order:
             if (
-                mode == "stage"
-                and name in existing
-                and (
-                    not existing[name]["claims_paused"]
-                    or existing[name]["local_claims_paused"]
-                    or existing[name]["staged_build"]
-                    not in (
-                        {None, manifest["configuration"]["worker_build"]} if predecessor else {None}
-                    )
-                    or existing[name]["live_attempts"]
-                    != existing[name].get("local_live_attempts", 0)
-                )
+                name not in existing
+                or existing[name]["group_id"] != manifest["configuration"]["groups"][name]["id"]
             ):
-                raise ValueError("unsafe existing coordinator state for initial stage")
-        journal.data["phase"] = "staging" if mode == "stage" else "rolling"
+                raise ValueError("existing remote coordinator identity differs from candidate")
+            if not existing[name]["local_claims_paused"]:
+                raise ValueError("local claims must remain paused")
+        journal.data["phase"] = "rolling"
         journal.save()
         for name in order:
             transition(host, name, manifest)
-            if capped:
-                paused = host.observe()[name]["claims_paused"]
-                host.template(name, manifest, 1 if paused or name == "selfie" else 0)
-                host.disk_fence(manifest, settled=name)
-        if mode == "stage":
-            verify_staged_fleet(host, manifest)
-            journal.data.update(phase="staged", verified=["bulk", "selfie"])
-            journal.save()
-            return
-        cutover(host)
-        for name in ("bulk", "selfie"):
-            host.template(name, manifest, 0 if name == "bulk" else 1)
-        verify_fleet(host, manifest)
-        journal.data.update(phase="verified", verified=["bulk", "selfie"])
-        journal.save()
-    elif mode == "activate":
-        if journal.data.get("previous") is not None or journal.data["phase"] not in {
-            "staged",
-            "activating",
-        }:
-            raise ValueError("first activation requires a staged local release")
-        if journal.data["phase"] == "staged":
-            verify_staged_fleet(host, manifest)
-        journal.data["phase"] = "activating"
-        journal.save()
-        cutover(host)
-        for name in ("bulk", "selfie"):
-            host.template(name, manifest, 0 if name == "bulk" else 1)
+            settle_remote_pool(host, name, manifest)
         verify_fleet(host, manifest)
         journal.data.update(phase="verified", verified=["bulk", "selfie"])
         journal.save()
     elif mode == "rollback":
         previous = journal.data["previous"]
-        if previous is None:
-            # A preflight failure has not necessarily configured rows yet.
-            existing = host.control("status")
-            for name in order:
-                if name not in existing:
-                    host.control(
-                        "configure",
-                        pool=name,
-                        group_id=manifest["configuration"]["groups"][name]["id"],
-                        active_build=manifest["configuration"]["worker_build"],
-                    )
-            rollback_initial(host, journal, marker)
-        else:
-            old = previous["manifest"]
-            for name in order:
-                snapshot = host.observe()[name]
-                if snapshot["active_build"] == old["configuration"]["worker_build"]:
-                    if snapshot["staged_build"]:
-                        cancel(host, name, old)
-                else:
-                    transition(host, name, old)
-                host.template(name, old, 0 if name == "bulk" else 1)
-                if capped:
-                    host.disk_fence(old, settled=name)
-            verify_fleet(host, old)
-            Journal(marker, previous)
-            journal.data["phase"] = "rolled-back"
-            journal.save()
+        old = previous["manifest"]
+        for name in order:
+            snapshot = host.observe()[name]
+            if snapshot["active_build"] == old["configuration"]["worker_build"]:
+                if snapshot["staged_build"]:
+                    cancel(host, name, old)
+            else:
+                transition(host, name, old)
+            settle_remote_pool(host, name, old)
+        verify_fleet(host, old)
+        Journal(marker, previous)
+        journal.data["phase"] = "rolled-back"
+        journal.save()
     elif mode in {"verify", "commit"}:
         verify_fleet(host, manifest)
         if mode == "commit":
@@ -1388,18 +838,8 @@ def main():
     parser.add_argument(
         "mode",
         choices=(
-            "eligibility",
-            "receiver-preflight",
-            "receiver-stage",
-            "receiver-absence",
-            "receiver-close",
-            "bind-stage",
             "preflight",
-            "guard",
-            "verify-candidate",
             "rollout",
-            "stage",
-            "activate",
             "status",
             "verify",
             "commit",
@@ -1417,10 +857,7 @@ def main():
         if args.mode == "deployment-guard":
             deployment_guard(args.root, args.app_image, args.worker_image, args.manifest)
             return 0
-        if (
-            args.mode in {"activate", "commit", "receiver-close"}
-            and os.environ.get("FINDME_CANONICAL_DEPLOY") != "1"
-        ):
+        if args.mode == "commit" and os.environ.get("FINDME_CANONICAL_DEPLOY") != "1":
             raise ValueError("activation requires canonical Deploy health gates")
         # Deploy holds fd9 over package installation, app reconciliation and every fleet phase.
         # A direct invocation takes exactly that same lock; there is no second writer authority.
@@ -1431,7 +868,7 @@ def main():
         else:
             lock_fd = os.open(args.root / ".deployment.lock", os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        result = execute(
+        execute(
             args.mode, args.root, args.manifest, args.checksum, args.app_image, args.worker_image
         )
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
@@ -1440,9 +877,7 @@ def main():
             file=sys.stderr,
         )
         return 1
-    if args.mode == "eligibility":
-        print(json.dumps(result, sort_keys=True))
-    elif args.mode != "status":
+    if args.mode != "status":
         print("canonical worker release phase complete")
     return 0
 

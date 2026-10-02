@@ -11,6 +11,21 @@ from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
 
+def local_worker_enabled() -> bool:
+    """Local protocol fixtures are restricted to development without a coordinator."""
+    return bool(settings.DEBUG and not settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED)
+
+
+def worker_endpoint_enabled() -> bool:
+    return bool(
+        settings.PHOTO_PROCESSING_ENABLED
+        and (
+            settings.PHOTO_PROCESSING_FLEET_TOKEN
+            or (local_worker_enabled() and settings.PHOTO_PROCESSING_WORKER_TOKEN)
+        )
+    )
+
+
 def has_worker_token(request: HttpRequest) -> bool:
     """Return whether one exact configured bearer credential authorizes this request.
 
@@ -21,8 +36,10 @@ def has_worker_token(request: HttpRequest) -> bool:
     fleet_token = settings.PHOTO_PROCESSING_FLEET_TOKEN
     marker = request.headers.get("X-FindMe-Worker-Transport", "")
     configured = fleet_token if marker == "private-tls" else local_token
-    transport_valid = marker in {"", "private-tls"} and (
-        not fleet_token or not compare_digest(local_token, fleet_token)
+    transport_valid = (marker == "private-tls" or (marker == "" and local_worker_enabled())) and (
+        not local_worker_enabled()
+        or not fleet_token
+        or not compare_digest(local_token, fleet_token)
     )
     header = request.headers.get("Authorization", "")
     prefix = "Bearer "

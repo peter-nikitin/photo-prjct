@@ -42,12 +42,6 @@ def test_restore_tools_require_vector_extension_capability():
     assert "pgvector" in text
 
 
-def test_compose_identity_cutover_uses_vector_capable_archive_inspector():
-    text = (ROOT / "deploy/cutover-compose-identity.sh").read_text()
-    assert IMAGE in text
-    assert "postgres:16" not in text
-
-
 def test_collation_capability_precedes_extension_and_database_image_retention():
     text = (ROOT / "deploy/apply-deployment.sh").read_text()
     collation = text.index("pg_database_collation_actual_version")

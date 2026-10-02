@@ -24,10 +24,7 @@ def observe_pool_state(*, capacity: list[WorkerPool] | None = None) -> dict[str,
     state = build_worker_pool_state()
     if not state["endpoint_enabled"]:
         raise ValueError("worker endpoint unavailable")
-    if settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED and (
-        not settings.PHOTO_PROCESSING_FLEET_TOKEN
-        or settings.PHOTO_PROCESSING_FLEET_TOKEN == settings.PHOTO_PROCESSING_WORKER_TOKEN
-    ):
+    if settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED and not settings.PHOTO_PROCESSING_FLEET_TOKEN:
         raise ValueError("fleet endpoint unavailable")
     capacity_by_pool = {
         pool.name: pool for pool in (capacity if capacity is not None else WorkerPool.objects.all())

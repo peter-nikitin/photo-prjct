@@ -41,7 +41,10 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
 
     jobs = workflow["jobs"]
     preflight = jobs["lockbox-preflight"]
-    assert preflight["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.preflight }}"
+    assert preflight["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.preflight && "
+        "!inputs.finalize_initial_workers }}"
+    )
     assert preflight["runs-on"] == "ubuntu-latest"
     assert "environment" not in preflight
     assert preflight["permissions"] == {"contents": "read", "id-token": "write"}
@@ -89,24 +92,28 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
     assert "appleboy/" not in serialized_preflight
     assert "${{ secrets." not in remote_preflight["run"]
 
-    assert jobs["classify-release"]["if"] == "${{ !inputs.preflight }}"
+    assert jobs["classify-release"]["if"] == (
+        "${{ !inputs.preflight && !inputs.finalize_initial_workers }}"
+    )
     assert jobs["build"]["if"] == (
         "${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && "
-        "!inputs.preflight && !inputs.stage_paused_observability_release }}"
+        "!inputs.preflight && !inputs.stage_paused_observability_release && "
+        "!inputs.finalize_initial_workers }}"
     )
     assert jobs["deploy"]["if"] == jobs["build"]["if"]
     assert jobs["reconcile-deploy-issue"]["if"] == (
         "${{ always() && !inputs.configure_monitoring_agent && "
         "!inputs.validate_deploy_issue && !inputs.preflight && "
-        "!inputs.stage_paused_observability_release }}"
+        "!inputs.stage_paused_observability_release && !inputs.finalize_initial_workers }}"
     )
     assert jobs["validate-deploy-issue"]["if"] == (
         "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && "
-        "!inputs.preflight }}"
+        "!inputs.preflight && !inputs.finalize_initial_workers }}"
     )
     assert jobs["configure-monitoring-agent"]["if"] == (
         "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue && !inputs.preflight }}"
+        "!inputs.validate_deploy_issue && !inputs.preflight && "
+        "!inputs.finalize_initial_workers }}"
     )
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -132,7 +139,10 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
         assert "GITHUB_OUTPUT" not in serialized
 
     stage = jobs["stage-observability-release"]
-    assert stage["if"] == "${{ inputs.stage_paused_observability_release && !inputs.preflight }}"
+    assert stage["if"] == (
+        "${{ inputs.stage_paused_observability_release && !inputs.preflight && "
+        "!inputs.finalize_initial_workers }}"
+    )
     assert stage["permissions"] == {"contents": "read", "id-token": "write"}
     assert stage["needs"] == ["classify-release"]
     assert "environment" not in stage

@@ -26,7 +26,7 @@ from processing.models import (
 )
 
 
-@override_settings(PHOTO_PROCESSING_ENABLED=True, PHOTO_PROCESSING_WORKER_TOKEN="private-token")
+@override_settings(PHOTO_PROCESSING_ENABLED=True, PHOTO_PROCESSING_FLEET_TOKEN="private-token")
 class WorkerPoolStateCommandTests(TestCase):
     def setUp(self):
         self.now = timezone.now()

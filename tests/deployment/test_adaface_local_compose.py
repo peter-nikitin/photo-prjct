@@ -126,8 +126,9 @@ def test_local_adaface_compose_requires_an_explicit_distance_threshold() -> None
 def test_base_and_production_compose_ship_adaface_without_local_only_gates() -> None:
     for compose_path in (ROOT / "docker-compose.yml", ROOT / "docker-compose.deployment.yml"):
         content = compose_path.read_text(encoding="utf-8")
-        assert "3/face_embedding/5" in content
-        assert "1/selfie_query/2" in content
+        if compose_path.name == "docker-compose.yml":
+            assert "3/face_embedding/5" in content
+            assert "1/selfie_query/2" in content
         assert "ADAFACE_LOCAL_EXPERIMENT_ENABLED" not in content
         assert "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD" not in content
 
@@ -160,6 +161,8 @@ def test_remote_profiles_keep_shared_services_without_local_photo_workers() -> N
             "import",
             "--profile",
             "commerce",
+            "--profile",
+            "worker",
             "config",
             "--services",
         ],

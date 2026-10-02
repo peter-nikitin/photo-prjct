@@ -74,51 +74,23 @@ case "$requested_import_enabled" in
     *) echo "PHOTO_IMPORT_ENABLED must be True or False" >&2; exit 2 ;;
 esac
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
-requested_worker_placement="${PHOTO_WORKER_PLACEMENT:-local}"
-worker_pool_activation="${WORKER_POOL_ACTIVATION:-normal}"
-case "$worker_pool_activation" in
-    normal|receiver|stage|activate|complete|abort) ;;
-    *) echo "WORKER_POOL_ACTIVATION must be normal, receiver, stage, activate, complete or abort" >&2; exit 2 ;;
-esac
-requested_local_processing_enabled="$requested_processing_enabled"
+if [ "${WORKER_POOL_ACTIVATION:-normal}" != normal ]; then
+    echo "Only normal remote fleet deployment is supported" >&2
+    exit 2
+fi
 fleet_prepared=0
-case "$requested_worker_placement" in
-    local) ;;
-    remote)
-        if [ "$requested_processing_enabled" != True ] || \
-            [ -z "${PHOTO_PROCESSING_FLEET_TOKEN:-}" ] || \
-            [ "${PHOTO_PROCESSING_FLEET_TOKEN:-}" = "${PHOTO_PROCESSING_WORKER_TOKEN:-}" ] || \
-            [ -z "${WORKER_POOL_PRIVATE_API_IPV4:-}" ] || \
-            [ -z "${WORKER_POOL_RELEASE_MANIFEST:-}" ] || \
-            [ -z "${WORKER_POOL_RELEASE_CHECKSUM:-}" ]; then
-            echo "remote placement requires enabled API, distinct fleet credential and reviewed release" >&2
-            exit 2
-        fi
-        if [ "$worker_pool_activation" = receiver ] && [ -z "${WORKER_POOL_WORKER_DIGEST:-}" ]; then
-            echo "receiver stage requires reviewed worker digest" >&2
-            exit 2
-        fi
-        if [ "$worker_pool_activation" != receiver ] && [ "$worker_pool_activation" != stage ]; then
-            requested_local_processing_enabled=False
-        fi
-        ;;
-    *) echo "PHOTO_WORKER_PLACEMENT must be local or remote" >&2; exit 2 ;;
-esac
+if [ "$requested_processing_enabled" != True ] || \
+    [ -z "${PHOTO_PROCESSING_FLEET_TOKEN:-}" ] || \
+    [ -z "${WORKER_POOL_PRIVATE_API_IPV4:-}" ] || \
+    [ -z "${WORKER_POOL_RELEASE_MANIFEST:-}" ] || \
+    [ -z "${WORKER_POOL_RELEASE_CHECKSUM:-}" ]; then
+    echo "Remote deployment requires enabled API, fleet credential and reviewed release" >&2
+    exit 2
+fi
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 requested_bulk_processor_identities="${PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1}"
 requested_selfie_processor_identities="${PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES:-1/selfie_query/2}"
-requested_worker_replicas="${PHOTO_WORKER_REPLICAS:-1}"
-requested_worker_cpus="${PHOTO_WORKER_CPUS:-1.0}"
-requested_worker_memory_limit="${PHOTO_WORKER_MEMORY_LIMIT:-2g}"
-case "$requested_worker_cpus" in
-    1|1.0|2|2.0) ;;
-    *) echo "PHOTO_WORKER_CPUS must be 1.0 or 2.0" >&2; exit 2 ;;
-esac
-case "$requested_worker_memory_limit" in
-    2g|3g|4g|5g|6g|2048m|2560m|3072m|3584m|4096m|4608m|5120m|5632m|6144m) ;;
-    *) echo "PHOTO_WORKER_MEMORY_LIMIT must be 2 to 6 GiB in 512 MiB increments" >&2; exit 2 ;;
-esac
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_bulk_processor_types="${PHOTO_WORKER_BULK_PROCESSOR_TYPES:-bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview}"
 requested_selfie_processor_types="${PHOTO_WORKER_SELFIE_PROCESSOR_TYPES:-selfie_query}"
@@ -148,14 +120,6 @@ requested_commerce_order_access_signing_secret="${COMMERCE_ORDER_ACCESS_SIGNING_
 requested_commerce_support_contact="${COMMERCE_SUPPORT_CONTACT:-}"
 requested_commerce_worker_health_max_ready_age_seconds="${COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS:-300}"
 
-case "$requested_worker_replicas" in
-    1|2)
-        ;;
-    *)
-        echo "PHOTO_WORKER_REPLICAS must be 1 or 2" >&2
-        exit 2
-        ;;
-esac
 
 case "$requested_commerce_worker_enabled" in
     True|False)
@@ -408,10 +372,6 @@ case "$requested_processing_enabled" in
             echo "Set WORKER_IMAGE" >&2
             exit 2
         fi
-        if [ -z "${PHOTO_PROCESSING_WORKER_TOKEN:-}" ]; then
-            echo "Set PHOTO_PROCESSING_WORKER_TOKEN" >&2
-            exit 2
-        fi
         ;;
     False)
         ;;
@@ -563,131 +523,35 @@ verify_observability_bootstrap() {
 compose_with_env_file() {
     compose_env_file="$1"
     shift
-    private_overlay=""
-    if [ "$(sed -n 's/^PHOTO_WORKER_PLACEMENT=//p' "$compose_env_file" | head -n 1)" = remote ]; then
-        private_overlay="$DEPLOY_ROOT/deploy/worker-pools/private-edge.compose.yml"
-    fi
-    if [ -n "$private_overlay" ]; then
-        APP_ENV_FILE="$compose_env_file" docker compose --project-name "$COMPOSE_PROJECT_NAME" \
-            --env-file "$compose_env_file" -f "$DEPLOY_ROOT/docker-compose.deployment.yml" \
-            -f "$overlay_file" -f "$private_overlay" "$@"
-        return
-    fi
-    APP_ENV_FILE="$compose_env_file" \
-    docker compose --project-name "$COMPOSE_PROJECT_NAME" \
-        --env-file "$compose_env_file" \
-        -f "$DEPLOY_ROOT/docker-compose.deployment.yml" \
-        -f "$overlay_file" "$@"
+    APP_ENV_FILE="$compose_env_file" docker compose --project-name "$COMPOSE_PROJECT_NAME" \
+        --env-file "$compose_env_file" -f "$DEPLOY_ROOT/docker-compose.deployment.yml" \
+        -f "$overlay_file" -f "$DEPLOY_ROOT/deploy/worker-pools/private-edge.compose.yml" "$@"
 }
 
 compose() {
     compose_with_env_file "$DEPLOY_ROOT/.env" "$@"
 }
 
-compose_with_runtime_profiles() {
-    processing_enabled="$1"
-    commerce_enabled="$2"
-    compose_env_file="$3"
-    shift 3
-
-    if [ "$processing_enabled" = True ] && [ "$commerce_enabled" = True ]; then
-        compose_with_env_file "$compose_env_file" --profile worker --profile commerce "$@"
-    elif [ "$processing_enabled" = True ]; then
-        compose_with_env_file "$compose_env_file" --profile worker "$@"
-    elif [ "$commerce_enabled" = True ]; then
-        compose_with_env_file "$compose_env_file" --profile commerce "$@"
-    else
-        compose_with_env_file "$compose_env_file" "$@"
-    fi
-}
-
 compose_with_requested_runtime_profiles() {
-    compose_with_runtime_profiles \
-        "$requested_local_processing_enabled" "$requested_commerce_worker_enabled" "$DEPLOY_ROOT/.env" "$@"
-}
-
-compose_reconcile_runtime_profiles() {
-    processing_enabled="$1"
-    commerce_enabled="$2"
-    compose_env_file="$3"
-    worker_replicas="$4"
-
-    if [ "$processing_enabled" = False ]; then
-        compose_with_env_file "$compose_env_file" --profile worker rm -sf worker-bulk worker-selfie || return 1
-    fi
-    if [ "$commerce_enabled" = False ]; then
-        compose_with_env_file "$compose_env_file" --profile commerce rm -sf commerce-worker || return 1
-    fi
-    if [ "$processing_enabled" = True ]; then
-        compose_with_runtime_profiles "$processing_enabled" "$commerce_enabled" "$compose_env_file" \
-            up -d --remove-orphans --scale worker-bulk="$worker_replicas" --scale worker-selfie=1
+    if [ "$requested_commerce_worker_enabled" = True ]; then
+        compose --profile commerce "$@"
     else
-        compose_with_runtime_profiles "$processing_enabled" "$commerce_enabled" "$compose_env_file" \
-            up -d --remove-orphans
+        compose "$@"
     fi
 }
 
 compose_reconcile_requested_runtime_profiles() {
-    if [ "$requested_worker_placement" = remote ]; then
-        # Compatible web/private edge first. Existing locals continue until authoritative drain.
-        compose up -d --no-deps web nginx || return 1
-        if [ "$requested_commerce_worker_enabled" = True ]; then
-            compose --profile commerce up -d --no-deps commerce-worker || return 1
-        else
-            compose --profile commerce rm -sf commerce-worker || return 1
-        fi
-        return 0
-    fi
-    compose_reconcile_runtime_profiles \
-        "$requested_processing_enabled" "$requested_commerce_worker_enabled" \
-        "$DEPLOY_ROOT/.env" "$requested_worker_replicas"
-}
-
-compose_reconcile_recovered_runtime_profiles() {
-    processing_enabled="$1"
-    commerce_enabled="$2"
-    compose_env_file="$3"
-    worker_replicas="$4"
-    worker_topology="$5"
-
-    if [ "$worker_topology" != shared ]; then
-        compose_reconcile_runtime_profiles \
-            "$processing_enabled" "$commerce_enabled" "$compose_env_file" "$worker_replicas"
-        return
-    fi
-    if [ "$processing_enabled" = False ]; then
-        compose_with_env_file "$compose_env_file" --profile worker rm -sf worker || return 1
-    fi
-    if [ "$commerce_enabled" = False ]; then
-        compose_with_env_file "$compose_env_file" --profile commerce rm -sf commerce-worker || return 1
-    fi
-    if [ "$processing_enabled" = True ]; then
-        compose_with_runtime_profiles "$processing_enabled" "$commerce_enabled" "$compose_env_file" \
-            up -d --remove-orphans --scale worker="$worker_replicas"
+    compose up -d --no-deps web nginx || return 1
+    if [ "$requested_commerce_worker_enabled" = True ]; then
+        compose --profile commerce up -d --no-deps commerce-worker || return 1
     else
-        compose_with_runtime_profiles "$processing_enabled" "$commerce_enabled" "$compose_env_file" \
-            up -d --remove-orphans
+        compose --profile commerce rm -sf commerce-worker || return 1
     fi
 }
 
 diagnostics() {
     compose ps || true
     compose logs --tail=100 web nginx || true
-}
-
-worker_runtime_diagnostics() {
-    echo "Worker runtime verification diagnostics:" >&2
-    compose_with_requested_runtime_profiles ps || true
-    if [ -n "${worker_containers:-}" ]; then
-        printf 'Expected bulk/selfie worker containers (%s+1):\n%s\n' \
-            "$requested_worker_replicas" "$worker_containers" >&2
-        for worker_container in $worker_containers; do
-            docker inspect \
-                --format 'worker_id={{.Id}} worker_state={{.State.Status}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{.State.Error}} restart_count={{.RestartCount}}' \
-                "$worker_container" 2>&1 || true
-        done
-    fi
-    compose_with_requested_runtime_profiles logs --tail=100 worker-bulk worker-selfie || true
 }
 
 commerce_worker_runtime_diagnostics() {
@@ -699,11 +563,6 @@ commerce_worker_runtime_diagnostics() {
 fail_commerce_worker_runtime_verification() {
     commerce_worker_runtime_diagnostics
     fail "Requested deployment failed Commerce worker runtime verification"
-}
-
-fail_worker_runtime_verification() {
-    worker_runtime_diagnostics
-    fail "Requested deployment failed worker runtime verification"
 }
 
 requested_env_tmp=""
@@ -731,7 +590,6 @@ cleanup() {
 }
 
 clear_fleet_recovery_snapshot() {
-    [ "$requested_worker_placement" = remote ] || return 0
     rm -f "$DEPLOY_ROOT/.deployment-recovery/previous.env" \
         "$DEPLOY_ROOT/.deployment-recovery/deployed-image" \
         "$DEPLOY_ROOT/.deployment-recovery/package-path" \
@@ -800,14 +658,12 @@ clear_candidate_compose_interpolation() {
         PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY \
         PRIVATE_MEDIA_ALLOWED_ORIGINS \
         WORKER_IMAGE \
-        PHOTO_WORKER_PLACEMENT \
         PHOTO_WORKER_POOL_COORDINATOR_ENABLED \
         PHOTO_PROCESSING_FLEET_TOKEN \
         WORKER_POOL_PRIVATE_API_IPV4 \
         PHOTO_PROCESSING_ENABLED \
         PHOTO_PROCESSING_PREVIEW_ENABLED \
         PHOTO_PROCESSING_FACE_ENABLED \
-        PHOTO_PROCESSING_WORKER_TOKEN \
         PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS \
         PHOTO_PROCESSING_MAX_REQUEST_BYTES \
         PHOTO_WORKER_BUILD \
@@ -820,9 +676,6 @@ clear_candidate_compose_interpolation() {
         PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS \
         PHOTO_WORKER_PROCESSOR_IDENTITIES \
         PHOTO_WORKER_PROCESSOR_TYPES \
-        PHOTO_WORKER_REPLICAS \
-        PHOTO_WORKER_CPUS \
-        PHOTO_WORKER_MEMORY_LIMIT \
         PREVIOUS_DEPLOYMENT_PACKAGE_ROOT \
         PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY \
         SELFIE_SEARCH_MAX_UPLOAD_BYTES \
@@ -893,35 +746,19 @@ restore_previous_deployment_package() {
         "$DEPLOY_ROOT"/*) ;;
         *) return 1 ;;
     esac
-    if [ -n "${PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY:-}" ]; then
-        case "$PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY" in
-            shared|split) ;;
-            *) return 1 ;;
-        esac
-    fi
     for package_entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
         [ -e "$previous_package_root/$package_entry" ] || return 1
     done
     failed_package_root="$(mktemp -d "$DEPLOY_ROOT/.deployment-failed.XXXXXX")" || return 1
-    retain_recovery_backup=0
-    if { [ "$worker_pool_activation" = receiver ] || [ "$worker_pool_activation" = abort ]; } && \
-       [ -f "$DEPLOY_ROOT/.deployment-recovery/package-path" ] && \
-       [ "$(sed -n '1p' "$DEPLOY_ROOT/.deployment-recovery/package-path")" = "$previous_package_root" ]; then
-        retain_recovery_backup=1
-    fi
     for package_entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
         mv "$DEPLOY_ROOT/$package_entry" "$failed_package_root/$package_entry" || return 1
-        if [ "$retain_recovery_backup" -eq 1 ]; then
-            cp -Rp "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
-        else
-            mv "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
-        fi
+        mv "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
     done
     if [ "$vector_database_reconciled" -eq 1 ]; then
         retain_vector_database_image || return 1
     fi
     rm -rf "$failed_package_root" || return 1
-    if [ "$retain_recovery_backup" -eq 0 ]; then rm -rf "$previous_package_root" || return 1; fi
+    rm -rf "$previous_package_root" || return 1
     unset PREVIOUS_DEPLOYMENT_PACKAGE_ROOT
 }
 
@@ -974,19 +811,6 @@ stop_import_before_web_change() {
     fi
 }
 
-stop_existing_processing_worker_topology() {
-    for processing_service in worker worker-bulk worker-selfie; do
-        processing_containers="$(
-            docker ps -q \
-                --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
-                --filter "label=com.docker.compose.service=$processing_service" 2>/dev/null
-        )" || return 1
-        for processing_container in $processing_containers; do
-            docker stop "$processing_container" >/dev/null 2>&1 || return 1
-        done
-    done
-}
-
 run_private_candidate_command() {
     candidate_command_output_tmp="$(
         mktemp "$DEPLOY_ROOT/.candidate-command-output.XXXXXX"
@@ -1010,7 +834,7 @@ start_import_after_web_ready() {
 }
 
 recover_previous_deployment() {
-    if [ "$fleet_prepared" -eq 1 ] && [ "$worker_pool_activation" != receiver ]; then
+    if [ "$fleet_prepared" -eq 1 ]; then
         # Failure keeps compatible candidate web in place until remote ownership is safe.
         fleet_phase rollback || return 1
     fi
@@ -1043,27 +867,13 @@ recover_previous_deployment() {
     [ -n "$previous_env_tmp" ] || return 1
     mv "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
     previous_env_tmp=""
-    recovered_worker_topology="${PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY:-split}"
     restore_previous_deployment_package || return 1
     clear_candidate_compose_interpolation
-    if [ "$previous_worker_placement" = remote ] || [ "$requested_worker_placement" = remote ]; then
-        compose up -d --no-deps web nginx || return 1
-        if { [ "$previous_worker_placement" = local ] || \
-             [ "$worker_pool_activation" = activate ] || \
-             [ "$worker_pool_activation" = complete ]; } && \
-           [ "$previous_processing_enabled" = True ]; then
-            compose --profile worker up -d --no-deps --scale worker-bulk="$previous_worker_replicas" \
-                --scale worker-selfie=1 worker-bulk worker-selfie || return 1
-        fi
-        if [ "$previous_commerce_worker_enabled" = True ]; then
-            compose --profile commerce up -d --no-deps commerce-worker || return 1
-        else
-            compose --profile commerce rm -sf commerce-worker || return 1
-        fi
+    compose up -d --no-deps web nginx || return 1
+    if [ "$previous_commerce_worker_enabled" = True ]; then
+        compose --profile commerce up -d --no-deps commerce-worker || return 1
     else
-        compose_reconcile_recovered_runtime_profiles \
-            "$previous_processing_enabled" "$previous_commerce_worker_enabled" \
-            "$DEPLOY_ROOT/.env" "$previous_worker_replicas" "$recovered_worker_topology" || return 1
+        compose --profile commerce rm -sf commerce-worker || return 1
     fi
     if [ "$previous_import_enabled" = True ]; then
         compose_with_env_file "$DEPLOY_ROOT/.env" up -d --wait web || return 1
@@ -1088,11 +898,7 @@ on_exit() {
 
     if [ "$mutation_started" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
         [ "$status" -ne 0 ] || status=1
-        if [ "$worker_pool_activation" = stage ] || [ "$worker_pool_activation" = activate ] || \
-           [ "$worker_pool_activation" = complete ]; then
-            echo "Initial activation failed; candidate, fleet and recovery retained for explicit retry" >&2
-            diagnostics
-        elif [ "$recovery_in_progress" -eq 0 ]; then
+        if [ "$recovery_in_progress" -eq 0 ]; then
             recovery_in_progress=1
             if ! recover_previous_deployment; then
                 rollback_result=failed
@@ -1100,11 +906,7 @@ on_exit() {
                 diagnostics
             else
                 rollback_result=succeeded
-                if [ -d "$DEPLOY_ROOT/.deployment-recovery" ] && \
-                   [ "$worker_pool_activation" != stage ] && \
-                   [ "$worker_pool_activation" != activate ] && \
-                   [ "$worker_pool_activation" != complete ] && \
-                   [ "$worker_pool_activation" != receiver ]; then
+                if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
                     clear_fleet_recovery_snapshot || rollback_result=failed
                 fi
                 if [ "${previous_upload_enabled:-False}" = True ]; then
@@ -1119,17 +921,14 @@ on_exit() {
                 fi
             fi
         fi
-        if [ "$observability_installed" -eq 1 ] && \
-           [ "$worker_pool_activation" != stage ] && [ "$worker_pool_activation" != activate ] && \
-           [ "$worker_pool_activation" != complete ]; then
+        if [ "$observability_installed" -eq 1 ]; then
             sudo -n "$observability_helper" rollback || \
                 {
                     rollback_result=failed
                     echo "Observability managed-file rollback failed" >&2
                 }
         fi
-    elif [ "$fleet_prepared" -eq 1 ] && [ "$deployment_committed" -eq 0 ] && \
-         [ "$worker_pool_activation" = normal ]; then
+    elif [ "$fleet_prepared" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
         # No fleet mutation has begun. Close the prepared receipt before the installer
         # restores a potentially legacy package that has no fleet recovery command.
         fleet_phase rollback || status=1
@@ -1178,24 +977,18 @@ fi
 python3 "$(dirname "$0")/worker-pools/release.py" deployment-guard --root "$DEPLOY_ROOT" \
     --app-image "$requested_image" --worker-image "${WORKER_POOL_WORKER_DIGEST:-}" \
     --manifest "${WORKER_POOL_RELEASE_MANIFEST:-}" || fail "Deployment violates native generation or local retirement boundary"
-if [ -e "$DEPLOY_ROOT/.deployment-recovery" ]; then
-    case "$worker_pool_activation" in
-        receiver|stage|activate|complete|abort) ;;
-        *) fail "Canonical recovery remains unfinished" ;;
-    esac
-fi
+[ ! -e "$DEPLOY_ROOT/.deployment-recovery" ] || fail "Canonical recovery remains unfinished"
+[ -f "$DEPLOY_ROOT/worker-pools-current.json" ] || fail "Committed remote fleet marker is required"
 fleet_phase() {
     FINDME_CANONICAL_DEPLOY=1 PYTHONPATH="$DEPLOY_ROOT/deploy/worker-pools/_canonical" \
         python3 "$DEPLOY_ROOT/deploy/worker-pools/release.py" "$1" --root "$DEPLOY_ROOT" \
         --manifest "${WORKER_POOL_RELEASE_MANIFEST:-}" --checksum "${WORKER_POOL_RELEASE_CHECKSUM:-}" \
         --app-image "$requested_image" --worker-image "${WORKER_POOL_WORKER_DIGEST:-}"
 }
-previous_worker_placement=local
 previous_import_enabled="False"
 previous_upload_enabled="False"
 previous_processing_enabled="False"
 previous_commerce_worker_enabled="False"
-previous_worker_replicas=1
 previous_env_exists=0
 previous_deployed_image_exists=0
 previous_cart_cleanup_present=False
@@ -1208,11 +1001,6 @@ if previous_cart_cleanup_is_present; then
 fi
 install -d -m 0755 "$DEPLOY_ROOT"
 if [ -f "$DEPLOY_ROOT/.env" ]; then
-    previous_worker_placement="$(sed -n 's/^PHOTO_WORKER_PLACEMENT=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
-    previous_worker_placement="${previous_worker_placement:-local}"
-    if [ "$previous_worker_placement" = remote ] && [ "$requested_worker_placement" = local ]; then
-        fail "Remote to local recovery requires canonical fleet rollback before a local deployment"
-    fi
     has_established_deployment=1
     previous_env_exists=1
     previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not snapshot previous deployment environment"
@@ -1225,9 +1013,6 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_processing_enabled="$(
         sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
-    previous_worker_replicas="$(
-        sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$DEPLOY_ROOT/.env" | head -n 1
-    )"
     previous_commerce_worker_enabled="$(
         sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
@@ -1236,16 +1021,6 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
             ;;
         *)
             previous_processing_enabled="False"
-            ;;
-    esac
-    case "$previous_worker_replicas" in
-        '')
-            previous_worker_replicas=1
-            ;;
-        1|2)
-            ;;
-        *)
-            fail "Previous PHOTO_WORKER_REPLICAS must be 1 or 2"
             ;;
     esac
     case "$previous_commerce_worker_enabled" in
@@ -1262,78 +1037,6 @@ if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
     previous_deployed_image_exists=1
     previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
     cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
-fi
-
-if [ "$worker_pool_activation" = abort ]; then
-    recovery_gate="$DEPLOY_ROOT/.deployment-recovery"
-    receiver_only=0
-    receiver_phase="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["phase"])' "$DEPLOY_ROOT/worker-pools-release.json")" || \
-        fail "Staged receiver receipt is unavailable"
-    if [ "$receiver_phase" = receiver-prepared ] && [ ! -d "$recovery_gate" ]; then
-        # Receiver preflight may have completed before any app/env mutation. The installer
-        # still carries the prior local package; its snapshot is the exact rollback input.
-        [ "$previous_worker_placement" = local ] && [ "$previous_env_exists" -eq 1 ] || \
-            fail "Receiver predecessor is not an established local deployment"
-        fleet_phase receiver-absence || fail "Receiver worker-folder absence is unproved"
-        fleet_phase receiver-close || fail "Receiver abort receipt could not be closed"
-        recover_previous_deployment || fail "Pre-mutation receiver package recovery failed"
-        verify_recovered_public_edge || fail "Restored public endpoint failed health verification"
-        deployment_committed=1
-        exit 0
-    fi
-    [ -f "$recovery_gate/previous.env" ] && [ -f "$recovery_gate/package-path" ] || \
-        fail "Staged recovery inputs are unavailable"
-    case "$receiver_phase" in
-        receiver-prepared|receiver-staged|receiver-aborted)
-            receiver_only=1
-            fleet_phase receiver-absence || fail "Receiver worker-folder absence is unproved"
-            fleet_phase receiver-close || fail "Receiver abort receipt could not be closed"
-            ;;
-        *) fleet_phase guard || fail "Staged candidate pin changed" ;;
-    esac
-    original_package_root="$(sed -n '1p' "$recovery_gate/package-path")"
-    case "$original_package_root" in "$DEPLOY_ROOT"/.deployment-previous.*) ;; *) fail "Invalid staged package backup" ;; esac
-    original_worker_topology="$(sed -n '1p' "$recovery_gate/worker-topology")"
-    case "$original_worker_topology" in shared|split) ;; *) fail "Invalid staged worker topology" ;; esac
-    original_env="$recovery_gate/previous.env"
-    previous_worker_placement="$(sed -n 's/^PHOTO_WORKER_PLACEMENT=//p' "$original_env" | head -n 1)"
-    [ -n "$previous_worker_placement" ] || previous_worker_placement=local
-    [ "$previous_worker_placement" = local ] || fail "Stage predecessor is not local"
-    previous_import_enabled="$(sed -n 's/^PHOTO_IMPORT_ENABLED=//p' "$original_env" | head -n 1)"
-    previous_processing_enabled="$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$original_env" | head -n 1)"
-    previous_commerce_worker_enabled="$(sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$original_env" | head -n 1)"
-    previous_worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$original_env" | head -n 1)"
-    [ -n "$previous_import_enabled" ] || previous_import_enabled=False
-    [ -n "$previous_commerce_worker_enabled" ] || previous_commerce_worker_enabled=False
-    [ -n "$previous_worker_replicas" ] || previous_worker_replicas=1
-    case "$previous_import_enabled:$previous_processing_enabled:$previous_commerce_worker_enabled:$previous_worker_replicas" in
-        True:True:True:1|True:True:True:2|True:True:False:1|True:True:False:2|False:True:True:1|False:True:True:2|False:True:False:1|False:True:False:2) ;;
-        *) fail "Invalid staged predecessor worker settings" ;;
-    esac
-    PREVIOUS_DEPLOYMENT_PACKAGE_ROOT="$original_package_root"
-    PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY="$original_worker_topology"
-    previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not copy original recovery environment"
-    cp "$original_env" "$previous_env_tmp" || fail "Could not copy original recovery environment"
-    previous_deployed_image_exists=1
-    [ -f "$recovery_gate/deployed-image" ] || fail "Original image marker missing"
-    previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not copy original image marker"
-    cp "$recovery_gate/deployed-image" "$previous_deployed_image_tmp" || fail "Could not copy original image marker"
-    if [ "$receiver_only" -eq 0 ]; then fleet_prepared=1; fi
-    recover_previous_deployment || fail "Local stage recovery failed"
-    if ! verify_recovered_public_edge; then
-        fail "Restored public endpoint failed health verification"
-    fi
-    if [ "$receiver_only" -eq 0 ]; then
-        sudo -n /usr/local/sbin/findme-worker-pool-metrics remove || fail "Collector removal failed"
-    fi
-    clear_fleet_recovery_snapshot || fail "Staged recovery gate cleanup failed"
-    rm -rf "$original_package_root" || fail "Original recovery package cleanup failed"
-    deployment_committed=1
-    exit 0
-fi
-
-if [ "$requested_worker_placement" = remote ] && [ "$previous_env_exists" -ne 1 ]; then
-    fail "Remote cutover requires an established compatible local deployment"
 fi
 
 postgres_volume="${COMPOSE_PROJECT_NAME}_pgdata"
@@ -1418,16 +1121,12 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS=%s\n' "$requested_commerce_worker_health_max_ready_age_seconds"
     printf 'COMMERCE_WORKER_ENABLED=%s\n' "$requested_commerce_worker_enabled"
     printf 'WORKER_IMAGE=%s\n' "${WORKER_IMAGE:-}"
-    printf 'PHOTO_WORKER_PLACEMENT=%s\n' "$requested_worker_placement"
-    if [ "$requested_worker_placement" = remote ]; then
-        printf 'PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True\n'
-        write_literal_dotenv_value PHOTO_PROCESSING_FLEET_TOKEN "$PHOTO_PROCESSING_FLEET_TOKEN"
-        printf 'WORKER_POOL_PRIVATE_API_IPV4=%s\n' "$WORKER_POOL_PRIVATE_API_IPV4"
-    fi
+    printf 'PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True\n'
+    write_literal_dotenv_value PHOTO_PROCESSING_FLEET_TOKEN "$PHOTO_PROCESSING_FLEET_TOKEN"
+    printf 'WORKER_POOL_PRIVATE_API_IPV4=%s\n' "$WORKER_POOL_PRIVATE_API_IPV4"
     printf 'PHOTO_PROCESSING_ENABLED=%s\n' "$requested_processing_enabled"
     printf 'PHOTO_PROCESSING_PREVIEW_ENABLED=%s\n' "$requested_preview_enabled"
     printf 'PHOTO_PROCESSING_FACE_ENABLED=%s\n' "$requested_face_enabled"
-    printf 'PHOTO_PROCESSING_WORKER_TOKEN=%s\n' "${PHOTO_PROCESSING_WORKER_TOKEN:-}"
     printf 'PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=%s\n' "${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}"
     printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}"
     printf 'PHOTO_WORKER_BUILD=%s\n' "${PHOTO_WORKER_BUILD:-capture-metadata-v1}"
@@ -1438,9 +1137,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=%s\n' "$requested_selfie_processor_identities"
     printf 'PHOTO_WORKER_SELFIE_PROCESSOR_TYPES=%s\n' "$requested_selfie_processor_types"
     printf 'PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS=%s\n' "$requested_selfie_http_timeout_seconds"
-    printf 'PHOTO_WORKER_REPLICAS=%s\n' "$requested_worker_replicas"
-    printf 'PHOTO_WORKER_CPUS=%s\n' "$requested_worker_cpus"
-    printf 'PHOTO_WORKER_MEMORY_LIMIT=%s\n' "$requested_worker_memory_limit"
     printf 'SELFIE_SEARCH_MAX_UPLOAD_BYTES=%s\n' "$requested_selfie_search_max_upload_bytes"
     printf 'SELFIE_SEARCH_MAX_PIXELS=%s\n' "$requested_selfie_search_max_pixels"
     printf 'SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS=%s\n' "$requested_selfie_search_download_ttl_seconds"
@@ -1468,12 +1164,7 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     fi
 fi
 
-if [ "$requested_processing_enabled" = True ]; then
-    if ! compose_with_env_file "$requested_env_tmp" --profile worker pull \
-        web worker-bulk worker-selfie; then
-        fail "Candidate application image pull failed"
-    fi
-elif ! compose_with_env_file "$requested_env_tmp" pull web; then
+if ! compose_with_env_file "$requested_env_tmp" pull web; then
     fail "Candidate application image pull failed"
 fi
 
@@ -1481,34 +1172,8 @@ if [ "$requested_import_enabled" = True ]; then
     compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
 fi
 
-if [ "$requested_worker_placement" = remote ]; then
-    # The receiver is deployed before group IDs exist. Binding requires complete reviewed
-    # ownership and SG inspection before any remotely claimable capacity exists.
-    case "$worker_pool_activation" in
-        receiver) fleet_phase receiver-preflight || fail "Receiver preflight failed" ;;
-        stage)
-            if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
-                if [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["phase"])' "$DEPLOY_ROOT/worker-pools-release.json")" = receiver-staged ]; then
-                    fleet_phase bind-stage || fail "Receiver/fleet binding failed"
-                else
-                    fleet_phase preflight || fail "Initial forward stage admission failed"
-                fi
-            else
-                fail "Receiver must be staged before fleet warm-up"
-            fi
-            ;;
-        activate|complete|abort) fleet_phase guard || fail "Staged candidate pin changed" ;;
-        normal)
-            [ -f "$DEPLOY_ROOT/worker-pools-current.json" ] || fail "Initial remote placement requires explicit staged activation"
-            fleet_phase preflight || fail "Fleet release preflight failed"
-            ;;
-    esac
-    if [ "$worker_pool_activation" = stage ] || [ "$worker_pool_activation" = activate ] || \
-       [ "$worker_pool_activation" = complete ]; then
-        fleet_phase verify-candidate || fail "Candidate image digest changed after staging"
-    fi
-    fleet_prepared=1
-fi
+fleet_phase preflight || fail "Fleet release preflight failed"
+fleet_prepared=1
 
 gallery_media_preflight='
 from contextlib import closing
@@ -1562,23 +1227,13 @@ fi
 phase observability-preflight
 verify_observability_bootstrap || fail "Selfie observability bootstrap is missing or stale; run deploy/bootstrap-selfie-observability.sh as an operator"
 phase observability-reconcile
-if [ "$requested_worker_placement" = remote ]; then
-    # Keep rollback inputs through interruption or failed remote fencing. The outer installer
-    # recognizes this directory and must retain compatible tooling plus the prior package.
-    if [ ! -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
-        mkdir -m 0700 "$DEPLOY_ROOT/.deployment-recovery"
-        install -m 0600 "$previous_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/previous.env"
-        if [ "$previous_deployed_image_exists" -eq 1 ]; then
-            install -m 0600 "$previous_deployed_image_tmp" "$DEPLOY_ROOT/.deployment-recovery/deployed-image"
-        fi
-        (umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}" > "$DEPLOY_ROOT/.deployment-recovery/package-path")
-        (umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY:-}" > "$DEPLOY_ROOT/.deployment-recovery/worker-topology")
-    else
-        [ -f "$DEPLOY_ROOT/.deployment-recovery/previous.env" ] && \
-            [ -f "$DEPLOY_ROOT/.deployment-recovery/package-path" ] || \
-            fail "Staged recovery gate is incomplete"
-    fi
+# Retain the compatible predecessor until remote ownership is safe on failure.
+mkdir -m 0700 "$DEPLOY_ROOT/.deployment-recovery"
+install -m 0600 "$previous_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/previous.env"
+if [ "$previous_deployed_image_exists" -eq 1 ]; then
+    install -m 0600 "$previous_deployed_image_tmp" "$DEPLOY_ROOT/.deployment-recovery/deployed-image"
 fi
+(umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}" > "$DEPLOY_ROOT/.deployment-recovery/package-path")
 observability_installed=1
 mutation_started=1
 sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
@@ -1587,9 +1242,6 @@ if [ "$previous_env_exists" -eq 1 ]; then
 fi
 
 phase vector-database-preflight
-if [ "$requested_worker_placement" = local ]; then
-    stop_existing_processing_worker_topology || fail "Processing worker stop failed"
-fi
 compose_with_env_file "$requested_env_tmp" pull db || fail "Vector database image pull failed"
 compose_with_env_file "$requested_env_tmp" up -d --wait --no-deps db || fail "Vector database start failed"
 if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
@@ -1718,84 +1370,8 @@ if [ "$requested_import_enabled" = True ]; then
 fi
 
 phase worker-health
-if [ "$requested_worker_placement" = remote ]; then
-    case "$worker_pool_activation" in
-        receiver) fleet_phase receiver-stage || fail "Receiver staging failed" ;;
-        stage)
-            fleet_phase stage || fail "Fleet warm-up failed"
-            sudo -n /usr/local/sbin/findme-worker-pool-metrics install || \
-                fail "Native collector installation or first collection failed"
-            ;;
-        activate)
-            sudo -n /usr/local/sbin/findme-worker-pool-metrics verify || \
-                fail "Native collector is not active"
-            ;;
-        complete)
-            sudo -n /usr/local/sbin/findme-worker-pool-metrics verify || \
-                fail "Native collector is not active"
-            fleet_phase verify || fail "Activated fleet live verification failed"
-            ;;
-        normal) fleet_phase rollout || fail "Canonical fleet release failed" ;;
-        abort) fail "Abort is a separate local recovery operation" ;;
-    esac
-fi
-if [ "$requested_local_processing_enabled" = True ]; then
-    bulk_worker_containers="$(compose_with_requested_runtime_profiles ps -q worker-bulk)"
-    selfie_worker_containers="$(compose_with_requested_runtime_profiles ps -q worker-selfie)"
-    bulk_worker_container_count="$(
-        printf '%s\n' "$bulk_worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
-    )"
-    selfie_worker_container_count="$(
-        printf '%s\n' "$selfie_worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
-    )"
-    worker_containers="$(printf '%s\n%s\n' "$bulk_worker_containers" "$selfie_worker_containers" | sed '/^$/d')"
-    if [ "$bulk_worker_container_count" -ne "$requested_worker_replicas" ] || \
-        [ "$selfie_worker_container_count" -ne 1 ]; then
-        fail_worker_runtime_verification
-    fi
-    attempt=1
-    max_worker_attempts=3
-    initial_worker_restart_counts=""
-    while [ "$attempt" -le "$max_worker_attempts" ]; do
-        for worker_container in $worker_containers; do
-            worker_state="$(
-                docker inspect \
-                    --format '{{.State.Running}} {{.State.Restarting}} {{.State.OOMKilled}} {{.RestartCount}}' \
-                    "$worker_container" 2>/dev/null || true
-            )"
-            worker_running="${worker_state%% *}"
-            worker_state_tail="${worker_state#* }"
-            worker_restarting="${worker_state_tail%% *}"
-            worker_state_tail="${worker_state_tail#* }"
-            worker_oom_killed="${worker_state_tail%% *}"
-            worker_restart_count="${worker_state_tail#* }"
-            case "$worker_restart_count" in
-                ''|*[!0-9]*)
-                    fail_worker_runtime_verification
-                    ;;
-            esac
-            if [ "$worker_running" != true ] || \
-                [ "$worker_restarting" != false ] || \
-                [ "$worker_oom_killed" != false ]; then
-                fail_worker_runtime_verification
-            fi
-            case " $initial_worker_restart_counts " in
-                *" $worker_container:$worker_restart_count "*)
-                    ;;
-                *" $worker_container:"*)
-                    fail_worker_runtime_verification
-                    ;;
-                *)
-                    initial_worker_restart_counts="${initial_worker_restart_counts}${worker_container}:${worker_restart_count} "
-                    ;;
-            esac
-        done
-        if [ "$attempt" -lt "$max_worker_attempts" ]; then
-            sleep 2
-        fi
-        attempt=$((attempt + 1))
-    done
-fi
+sudo -n /usr/local/sbin/findme-worker-pool-metrics verify || fail "Native collector is not active"
+fleet_phase rollout || fail "Canonical fleet release failed"
 
 commerce_worker_is_ready() {
     commerce_worker_containers="$(compose_with_requested_runtime_profiles ps -q commerce-worker)"
@@ -1848,10 +1424,6 @@ if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
 fi
 
 phase commit
-if [ "$requested_worker_placement" = remote ] && \
-    [ "$worker_pool_activation" = activate ]; then
-    fleet_phase activate || fail "Fleet activation failed"
-fi
 if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
 else
@@ -1864,19 +1436,6 @@ printf '%s\n' "$requested_image" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
 sudo -n "$observability_helper" commit
-if [ "$worker_pool_activation" = complete ]; then
-    original_package_root="$(sed -n '1p' "$DEPLOY_ROOT/.deployment-recovery/package-path")"
-    case "$original_package_root" in "$DEPLOY_ROOT"/.deployment-previous.*) ;; *) fail "Invalid activated package backup" ;; esac
-fi
-if [ "$requested_worker_placement" = remote ] && \
-    { [ "$worker_pool_activation" = normal ] || [ "$worker_pool_activation" = complete ]; }; then
-    fleet_phase commit || fail "Fleet release verification failed"
-fi
+fleet_phase commit || fail "Fleet release verification failed"
 deployment_committed=1
-if [ "$requested_worker_placement" = remote ] && \
-    { [ "$worker_pool_activation" = normal ] || [ "$worker_pool_activation" = complete ]; }; then
-    clear_fleet_recovery_snapshot || fail "Committed recovery gate cleanup failed"
-fi
-if [ "$worker_pool_activation" = complete ]; then
-    rm -rf "$original_package_root" || fail "Original activated package cleanup failed"
-fi
+clear_fleet_recovery_snapshot || fail "Committed recovery gate cleanup failed"

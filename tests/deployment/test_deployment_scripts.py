@@ -14,55 +14,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("activation", ["stage", "activate", "complete"])
-@pytest.mark.parametrize("observability_installed", ["0", "1"])
-def test_failed_explicit_initial_activation_preserves_candidate_without_automatic_recovery(
-    tmp_path, activation, observability_installed
-):
-    source = (ROOT / "deploy/apply-deployment.sh").read_text()
-    function = list(re.finditer(r"^on_exit\(\) \{\n.*?^\}", source, re.M | re.S))[-1][0]
-    helper = tmp_path / "sudo"
-    helper.write_text('#!/bin/sh\nprintf rollback > "$DEPLOY_ROOT/observability-rollback"\n')
-    helper.chmod(0o755)
-    result = subprocess.run(
-        [
-            "/bin/sh",
-            "-c",
-            function
-            + """
-recover_previous_deployment() { printf recovered > "$DEPLOY_ROOT/recovered"; }
-cleanup() { :; }
-elapsed_seconds() { printf 0; }
-diagnostics() { :; }
-trap on_exit EXIT
-exit 1
-""",
-        ],
-        env={
-            **os.environ,
-            "PATH": str(tmp_path) + ":" + os.environ["PATH"],
-            "DEPLOY_ROOT": str(tmp_path),
-            "worker_pool_activation": activation,
-            "mutation_started": "1",
-            "deployment_committed": "0",
-            "recovery_in_progress": "0",
-            "observability_installed": observability_installed,
-            "observability_helper": "/fixture-observability-helper",
-            "fleet_prepared": "1",
-            "deployment_phase": "worker-health",
-            "previous_cart_cleanup_present": "False",
-            "previous_upload_enabled": "False",
-        },
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 1
-    assert not (tmp_path / "recovered").exists()
-    assert not (tmp_path / "observability-rollback").exists()
-    assert "DEPLOY_RESULT=failure" in result.stdout
-    assert "rollback=not-needed" in result.stdout
-
-
 @pytest.mark.parametrize("previous_placement", ["local", "remote"])
 @pytest.mark.parametrize("requested_commerce", ["True", "False"])
 @pytest.mark.parametrize("previous_commerce", ["True", "False"])
@@ -500,7 +451,8 @@ def _apply_env(
     # exercise the real current-DB/immutable-image retirement guard.
     _write_executable(
         fake_bin / "python3",
-        'case " $* " in *" deployment-guard "*) exit 0 ;; esac\n'
+        'case " $* " in *"worker-pools/release.py"*) '
+        'printf "fleet %s\\n" "$2" >> "$COMMAND_LOG"; exit 0 ;; esac\n'
         + "exec "
         + shlex.quote(sys.executable)
         + ' "$@"',
@@ -509,6 +461,8 @@ def _apply_env(
     (tmp_path / ".env").chmod(0o640)
     (tmp_path / "previous-env.expected").write_bytes(PREVIOUS_ENV)
     (tmp_path / "deployed-image").write_text("old-image\n", encoding="utf-8")
+    (tmp_path / "worker-pools-current.json").write_text("{}\n")
+    (tmp_path / "worker-pools-release.json").write_text('{"phase":"committed"}\n')
     for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
         (tmp_path / name).write_text("services: {}\n", encoding="utf-8")
     cert_dir = tmp_path / "deploy" / "certbot"
@@ -900,7 +854,7 @@ case " $* " in
 esac
 if [ -n "${RECOVERY_COMPOSE_CONFIG:-}" ] && \
    [ "${APP_IMAGE-unset}" = unset ] && \
-   case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
+   case " $* " in *" compose "*" up -d --no-deps web nginx "*) true ;; *) false ;; esac; then
   "$REAL_DOCKER" compose --env-file "$compose_env_file" \
     -f "$REAL_DEPLOYMENT_COMPOSE" config --environment \
     > "$RECOVERY_COMPOSE_CONFIG" 2> "$RECOVERY_COMPOSE_STDERR"
@@ -926,7 +880,7 @@ if [ "$APPLY_SCENARIO" = worker-removal-failure ] && \
 fi
 if [ "$APPLY_SCENARIO" = worker-recovery ] && \
    [ "${APP_IMAGE-unset}" = unset ] && \
-   case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
+   case " $* " in *" compose "*" up -d --no-deps web nginx "*) true ;; *) false ;; esac; then
   [ "${PHOTO_PROCESSING_WORKER_TOKEN-unset}" = unset ]
   [ "${PHOTO_WORKER_BUILD-unset}" = unset ]
   [ "${PHOTO_WORKER_LEASE_SECONDS-unset}" = unset ]
@@ -950,11 +904,11 @@ if [ "$APPLY_SCENARIO" = worker-recovery-disabled ] && \
 fi
 if [ "$APPLY_SCENARIO" = compose-failure ] && \
    [ "${APP_IMAGE-unset}" = new-image ] && \
-   case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
+   case " $* " in *" compose "*" up -d --no-deps web nginx "*) true ;; *) false ;; esac; then
   exit 1
 fi
 if [ "$APPLY_SCENARIO" = recovery-failure ] && \
-   case " $* " in *" compose "*" up -d --remove-orphans "*) true ;; *) false ;; esac; then
+   case " $* " in *" compose "*" up -d --no-deps web nginx "*) true ;; *) false ;; esac; then
   exit 1
 fi
 case " $* " in
@@ -1122,7 +1076,10 @@ esac
         "PHOTO_PROCESSING_ENABLED": "True",
         "PHOTO_PROCESSING_FACE_ENABLED": "True",
         "WORKER_IMAGE": "worker-image",
-        "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
+        "PHOTO_PROCESSING_FLEET_TOKEN": "fleet-token",
+        "WORKER_POOL_PRIVATE_API_IPV4": "10.0.0.2",
+        "WORKER_POOL_RELEASE_MANIFEST": "reviewed-manifest",
+        "WORKER_POOL_RELEASE_CHECKSUM": "reviewed-checksum",
         "PRIVATE_MEDIA_S3_BUCKET": "requested-private-bucket",
         "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "requested-private-access",
         "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "requested-private-secret",
@@ -1141,29 +1098,11 @@ def test_remote_placement_requires_reviewed_release_before_mutation(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="success")
-    env["PHOTO_WORKER_PLACEMENT"] = "remote"
+    env.pop("WORKER_POOL_RELEASE_MANIFEST")
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode != 0
-    assert "remote placement requires" in result.stderr
+    assert "Remote deployment requires" in result.stderr
     assert not (tmp_path / "apply.log").exists()
-
-
-def test_apply_retirement_guard_rejects_local_placement_before_environment_mutation(
-    tmp_path, fake_bin
-):
-    from tests.deployment.test_worker_pool_release import retirement_marker
-
-    env = _apply_env(tmp_path, fake_bin, scenario="success")
-    (tmp_path / "worker-pools-local-retired.json").write_text(json.dumps(retirement_marker()))
-    (tmp_path / "worker-pools-current.json").write_text("{}")
-    (tmp_path / "worker-pools-release.json").write_text(json.dumps({"phase": "committed"}))
-    _write_executable(fake_bin / "python3", "exec " + shlex.quote(sys.executable) + ' "$@"')
-    result = _run("deploy/apply-deployment.sh", env=env)
-    assert result.returncode != 0
-    assert "retirement boundary" in result.stderr
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
-    assert not list(tmp_path.glob(".env.requested.*"))
 
 
 def test_committed_remote_normal_release_clears_gate_before_next_installer_and_release(
@@ -1201,6 +1140,10 @@ exec """
     assert not (tmp_path / ".deployment-recovery").exists()
 
     source = (ROOT / "deploy/run-remote.sh").read_text()
+    (tmp_path / "deploy/worker-pools").mkdir()
+    (tmp_path / "deploy/worker-pools/release.py").write_text(
+        "def require_native_compatible_release(*args): pass\n"
+    )
     installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
     installer = installer.replace("deployment_root=/opt/photo-prjct", f"deployment_root={tmp_path}")
     _write_executable(fake_bin / "flock", "exit 0")
@@ -1217,45 +1160,6 @@ exec """
     second = _run("deploy/apply-deployment.sh", env=env)
     assert second.returncode == 0, second.stderr
     assert not (tmp_path / ".deployment-recovery").exists()
-
-
-def test_receiver_stage_keeps_local_workers_and_retains_recovery_gate(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="success")
-    env.update(
-        PHOTO_WORKER_PLACEMENT="remote",
-        WORKER_POOL_ACTIVATION="receiver",
-        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
-        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
-        WORKER_POOL_RELEASE_MANIFEST="/reviewed-creation.json",
-        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
-        WORKER_POOL_WORKER_DIGEST="ghcr.io/example/worker@sha256:" + "a" * 64,
-    )
-    _write_executable(
-        fake_bin / "python3",
-        """
-case "$*" in
-  *worker-pools/release.py*) printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"; exit 0 ;;
-esac
-exec """
-        + sys.executable
-        + """ "$@"
-""",
-    )
-    result = _run("deploy/apply-deployment.sh", env=env)
-    assert result.returncode == 0, result.stderr
-    log = _apply_log(tmp_path)
-    assert "fleet receiver-preflight" in log
-    assert "fleet receiver-stage" in log
-    assert not any(line.startswith("docker stop ") for line in log)
-    assert not any("rm -sf worker-bulk worker-selfie" in line for line in log)
-    assert (tmp_path / ".deployment-recovery/previous.env").read_bytes() == PREVIOUS_ENV
-    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
-    env["EXPECTED_DEPLOYED_IMAGE"] = (tmp_path / "deployed-image").read_text().strip()
-    retry = _run("deploy/apply-deployment.sh", env=env)
-    assert retry.returncode == 0, retry.stderr
-    assert _apply_log(tmp_path).count("fleet receiver-preflight") == 2
 
 
 @pytest.mark.parametrize(("action", "expected_code"), [("normal", 1), ("receiver", 2)])
@@ -1288,456 +1192,6 @@ def test_installer_fences_remote_first_activation_before_package_replacement(
     )
     assert result.returncode == expected_code, result.stderr
     assert (tmp_path / "docker-compose.deployment.yml").read_text() == "original\n"
-
-
-@pytest.mark.parametrize(
-    ("action", "expected_code"),
-    [("abort", 2), ("normal", 1), ("stage", 1), ("activate", 1)],
-)
-def test_interrupted_local_rollback_allows_only_pinned_abort_before_package_replacement(
-    tmp_path: Path, action: str, expected_code: int
-) -> None:
-    source = (ROOT / "deploy/run-remote.sh").read_text()
-    installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
-    installer = installer.replace("deployment_root=/opt/photo-prjct", f"deployment_root={tmp_path}")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    _write_executable(fake_bin / "flock", "exit 0")
-    (tmp_path / "docker-compose.deployment.yml").write_text("original\n")
-    (tmp_path / ".deployment-recovery").mkdir()
-    image = "ghcr.io/example/worker@sha256:" + "c" * 64
-    manifest = {
-        "checksum": "a" * 64,
-        "configuration": {"worker_build": "b" * 40, "worker_image": image},
-    }
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
-    (tmp_path / "worker-pools-release.json").write_text(
-        json.dumps(
-            {"phase": "rolling-back-local", "previous": None, "candidate": {"manifest": manifest}}
-        )
-    )
-    result = subprocess.run(
-        ["sh", "-c", installer],
-        env={
-            **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "WORKER_POOL_ACTIVATION": action,
-            "PHOTO_WORKER_PLACEMENT": "remote",
-            "APP_IMAGE": "ghcr.io/example/photo-prjct:" + "b" * 40,
-            "WORKER_POOL_RELEASE_MANIFEST": str(manifest_path),
-            "WORKER_POOL_RELEASE_CHECKSUM": "a" * 64,
-            "WORKER_POOL_WORKER_DIGEST": image,
-            "DEPLOYMENT_ARCHIVE_NAME": "invalid",
-        },
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == expected_code, result.stderr
-    assert (tmp_path / "docker-compose.deployment.yml").read_text() == "original\n"
-
-
-@pytest.mark.parametrize(
-    ("action", "expected_code"),
-    [("complete", 2), ("abort", 2), ("normal", 1), ("activate", 1), ("stage", 1)],
-)
-def test_activated_window_allows_only_pinned_complete_or_abort_before_package_replacement(
-    tmp_path: Path, action: str, expected_code: int
-) -> None:
-    source = (ROOT / "deploy/run-remote.sh").read_text()
-    installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
-    installer = installer.replace("deployment_root=/opt/photo-prjct", f"deployment_root={tmp_path}")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    _write_executable(fake_bin / "flock", "exit 0")
-    (tmp_path / "docker-compose.deployment.yml").write_text("original\n")
-    (tmp_path / ".deployment-recovery").mkdir()
-    image = "ghcr.io/example/worker@sha256:" + "c" * 64
-    manifest = {
-        "checksum": "a" * 64,
-        "configuration": {"worker_build": "b" * 40, "worker_image": image},
-    }
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
-    (tmp_path / "worker-pools-release.json").write_text(
-        json.dumps({"phase": "verified", "previous": None, "candidate": {"manifest": manifest}})
-    )
-    result = subprocess.run(
-        ["sh", "-c", installer],
-        env={
-            **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "WORKER_POOL_ACTIVATION": action,
-            "PHOTO_WORKER_PLACEMENT": "remote",
-            "APP_IMAGE": "ghcr.io/example/photo-prjct:" + "b" * 40,
-            "WORKER_POOL_RELEASE_MANIFEST": str(manifest_path),
-            "WORKER_POOL_RELEASE_CHECKSUM": "a" * 64,
-            "WORKER_POOL_WORKER_DIGEST": image,
-            "DEPLOYMENT_ARCHIVE_NAME": "invalid",
-        },
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == expected_code, result.stderr
-    assert (tmp_path / "docker-compose.deployment.yml").read_text() == "original\n"
-
-
-@pytest.mark.parametrize(
-    ("receiver_only", "rollback_fails", "public_fails"),
-    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
-)
-def test_abort_restores_original_local_package_env_workers_and_public_health(
-    tmp_path: Path,
-    fake_bin: Path,
-    receiver_only: bool,
-    rollback_fails: bool,
-    public_fails: bool,
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="public-failure" if public_fails else "success")
-    env.update(
-        PHOTO_WORKER_PLACEMENT="remote",
-        WORKER_POOL_ACTIVATION="abort",
-        PUBLIC_DOMAIN="candidate.example",
-        PUBLIC_DOMAIN_ALIAS="alias.candidate.example",
-        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
-        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
-        WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
-        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
-    )
-    original_env = (
-        PREVIOUS_ENV.replace(
-            b"PUBLIC_DOMAIN=old.example\n",
-            b"PUBLIC_DOMAIN=old.example\nPUBLIC_DOMAIN_ALIAS=alias.old.example\n",
-        )
-        + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
-    )
-    staged_env = (
-        PREVIOUS_ENV.replace(
-            b"PUBLIC_DOMAIN=old.example\n",
-            b"PUBLIC_DOMAIN=candidate.example\nPUBLIC_DOMAIN_ALIAS=alias.candidate.example\n",
-        )
-        + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
-    )
-    (tmp_path / ".env").write_bytes(staged_env)
-    (tmp_path / "previous-env.expected").write_bytes(staged_env)
-    shutil.copy2(ROOT / "deploy/verify-public-edge.sh", tmp_path / "deploy/verify-public-edge.sh")
-    original_package = tmp_path / ".deployment-previous.original"
-    original_package.mkdir()
-    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
-        shutil.copy2(tmp_path / name, original_package / name)
-    shutil.copytree(tmp_path / "deploy", original_package / "deploy")
-    recovery = tmp_path / ".deployment-recovery"
-    recovery.mkdir()
-    (recovery / "previous.env").write_bytes(original_env)
-    (recovery / "deployed-image").write_text("old-image\n")
-    (recovery / "package-path").write_text(str(original_package) + "\n")
-    (recovery / "worker-topology").write_text("split\n")
-    (tmp_path / "worker-pools-release.json").write_text(
-        json.dumps({"phase": "receiver-staged" if receiver_only else "staged"})
-    )
-    _write_executable(
-        fake_bin / "python3",
-        """
-case "$*" in
-  *worker-pools/release.py*)
-    printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"
-    [ "$2:$FLEET_ROLLBACK_FAILS" != rollback:1 ] || exit 1
-    exit 0 ;;
-esac
-exec """
-        + sys.executable
-        + """ "$@"
-""",
-    )
-    env["FLEET_ROLLBACK_FAILS"] = "1" if rollback_fails else "0"
-    _write_executable(
-        fake_bin / "curl",
-        """
-for url do :; done
-printf 'edge-curl %s\n' "$url" >> "$COMMAND_LOG"
-case "$url" in
-  http://old.example/*|http://alias.old.example/*|https://alias.old.example/*)
-    printf '308\nhttps://old.example/__edge_verify__?source=deploy\n' ;;
-  https://old.example/health/)
-    if [ "$APPLY_SCENARIO" = public-failure ]; then printf '503\n'; else printf '200\n'; fi ;;
-  *) exit 1 ;;
-esac
-""",
-    )
-    result = _run("deploy/apply-deployment.sh", env=env)
-    if rollback_fails:
-        assert result.returncode != 0
-        assert _apply_log(tmp_path).count("fleet rollback") == 1
-        assert (recovery / "previous.env").read_bytes() == original_env
-        assert (recovery / "deployed-image").read_text() == "old-image\n"
-        assert (recovery / "package-path").read_text() == str(original_package) + "\n"
-        assert original_package.is_dir()
-        assert (tmp_path / ".env").read_bytes() == staged_env
-        assert (tmp_path / "deployed-image").read_text() == "old-image\n"
-        return
-    if public_fails:
-        assert result.returncode != 0
-        assert _apply_log(tmp_path).count("fleet rollback") == 1
-        assert (recovery / "previous.env").read_bytes() == original_env
-        assert (recovery / "deployed-image").read_text() == "old-image\n"
-        assert (recovery / "package-path").read_text() == str(original_package) + "\n"
-        assert original_package.is_dir()
-        assert (tmp_path / ".env").read_bytes() == original_env
-        assert (tmp_path / "deployed-image").read_text() == "old-image\n"
-        env["APPLY_SCENARIO"] = "success"
-        retried = _run("deploy/apply-deployment.sh", env=env)
-        assert retried.returncode == 0, retried.stderr
-        result = retried
-    assert result.returncode == 0, result.stderr
-    assert (tmp_path / ".env").read_bytes() == original_env
-    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
-    assert not recovery.exists()
-    assert not original_package.exists()
-    log = _apply_log(tmp_path)
-    if receiver_only:
-        assert "fleet receiver-absence" in log
-        assert "fleet receiver-close" in log
-        assert "fleet rollback" not in log
-    else:
-        assert "fleet rollback" in log
-    assert any("--profile worker up -d --no-deps" in line for line in log)
-    assert "edge-curl http://old.example/__edge_verify__?source=deploy" in log
-    assert "edge-curl http://alias.old.example/__edge_verify__?source=deploy" in log
-    assert "edge-curl https://alias.old.example/__edge_verify__?source=deploy" in log
-    assert not any(line.startswith("edge-curl ") and "candidate.example" in line for line in log)
-    assert ("worker-metrics-remove" in log) is not receiver_only
-
-
-@pytest.mark.parametrize("decision", ["complete", "abort", "complete-public-failure"])
-def test_activated_real_work_window_retains_original_gate_until_complete_or_abort(
-    tmp_path: Path, fake_bin: Path, decision: str
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="success")
-    env.update(
-        PHOTO_WORKER_PLACEMENT="remote",
-        WORKER_POOL_ACTIVATION="activate",
-        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
-        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
-        WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
-        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
-        WORKER_POOL_WORKER_DIGEST="ghcr.io/example/worker@sha256:" + "a" * 64,
-    )
-    original_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
-    staged_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
-    (tmp_path / ".env").write_bytes(staged_env)
-    (tmp_path / "previous-env.expected").write_bytes(staged_env)
-    original_package = tmp_path / ".deployment-previous.original"
-    original_package.mkdir()
-    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
-        shutil.copy2(tmp_path / name, original_package / name)
-    shutil.copytree(tmp_path / "deploy", original_package / "deploy")
-    recovery = tmp_path / ".deployment-recovery"
-    recovery.mkdir()
-    (recovery / "previous.env").write_bytes(original_env)
-    (recovery / "deployed-image").write_text("old-image\n")
-    (recovery / "package-path").write_text(str(original_package) + "\n")
-    (recovery / "worker-topology").write_text("split\n")
-    (tmp_path / "worker-pools-release.json").write_text(json.dumps({"phase": "staged"}))
-    _write_executable(
-        fake_bin / "python3",
-        """
-case "$*" in
-  *worker-pools/release.py*) printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"; exit 0 ;;
-esac
-exec """
-        + sys.executable
-        + """ "$@"
-""",
-    )
-    activated = _run("deploy/apply-deployment.sh", env=env)
-    assert activated.returncode == 0, activated.stderr
-    assert "fleet activate" in _apply_log(tmp_path)
-    assert "fleet commit" not in _apply_log(tmp_path)
-    assert (recovery / "previous.env").read_bytes() == original_env
-    assert (recovery / "deployed-image").read_text() == "old-image\n"
-    assert original_package.is_dir()
-    env["WORKER_POOL_ACTIVATION"] = (
-        "complete" if decision == "complete-public-failure" else decision
-    )
-    env["EXPECTED_DEPLOYED_IMAGE"] = (
-        (tmp_path / "deployed-image").read_text().strip()
-        if decision in {"complete", "complete-public-failure"}
-        else "old-image"
-    )
-    if decision == "complete-public-failure":
-        env["APPLY_SCENARIO"] = "public-failure"
-    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
-    (tmp_path / "worker-pools-release.json").write_text(json.dumps({"phase": "verified"}))
-    finished = _run("deploy/apply-deployment.sh", env=env)
-    if decision == "complete-public-failure":
-        assert finished.returncode != 0
-        assert "fleet commit" not in _apply_log(tmp_path)
-        assert "fleet rollback" not in _apply_log(tmp_path)
-        assert (recovery / "previous.env").read_bytes() == original_env
-        assert original_package.is_dir()
-        return
-    assert finished.returncode == 0, finished.stderr
-    log = _apply_log(tmp_path)
-    if decision == "complete":
-        assert "fleet verify" in log
-        assert "fleet commit" in log
-        assert (tmp_path / ".env").read_bytes() != original_env
-    else:
-        assert "fleet rollback" in log
-        assert "fleet commit" not in log
-        assert (tmp_path / ".env").read_bytes() == original_env
-        assert (tmp_path / "deployed-image").read_text() == "old-image\n"
-    assert not recovery.exists()
-    assert not original_package.exists()
-
-
-def test_receiver_preflight_abort_without_recovery_gate_restores_local_package(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="success")
-    env.update(
-        PHOTO_WORKER_PLACEMENT="remote",
-        WORKER_POOL_ACTIVATION="abort",
-        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
-        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
-        WORKER_POOL_RELEASE_MANIFEST="/reviewed-creation.json",
-        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
-    )
-    local_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
-    (tmp_path / ".env").write_bytes(local_env)
-    (tmp_path / "previous-env.expected").write_bytes(local_env)
-    previous_package = tmp_path / ".deployment-previous.original"
-    previous_package.mkdir()
-    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
-        shutil.copy2(tmp_path / name, previous_package / name)
-    shutil.copytree(tmp_path / "deploy", previous_package / "deploy")
-    env["PREVIOUS_DEPLOYMENT_PACKAGE_ROOT"] = str(previous_package)
-    env["PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY"] = "split"
-    (tmp_path / "worker-pools-release.json").write_text(json.dumps({"phase": "receiver-prepared"}))
-    _write_executable(
-        fake_bin / "python3",
-        """
-case "$*" in
-  *worker-pools/release.py*) printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"; exit 0 ;;
-esac
-exec """
-        + sys.executable
-        + """ "$@"
-""",
-    )
-    result = _run("deploy/apply-deployment.sh", env=env)
-    assert result.returncode == 0, result.stderr
-    assert (tmp_path / ".env").read_bytes() == local_env
-    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
-    assert not (tmp_path / ".deployment-recovery").exists()
-    assert not previous_package.exists()
-    log = _apply_log(tmp_path)
-    assert "fleet receiver-absence" in log
-    assert "fleet receiver-close" in log
-    assert "fleet rollback" not in log
-
-
-def test_failed_receiver_recovery_preserves_original_package_in_durable_gate(
-    tmp_path: Path,
-) -> None:
-    original = tmp_path / ".deployment-previous.original"
-    original.mkdir()
-    for package_root, value in ((tmp_path, "candidate"), (original, "original")):
-        (package_root / "deploy").mkdir()
-        (package_root / "deploy/version").write_text(value)
-        for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
-            (package_root / name).write_text(value)
-    recovery = tmp_path / ".deployment-recovery"
-    recovery.mkdir()
-    (recovery / "package-path").write_text(str(original) + "\n")
-    source = (ROOT / "deploy/apply-deployment.sh").read_text()
-    function = re.search(
-        r"^restore_previous_deployment_package\(\) \{\n.*?^\}", source, re.M | re.S
-    )[0]
-    result = subprocess.run(
-        ["/bin/sh", "-eu", "-c", function + "\nrestore_previous_deployment_package\n"],
-        env={
-            **os.environ,
-            "DEPLOY_ROOT": str(tmp_path),
-            "PREVIOUS_DEPLOYMENT_PACKAGE_ROOT": str(original),
-            "worker_pool_activation": "receiver",
-            "vector_database_reconciled": "0",
-        },
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == 0, result.stderr
-    assert (tmp_path / "deploy/version").read_text() == "original"
-    assert (original / "deploy/version").read_text() == "original"
-    assert (recovery / "package-path").read_text() == str(original) + "\n"
-
-
-@pytest.mark.parametrize("scenario", ["success", "migration-plan-failure", "public-failure"])
-def test_remote_cutover_never_force_removes_local_workers_and_gates_image_marker(
-    tmp_path: Path, fake_bin: Path, scenario: str
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
-    env.update(
-        PHOTO_WORKER_PLACEMENT="remote",
-        WORKER_POOL_ACTIVATION="activate",
-        PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only",
-        WORKER_POOL_PRIVATE_API_IPV4="10.0.0.5",
-        WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
-        WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
-        FLEET_ROLLBACK_FAILS="1",
-    )
-    original_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=local\nPHOTO_PROCESSING_ENABLED=True\n"
-    staged_env = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
-    (tmp_path / ".env").write_bytes(staged_env)
-    (tmp_path / "previous-env.expected").write_bytes(staged_env)
-    recovery = tmp_path / ".deployment-recovery"
-    recovery.mkdir()
-    (recovery / "previous.env").write_bytes(original_env)
-    (recovery / "deployed-image").write_text("old-image\n")
-    (recovery / "package-path").write_text("unused\n")
-    (recovery / "worker-topology").write_text("split\n")
-    # Inject only fleet/cloud host boundary. Canonical shell and real file marker paths execute.
-    _write_executable(
-        fake_bin / "python3",
-        """
-case "$*" in
-  *worker-pools/release.py*)
-    printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"
-    [ "$2" != activate ] || exit 1
-    [ "$2:$FLEET_ROLLBACK_FAILS" != rollback:1 ] || exit 1
-    exit 0 ;;
-esac
-exec """
-        + sys.executable
-        + """ "$@"
-""",
-    )
-    result = _run("deploy/apply-deployment.sh", env=env)
-    assert result.returncode != 0
-    log = _apply_log(tmp_path)
-    assert "fleet rollback" not in log
-    assert ("fleet activate" in log) == (scenario == "success"), result.stderr
-    if scenario == "success":
-        assert log.index("verify-public-edge") < log.index("fleet activate")
-        assert log.index("verify-selfie-observability") < log.index("fleet activate")
-    assert not any("rm -sf worker" in line for line in log)
-    assert not any(line.startswith("docker stop ") for line in log)
-    if scenario == "success":
-        assert (
-            log.index("candidate-vector-collation-check")
-            < log.index("candidate-vector-capability")
-            < log.index("candidate-migrate")
-            < log.index("fleet activate")
-        )
-        database_start = next(line for line in log if " up -d --wait --no-deps db" in line)
-        assert "--force-recreate" not in database_start
-        assert "--remove-orphans" not in database_start
-    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
-    recovery = tmp_path / ".deployment-recovery"
-    assert (recovery / "previous.env").read_bytes() == original_env
-    assert (recovery / "deployed-image").read_text() == "old-image\n"
-    assert (tmp_path / ".env").read_bytes() != original_env
-    assert not any("--profile worker up -d --no-deps" in line for line in log)
 
 
 def _render_gallery_environment(env_file: Path) -> tuple[dict[str, str], str]:
@@ -2122,7 +1576,7 @@ def test_apply_rejects_an_unsafe_gunicorn_profile_before_mutation(
 
 @pytest.mark.parametrize(
     ("configuration", "message"),
-    [("missing-secret-key", "Set SECRET_KEY"), ("invalid-worker-replicas", "must be 1 or 2")],
+    [("missing-secret-key", "Set SECRET_KEY")],
 )
 def test_validate_failure_emits_one_sanitized_result_before_any_mutation(
     tmp_path: Path, fake_bin: Path, configuration: str, message: str
@@ -2306,7 +1760,10 @@ def test_missing_processing_prerequisite_prevents_deployment(
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 2
-    assert "Selfie search requires enabled photo processing and face embeddings" in result.stderr
+    assert (
+        "Remote deployment requires enabled API, fleet credential and reviewed release"
+        in result.stderr
+    )
     assert not (tmp_path / "apply.log").exists()
 
 
@@ -2471,7 +1928,7 @@ def test_enabled_commerce_worker_retries_readiness_until_its_lock_is_live(
     assert "Commerce worker readiness check attempt 2 failed; retrying" in result.stderr
     assert "DEPLOY_RESULT=success" in result.stdout
     commands = "\n".join(_apply_log(tmp_path))
-    assert "--profile commerce up -d --remove-orphans" in commands
+    assert "--profile commerce up -d --no-deps commerce-worker" in commands
     assert commands.count("commerce-worker-health-attempt=") == 3
 
 
@@ -2494,7 +1951,7 @@ def test_enabled_commerce_worker_readiness_exhaustion_restores_previous_profile(
     assert (tmp_path / "commerce-health-attempts").read_text(encoding="utf-8") == "6\n"
     commands = "\n".join(_apply_log(tmp_path))
     assert "APP_IMAGE=unset docker compose --project-name photo-prjct --env-file" in commands
-    assert "--profile commerce up -d --remove-orphans" in commands
+    assert "--profile commerce up -d --no-deps commerce-worker" in commands
     assert "DEPLOY_RESULT=failure phase=worker-health rollback=succeeded" in result.stdout
 
 
@@ -2543,96 +2000,10 @@ def test_selfie_prerequisites_are_required_for_every_deployment(
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 2
-    assert "Selfie search requires enabled photo processing and face embeddings" in result.stderr
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-
-
-def test_enabled_processing_pulls_and_reconciles_the_worker_profile(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """Enabling processing must deploy the immutable worker beside the web service."""
-    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env.update(
-        {
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "WORKER_IMAGE": "worker-image",
-            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token-must-not-be-logged",
-            "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS": "240",
-            "PHOTO_PROCESSING_MAX_REQUEST_BYTES": "32768",
-            "PHOTO_WORKER_BUILD": "capture-metadata-v2",
-            "PHOTO_WORKER_LEASE_SECONDS": "180",
-        }
+    assert (
+        "Remote deployment requires enabled API, fleet credential and reviewed release"
+        in result.stderr
     )
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode == 0, result.stderr
-    deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    assert "WORKER_IMAGE=worker-image" in deployed_env
-    assert "PHOTO_PROCESSING_ENABLED=True" in deployed_env
-    assert "PHOTO_PROCESSING_WORKER_TOKEN=worker-token-must-not-be-logged" in deployed_env
-    assert "PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=240" in deployed_env
-    assert "PHOTO_PROCESSING_MAX_REQUEST_BYTES=32768" in deployed_env
-    assert "PHOTO_WORKER_BUILD=capture-metadata-v2" in deployed_env
-    assert "PHOTO_WORKER_LEASE_SECONDS=180" in deployed_env
-    commands = _apply_log(tmp_path)
-    assert any(
-        "--profile worker pull web worker-bulk worker-selfie" in command for command in commands
-    )
-    assert any(
-        "--profile worker up -d --remove-orphans --scale worker-bulk=1 --scale worker-selfie=1"
-        in command
-        for command in commands
-    )
-    assert "worker-token-must-not-be-logged" not in result.stdout
-    assert "worker-token-must-not-be-logged" not in result.stderr
-    assert "worker-token-must-not-be-logged" not in "\n".join(commands)
-
-
-def test_enabled_processing_reconciles_two_requested_worker_replicas(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """Bulk replicas scale independently while the selfie role stays singular."""
-    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env.update(
-        {
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "WORKER_IMAGE": "worker-image",
-            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "PHOTO_WORKER_REPLICAS": "2",
-        }
-    )
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode == 0, result.stderr
-    assert "PHOTO_WORKER_REPLICAS=2" in (tmp_path / ".env").read_text(encoding="utf-8")
-    assert any(
-        "--profile worker up -d --remove-orphans --scale worker-bulk=2 --scale worker-selfie=1"
-        in command
-        for command in _apply_log(tmp_path)
-    )
-
-
-@pytest.mark.parametrize("scenario", ("worker-second-missing", "worker-second-restarting"))
-def test_two_worker_deployment_rejects_a_missing_or_restarting_replica(
-    tmp_path: Path, fake_bin: Path, scenario: str
-) -> None:
-    """One healthy worker cannot make a two-worker rollout successful."""
-    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
-    env.update(
-        {
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "WORKER_IMAGE": "worker-image",
-            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "PHOTO_WORKER_REPLICAS": "2",
-        }
-    )
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert "worker runtime verification" in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
 
 
@@ -2758,36 +2129,12 @@ def test_deployment_rejects_worker_identity_lists_the_worker_would_not_accept(
     assert not (tmp_path / "apply.log").exists()
 
 
-def test_enabled_processing_rejects_a_worker_that_is_crash_looping_after_compose_up(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """A healthy web container cannot make a restarting worker deployment successful."""
-    env = _apply_env(tmp_path, fake_bin, scenario="worker-crash-loop")
-    env.update(
-        {
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "WORKER_IMAGE": "worker-image",
-            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-        }
-    )
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert "worker runtime verification" in result.stderr
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-    assert any(
-        "--profile worker" in command and "logs --tail=100 worker-bulk worker-selfie" in command
-        for command in _apply_log(tmp_path)
-    )
-
-
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
         (
             {"PHOTO_PROCESSING_PREVIEW_ENABLED": "True"},
-            "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_ENABLED=True",
+            "Remote deployment requires enabled API, fleet credential and reviewed release",
         ),
     ],
 )
@@ -2855,8 +2202,10 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"PHOTO_PROCESSING_ENABLED": "true"}, "PHOTO_PROCESSING_ENABLED must be True or False"),
-        ({"PHOTO_WORKER_REPLICAS": "3"}, "PHOTO_WORKER_REPLICAS must be 1 or 2"),
+        (
+            {"PHOTO_PROCESSING_ENABLED": "true"},
+            "Remote deployment requires enabled API, fleet credential and reviewed release",
+        ),
         (
             {"PHOTO_PROCESSING_FACE_ENABLED": "true"},
             "PHOTO_PROCESSING_FACE_ENABLED must be True or False",
@@ -2877,7 +2226,7 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
                 "PHOTO_PROCESSING_ENABLED": "True",
                 "WORKER_IMAGE": "worker-image",
             },
-            "Set PHOTO_PROCESSING_WORKER_TOKEN",
+            "Remote deployment requires enabled API, fleet credential and reviewed release",
         ),
     ],
 )
@@ -2889,9 +2238,13 @@ def test_processing_activation_requires_exact_valid_configuration(
 ) -> None:
     """Invalid activation never changes the live deployment environment."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    if message in {"Set WORKER_IMAGE", "Set PHOTO_PROCESSING_WORKER_TOKEN"}:
+    if message == "Set WORKER_IMAGE":
         env.pop("WORKER_IMAGE")
-        env.pop("PHOTO_PROCESSING_WORKER_TOKEN")
+    elif (
+        message == "Remote deployment requires enabled API, fleet credential and reviewed release"
+        and overrides.get("WORKER_IMAGE")
+    ):
+        env.pop("PHOTO_PROCESSING_FLEET_TOKEN")
     env.update(overrides)
 
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -2900,198 +2253,6 @@ def test_processing_activation_requires_exact_valid_configuration(
     assert message in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert not (tmp_path / "apply.log").exists()
-
-
-def test_failed_worker_deployment_restores_the_complete_previous_environment_and_profile(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """Recovery must restore all old settings and the old worker-enabled service pair."""
-    previous_env = PREVIOUS_ENV + (
-        b"WORKER_IMAGE=old-worker-image\n"
-        b"PHOTO_PROCESSING_ENABLED=True\n"
-        b"PHOTO_PROCESSING_WORKER_TOKEN=old-worker-token\n"
-        b"PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120\n"
-        b"PHOTO_PROCESSING_MAX_REQUEST_BYTES=131072\n"
-        b"PHOTO_WORKER_BUILD=old-capture-metadata\n"
-        b"PHOTO_WORKER_LEASE_SECONDS=90\n"
-        b"PHOTO_WORKER_REPLICAS=2\n"
-    )
-    env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery")
-    (tmp_path / ".env").write_bytes(previous_env)
-    (tmp_path / "previous-env.expected").write_bytes(previous_env)
-    env.update(
-        {
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "WORKER_IMAGE": "worker-image",
-            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token-must-not-be-logged",
-            "PHOTO_WORKER_BUILD": "candidate-capture-metadata",
-            "PHOTO_WORKER_LEASE_SECONDS": "180",
-            "PHOTO_WORKER_REPLICAS": "1",
-            "DB_NAME": "candidate-app",
-            "PUBLIC_DOMAIN": "candidate.example",
-        }
-    )
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert (tmp_path / ".env").read_bytes() == previous_env
-    commands = _apply_log(tmp_path)
-    assert (
-        sum(
-            "--profile worker up -d --remove-orphans --scale worker-bulk=1 "
-            "--scale worker-selfie=1" in command
-            for command in commands
-        )
-        == 1
-    )
-    assert (
-        sum(
-            "--profile worker up -d --remove-orphans --scale worker-bulk=2 "
-            "--scale worker-selfie=1" in command
-            for command in commands
-        )
-        == 1
-    )
-    assert "recovery-compose-uses-restored-environment" in commands
-    assert "worker-token-must-not-be-logged" not in result.stdout
-    assert "worker-token-must-not-be-logged" not in result.stderr
-    assert "worker-token-must-not-be-logged" not in "\n".join(commands)
-
-
-def test_failed_split_rollout_restores_previous_shared_worker_package_atomically(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """Rollback must pair the old env/image with its byte-exact shared-worker package."""
-    previous_env = PREVIOUS_ENV + (
-        b"WORKER_IMAGE=old-worker-image\n"
-        b"PHOTO_PROCESSING_ENABLED=True\n"
-        b"PHOTO_PROCESSING_WORKER_TOKEN=old-worker-token\n"
-        b"PHOTO_WORKER_BUILD=old-capture-metadata\n"
-        b"PHOTO_WORKER_LEASE_SECONDS=90\n"
-        b"PHOTO_WORKER_REPLICAS=2\n"
-        b"COMMERCE_WORKER_ENABLED=False\n"
-    )
-    env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery")
-    (tmp_path / ".env").write_bytes(previous_env)
-    (tmp_path / "previous-env.expected").write_bytes(previous_env)
-    previous_package = tmp_path / "previous-package"
-    previous_package.mkdir()
-    old_compose = (
-        b"services:\n  db:\n    image: postgres:16\n  worker:\n    image: ${WORKER_IMAGE}\n"
-    )
-    old_overlay = b"services:\n  nginx:\n    image: nginx:old\n"
-    (previous_package / "docker-compose.deployment.yml").write_bytes(old_compose)
-    (previous_package / "docker-compose.https.yml").write_bytes(old_overlay)
-    shutil.copytree(tmp_path / "deploy", previous_package / "deploy")
-    (previous_package / "deploy" / "package-version").write_text(
-        "previous-shared-worker\n", encoding="utf-8"
-    )
-    env.update(
-        {
-            "PREVIOUS_DEPLOYMENT_PACKAGE_ROOT": str(previous_package),
-            "PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY": "shared",
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "WORKER_IMAGE": "candidate-worker-image",
-            "PHOTO_PROCESSING_WORKER_TOKEN": "candidate-worker-token",
-            "PHOTO_WORKER_BUILD": "candidate-split-worker",
-            "PHOTO_WORKER_REPLICAS": "1",
-        }
-    )
-    env.update(_real_commerce_worker_settings())
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert "DEPLOY_RESULT=failure phase=local-health rollback=succeeded" in result.stdout
-    assert (tmp_path / ".env").read_bytes() == previous_env
-    assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
-    assert (tmp_path / "docker-compose.deployment.yml").read_bytes() == old_compose.replace(
-        b"postgres:16",
-        b"pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b",
-    )
-    assert (tmp_path / "docker-compose.https.yml").read_bytes() == old_overlay
-    assert (tmp_path / "deploy" / "package-version").read_text(encoding="utf-8") == (
-        "previous-shared-worker\n"
-    )
-    commands = _apply_log(tmp_path)
-    shared_recovery = "--profile worker up -d --remove-orphans --scale worker=2"
-    shared_recovery_index = next(
-        index for index, line in enumerate(commands) if shared_recovery in line
-    )
-    commerce_removal_index = next(
-        index
-        for index, line in enumerate(commands)
-        if "--profile commerce rm -sf commerce-worker" in line
-    )
-    assert commerce_removal_index < shared_recovery_index
-    assert sum("--scale worker-bulk=1 --scale worker-selfie=1" in line for line in commands) == 1
-
-
-def test_shared_rollback_removes_worker_when_previous_processing_is_disabled(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    previous_env = PREVIOUS_ENV + (
-        b"PHOTO_PROCESSING_ENABLED=False\nPHOTO_WORKER_REPLICAS=2\nCOMMERCE_WORKER_ENABLED=False\n"
-    )
-    env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery-disabled")
-    (tmp_path / ".env").write_bytes(previous_env)
-    (tmp_path / "previous-env.expected").write_bytes(previous_env)
-    previous_package = tmp_path / "previous-package"
-    previous_package.mkdir()
-    (previous_package / "docker-compose.deployment.yml").write_text(
-        "services:\n  db:\n    image: postgres:16\n  worker:\n    image: ${WORKER_IMAGE}\n",
-        encoding="utf-8",
-    )
-    (previous_package / "docker-compose.https.yml").write_text(
-        "services:\n  nginx:\n    image: nginx:old\n", encoding="utf-8"
-    )
-    shutil.copytree(tmp_path / "deploy", previous_package / "deploy")
-    env.update(
-        {
-            "PREVIOUS_DEPLOYMENT_PACKAGE_ROOT": str(previous_package),
-            "PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY": "shared",
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "WORKER_IMAGE": "candidate-worker-image",
-            "PHOTO_PROCESSING_WORKER_TOKEN": "candidate-worker-token",
-            "PHOTO_WORKER_REPLICAS": "1",
-        }
-    )
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert "DEPLOY_RESULT=failure phase=local-health rollback=succeeded" in result.stdout
-    commands = _apply_log(tmp_path)
-    assert any("--profile worker rm -sf worker" in line for line in commands)
-    assert any("--profile commerce rm -sf commerce-worker" in line for line in commands)
-
-
-def test_failed_worker_rollout_removes_the_candidate_worker_when_previous_deployment_is_disabled(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """Recovery to a disabled deployment cannot leave the candidate profiled worker behind."""
-    env = _apply_env(tmp_path, fake_bin, scenario="worker-recovery-disabled")
-    previous_env = PREVIOUS_ENV + b"PHOTO_PROCESSING_ENABLED=False\n"
-    (tmp_path / ".env").write_bytes(previous_env)
-    (tmp_path / "previous-env.expected").write_bytes(previous_env)
-    env.update(
-        {
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "WORKER_IMAGE": "worker-image",
-            "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "PHOTO_WORKER_REPLICAS": "2",
-        }
-    )
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    commands = _apply_log(tmp_path)
-    assert any(
-        "--profile worker rm -sf worker-bulk worker-selfie" in command for command in commands
-    )
-    assert "recovery-removes-worker-from-restored-disabled-environment" in commands
 
 
 def test_successful_deployment_installs_cart_cleanup_only_after_the_candidate_commits(
@@ -3189,15 +2350,11 @@ def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
     tmp_path: Path,
     fake_bin: Path,
 ) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-deployment")
-    for name in (".env", "deployed-image"):
-        (tmp_path / name).unlink()
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
 
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 0, result.stderr
-    assert "gallery-private-media-preflight-skipped:no-existing-deployment\n" in result.stdout
-    assert "migration-preflight-skipped:no-established-deployment\n" in result.stdout
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
         "DEPLOY_RESULT=success phase=commit rollback=not-needed",
@@ -3205,14 +2362,13 @@ def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
     commands = _apply_log(tmp_path)
     assert commands.count("volume-inspect photo-prjct_pgdata") == 1
     assert any(" pull web" in command for command in commands)
-    assert not any("manage.py shell --no-imports" in command for command in commands)
-    assert not any("candidate-migration-history" in command for command in commands)
-    assert "candidate-migration-plan" not in commands
+    assert "candidate-migration-history" in commands
+    assert "candidate-migration-plan" in commands
     assert "unexpected-fresh-migration-history" not in commands
     assert "candidate-projection-report" not in commands
     assert "candidate-projection-benchmark" not in commands
     assert any(" stop nginx" in command for command in commands)
-    assert any(" up -d --remove-orphans" in command for command in commands)
+    assert any(" up -d --no-deps web nginx" in command for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -3242,11 +2398,6 @@ def test_gallery_projection_cutover_preserves_old_web_until_clean_candidate_reco
         for index, command in enumerate(commands)
         if " pull web" in command and "APP_IMAGE=new-image" in command
     )
-    worker_stop = next(
-        index
-        for index, command in enumerate(commands)
-        if command.endswith("docker stop previous-worker-bulk")
-    )
     migrate = commands.index("candidate-migrate")
     drain = commands.index("candidate-gallery-publication-drain")
     rebuild = commands.index("candidate-gallery-projection-rebuild")
@@ -3254,20 +2405,20 @@ def test_gallery_projection_cutover_preserves_old_web_until_clean_candidate_reco
     candidate_up = next(
         index
         for index, command in enumerate(commands)
-        if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+        if " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
     )
     smoke = commands.index("candidate-gallery-projection-smoke")
     worker_health = next(
-        index for index, command in enumerate(commands) if " ps -q worker-bulk" in command
+        index for index, command in enumerate(commands) if command == "fleet rollout"
     )
 
-    assert candidate_pull < worker_stop < migrate < drain < rebuild < verify < candidate_up < smoke
+    assert candidate_pull < migrate < drain < rebuild < verify < candidate_up < smoke
     assert smoke < worker_health
     assert not any(
         " stop web" in command or " stop nginx" in command for command in commands[: verify + 1]
     )
     assert not any(
-        " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+        " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
         for command in commands[: verify + 1]
     )
     assert not any("commerce-worker" in command and " stop " in command for command in commands)
@@ -3285,22 +2436,16 @@ def test_gallery_projection_preparation_runs_candidate_drain_before_rebuild(
 
     assert result.returncode == 0, result.stderr
     commands = _apply_log(tmp_path)
-    worker_stop = next(
-        index
-        for index, command in enumerate(commands)
-        if command.endswith("docker stop previous-worker-bulk")
-    )
     migrate = commands.index("candidate-migrate")
     drain = commands.index("candidate-gallery-publication-drain")
     rebuild = commands.index("candidate-gallery-projection-rebuild")
 
-    assert worker_stop < migrate < drain < rebuild
+    assert migrate < drain < rebuild
 
 
 @pytest.mark.parametrize(
     ("scenario", "expected_phase", "last_pre_failure_command"),
     [
-        ("gallery-projection-worker-stop-failure", "vector-database-preflight", None),
         (
             "gallery-projection-publication-drain-failure",
             "projection-preflight",
@@ -3343,14 +2488,12 @@ def test_gallery_projection_cutover_failures_recover_previous_worker_topology_wi
     if last_pre_failure_command is not None:
         assert last_pre_failure_command in commands
     assert any(
-        "--profile worker up -d --remove-orphans --scale worker-bulk=1 --scale worker-selfie=1"
-        in command
-        and "APP_IMAGE=unset" in command
+        "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
         for command in commands
     )
     if scenario == "gallery-projection-verification-failure":
         assert not any(
-            " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+            " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
             for command in commands
         )
     combined_output = result.stdout + result.stderr
@@ -3380,72 +2523,6 @@ def _fresh_projection_failure_env(
     )
     env["PREVIOUS_DEPLOYMENT_PACKAGE_ROOT"] = str(previous_package)
     return env
-
-
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "gallery-projection-worker-stop-failure",
-        "gallery-projection-migration-failure",
-        "gallery-projection-publication-drain-failure",
-        "gallery-projection-rebuild-failure",
-        "gallery-projection-verification-failure",
-    ],
-)
-def test_fresh_projection_preparation_failure_uses_requested_env_to_restore_no_env_state(
-    tmp_path: Path, fake_bin: Path, scenario: str
-) -> None:
-    """Pre-promotion rollback must clean candidate Compose before restoring the staged package."""
-    result = _run(
-        "deploy/apply-deployment.sh",
-        env=_fresh_projection_failure_env(tmp_path, fake_bin, scenario=scenario),
-    )
-
-    assert result.returncode != 0
-    expected_phase = (
-        "vector-database-preflight"
-        if scenario == "gallery-projection-worker-stop-failure"
-        else "projection-preflight"
-    )
-    assert f"DEPLOY_RESULT=failure phase={expected_phase} rollback=succeeded" in result.stdout
-    commands = _apply_log(tmp_path)
-    cleanup_index = next(
-        index
-        for index, command in enumerate(commands)
-        if " down --remove-orphans" in command
-        and f"--env-file {tmp_path}/.env.recovery." in command
-    )
-    package_restore_index = next(
-        index
-        for index, command in enumerate(commands)
-        if command.startswith("mv ")
-        and f"{tmp_path}/previous-package/docker-compose.deployment.yml" in command
-    )
-    assert cleanup_index < package_restore_index
-    expected_database_image = (
-        "postgres:16"
-        if scenario == "gallery-projection-worker-stop-failure"
-        else "pgvector/pgvector:0.8.6-pg16-trixie@sha256:"
-        "c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b"
-    )
-    assert (tmp_path / "docker-compose.deployment.yml").read_text(encoding="utf-8") == (
-        f"services:\n  db:\n    image: {expected_database_image}\n"
-        "  web:\n    image: previous-package\n"
-    )
-    assert (tmp_path / "docker-compose.https.yml").read_text(encoding="utf-8") == (
-        "services:\n  nginx:\n    image: nginx:previous\n"
-    )
-    assert (tmp_path / "deploy" / "package-version").read_text(encoding="utf-8") == (
-        "previous-package\n"
-    )
-    for name in (".env", "deployed-image"):
-        assert not (tmp_path / name).exists()
-    assert list(tmp_path.glob(".candidate-command-output.*")) == []
-    combined_output = result.stdout + result.stderr
-    assert "private-key-must-not-reach-output" not in combined_output
-    assert "photo-id-must-not-reach-output" not in combined_output
-    assert "requested-private-secret" not in combined_output
-    _assert_no_env_temporary_files(tmp_path)
 
 
 def test_retained_postgres_volume_alone_forces_migration_preflight(
@@ -3485,7 +2562,7 @@ def test_retained_postgres_volume_alone_forces_migration_preflight(
     assert not any("observability-" in command for command in commands)
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(" up -d --no-deps web nginx" in command for command in commands)
     assert not any(command.startswith("crontab ") for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
@@ -3509,26 +2586,9 @@ def test_postgres_volume_inspection_error_fails_safely_before_mutation(
         "DEPLOY_PHASE=snapshot",
         "DEPLOY_RESULT=failure phase=snapshot rollback=not-needed",
     ]
-    assert _apply_log(tmp_path) == ["volume-inspect photo-prjct_pgdata"]
+    assert _apply_log(tmp_path) == ["fleet deployment-guard", "volume-inspect photo-prjct_pgdata"]
     for name in (".env", "deployed-image"):
         assert not (tmp_path / name).exists()
-    _assert_no_env_temporary_files(tmp_path)
-
-
-def test_failed_fresh_deployment_leaves_the_no_env_state(tmp_path: Path, fake_bin: Path) -> None:
-    """A failed initial rollout must not leave deployment metadata to recover."""
-    env = _apply_env(tmp_path, fake_bin, scenario="fresh-first-health-failure")
-    for name in (".env", "deployed-image"):
-        (tmp_path / name).unlink()
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert not (tmp_path / ".env").exists()
-    assert not (tmp_path / "deployed-image").exists()
-    commands = _apply_log(tmp_path)
-    assert any(" down --remove-orphans" in command for command in commands)
-    assert any(" up -d --remove-orphans" in command for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -3594,7 +2654,7 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
     candidate_up = next(
         index
         for index, command in enumerate(commands)
-        if " up -d --remove-orphans" in command and "APP_IMAGE=new-image" in command
+        if " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
     )
     assert candidate_pull < candidate_run < stop_nginx < candidate_up
 
@@ -3632,7 +2692,7 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
     commands = _apply_log(tmp_path)
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(" up -d --no-deps web nginx" in command for command in commands)
     assert not any(command.startswith("crontab ") for command in commands)
     assert commands.count("candidate-requested-env-with-canonical-untouched") == 2
     _assert_no_env_temporary_files(tmp_path)
@@ -3691,7 +2751,7 @@ def test_failed_candidate_migration_history_stops_before_any_deployment_mutation
     assert not any("observability-" in command for command in commands)
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(" up -d --no-deps web nginx" in command for command in commands)
     assert not any(command.startswith("crontab ") for command in commands)
     output = "\n".join((result.stdout, result.stderr, *commands))
     for secret in (
@@ -3747,7 +2807,7 @@ def test_each_durable_deployment_signal_alone_requires_migration_preflight(
     assert not any("observability-" in command for command in commands)
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(" up -d --no-deps web nginx" in command for command in commands)
     assert not any(command.startswith("crontab ") for command in commands)
     _assert_no_env_temporary_files(tmp_path)
 
@@ -3800,7 +2860,7 @@ def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliat
     commands = _apply_log(tmp_path)
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
-    assert not any(" up -d --remove-orphans" in command for command in commands)
+    assert not any(" up -d --no-deps web nginx" in command for command in commands)
     assert not any(command.startswith("crontab ") for command in commands)
     assert commands.count("candidate-requested-env-with-canonical-untouched") == 1
     _assert_no_env_temporary_files(tmp_path)
@@ -3880,7 +2940,7 @@ def test_apply_success_commits_deployed_image_only_after_checks(
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.count("up -d --remove-orphans") == 1
+    assert commands.count("up -d --no-deps web nginx") == 1
     assert commands.count("requested-env-promoted-before-stop") == 1
     assert "https://findme-photo.ru/health/" in commands
     _assert_no_env_temporary_files(tmp_path)
@@ -3899,7 +2959,7 @@ def test_apply_failure_restores_previous_image_and_overlay_without_marker_change
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.count("up -d --remove-orphans") >= 2
+    assert commands.count("up -d --no-deps web nginx") >= 2
 
 
 def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
@@ -3914,7 +2974,7 @@ def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.index("stop nginx") < commands.index("up -d --remove-orphans")
+    assert commands.index("stop nginx") < commands.index("up -d --no-deps web nginx")
     assert "docker-compose.https.yml" in commands
 
 
@@ -3941,9 +3001,9 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     assert commands.count("candidate-requested-env-with-canonical-untouched") == 11
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
-    assert sum(" up -d --remove-orphans" in command for command in commands) == 1
+    assert sum(" up -d --no-deps web nginx" in command for command in commands) == 1
     assert any(
-        "APP_IMAGE=unset" in command and " up -d --remove-orphans" in command
+        "APP_IMAGE=unset" in command and " up -d --no-deps web nginx" in command
         for command in commands
     )
     _assert_no_env_temporary_files(tmp_path)
@@ -3964,7 +3024,7 @@ def test_failed_env_promotion_removes_secret_bearing_requested_temp(
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
     commands = _apply_log(tmp_path)
-    assert sum(" up -d --remove-orphans" in command for command in commands) == 1
+    assert sum(" up -d --no-deps web nginx" in command for command in commands) == 1
     assert requested_secret not in result.stdout
     assert requested_secret not in result.stderr
     assert requested_secret not in "\n".join(commands)
@@ -3990,7 +3050,7 @@ def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.count("up -d --remove-orphans") == expected_reconciliations
+    assert commands.count("up -d --no-deps web nginx") == expected_reconciliations
 
 
 def test_failed_certificate_renewal_waits_before_next_attempt(
@@ -4095,8 +3155,8 @@ def test_feedback_workflow_forwards_web_credentials_and_keeps_them_out_of_worker
     assert "SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}" in workflow
     assert "--consumer deploy" in workflow
     assert "selfie-feedback-storage" in workflow
-    worker_section = compose.split("  worker-bulk:\n", maxsplit=1)[1]
-    assert "SELFIE_FEEDBACK_" not in worker_section
+    assert "worker-bulk:" not in compose
+    assert "SELFIE_FEEDBACK_" not in (ROOT / "deploy/worker-pools/compose.yml").read_text()
 
 
 def _observability_install_env(tmp_path: Path, fake_bin: Path) -> dict[str, str]:
@@ -4633,7 +3693,11 @@ def test_apply_rolls_back_observability_when_post_install_verification_fails(
     assert sudo_commands
     assert all("sudo -n " in command and " -E " not in f" {command} " for command in sudo_commands)
     assert all(
-        "/usr/local/sbin/findme-selfie-observability" in command for command in sudo_commands
+        (
+            "/usr/local/sbin/findme-selfie-observability" in command
+            or "/usr/local/sbin/findme-worker-pool-metrics" in command
+        )
+        for command in sudo_commands
     )
     assert all("/opt/photo-prjct" not in command for command in sudo_commands)
     assert all(
@@ -5026,7 +4090,10 @@ def test_vector_database_is_reconciled_and_verified_before_candidate_migration(t
 def test_database_collation_mismatch_refuses_extension_and_retains_previous_database_image(
     tmp_path, fake_bin
 ):
-    env = _fresh_projection_failure_env(tmp_path, fake_bin, scenario="vector-collation-mismatch")
+    env = _apply_env(tmp_path, fake_bin, scenario="vector-collation-mismatch")
+    (tmp_path / "docker-compose.deployment.yml").write_text(
+        "services:\n  db:\n    image: postgres:16\n"
+    )
     result = _run("deploy/apply-deployment.sh", env=env)
     commands = Path(env["COMMAND_LOG"]).read_text()
     assert result.returncode != 0

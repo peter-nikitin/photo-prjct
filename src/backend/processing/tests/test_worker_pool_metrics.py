@@ -15,6 +15,23 @@ from processing.tests.test_worker_pool_state_command import WorkerPoolStateComma
 
 @override_settings(PHOTO_PROCESSING_FLEET_TOKEN="fleet-token")
 class WorkerPoolMetricsTests(WorkerPoolStateCommandTests):
+    @override_settings(
+        DEBUG=False, PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True, PHOTO_PROCESSING_WORKER_TOKEN=""
+    )
+    def test_production_fleet_endpoint_and_metrics_need_no_local_token(self):
+        from processing.services.worker_pool_state import build_worker_pool_state
+
+        self.assertTrue(build_worker_pool_state()["endpoint_enabled"])
+        self.assertTrue(self.metrics()["metrics"])
+
+    @override_settings(
+        DEBUG=False,
+        PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True,
+        PHOTO_PROCESSING_WORKER_TOKEN="fleet-token",
+    )
+    def test_stale_equal_local_token_does_not_disable_fleet_metrics(self):
+        self.assertTrue(self.metrics()["metrics"])
+
     def metrics(self, **options):
         output = StringIO()
         call_command("publish_worker_pool_metrics", zone="ru-central1-a", stdout=output, **options)

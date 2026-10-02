@@ -81,6 +81,8 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
     settings.PHOTO_PROCESSING_ENABLED = True
     settings.PHOTO_PROCESSING_FACE_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "worker-secret"
+    settings.DEBUG = True
+    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = False
     h = test_views.WorkerApiTests()
     h.client = client
     h.setUp()
@@ -252,6 +254,8 @@ def test_maximum_selfie_callback_cleanup_and_wire(client, settings):
 
     settings.PHOTO_PROCESSING_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "worker-secret"
+    settings.DEBUG = True
+    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = False
     h = test_views.SelfieWorkerApiTests()
     h.client = client
     h.setUp()

@@ -10,10 +10,9 @@ import tarfile
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date
-from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,14 +25,14 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_historical_runbook_requires_readiness_deploy_before_enrollment():
     runbook = (ROOT / "docs/runbooks/historical-adaface-backfill.md").read_text()
     assert "do not merge this readiness PR" in runbook
-    complete = runbook.index("## Gate 1a: finish the initial remote release")
+    complete = runbook.index("## Gate 1a: finalize the initial remote receipt")
     readiness = runbook.index("## Gate 1b: deploy and prove the readiness code")
     enrollment = runbook.index("## Gate 2: approve one bounded enrollment")
     assert complete < readiness < enrollment < runbook.index("--apply")
+    assert "finalize_initial_workers=true" in runbook[complete:readiness]
     proof = runbook[readiness:enrollment]
     for required in (
         "deployment_sha=<APPROVED_READINESS_SHA>",
-        "worker_pool_activation=normal",
         "worker-pools-current.json",
         "org.opencontainers.image.revision",
         "ru.findme-photo.historical-adaface-contract",
@@ -51,84 +50,6 @@ def retirement_marker():
         "release_build": "a" * 40,
         "acceptance_sha256": "b" * 64,
     }
-
-
-@pytest.mark.parametrize(
-    "placement,action", [("local", "normal"), ("remote", "stage"), ("remote", "abort")]
-)
-def test_retired_local_workers_cannot_be_revived_by_deploy(tmp_path, placement, action):
-    release = release_module()
-    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
-    release.Journal(tmp_path / "worker-pools-current.json", {"manifest": capped_manifest()})
-    release.Journal(
-        tmp_path / "worker-pools-release.json", {"phase": "committed", "previous": None}
-    )
-    with pytest.raises(ValueError, match="retired"):
-        release.guard_local_retirement(tmp_path, placement, action)
-
-
-@pytest.mark.parametrize(
-    "marker",
-    [
-        {},
-        {**retirement_marker(), "version": True},
-        {**retirement_marker(), "acceptance_sha256": "unreviewed"},
-    ],
-)
-def test_invalid_retirement_marker_blocks_even_remote_deploy(tmp_path, marker):
-    release = release_module()
-    release.Journal(tmp_path / "worker-pools-local-retired.json", marker)
-    with pytest.raises(ValueError, match="retirement"):
-        release.guard_local_retirement(tmp_path, "remote", "normal")
-
-
-def test_retirement_cannot_discard_initial_verified_local_recovery(tmp_path):
-    release = release_module()
-    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
-    release.Journal(tmp_path / "worker-pools-release.json", {"phase": "verified", "previous": None})
-    with pytest.raises(ValueError, match="complete"):
-        release.guard_local_retirement(tmp_path, "remote", "normal")
-
-
-def test_retired_remote_releases_continue_without_a_build_allowlist(tmp_path):
-    release = release_module()
-    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
-    release.Journal(
-        tmp_path / "worker-pools-current.json", {"manifest": capped_manifest(build="c" * 40)}
-    )
-    release.Journal(
-        tmp_path / "worker-pools-release.json",
-        {"phase": "prepared", "previous": {"manifest": capped_manifest()}},
-    )
-    release.guard_local_retirement(tmp_path, "remote", "normal")
-
-
-@pytest.mark.parametrize("action", ["complete", "abort"])
-def test_without_retirement_marker_initial_acceptance_and_abort_are_unchanged(tmp_path, action):
-    release_module().guard_local_retirement(tmp_path, "remote", action)
-
-
-@pytest.mark.parametrize("placement,allowed", [("local", False), ("remote", True)])
-def test_installer_enforces_permanent_retirement_before_package_swap(tmp_path, placement, allowed):
-    source = (ROOT / "deploy/run-remote.sh").read_text()
-    guard = source.split("<<'PY_STAGE_GUARD'\n", 1)[1].split("\nPY_STAGE_GUARD", 1)[0]
-    release = release_module()
-    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
-    release.Journal(tmp_path / "worker-pools-current.json", {"manifest": capped_manifest()})
-    release.Journal(
-        tmp_path / "worker-pools-release.json", {"phase": "committed", "previous": None}
-    )
-    helper = tmp_path / "deploy/worker-pools"
-    helper.mkdir(parents=True)
-    shutil.copyfile(ROOT / "deploy/worker-pools/release.py", helper / "release.py")
-    result = subprocess.run(
-        [sys.executable, "-", str(tmp_path)],
-        input=guard,
-        env={**os.environ, "PHOTO_WORKER_PLACEMENT": placement},
-        text=True,
-        capture_output=True,
-    )
-    assert (result.returncode == 0) is allowed, result.stderr
 
 
 @pytest.mark.django_db
@@ -197,45 +118,13 @@ def test_native_database_unavailable_fails_closed_without_pulling_images(tmp_pat
         release.require_native_compatible_release(tmp_path, "web", "worker", run=run)
 
 
-def test_initial_no_native_abort_can_probe_database_with_web_unavailable(tmp_path, monkeypatch):
-    release = release_module()
-    (tmp_path / ".env").write_text("fixture=true\n")
-
-    def run(command, **kwargs):
-        assert "db" in command
-        assert "web" not in command
-        return SimpleNamespace(stdout="false")
-
-    check = release.require_native_compatible_release
-    monkeypatch.setattr(
-        release,
-        "require_native_compatible_release",
-        lambda root, app, worker: check(root, app, worker, run=run),
-    )
-    monkeypatch.setenv("PHOTO_WORKER_PLACEMENT", "remote")
-    monkeypatch.setenv("WORKER_POOL_ACTIVATION", "abort")
-    release.deployment_guard(tmp_path)
-
-
-@pytest.mark.parametrize("phase", ["verified", "committed"])
-def test_retired_fleet_cannot_take_initial_local_rollback(tmp_path, monkeypatch, phase):
-    release = release_module()
-    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
-    release.Journal(tmp_path / "worker-pools-current.json", {"manifest": capped_manifest()})
-    release.Journal(tmp_path / "worker-pools-release.json", {"phase": phase, "previous": None})
-    monkeypatch.setattr(
-        release, "provision_module", lambda: pytest.fail("premature cloud preparation")
-    )
-    with pytest.raises(ValueError, match="complete|retired"):
-        release.execute("rollback", tmp_path, None, None, None)
-
-
 def test_normal_native_deploy_uses_current_pinned_worker_image_without_manifest(
     tmp_path, monkeypatch
 ):
     release = release_module()
     manifest = capped_manifest()
     release.Journal(tmp_path / "worker-pools-current.json", {"manifest": manifest})
+    release.Journal(tmp_path / "worker-pools-release.json", {"phase": "committed"})
     monkeypatch.setenv("PHOTO_WORKER_PLACEMENT", "remote")
     observed = []
     monkeypatch.setattr(
@@ -299,29 +188,6 @@ def test_fleet_status_never_pulls_images_or_probes_native_db(tmp_path, monkeypat
     release.execute("status", tmp_path, None, None, None)
 
 
-def test_followup_activation_reuses_receiver_digest_without_rebuilding_images():
-    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
-    build = workflow["jobs"]["build"]
-    pushes = [
-        step
-        for step in build["steps"]
-        if step.get("uses", "").startswith("docker/build-push-action")
-    ]
-    assert len(pushes) == 3
-    assert all("worker_pool_activation" in step.get("if", "") for step in pushes)
-    assert all("'receiver'" not in step.get("if", "") for step in pushes)
-    resolver = next(
-        step for step in build["steps"] if step["name"] == "Resolve reviewed worker digest"
-    )
-    assert "inputs.worker_pool_worker_digest" in resolver["env"]["REVIEWED_DIGEST"]
-    assert "receiver|stage|activate|complete|abort" in resolver["run"]
-    assert "steps.worker_ref.outputs.worker_digest" in build["outputs"]["worker_digest"]
-    deploy_step = next(
-        step for step in workflow["jobs"]["deploy"]["steps"] if step["name"] == "Run deployment"
-    )
-    assert "WORKER_POOL_WORKER_DIGEST" in deploy_step["env"]
-
-
 def test_remote_install_trap_retains_compatible_package_after_failed_fleet_recovery(tmp_path):
     source = (ROOT / "deploy/run-remote.sh").read_text()
     program = source.split("REMOTE_PROGRAM=$(cat <<'PY'\n", 1)[1].split("\nPY\n)", 1)[0]
@@ -343,9 +209,17 @@ def test_remote_install_trap_retains_compatible_package_after_failed_fleet_recov
     (tmp_path / "docker-compose.deployment.yml").write_text("previous")
     (tmp_path / "docker-compose.https.yml").write_text("previous")
     (tmp_path / ".env").write_text("previous-env")
+    (tmp_path / "deploy/worker-pools").mkdir()
+    (tmp_path / "deploy/worker-pools/release.py").write_text(
+        "def require_native_compatible_release(*args): pass\n"
+    )
+    (tmp_path / "worker-pools-current.json").write_text("{}")
+    (tmp_path / "worker-pools-release.json").write_text('{"phase":"committed"}')
     candidate = tmp_path / "candidate"
     (candidate / "deploy").mkdir(parents=True)
     (candidate / "deploy/version").write_text("compatible-candidate")
+    (candidate / "deploy/worker-pools").mkdir()
+    (candidate / "deploy/worker-pools/release.py").write_text("def deployment_guard(*args): pass\n")
     (candidate / "deploy/apply-deployment.sh").write_text(
         'mkdir -m 700 "$DEPLOY_ROOT/.deployment-recovery"\n'
         'cp "$DEPLOY_ROOT/.env" "$DEPLOY_ROOT/.deployment-recovery/previous.env"\nexit 1\n'
@@ -380,142 +254,6 @@ def test_remote_install_trap_retains_compatible_package_after_failed_fleet_recov
     assert (backups[0] / "deploy/version").read_text() == "previous"
 
 
-@pytest.mark.parametrize(
-    "activation,phase,allowed,drift",
-    [
-        ("normal", "staged", False, False),
-        ("stage", "staged", True, False),
-        ("activate", "staged", True, False),
-        ("normal", "receiver-staged", False, False),
-        ("receiver", "receiver-staged", True, False),
-        ("stage", "receiver-staged", True, False),
-        ("stage", "receiver-staged", False, True),
-        ("stage", "rolled-back-local", True, False),
-        ("stage", "rolled-back-local", False, True),
-        ("stage", "staging", True, False),
-        ("stage", "staging", False, True),
-    ],
-)
-def test_pending_stage_install_gate_rejects_unrelated_deploy_before_package_swap(
-    tmp_path, activation, phase, allowed, drift
-):
-    source = (ROOT / "deploy/run-remote.sh").read_text()
-    program = source.split("REMOTE_PROGRAM=$(cat <<'PY'\n", 1)[1].split("\nPY\n)", 1)[0]
-    tree = ast.parse(program)
-    command = next(
-        ast.literal_eval(node.value)
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "deployment_command"
-            for target in node.targets
-        )
-    ).replace("deployment_root=/opt/photo-prjct", "deployment_root=" + shlex.quote(str(tmp_path)))
-    (tmp_path / "deploy").mkdir()
-    (tmp_path / "deploy/version").write_text("staged")
-    (tmp_path / "docker-compose.deployment.yml").write_text("staged")
-    (tmp_path / "docker-compose.https.yml").write_text("staged")
-    (tmp_path / ".env").write_text("staged")
-    recovery = tmp_path / ".deployment-recovery"
-    recovery.mkdir()
-    original_backup = tmp_path / ".deployment-previous.original"
-    original_backup.mkdir()
-    (recovery / "package-path").write_text(str(original_backup) + "\n")
-    creation = {
-        "checksum": "creation",
-        "configuration": {
-            "worker_build": "a" * 40,
-            "worker_image": "ghcr.io/example/worker@sha256:" + "b" * 64,
-            "worker_sa_id": "worker-sa",
-            "groups": {"bulk": {"id": None}, "selfie": {"id": None}},
-        },
-    }
-    manifest = {
-        "checksum": "reviewed",
-        "configuration": {
-            "worker_build": "a" * 40,
-            "worker_image": "ghcr.io/example/worker@sha256:" + "b" * 64,
-            "worker_sa_id": "different-sa" if drift else "worker-sa",
-            "groups": {"bulk": {"id": "bulk-group"}, "selfie": {"id": "selfie-group"}},
-        },
-    }
-    manifest_path = tmp_path / "manifest.json"
-    prior_manifest = deepcopy(manifest)
-    origin_manifest = deepcopy(manifest)
-    if phase in {"rolled-back-local", "staging"}:
-        manifest["configuration"]["worker_build"] = "c" * 40
-        manifest["configuration"]["worker_image"] = "ghcr.io/example/worker@sha256:" + "c" * 64
-        manifest["configuration"]["groups"]["bulk"]["baseline"] = "fresh"
-        if drift:
-            prior_manifest["configuration"]["worker_sa_id"] = "worker-sa"
-            origin_manifest["configuration"]["worker_sa_id"] = "worker-sa"
-        if phase == "staging":
-            prior_manifest["configuration"]["worker_build"] = "b" * 40
-            prior_manifest["configuration"]["worker_image"] = (
-                "ghcr.io/example/worker@sha256:" + "b" * 64
-            )
-    selected_manifest = creation if activation == "receiver" else manifest
-    manifest_path.write_text(json.dumps(selected_manifest))
-    (tmp_path / "worker-pools-release.json").write_text(
-        json.dumps(
-            {
-                "phase": phase,
-                "staged_predecessor": {"manifest": origin_manifest} if phase == "staging" else None,
-                "candidate": {
-                    "manifest": prior_manifest
-                    if phase in {"rolled-back-local", "staging"}
-                    else manifest
-                    if phase == "staged"
-                    else None,
-                    "creation_manifest": creation,
-                    "worker_build": "a" * 40,
-                    "worker_image": manifest["configuration"]["worker_image"],
-                },
-            }
-        )
-    )
-    candidate = tmp_path / "candidate"
-    (candidate / "deploy").mkdir(parents=True)
-    (candidate / "deploy/version").write_text("replacement")
-    (candidate / "deploy/apply-deployment.sh").write_text(
-        'printf "%s" "$WORKER_POOL_ACTIVATION" > "$DEPLOY_ROOT/operation-seen"\n'
-    )
-    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
-        (candidate / name).write_text("replacement")
-    with tarfile.open(tmp_path / ".deployment-candidate.fixture.tar", "w") as archive:
-        for path in candidate.iterdir():
-            archive.add(path, arcname=path.name)
-    binary = tmp_path / "bin"
-    binary.mkdir()
-    for name, body in {
-        "docker": "printf 'worker-bulk\\nworker-selfie\\n'",
-        "flock": "exit 0",
-    }.items():
-        path = binary / name
-        path.write_text("#!/bin/sh\n" + body + "\n")
-        path.chmod(0o755)
-    result = subprocess.run(
-        ["sh", "-c", command],
-        env={
-            "PATH": str(binary) + ":" + os.environ["PATH"],
-            "DEPLOYMENT_ARCHIVE_NAME": ".deployment-candidate.fixture.tar",
-            "WORKER_POOL_ACTIVATION": activation,
-            "APP_IMAGE": "ghcr.io/example/photo-prjct:"
-            + selected_manifest["configuration"]["worker_build"],
-            "WORKER_POOL_RELEASE_MANIFEST": str(manifest_path),
-            "WORKER_POOL_RELEASE_CHECKSUM": selected_manifest["checksum"],
-            "WORKER_POOL_WORKER_DIGEST": manifest["configuration"]["worker_image"],
-        },
-        capture_output=True,
-        text=True,
-    )
-    assert (result.returncode == 0) is allowed, result.stderr
-    assert (tmp_path / "deploy/version").read_text() == ("replacement" if allowed else "staged")
-    assert (tmp_path / "operation-seen").exists() is allowed
-    if allowed:
-        assert list(tmp_path.glob(".deployment-previous.*")) == [original_backup]
-
-
 def release_module():
     path = ROOT / "deploy/worker-pools/release.py"
     assert path.exists(), "canonical fleet release controller is missing"
@@ -523,193 +261,6 @@ def release_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.mark.django_db
-@pytest.mark.parametrize("stale", [False, True])
-def test_fresh_execute_initializes_both_pools_before_real_all_pool_observation(
-    tmp_path, monkeypatch, settings, stale
-):
-    from django.core.management import call_command
-    from django.utils import timezone
-    from processing.models import WorkerPool
-    from processing.services import worker_pool_lifecycle as lifecycle
-
-    release = release_module()
-    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = True
-    settings.PHOTO_PROCESSING_ENABLED = True
-    settings.PHOTO_PROCESSING_WORKER_TOKEN = "fixture-local-only"
-    settings.PHOTO_PROCESSING_FLEET_TOKEN = "fixture-fleet-only"
-    build = "a" * 40
-    image = "ghcr.io/example/photo-prjct-worker@sha256:" + "b" * 64
-    template = {
-        "metadata": {"findme-worker-build": build, "findme-worker-image": image},
-        "bootDiskSpec": {"diskSpec": {"imageId": "boot-image"}},
-    }
-    groups = {
-        name: {
-            "id": name + "-group",
-            "folderId": "folder",
-            "allocationPolicy": {"zones": [{"zoneId": "ru-central1-a"}]},
-            "instanceTemplate": template,
-            "managedInstancesState": {"targetSize": "1"},
-            "scalePolicy": {
-                "autoScale": {"maxSize": "2", "minZoneSize": "0" if name == "bulk" else "1"}
-            },
-        }
-        for name in ("bulk", "selfie")
-    }
-    manifest = {
-        "configuration": {
-            "pool_max_size": 2,
-            "worker_build": build,
-            "groups": {name: {"id": name + "-group"} for name in groups},
-        },
-        "groups": groups,
-    }
-    if stale:
-        old = "c" * 40
-        manifest["configuration"]["predecessors"] = {
-            name: {"group_id": name + "-old", "active_build": old} for name in ("bulk", "selfie")
-        }
-        now = timezone.now()
-        for name in ("bulk", "selfie"):
-            lifecycle.configure_pool(name, group_id=name + "-old", active_build=old)
-            lifecycle.record_cloud_snapshot(
-                name,
-                group_id=name + "-old",
-                sequence=5,
-                started_at=now,
-                completed_at=now,
-                target_size=1,
-                complete=True,
-                members=[
-                    {
-                        "instance_id": name + "-stale",
-                        "status": "RUNNING_ACTUAL",
-                        "worker_build": old,
-                    }
-                ],
-            )
-    config = {
-        "folder_id": "folder",
-        "canonical_folder_id": "canonical-folder",
-        "zone": "ru-central1-a",
-        "boot_image_id": "boot-image",
-        "groups": {name: name + "-group" for name in groups},
-        "releases": {build: image},
-    }
-    release.Journal(
-        tmp_path / "worker-pools-release.json",
-        {
-            "phase": "prepared",
-            "pending": None,
-            "previous": None,
-            "verified": [],
-            "candidate": {"manifest": manifest, "proof": {}},
-        },
-    )
-    release.Journal(tmp_path / "worker-pools-observation.json", config)
-
-    class Cloud:
-        def get(self, path, **kwargs):
-            kind, identity = path.split("/")
-            name = identity.split("-")[0]
-            if kind == "instanceGroups":
-                return groups[name]
-            if kind == "instances":
-                return {
-                    "id": identity,
-                    "folderId": "folder",
-                    "zoneId": "ru-central1-a",
-                    "metadata": template["metadata"],
-                    "bootDisk": {"diskId": name + "-disk"},
-                    "networkInterfaces": [{"primaryV4Address": {"address": "10.0.0.4"}}],
-                }
-            assert kind == "disks"
-            return {"id": identity, "folderId": "folder", "sourceImageId": "boot-image"}
-
-        def pages(self, path, key):
-            name = path.split("/")[1].split("-")[0]
-            return [
-                {
-                    "instanceId": name + "-node",
-                    "status": "RUNNING_ACTUAL",
-                    "zoneId": "ru-central1-a",
-                }
-            ]
-
-    cloud = Cloud()
-    monkeypatch.setattr(
-        release, "provision_module", lambda: SimpleNamespace(Cloud=lambda token: cloud)
-    )
-    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
-    monkeypatch.setattr(
-        "processing.services.worker_pool_observation.metadata_token", lambda: "fixture"
-    )
-    monkeypatch.setattr(
-        "processing.services.worker_pool_observation.CloudReader", lambda token: cloud
-    )
-    monkeypatch.setattr("processing.services.worker_pool_metrics.write_metrics", lambda *args: None)
-    events = []
-
-    class Host(release.Host):
-        def verify_web(self, proof):
-            events.append("verified-web")
-
-        def command(self, command, *, payload=None, timeout=950):
-            output = StringIO()
-            with patch("sys.stdin", StringIO(json.dumps(payload))):
-                call_command(*command, stdout=output)
-            return json.loads(output.getvalue())
-
-        def observe(self):
-            snapshot = super().observe()  # Actual Host, management commands, reader and DB.
-            for name, pool in snapshot.items():
-                if pool["members"]:
-                    continue
-                assert pool["claims_paused"] and not pool["local_claims_paused"]
-                identity = lifecycle.MemberIdentity(name, name + "-node", uuid4(), build)
-                registration = lifecycle.register(identity)
-                identity = replace(
-                    identity, registration_generation=UUID(registration["registration_generation"])
-                )
-                lifecycle.heartbeat(identity, ready=True, draining=False)
-            return self.control("status")
-
-        def template(self, name, desired, floor):
-            events.append(("template", name, floor))
-            groups[name]["scalePolicy"]["autoScale"]["minZoneSize"] = str(floor)
-
-        def stop_local(self):
-            snapshot = self.control("status")
-            assert all(
-                row["claims_paused"] and row["local_claims_paused"] and not row["live_attempts"]
-                for row in snapshot.values()
-            )
-            events.append("stop-local")
-
-    monkeypatch.setattr(release, "Host", Host)
-    assert WorkerPool.objects.exists() is stale
-    release.execute("stage", tmp_path, None, None, None)
-    if stale:
-        assert dict(WorkerPool.objects.values_list("name", "group_id")) == {
-            "bulk": "bulk-group",
-            "selfie": "selfie-group",
-        }
-    release.execute("activate", tmp_path, None, None, None)
-    assert events[0] == "verified-web"
-    assert "stop-local" in events
-    assert list(
-        WorkerPool.objects.order_by("name").values_list(
-            "name", "claims_paused", "local_claims_paused"
-        )
-    ) == [
-        ("bulk", False, True),
-        ("selfie", False, True),
-    ]
-    receipt = release.Journal(tmp_path / "worker-pools-release.json").data
-    assert receipt["phase"] == "verified" and receipt["verified"] == ["bulk", "selfie"]
 
 
 def state(*builds, staged=None):
@@ -809,59 +360,18 @@ def test_actual_image_requires_digest_and_oci_revision_not_tag():
 
 
 def test_workflow_builds_candidate_revision_even_for_unchanged_worker_sources():
-    import yaml
 
     workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
     steps = workflow["jobs"]["build"]["steps"]
     worker = next(
         step for step in steps if step.get("with", {}).get("file") == "./Dockerfile.worker"
     )
-    assert "worker_pool_activation == 'normal'" in worker["if"]
-    assert "worker_pool_activation == 'receiver'" not in worker["if"]
-    assert "github.event_name == 'push'" in worker["if"]
+    assert "if" not in worker
     assert (
         worker["with"]["build-args"]
         == "RELEASE_SHA=${{ needs.classify-release.outputs.release_sha }}"
     )
     assert not any("imagetools create" in step.get("run", "") for step in steps)
-
-
-def test_local_drain_timeout_never_stops_any_container_or_unpauses_remote():
-    release = release_module()
-    events = []
-    gateway = Mock()
-
-    def control(operation, **args):
-        events.append((operation, args))
-        if operation == "drain-local" and args["pool"] == "selfie":
-            raise ValueError("drain timeout")
-        return {"drained": True}
-
-    gateway.control.side_effect = control
-    with pytest.raises(ValueError, match="drain timeout"):
-        release.cutover(gateway)
-    gateway.stop_local.assert_not_called()
-    assert not any(op == "pause" and not args["paused"] for op, args in events)
-
-
-def test_cutover_stops_exact_locals_only_after_both_authoritative_drains():
-    release = release_module()
-    events = []
-    gateway = Mock()
-    gateway.control.side_effect = lambda op, **args: events.append((op, args)) or {"drained": True}
-    gateway.stop_local.side_effect = lambda: events.append(("stop", {}))
-    release.cutover(gateway)
-    assert [event[0] for event in events] == [
-        "pause",
-        "pause",
-        "drain-local",
-        "drain-local",
-        "stop",
-        "pause",
-        "pause",
-    ]
-    assert all(event[1]["local"] for event in events[:2])
-    assert all(not event[1]["local"] for event in events[-2:])
 
 
 def test_uncertain_cloud_submission_reconciles_without_resubmitting(tmp_path):
@@ -896,6 +406,7 @@ def test_prepared_rollback_does_not_require_cloud_or_running_candidate(tmp_path,
             "phase": "prepared",
             "pending": None,
             "candidate": {"manifest": {}},
+            "previous": {"manifest": capped_manifest()},
         },
     )
     token = Mock(side_effect=OSError("metadata unavailable"))
@@ -915,10 +426,11 @@ def test_terminal_receipt_with_uncertain_cloud_write_blocks_another_preflight(
     release.Journal(
         tmp_path / "worker-pools-release.json",
         {
-            "phase": "rolled-back-local",
+            "phase": "rolled-back",
             "pending": {"group": "bulk", "body": {}},
         },
     )
+    release.Journal(tmp_path / "worker-pools-current.json", {"manifest": manifest})
     provision = Mock()
     provision.prepare.return_value = manifest
     monkeypatch.setattr(release, "provision_module", lambda: provision)
@@ -927,138 +439,6 @@ def test_terminal_receipt_with_uncertain_cloud_write_blocks_another_preflight(
     with pytest.raises(ValueError, match="unfinished release"):
         release.execute("preflight", tmp_path, path, "reviewed", "unused")
     provision.inspect.assert_not_called()
-
-
-@pytest.mark.django_db
-@pytest.mark.parametrize("uncertain", [False, True])
-def test_initial_app_failure_after_fleet_commit_restores_absence_and_recovery_mode(
-    tmp_path, monkeypatch, settings, uncertain
-):
-    from processing.management.commands.control_worker_pools import execute as control
-
-    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = True
-    release = release_module()
-    manifest = {
-        "checksum": "reviewed",
-        "configuration": {
-            "pool_max_size": 2,
-            "folder_id": "folder",
-            "canonical_folder_id": "canonical-folder",
-            "zone": "ru-central1-a",
-            "boot_image_id": "boot",
-            "worker_build": "a" * 40,
-            "worker_image": "ghcr.io/example/worker@sha256:" + "b" * 64,
-            "groups": {name: {"id": name + "-group"} for name in ("bulk", "selfie")},
-        },
-    }
-    for name in ("bulk", "selfie"):
-        control(
-            {
-                "operation": "configure",
-                "pool": name,
-                "group_id": name + "-group",
-                "active_build": "a" * 40,
-            }
-        )
-        control({"operation": "pause", "pool": name, "local": True, "paused": True})
-        control({"operation": "pause", "pool": name, "local": False, "paused": False})
-    pending = {"group": "bulk-group", "body": {"scalePolicy": {}}} if uncertain else None
-    receipt = tmp_path / "worker-pools-release.json"
-    journal = release.Journal(
-        receipt,
-        {
-            "phase": "verified",
-            "previous": None,
-            "pending": pending,
-            "operation_id": "retained-operation",
-            "verified": ["bulk", "selfie"],
-            "candidate": {"manifest": manifest, "proof": {}},
-        },
-    )
-    marker = tmp_path / "worker-pools-current.json"
-    release.commit_release(journal, marker)
-    assert marker.exists()
-    host = Mock()
-    host.control.side_effect = lambda operation, **args: control({"operation": operation, **args})
-    monkeypatch.setattr(release, "Host", lambda *args: host)
-    provision = Mock()
-    provision.prepare.return_value = manifest
-    monkeypatch.setattr(release, "provision_module", lambda: provision)
-    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
-    # Canonical apply has committed the fleet, but a later application commit step failed.
-    release.execute("rollback", tmp_path, None, None, None)
-    assert not marker.exists()
-    restored = release.Journal(receipt).data
-    assert restored["phase"] == "rolled-back-local"
-    assert restored["pending"] == pending
-    assert restored["operation_id"] == "retained-operation"
-    assert restored["candidate"] == journal.data["candidate"]
-    for pool in control({"operation": "status"}).values():
-        assert pool["claims_paused"] and not pool["local_claims_paused"]
-        assert pool["live_attempts"] == 0
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(manifest))
-    monkeypatch.setattr(release, "validate_manifest", lambda value: None)
-    monkeypatch.setattr(release, "image_proof", lambda *args: {})
-    if uncertain:
-        with pytest.raises(ValueError, match="unfinished release"):
-            release.execute("preflight", tmp_path, path, "reviewed", "app-image")
-        assert release.Journal(receipt).data == restored
-    else:
-        release.execute("preflight", tmp_path, path, "reviewed", "app-image")
-        assert release.Journal(receipt).data["previous"] is None
-
-
-def test_initial_rollback_fences_both_pools_before_recovering_and_resuming_local(tmp_path):
-    release = release_module()
-    journal = release.Journal(
-        tmp_path / "receipt.json",
-        {"phase": "rolling", "previous": None, "pending": None, "verified": []},
-    )
-    gateway = Mock()
-    events = []
-
-    def control(op, **args):
-        events.append((op, args))
-        if op == "status":
-            return {name: {"live_attempts": 0} for name in ("bulk", "selfie")}
-        return {"ok": True}
-
-    gateway.control.side_effect = control
-    release.rollback_initial(gateway, journal, tmp_path / "worker-pools-current.json")
-    assert events[:2] == [
-        ("pause", {"pool": "bulk", "paused": True, "local": False}),
-        ("pause", {"pool": "selfie", "paused": True, "local": False}),
-    ]
-    assert events[2:4] == [
-        ("pause", {"pool": "bulk", "paused": True, "local": True}),
-        ("pause", {"pool": "selfie", "paused": True, "local": True}),
-    ]
-    assert events[-2:] == [
-        ("pause", {"pool": "bulk", "paused": False, "local": True}),
-        ("pause", {"pool": "selfie", "paused": False, "local": True}),
-    ]
-    assert journal.data["phase"] == "rolled-back-local"
-
-
-def test_initial_rollback_timeout_preserves_remote_fence_and_never_restores_local(tmp_path):
-    release = release_module()
-    journal = release.Journal(tmp_path / "receipt.json", {"previous": None})
-    gateway = Mock()
-    events = []
-
-    def control(op, **args):
-        events.append((op, args))
-        if op == "status":
-            return {name: {"live_attempts": 1} for name in ("bulk", "selfie")}
-        return {"ok": True}
-
-    gateway.control.side_effect = control
-    with pytest.raises(ValueError, match="drain"):
-        release.rollback_initial(
-            gateway, journal, tmp_path / "worker-pools-current.json", timeout=0
-        )
-    assert not any(op == "pause" and not args["paused"] for op, args in events)
 
 
 def test_zero_bulk_verification_checks_future_template_and_rejects_old_image():
@@ -1558,18 +938,9 @@ def test_release_verifiers_accept_only_provider_default_and_numeric_target_shape
 
     release.verify_fleet(host, manifest)
 
-    for name in ("bulk", "selfie"):
-        cloud.groups[name + "-group"]["scalePolicy"]["autoScale"]["minZoneSize"] = "1"
-    staged = {name: state("a" * 40) for name in ("bulk", "selfie")}
-    for row in staged.values():
-        row["claims_paused"] = True
-        row["local_claims_paused"] = False
-    host.observe = lambda: staged
-    release.verify_staged_fleet(host, manifest)
-
     cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["customRules"][0]["target"] = "2"
     with pytest.raises(ValueError):
-        release.verify_staged_fleet(host, manifest)
+        release.verify_fleet(host, manifest)
 
 
 @pytest.mark.parametrize("status", ["STOPPED", "DELETING", "CREATING"])
@@ -1754,7 +1125,7 @@ def capped_fleet(tmp_path, monkeypatch, *, initial=False):
                         m["serving"]
                         or (
                             snapshot["claims_paused"]
-                            and not snapshot["local_claims_paused"]
+                            and snapshot["local_claims_paused"]
                             and m["warm"]
                             and m["worker_build"] == snapshot["active_build"]
                         )
@@ -1814,6 +1185,48 @@ def test_capped_forward_and_rollback_restore_each_pool_before_next_expansion(tmp
             assert host.states[name]["active_build"] == manifest["configuration"]["worker_build"]
 
 
+@pytest.mark.parametrize("mode", ["rollout", "rollback"])
+def test_paused_remote_release_resumes_only_after_safe_retirement(tmp_path, monkeypatch, mode):
+    release, host, new, old = capped_fleet(tmp_path, monkeypatch)
+    if mode == "rollback":
+        release.execute("rollout", tmp_path, None, None, None)
+    for snapshot in host.states.values():
+        snapshot.update(claims_paused=True, local_claims_paused=True, live_attempts=0)
+        for member in snapshot["members"]:
+            member["serving"] = False
+    host.events.clear()
+    control = host.control
+
+    def checked_control(operation, **args):
+        if operation == "pause":
+            assert args["local"] is False
+            assert args["paused"] is False
+            snapshot = host.states[args["pool"]]
+            assert snapshot["local_claims_paused"]
+            assert snapshot["live_attempts"] == 0
+            assert len(snapshot["members"]) == 1
+            assert snapshot["members"][0]["warm"]
+        return control(operation, **args)
+
+    host.control = checked_control
+    release.execute(mode, tmp_path, None, None, None)
+    manifest = new if mode == "rollout" else old
+    assert host.journal.data["phase"] == ("verified" if mode == "rollout" else "rolled-back")
+    for name in ("bulk", "selfie"):
+        snapshot = host.states[name]
+        assert snapshot["local_claims_paused"]
+        assert not snapshot["claims_paused"]
+        assert snapshot["members"][0]["serving"]
+        assert snapshot["active_build"] == manifest["configuration"]["worker_build"]
+        assert (
+            host.cloud.groups[name + "-group"]["scalePolicy"]
+            == manifest["groups"][name]["scalePolicy"]
+        )
+        assert host.events.index(("retire", name)) < host.events.index(("pause", name))
+    assert host.events.index(("template", "bulk", 0)) < host.events.index(("template", "selfie", 2))
+    release.verify_fleet(host, manifest)
+
+
 def test_transition_allows_observed_provider_boot_and_warmup_before_retirement(
     tmp_path, monkeypatch
 ):
@@ -1847,7 +1260,7 @@ def test_transition_waits_for_granted_retirement_without_reapplying_floor(tmp_pa
     release, host, new, _ = capped_fleet(tmp_path, monkeypatch)
     for snapshot in host.states.values():
         snapshot["claims_paused"] = True
-        snapshot["local_claims_paused"] = False
+        snapshot["local_claims_paused"] = True
         snapshot["members"][0]["serving"] = False
     observe, control = host.observe, host.control
     pending = None
@@ -1947,105 +1360,6 @@ def test_interrupted_second_pool_is_reconciled_first_in_either_direction(
         )
 
 
-def test_initial_capped_cutover_preserves_paused_bulk_until_claims_open(tmp_path, monkeypatch):
-    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    host.journal.data["phase"] = "prepared"
-    host.journal.save()
-    for row in host.states.values():
-        row["local_claims_paused"] = False
-    release.execute("stage", tmp_path, None, None, None)
-    release.execute("activate", tmp_path, None, None, None)
-    assert host.events.index(("stop-local",)) < host.events.index(("template", "bulk", 0))
-    assert all(any(member["serving"] for member in row["members"]) for row in host.states.values())
-
-
-def test_first_activation_stage_warms_fleet_without_stopping_or_pausing_local(
-    tmp_path, monkeypatch
-):
-    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    host.journal.data["phase"] = "prepared"
-    host.journal.save()
-    for row in host.states.values():
-        row["local_claims_paused"] = False
-    release.execute("stage", tmp_path, None, None, None)
-    assert host.journal.data["phase"] == "staged"
-    assert host.journal.data["verified"] == ["bulk", "selfie"]
-    assert not (tmp_path / "worker-pools-current.json").exists()
-    assert ("stop-local",) not in host.events
-    assert not any(event[0] == "drain-local" for event in host.events)
-    assert all(
-        row["claims_paused"] and not row["local_claims_paused"] for row in host.states.values()
-    )
-
-
-def test_initial_stage_refuses_unpaused_existing_candidate_before_observation(
-    tmp_path, monkeypatch
-):
-    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    host.journal.data["phase"] = "prepared"
-    host.journal.save()
-    for row in host.states.values():
-        row["local_claims_paused"] = False
-    host.states["bulk"]["claims_paused"] = False
-    with pytest.raises(ValueError, match="unsafe existing"):
-        release.execute("stage", tmp_path, None, None, None)
-    assert not host.cloud.writes
-
-
-def test_staged_activation_drains_local_then_requires_explicit_completion(
-    tmp_path, monkeypatch, capsys
-):
-    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    host.journal.data["phase"] = "prepared"
-    host.journal.save()
-    for row in host.states.values():
-        row["local_claims_paused"] = False
-    release.execute("stage", tmp_path, None, None, None)
-    host.events.clear()
-    release.execute("activate", tmp_path, None, None, None)
-    assert host.events.index(("stop-local",)) > host.events.index(("drain-local", "selfie"))
-    assert host.events.index(("stop-local",)) < host.events.index(("template", "bulk", 0))
-    assert host.journal.data["phase"] == "verified"
-    assert not (tmp_path / "worker-pools-current.json").exists()
-    release.execute("status", tmp_path, None, None, None)
-    assert json.loads(capsys.readouterr().out)["placement"] == "remote-pending-acceptance"
-    release.execute("commit", tmp_path, None, None, None)
-    assert (tmp_path / "worker-pools-current.json").exists()
-
-
-def test_staged_abort_restores_local_claims_without_committing_remote(tmp_path, monkeypatch):
-    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    host.journal.data["phase"] = "prepared"
-    host.journal.save()
-    for row in host.states.values():
-        row["local_claims_paused"] = False
-    release.execute("stage", tmp_path, None, None, None)
-    release.execute("rollback", tmp_path, None, None, None)
-    assert host.journal.data["phase"] == "rolled-back-local"
-    assert all(
-        row["claims_paused"] and not row["local_claims_paused"] for row in host.states.values()
-    )
-    assert not (tmp_path / "worker-pools-current.json").exists()
-
-
-def test_failed_activation_can_rewarm_same_stage_after_local_rollback(tmp_path, monkeypatch):
-    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    host.journal.data["phase"] = "prepared"
-    host.journal.save()
-    for row in host.states.values():
-        row["local_claims_paused"] = False
-    release.execute("stage", tmp_path, None, None, None)
-    release.execute("rollback", tmp_path, None, None, None)
-    assert host.journal.data["phase"] == "rolled-back-local"
-    host.events.clear()
-    release.execute("stage", tmp_path, None, None, None)
-    assert host.journal.data["phase"] == "staged"
-    assert ("stop-local",) not in host.events
-    assert all(
-        row["claims_paused"] and not row["local_claims_paused"] for row in host.states.values()
-    )
-
-
 def forward_initial_fleet(tmp_path, monkeypatch, *, phase="rolled-back-local", warmed=True):
     release, host, new, old = capped_fleet(tmp_path, monkeypatch)
     provision = release_module().provision_module()
@@ -2120,64 +1434,6 @@ def forward_initial_fleet(tmp_path, monkeypatch, *, phase="rolled-back-local", w
     return release, host, new, origin, path
 
 
-@pytest.mark.parametrize("phase", ["rolled-back-local", "staged"])
-@pytest.mark.parametrize("warmed", [True, False])
-def test_forward_initial_stage_preserves_origin_and_replaces_paused_members_serially(
-    tmp_path, monkeypatch, phase, warmed
-):
-    release, host, new, origin, path = forward_initial_fleet(
-        tmp_path, monkeypatch, phase=phase, warmed=warmed
-    )
-    release.execute(
-        "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
-    )
-    receipt = release.Journal(host.journal.path).data
-    assert receipt["previous"] is None
-    assert receipt["staged_predecessor"] == origin
-    assert "bulk-old-disk" in receipt["worker_disks"]
-    assert json.loads((tmp_path / "worker-pools-observation.json").read_text())["releases"] == {
-        "a" * 40: origin["manifest"]["configuration"]["worker_image"],
-        "b" * 40: new["configuration"]["worker_image"],
-    }
-    host.running_web_id = "new-web"
-    release.execute("stage", tmp_path, None, None, None)
-    assert host.journal.data["phase"] == "staged"
-    assert host.events.index(("template", "bulk", 1)) < host.events.index(("template", "selfie", 2))
-    assert len(host.cloud.disks) == 2
-    assert all(
-        row["claims_paused"] and not row["local_claims_paused"] and row["active_build"] == "b" * 40
-        for row in host.states.values()
-    )
-    assert (
-        tmp_path / ".deployment-recovery/previous.env"
-    ).read_text() == "original-local-environment"
-    assert not (tmp_path / "worker-pools-current.json").exists()
-    final_receipt = release.Journal(host.journal.path).data
-    release.execute(
-        "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
-    )
-    assert release.Journal(host.journal.path).data == final_receipt
-
-
-def test_forward_initial_stage_resumes_interrupted_second_pool(tmp_path, monkeypatch):
-    release, host, new, origin, path = forward_initial_fleet(tmp_path, monkeypatch)
-    release.execute(
-        "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
-    )
-    host.running_web_id = "new-web"
-    host.interrupt_pool = "selfie"
-    with pytest.raises(TimeoutError):
-        release.execute("stage", tmp_path, None, None, None)
-    host.events.clear()
-    release.execute(
-        "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
-    )
-    release.execute("stage", tmp_path, None, None, None)
-    assert host.events[0][1] == "selfie"
-    assert host.journal.data["staged_predecessor"] == origin
-    assert len(host.cloud.disks) == 2
-
-
 def never_started_initial_fleet(tmp_path, monkeypatch):
     release, host, web_manifest, origin, path = forward_initial_fleet(
         tmp_path, monkeypatch, phase="staging", warmed=False
@@ -2223,451 +1479,6 @@ def never_started_initial_fleet(tmp_path, monkeypatch):
 
     cloud.get = full_instance
     return release, host, next_manifest, origin, web_only, path
-
-
-def test_never_started_initial_stage_supersedes_web_only_candidate_without_losing_worker_origin(
-    tmp_path, monkeypatch
-):
-    release, host, manifest, origin, web_only, path = never_started_initial_fleet(
-        tmp_path, monkeypatch
-    )
-    release.execute(
-        "preflight", tmp_path, path, manifest["checksum"], "ghcr.io/example/photo-prjct:" + "c" * 40
-    )
-    receipt = release.Journal(host.journal.path).data
-    assert receipt["previous"] is None
-    assert receipt["staged_predecessor"] == origin
-    assert receipt["superseded_candidate"] == web_only
-    assert "bulk-old-disk" in receipt["worker_disks"]
-    assert json.loads((tmp_path / "worker-pools-observation.json").read_text())["releases"] == {
-        "a" * 40: origin["manifest"]["configuration"]["worker_image"],
-        "c" * 40: manifest["configuration"]["worker_image"],
-    }
-    release.execute(
-        "preflight", tmp_path, path, manifest["checksum"], "ghcr.io/example/photo-prjct:" + "c" * 40
-    )
-    assert release.Journal(host.journal.path).data == receipt
-    host.running_web_id = "corrective-web"
-    release.execute("stage", tmp_path, None, None, None)
-    assert host.journal.data["phase"] == "staged"
-    assert all(
-        row["active_build"] == "c" * 40
-        and row["staged_build"] is None
-        and row["claims_paused"]
-        and not row["local_claims_paused"]
-        for row in host.states.values()
-    )
-    assert host.events.index(("template", "bulk", 1)) < host.events.index(("template", "selfie", 2))
-    assert len(host.cloud.disks) == 2
-    assert (
-        tmp_path / ".deployment-recovery/previous.env"
-    ).read_text() == "original-local-environment"
-    assert not (tmp_path / "worker-pools-current.json").exists()
-
-
-@pytest.mark.parametrize(
-    "problem",
-    [
-        "staged-build",
-        "mixed-active",
-        "pending",
-        "expanded",
-        "claiming",
-        "local-paused",
-        "remote-lease",
-        "unreconciled",
-        "web-proof",
-        "provider-drift",
-        "candidate-member",
-        "wrong-digest",
-        "stopped-vm",
-        "changing-group",
-        "origin-scope",
-    ],
-)
-def test_never_started_initial_stage_rejects_progress_or_drift_without_replacing_receipt(
-    tmp_path, monkeypatch, problem
-):
-    release, host, manifest, _, _, path = never_started_initial_fleet(tmp_path, monkeypatch)
-    if problem == "staged-build":
-        host.states["bulk"]["staged_build"] = "b" * 40
-    elif problem == "mixed-active":
-        host.states["bulk"]["active_build"] = "b" * 40
-    elif problem == "pending":
-        host.journal.data["pending"] = {"group": "bulk-group", "body": {}}
-    elif problem == "expanded":
-        host.journal.data["expanded_pool"] = "bulk"
-    elif problem == "claiming":
-        host.states["bulk"]["claims_paused"] = False
-    elif problem == "local-paused":
-        host.states["bulk"]["local_claims_paused"] = True
-    elif problem == "remote-lease":
-        host.states["bulk"]["live_attempts"] = 1
-    elif problem == "unreconciled":
-        host.states["bulk"]["members"][0]["grant"] = "outstanding"
-    elif problem == "web-proof":
-        host.journal.data["candidate"]["proof"]["web_id"] = "wrong-web"
-    elif problem == "origin-scope":
-        source = deepcopy(host.journal.data["staged_predecessor"]["manifest"]["configuration"])
-        source["worker_sa_id"] = "different-worker-sa"
-        host.journal.data["staged_predecessor"]["manifest"] = release.provision_module().prepare(
-            source
-        )
-    elif problem == "provider-drift":
-        host.cloud.groups["bulk-group"]["instanceTemplate"]["metadata"]["findme-worker-build"] = (
-            "b" * 40
-        )
-    elif problem == "candidate-member":
-        host.cloud.instances["bulk-old"]["metadata"] = {
-            "findme-worker-build": "b" * 40,
-            "findme-worker-image": "ghcr.io/example/photo-prjct-worker@sha256:" + "b" * 64,
-        }
-    elif problem == "wrong-digest":
-        host.cloud.instances["bulk-old"]["metadata"]["findme-worker-image"] = (
-            "ghcr.io/example/photo-prjct-worker@sha256:" + "b" * 64
-        )
-    elif problem == "stopped-vm":
-        host.cloud.instances["bulk-old"]["status"] = "STOPPED"
-    else:
-        get = host.cloud.get
-
-        def changing(path, **parameters):
-            result = get(path, **parameters)
-            if path == "instances/bulk-old":
-                host.cloud.groups["bulk-group"]["managedInstancesState"] = {"targetSize": "1"}
-            return result
-
-        host.cloud.get = changing
-    host.journal.save()
-    before = release.Journal(host.journal.path).data
-    with pytest.raises(ValueError):
-        release.execute(
-            "preflight",
-            tmp_path,
-            path,
-            manifest["checksum"],
-            "ghcr.io/example/photo-prjct:" + "c" * 40,
-        )
-    assert release.Journal(host.journal.path).data == before
-    assert not host.cloud.writes
-
-
-@pytest.mark.parametrize(
-    "problem",
-    [
-        "claiming",
-        "local-paused",
-        "remote-lease",
-        "pending",
-        "group",
-        "scope",
-        "provider-drift",
-        "scale-drift",
-        "proof",
-        "stale-proof",
-        "build",
-    ],
-)
-def test_forward_initial_stage_rejects_unsafe_state_without_replacing_receipt(
-    tmp_path, monkeypatch, problem
-):
-    release, host, new, _, path = forward_initial_fleet(tmp_path, monkeypatch)
-    if problem == "claiming":
-        host.states["bulk"]["claims_paused"] = False
-    elif problem == "local-paused":
-        host.states["bulk"]["local_claims_paused"] = True
-    elif problem == "remote-lease":
-        host.states["bulk"]["live_attempts"] = 1
-    elif problem == "pending":
-        host.journal.data["pending"] = {"group": "bulk-group", "body": {}}
-        host.journal.save()
-    elif problem == "build":
-        host.states["bulk"]["active_build"] = "c" * 40
-    elif problem == "proof":
-        monkeypatch.setattr(release, "image_proof", Mock(side_effect=ValueError("digest mismatch")))
-    elif problem == "stale-proof":
-        host.journal.data["candidate"]["proof"]["web_id"] = "different-running-web"
-        host.journal.save()
-    else:
-        config = deepcopy(new["configuration"])
-        if problem == "group":
-            config["groups"]["bulk"]["id"] = "different-group"
-        elif problem == "scope":
-            config["worker_sa_id"] = "different-worker-sa"
-        else:
-            if problem == "scale-drift":
-                host.cloud.groups["bulk-group"]["scalePolicy"]["autoScale"]["maxSize"] = "2"
-            else:
-                host.cloud.groups["bulk-group"]["instanceTemplate"]["resourcesSpec"]["memory"] = (
-                    "17179869184"
-                )
-            config["groups"]["bulk"]["baseline"] = release.provision_module().managed_baseline(
-                host.cloud.groups["bulk-group"]
-            )
-        new = release.provision_module().prepare(config)
-        path.write_text(json.dumps(new))
-    before = release.Journal(host.journal.path).data
-    with pytest.raises(ValueError):
-        release.execute(
-            "preflight", tmp_path, path, new["checksum"], "ghcr.io/example/photo-prjct:" + "b" * 40
-        )
-    assert release.Journal(host.journal.path).data == before
-    assert not host.cloud.writes
-
-
-@pytest.mark.parametrize("change", ["checksum", "sha", "manifest", "web-digest"])
-def test_staged_candidate_guard_rejects_reviewed_input_drift(tmp_path, monkeypatch, change):
-    release = release_module()
-    manifest = capped_manifest()
-    checksum = manifest["checksum"]
-    app_image = "ghcr.io/example/photo-prjct:" + "a" * 40
-    proof = {"web_image": "ghcr.io/example/photo-prjct@sha256:" + "f" * 64}
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(manifest))
-    release.Journal(
-        tmp_path / "worker-pools-release.json",
-        {
-            "phase": "staged",
-            "previous": None,
-            "pending": None,
-            "verified": ["bulk", "selfie"],
-            "candidate": {"manifest": manifest, "proof": proof},
-        },
-    )
-    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
-    monkeypatch.setattr(release, "Host", Mock(side_effect=AssertionError("host started")))
-    if change == "checksum":
-        checksum = "0" * 64
-    elif change == "sha":
-        app_image = "ghcr.io/example/photo-prjct:" + "b" * 40
-    elif change == "manifest":
-        path.write_text(json.dumps(capped_manifest(build="b" * 40)))
-    else:
-        monkeypatch.setattr(release, "image_proof", lambda *args: {"web_image": "changed"})
-    with pytest.raises(ValueError, match="candidate"):
-        release.execute(
-            "verify-candidate" if change == "web-digest" else "guard",
-            tmp_path,
-            path,
-            checksum,
-            app_image,
-        )
-
-
-def test_receiver_is_pinned_before_group_ids_exist_then_stage_binds_reviewed_groups(
-    tmp_path, monkeypatch
-):
-    release = release_module()
-    manifest = capped_manifest()
-    from tests.deployment.test_worker_pool_provisioning import config
-
-    creation = release.provision_module().prepare(config(1))
-    creation_path = tmp_path / "creation.json"
-    creation_path.write_text(json.dumps(creation))
-    app_image = "ghcr.io/example/photo-prjct:" + "a" * 40
-    worker_digest = manifest["configuration"]["worker_image"]
-    proof = {
-        "web_image": "ghcr.io/example/photo-prjct@sha256:" + "f" * 64,
-        "web_id": "web",
-        "worker_id": "worker",
-    }
-    monkeypatch.setattr(release, "image_proof", lambda *args: proof)
-    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
-    eligible = [False]
-    monkeypatch.setattr(
-        release,
-        "Host",
-        lambda *args: SimpleNamespace(
-            verify_web=lambda proof: None,
-            control=lambda operation, **kwargs: {"eligible": eligible[0]},
-        ),
-    )
-    provision = release.provision_module()
-    monkeypatch.setattr(provision, "inspect", lambda *args: None)
-    monkeypatch.setattr(release, "provision_module", lambda: provision)
-    release.execute(
-        "receiver-preflight",
-        tmp_path,
-        creation_path,
-        creation["checksum"],
-        app_image,
-        worker_digest,
-    )
-    release.execute(
-        "receiver-preflight",
-        tmp_path,
-        creation_path,
-        creation["checksum"],
-        app_image,
-        worker_digest,
-    )
-    release.execute("receiver-stage", tmp_path, None, None, app_image, worker_digest)
-    release.execute(
-        "receiver-preflight",
-        tmp_path,
-        creation_path,
-        creation["checksum"],
-        app_image,
-        worker_digest,
-    )
-    receipt = release.Journal(tmp_path / "worker-pools-release.json").data
-    assert receipt["phase"] == "receiver-staged"
-    assert receipt["candidate"]["manifest"] is None
-    assert receipt["candidate"]["creation_manifest"] == creation
-    assert not (tmp_path / "worker-pools-current.json").exists()
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(manifest))
-    altered = deepcopy(manifest["configuration"])
-    altered["worker_sa_id"] = "different-sa"
-    changed = provision.prepare(altered)
-    path.write_text(json.dumps(changed))
-    with pytest.raises(ValueError, match="receiver and reviewed fleet candidate differ"):
-        release.execute("bind-stage", tmp_path, path, changed["checksum"], app_image, worker_digest)
-    path.write_text(json.dumps(manifest))
-    with pytest.raises(ValueError, match="unexpected coordinator rows before bind"):
-        release.execute(
-            "bind-stage", tmp_path, path, manifest["checksum"], app_image, worker_digest
-        )
-    assert (
-        release.Journal(tmp_path / "worker-pools-release.json").data["phase"] == "receiver-staged"
-    )
-    eligible[0] = True
-    release.execute("bind-stage", tmp_path, path, manifest["checksum"], app_image, worker_digest)
-    receipt = release.Journal(tmp_path / "worker-pools-release.json").data
-    assert receipt["phase"] == "prepared"
-    assert receipt["candidate"]["manifest"] == manifest
-    assert (tmp_path / "worker-pools-observation.json").exists()
-
-
-@pytest.mark.django_db
-def test_receiver_eligibility_reads_real_stale_coordinator_and_checks_canonical_identity(
-    tmp_path, monkeypatch, settings
-):
-    from processing.management.commands.control_worker_pools import execute as control
-    from processing.models import WorkerPoolMember
-    from processing.services import worker_pool_lifecycle as lifecycle
-
-    from tests.deployment.test_worker_pool_provisioning import config
-
-    settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = True
-    release = release_module()
-    provision = release.provision_module()
-    old = "c" * 40
-    conf = config(1) | {
-        "predecessors": {
-            name: {"group_id": name + "-old", "active_build": old} for name in ("bulk", "selfie")
-        }
-    }
-    creation = provision.prepare(conf)
-    manifest_path = tmp_path / "creation.json"
-    manifest_path.write_text(json.dumps(creation))
-    release.Journal(
-        tmp_path / "worker-pools-release.json",
-        {
-            "phase": "receiver-staged",
-            "previous": None,
-            "candidate": {"creation_manifest": creation},
-        },
-    )
-    for name in ("bulk", "selfie"):
-        lifecycle.configure_pool(name, group_id=name + "-old", active_build=old)
-    monkeypatch.setattr(release, "canonical_instance_id", lambda: "canonical")
-    monkeypatch.setattr(
-        release,
-        "Host",
-        lambda *args: SimpleNamespace(
-            control=lambda operation, **args: control({"operation": operation, **args})
-        ),
-    )
-    assert release.execute("eligibility", tmp_path, manifest_path, creation["checksum"], None) == {
-        "eligible": True,
-        "checksum": creation["checksum"],
-        "predecessors": conf["predecessors"],
-    }
-    monkeypatch.setattr(release, "canonical_instance_id", lambda: "wrong")
-    with pytest.raises(ValueError, match="canonical VM"):
-        release.execute("eligibility", tmp_path, manifest_path, creation["checksum"], None)
-    monkeypatch.setattr(release, "canonical_instance_id", lambda: "canonical")
-    from processing.models import WorkerPool
-
-    WorkerPoolMember.objects.create(
-        pool=WorkerPool.objects.get(name="bulk"),
-        instance_id="still-active",
-        boot_id=uuid4(),
-        worker_build=old,
-    )
-    with pytest.raises(ValueError):
-        release.execute("eligibility", tmp_path, manifest_path, creation["checksum"], None)
-
-
-@pytest.mark.parametrize("occupied", [None, "instanceGroups", "instances", "disks", "read-error"])
-def test_receiver_abort_requires_complete_empty_receipt_bound_worker_folder(
-    tmp_path, monkeypatch, occupied
-):
-    release = release_module()
-    from tests.deployment.test_worker_pool_provisioning import config
-
-    creation = release.provision_module().prepare(config(1))
-    path = tmp_path / "creation.json"
-    path.write_text(json.dumps(creation))
-    app_image = "ghcr.io/example/photo-prjct:" + "a" * 40
-    digest = creation["configuration"]["worker_image"]
-    proof = {"web_image": "ghcr.io/example/photo-prjct@sha256:" + "f" * 64}
-    monkeypatch.setattr(release, "image_proof", lambda *args: proof)
-    monkeypatch.setattr("processing.services.worker_pool_cloud.metadata_token", lambda: "fixture")
-
-    class Cloud:
-        def resource(self, service, collection, identity):
-            assert (service, collection, identity) == (
-                "resourcemanager",
-                "folders",
-                "worker-folder",
-            )
-            return {"id": "worker-folder", "cloudId": "cloud"}
-
-        def pages(self, collection, key, **parameters):
-            assert collection == key
-            assert parameters == {"folderId": "worker-folder"}
-            if occupied == "read-error" and collection == "instances":
-                raise ValueError("partial provider listing")
-            return [{"id": "unreconciled"}] if collection == occupied else []
-
-    provision = release.provision_module()
-    monkeypatch.setattr(provision, "Cloud", lambda token: Cloud())
-    monkeypatch.setattr(release, "provision_module", lambda: provision)
-    release.Journal(
-        tmp_path / "worker-pools-release.json",
-        {
-            "phase": "receiver-staged",
-            "previous": None,
-            "candidate": {
-                "creation_manifest": creation,
-                "manifest": None,
-                "worker_build": "a" * 40,
-                "worker_image": digest,
-                "proof": proof,
-            },
-        },
-    )
-    if occupied:
-        with pytest.raises(
-            ValueError,
-            match="partial provider listing" if occupied == "read-error" else "empty worker folder",
-        ):
-            release.execute(
-                "receiver-absence", tmp_path, path, creation["checksum"], app_image, digest
-            )
-        assert (
-            release.Journal(tmp_path / "worker-pools-release.json").data["phase"]
-            == "receiver-staged"
-        )
-    else:
-        release.execute("receiver-absence", tmp_path, path, creation["checksum"], app_image, digest)
-        release.execute("receiver-close", tmp_path, path, creation["checksum"], app_image, digest)
-        assert (
-            release.Journal(tmp_path / "worker-pools-release.json").data["phase"]
-            == "receiver-aborted"
-        )
 
 
 def test_native_collector_helper_installs_verified_owned_source_and_can_remove(tmp_path):
@@ -2723,23 +1534,11 @@ def test_unjournaled_extra_running_member_blocks_release_expansion(tmp_path, mon
 
 
 def test_final_fleet_verification_rejects_unsettled_extra_candidate(tmp_path, monkeypatch):
-    release, host, new, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    host.journal.data["phase"] = "prepared"
-    host.journal.save()
-    for row in host.states.values():
-        row["local_claims_paused"] = False
-    release.execute("stage", tmp_path, None, None, None)
-    release.execute("activate", tmp_path, None, None, None)
+    release, host, new, _ = capped_fleet(tmp_path, monkeypatch)
+    release.execute("rollout", tmp_path, None, None, None)
     host.cloud.add("bulk", "extra-candidate")
     with pytest.raises(ValueError, match="settled"):
         release.verify_fleet(host, new)
-
-
-def test_initial_rollout_cannot_bypass_staged_deploy_health_gate(tmp_path, monkeypatch):
-    release, host, _, _ = capped_fleet(tmp_path, monkeypatch, initial=True)
-    with pytest.raises(ValueError, match="staged activation"):
-        release.execute("rollout", tmp_path, None, None, None)
-    assert ("stop-local",) not in host.events
 
 
 def test_uncertain_unapplied_expansion_does_not_retry_or_switch_pools(tmp_path, monkeypatch):

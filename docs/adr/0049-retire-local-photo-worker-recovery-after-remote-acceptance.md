@@ -3,22 +3,23 @@
 - Status: Accepted
 - Date: 2026-10-02
 - Deciders: project maintainer; explicitly accepted in conversation on 2026-10-02
-- Supersedes: ADR 0042 only for post-acceptance recovery through on-host photo workers
+- Supersedes: ADR 0042 and ADR 0046 only for post-acceptance recovery through on-host photo workers
 - Superseded by: none
 
 ## Context
 
-ADR 0042 requires an initial relocation rollback that fences remote workers and restores
-compatible photo workers on the canonical VM. That is necessary before the isolated pools have
-passed real-work acceptance. The historical AdaFace backfill will establish new-only vector
-evidence and exercise the remote pools under sustained work. Keeping on-host photo/selfie workers
-as a permanent recovery path would retain competing CPU and memory load on the database/web VM,
-obsolete claim credentials and a rollback route that may not understand new-only evidence.
+ADR 0042 requires a local rollback while the isolated pools are being activated. Once
+remote bulk and selfie workers have served real work, retaining on-host photo workers
+as a second production placement keeps competing CPU and memory load on the database/web
+VM, obsolete claim credentials and a rollback path that may not understand future
+new-only vector evidence. The historical AdaFace backfill is a separate workload; it
+does not need to decide where photo workers run.
 
-The initial activation has a distinct `complete` transition. Its local recovery inputs must remain
-available until that transition succeeds. Existing remote release tooling supports pinned image
-rollout, verification and rollback, with bounded group replacement, durable receipts and lease
-recovery. A remote VM merely being `RUNNING` does not establish processing correctness.
+The initial activation has a distinct acceptance boundary. Local recovery inputs remain
+inert until that boundary is durably closed. Existing remote release tooling supports
+pinned image rollout, verification and rollback within the worker groups, with bounded
+replacement, durable receipts and lease recovery. A remote VM merely being `RUNNING`
+does not establish processing correctness.
 
 ## Decision drivers
 
@@ -36,11 +37,12 @@ recovery. A remote VM merely being `RUNNING` does not establish processing corre
 
 ## Decision
 
-Select option 2, but only after the remote fleet's supported `complete` action succeeds and the
-historical AdaFace cohort is reconciled, activated and accepted. Until then, ADR 0042 and ADR
-0046's initial local rollback remain authoritative. The first new-only event activation must
-independently close any legacy-reader or incompatible-image rollback for that event; completing
-the fleet alone does not do so.
+Select option 2 after the remote fleet has passed bounded real-work acceptance and its
+initial release is durably committed. Retire local production photo/selfie execution
+before historical AdaFace enrollment; do not use the backfill as a prerequisite for
+choosing worker placement. The first new-only event activation must independently
+close any legacy-reader or incompatible-image rollback for that event; fleet acceptance
+alone does not do so.
 
 After acceptance, remove the canonical deployment's local photo and selfie services, local
 claim authorization and release fallback through a reviewed deployment. Remote bulk and selfie
@@ -61,8 +63,8 @@ embeddings, Python ranking and the temporary reader gate remains a separate late
 
 ### Positive
 
-- The canonical host no longer needs spare CPU, memory, credentials or Compose paths for photo
-  and selfie worker recovery.
+- The canonical host no longer needs spare CPU, memory, credentials or Compose paths for
+  photo and selfie worker recovery.
 - Recovery stays within one audited fleet release and durable processing protocol.
 - No additional standing worker capacity is required beyond the accepted pools.
 
@@ -76,24 +78,26 @@ embeddings, Python ranking and the temporary reader gate remains a separate late
 
 ### Follow-up
 
-- Plan and rehearse remote-only recovery, including loss of the only warm selfie member, bulk
-  zero-to-one wakeup, uncertain release state and lease recovery, before local retirement.
-- Inventory and delete only confirmed obsolete local photo/selfie resources after sustained
-  backfill acceptance; retain all shared and stateful services.
+- Verify remote-only recovery, including loss of the only warm selfie member, bulk
+  zero-to-one wakeup, uncertain release state and lease recovery.
+- Inventory and delete only confirmed obsolete local photo/selfie resources after
+  fleet acceptance and before historical enrollment; retain all shared and stateful services.
 - Complete the later legacy recognition/vector-reader retirement as separate work.
 
 ## Validation and rollback
 
-Require fresh deployed-SHA, fleet, claim, lease, attempt and monitoring evidence; real bulk
-processing, idle-zero/disk deletion and warm selfie search; and a compatible remote release or
-instance-replacement rehearsal. Before local retirement, a failed acceptance keeps the local
-recovery path. After retirement, recovery is remote-only and may pause processing while preserving
-durable state. Reconsider this decision if remote-only recovery cannot meet accepted service
-requirements within the fixed ceiling, rather than silently re-enabling obsolete local workers.
+Require fresh deployed-SHA, fleet, claim, lease, attempt and monitoring evidence; real
+bulk processing, idle-zero/disk deletion and warm selfie search; and a compatible
+remote release or instance-replacement recovery contract. A failed acceptance leaves
+the release uncommitted and does not delete its recovery inputs. After acceptance,
+recovery is remote-only and may pause processing while preserving durable state.
+Reconsider this decision if remote-only recovery cannot meet accepted service
+requirements within the fixed ceiling, rather than silently re-enabling local workers.
 
 ## References
 
 - [Historical AdaFace backfill and local photo-worker retirement specification](../superpowers/specs/2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md)
+- [Remote-only photo-worker operations specification](../superpowers/specs/2026-10-02-remote-only-photo-worker-operations-design.md)
 - [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md)
 - [ADR 0046](0046-isolate-worker-pool-management-in-a-separate-folder.md)
 - [Worker-pool runbook](../runbooks/worker-pools.md)

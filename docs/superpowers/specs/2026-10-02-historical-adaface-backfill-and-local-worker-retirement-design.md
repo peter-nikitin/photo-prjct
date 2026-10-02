@@ -24,21 +24,22 @@
 - **ADR impact:** Conforms to ADRs 0017, 0019, 0024, 0025, 0028, 0032, 0040, 0041 and 0046
   for durable jobs, immutable results, exact PostgreSQL search and initial worker activation.
   [ADR 0049](../../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
-  **supersedes ADR 0042 only for future post-acceptance rollback to on-host photo workers**:
-  this first phase retires that fallback after remote processing is proven. Initial
-  activation's already-approved rollback remains in force until its `complete` action succeeds.
+  **supersedes ADRs 0042/0046 only for post-acceptance rollback to on-host photo workers**.
+  The remote-only transition is completed before historical enrollment under the
+  [remote-only operations design](2026-10-02-remote-only-photo-worker-operations-design.md).
 
 ## Outcome and boundary
 
 The first phase reprocesses every event still pinned to SFace v3 with the already approved
-SCRFD-10G_KPS plus AdaFace IR18 WebFace4M generation, stores newly computed embeddings **only**
-in `FaceEmbeddingVector`, validates the isolated bulk and selfie pools under real work, and then
-retires photo/selfie execution on the canonical VM. Published and unavailable events, including
+SCRFD-10G_KPS plus AdaFace IR18 WebFace4M generation and stores newly computed embeddings **only**
+in `FaceEmbeddingVector`. Remote-only worker placement is accepted and local photo/selfie
+execution retired before this historical work starts; the backfill then exercises the remote
+pools under sustained real work. Published and unavailable events, including
 hidden photos with valid private sources, are in scope. The exact event and photo inventory is
 captured immediately before enrollment; a count from an earlier date is not authority to omit
 an event.
 
-This is the first part of a two-part retirement. It does **not** delete SFace model support,
+This is the first part of a two-part recognition migration. It does **not** delete SFace model support,
 historical SFace evidence, `FaceEmbedding` JSON rows, the Python reader, parallel writes for
 other work, or the temporary pgvector reader gate. Their coordinated removal is the subsequent
 part, after every dependent online and offline reader has migrated. The first part must not
@@ -57,16 +58,16 @@ offline corpus and reconciliation paths still consult JSON evidence. The existin
 `backfill_pgvector_face_embeddings` command copies existing embeddings into pgvector; it does
 not infer AdaFace from old photos. The `reprocess_event_face_embeddings --local-adaface` path
 belongs to the isolated local experiment and is not a production historical-enrollment command.
-The canonical deployment still declares local `worker-bulk` and `worker-selfie` services as
-recovery-capable profiles even after remote claims open. None of these existing paths may be
-mistaken for completion of this specification.
+The current deployment package still declares local `worker-bulk` and `worker-selfie`
+services as recovery-capable profiles even after remote claims open. The remote-only
+transition removes these before enrollment; their presence is not a backfill feature.
 
 The worker rollout and model migration have different recovery boundaries. Before any
-new-only AdaFace evidence is published, the remote fleet must have passed its supported
-`complete` action, with a fresh read of the deployed revision, pool membership, claims, leases,
-health and retained recovery state. A human acceptance waiver of a missing wakeup observation
-is not telemetry proving it happened. No direct edit of production Compose or the database
-may substitute for the release protocol.
+new-only AdaFace evidence is published, the remote fleet must have a durably committed
+release and the remote-only package must be deployed, with a fresh read of its revision,
+pool membership, claims, leases and health. A human acceptance waiver of a missing wakeup
+observation is not telemetry proving it happened. No direct edit of production Compose
+or the database may substitute for the release protocol.
 
 ## Selected design
 
@@ -129,11 +130,11 @@ Prometheus observations; a rate graph that misses its first counter sample is no
 work, and a `RUNNING` VM alone is not proof of successful processing. Failures pause enrollment
 and preserve the active event generation rather than expanding the approved VM cap.
 
-Only after all SFace events are accounted for and activated, remote pools are healthy, and
-new work no longer requires local photo-worker recovery may the canonical deployment retire
-its local `worker-bulk`/`worker-selfie` services, local claim credentials/configuration and
-release fallback. Inventory actual containers, references, secrets, images and recovery files
-first; remove only confirmed obsolete photo/selfie resources through a reviewed deployment.
+Before historical enrollment, the canonical deployment retires its local
+`worker-bulk`/`worker-selfie` services, local claim credentials/configuration and release
+fallback under the [remote-only operations design](2026-10-02-remote-only-photo-worker-operations-design.md).
+Inventory actual containers, references, secrets, images and recovery files first;
+remove only confirmed obsolete photo/selfie resources through a reviewed deployment.
 Keep PostgreSQL, Django, private worker API, queue coordinator/metrics, Nginx, import worker,
 commerce worker, media and their credentials. Do not run a broad Docker prune or delete a
 shared image merely because a local photo-worker container stopped.
@@ -153,8 +154,8 @@ the canonical VM and does not change cloud access, worker group sizes or paid se
    appear valid to customers.
 3. Reprocess all events in one unbounded burst or add another worker pool for the replay.
    Neither is needed for bounded, resumable work within the accepted topology and ceiling.
-4. Delete local workers immediately after the first remote success. That would discard the
-   accepted release-recovery boundary before historical work proves sustained operation.
+4. Delete local workers before the serving remote release is durably accepted. That would
+   discard retained recovery inputs before the remote-only transition commits.
 
 ## Acceptance criteria
 
@@ -171,10 +172,10 @@ the canonical VM and does not change cloud access, worker group sizes or paid se
 4. Remote bulk processing, zero-to-one wake, idle-zero/disk deletion and warm selfie processing
    have fresh provider, telemetry and durable result evidence. Foreground jobs make progress
    during the bounded replay without changing the approved capacity limit.
-5. A supported completed fleet release and an accepted replacement recovery method precede
-   removal of local photo/selfie execution. Post-cleanup inventory shows no local photo/selfie
-   containers or enabled claim path, while web/database/import/commerce/private API/monitoring
-   remain healthy and future Deploy cannot revive the old services.
+5. A durably committed fleet release and an accepted remote-only recovery method precede
+   historical enrollment. Pre-backfill inventory shows no local photo/selfie containers or
+   enabled claim path, while web/database/import/commerce/private API/monitoring remain
+   healthy and future Deploy cannot revive the old services.
 6. The follow-on old-model/JSON-reader removal remains explicitly pending; this phase does not
    claim the whole two-part cleanup is finished.
 

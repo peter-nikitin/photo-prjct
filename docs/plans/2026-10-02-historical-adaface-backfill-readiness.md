@@ -6,7 +6,12 @@
 - Related specification: [approved design](../superpowers/specs/2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md)
 - Related architecture: [worker placement and photo ingestion](../architecture.md#current-architecture--implemented), [search](../architecture.md#search)
 - Related ADRs: [0040](../adr/0040-use-pgvector-for-exact-face-search.md), [0042](../adr/0042-isolate-autoscaled-photo-worker-pools.md), [0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md), [0049](../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
-- ADR impact: ADR 0049 accepted on 2026-10-02; it supersedes only ADR 0042's post-acceptance local photo-worker recovery. The initial `complete`/`abort` boundary remains unchanged.
+- ADR impact: ADR 0049 accepted on 2026-10-02 and revised before this release merged; it supersedes ADRs 0042/0046 only for post-acceptance local photo-worker recovery. The remote-only transition is a separate pre-backfill dependency.
+
+The previously planned later local-worker retirement order is replaced by the
+[remote-only transition design](../superpowers/specs/2026-10-02-remote-only-photo-worker-operations-design.md).
+This plan's vector-only AdaFace implementation remains applicable; do not execute its
+older retirement task or rollout wording as production instructions.
 
 ## Goal
 
@@ -14,7 +19,7 @@ Implement and verify the [approved first-phase design](../superpowers/specs/2026
 
 ## Scope
 
-The deliverable is a reviewable, deployable code package and operator runbook for vector-only AdaFace candidate enrollment, reconciliation, event activation and later local-worker retirement. This plan does not run a production backfill, switch an event, complete the pending fleet activation, remove production containers, or delete legacy SFace/JSON data. Those are separately gated operational steps in the runbook.
+The deliverable is a reviewable, deployable code package and operator runbook for vector-only AdaFace candidate enrollment, reconciliation and event activation. The remote-only worker transition is now a separate pre-backfill dependency. This plan does not run a production backfill, switch an event, commit the pending fleet activation, remove production containers, or delete legacy SFace/JSON data.
 
 ## Acceptance criteria
 
@@ -98,11 +103,11 @@ For each task, preserve RED/GREEN evidence and use `make test TESTS="<exact chan
 
 ## Operational impact and rollout
 
-Code and operator controls may be merged/deployed under canonical Deploy after review, but the default runtime must continue serving current generations without any historical enrollment. A separate approved operation must finish the currently `verified` fleet with the supported `complete` action, refresh event/media/jobs/lease/fleet/metric inventories and resolve all source gaps before the first bounded candidate batch. Later operations reconcile/activate one event at a time, prove remote bulk wake/idle/disk deletion and warm selfie result, then separately retire local photo-worker resources. The current `0..1` bulk and `1..1` selfie ceilings and cloud IAM/network scope remain unchanged.
+Code and operator controls may be merged/deployed under canonical Deploy after review, but the default runtime must continue serving current generations without any historical enrollment. The currently `verified` fleet must first be committed and the remote-only package deployed under the separately reviewed [transition design](../superpowers/specs/2026-10-02-remote-only-photo-worker-operations-design.md). Refresh event/media/jobs/lease/fleet/metric inventories and resolve all source gaps before the first bounded candidate batch. Later operations reconcile/activate one event at a time and prove sustained remote bulk wake/idle/disk deletion and warm selfie results. The current `0..1` bulk and `1..1` selfie ceilings and cloud IAM/network scope remain unchanged.
 
 ## Rollback
 
-Before candidate event activation, stop enrollment and keep old SFace generation serving; a compatible code rollback may retain unused candidate rows. After an event activates vector-only AdaFace, do not roll back to a JSON-dependent reader, SFace or an image missing the new contract; pause affected work and recover with a pinned compatible release. Before fleet `complete`, initial `abort` remains the accepted local path; after local retirement use ADR 0049 remote-only recovery. No database restore, old-vector deletion or broad image prune is part of this plan.
+Before candidate event activation, stop enrollment and keep old SFace generation serving; a compatible code rollback may retain unused candidate rows. After an event activates vector-only AdaFace, do not roll back to a JSON-dependent reader, SFace or an image missing the new contract; pause affected work and recover with a pinned compatible release. Worker recovery follows ADR 0049 remote-only placement once the pre-backfill transition commits. No database restore, old-vector deletion or broad image prune is part of this plan.
 
 ## Open questions
 

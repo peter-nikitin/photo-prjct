@@ -2,6 +2,11 @@
 
 This is the operator path for the [approved specification](../superpowers/specs/2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md)
 and [ADR 0049](../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md).
+The pending fleet `complete` command below is known to fail on an obsolete local-worker
+observability assertion. Do not repeat it or start historical enrollment. The
+[remote-only transition design](../superpowers/specs/2026-10-02-remote-only-photo-worker-operations-design.md)
+replaces Gate 1a and the later local-retirement ordering once implemented and approved;
+this runbook is on hold until those sections are updated with verified commands.
 The code package is preparation. No production enrollment, event activation, fleet `complete`,
 local retirement, or recovery rehearsal is authorized by merging it. Each live step below needs
 its own explicit approval of the exact release, scope, impact, evidence, and recovery method.

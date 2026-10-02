@@ -7,15 +7,13 @@
   [Accepted constraints](../../architecture.md#accepted-constraints)
 - **Related ADRs:** [0042](../../adr/0042-isolate-autoscaled-photo-worker-pools.md),
   [0046](../../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md),
-  [0049](../../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md),
-  [0050](../../adr/0050-operate-photo-workers-remotely-without-local-fallback.md)
+  [0049](../../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
 - **Related work:** [Historical AdaFace backfill](2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md),
   [Worker-pool runbook](../../runbooks/worker-pools.md)
-- **ADR impact:** Supersedes ADR 0049's requirement to retain local photo-worker recovery
-  until after historical AdaFace backfill, and ADRs 0042/0046 only where they require a
-  local-worker rollback after the remote fleet has served real work. The separate-folder,
-  private-TLS, durable-job and bounded-capacity decisions remain unchanged. ADR 0050 is
-  proposed until explicitly accepted.
+- **ADR impact:** Conforms to ADR 0049 as revised before this release is merged. Its
+  remote-only recovery decision supersedes ADRs 0042/0046 only after the fleet has served
+  real work and its initial release is durably committed. The separate-folder, private-TLS,
+  durable-job and bounded-capacity decisions remain unchanged.
 
 ## Outcome and boundary
 

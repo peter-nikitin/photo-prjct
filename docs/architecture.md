@@ -119,11 +119,13 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   remote serving with original recovery retained. Only completion after real-work acceptance
   commits the remote fleet marker. Repository support is not evidence that this protocol has run.
   [ADR 0049](adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
-  accepts remote-only photo/selfie recovery after completed fleet acceptance and historical
-  AdaFace migration. This branch prepares bounded vector-only AdaFace enrollment, per-event
-  reconciliation/activation, foreground scheduling, and release guards, but does not run a
-  historical backfill or retire local workers. Until separate live acceptance, initial local
-  rollback remains authoritative; no backfill or retirement is live-proven by this code.
+  accepts remote-only photo/selfie recovery after completed fleet acceptance, before
+  historical AdaFace enrollment. This branch prepares bounded vector-only AdaFace
+  enrollment, per-event reconciliation/activation, foreground scheduling, and release
+  guards, but does not run a
+  historical backfill or retire local workers. The current pending fleet receipt and
+  production cleanup still require separate live acceptance; no backfill or retirement
+  is live-proven by this code.
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
   PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first

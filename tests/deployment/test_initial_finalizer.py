@@ -230,6 +230,56 @@ def test_private_health_probe_uses_receipt_manifest_address(tmp_path, monkeypatc
     assert private[-1] == "https://findme-photo.ru:8443/internal/photo-processing/v1/claim"
 
 
+@pytest.mark.parametrize("finish", ["success", "failed", "stale", "timeout"])
+def test_collector_running_cycle_wait_is_bounded(tmp_path, monkeypatch, finish):
+    finalizer = module()
+    clock = [0]
+    observations = []
+    monkeypatch.setattr(finalizer.time, "time", lambda: 1000)
+    monkeypatch.setattr(finalizer.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        finalizer.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+
+    def run(command, **kwargs):
+        if command[:2] == ["systemctl", "show"]:
+            observations.append(command)
+            if len(observations) == 1 or finish == "timeout":
+                return SimpleNamespace(
+                    stdout="Result=success\nExecMainStatus=0\nExecMainExitTimestamp=\nActiveState=activating\n"
+                )
+            return SimpleNamespace(
+                stdout="Result="
+                + ("failed" if finish == "failed" else "success")
+                + "\nExecMainStatus=0\nExecMainExitTimestamp=recent\nActiveState=inactive\n"
+            )
+        if command[0] == "date":
+            assert command[2] == "recent", "must not parse an unfinished exit timestamp"
+            return SimpleNamespace(stdout="800" if finish == "stale" else "999")
+        if command[0] == "curl":
+            return SimpleNamespace(stdout="401")
+        if command[0] == "docker" and command[1] == "inspect":
+            return SimpleNamespace(stdout="journald|findme.service=" + command[-1])
+        if "ps" in command:
+            return SimpleNamespace(stdout=command[-1])
+        return SimpleNamespace(stdout="")
+
+    host = SimpleNamespace(
+        run=run,
+        compose=["docker", "compose"],
+        journal=SimpleNamespace(
+            data={"candidate": {"manifest": {"configuration": {"private_api_ipv4": "10.20.30.40"}}}}
+        ),
+    )
+    if finish == "success":
+        finalizer.health_gates(tmp_path, host)
+    else:
+        with pytest.raises(ValueError, match="native collector"):
+            finalizer.health_gates(tmp_path, host)
+    assert len(observations) >= 2
+    assert 0 < clock[0] <= 60
+
+
 def test_workflow_finalizer_bypasses_deployment_jobs():
     import yaml
 

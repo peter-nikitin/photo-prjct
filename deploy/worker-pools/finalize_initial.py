@@ -97,21 +97,33 @@ def health_gates(root, host):
         host.run(command, check=True, capture_output=True, timeout=90, env=env)
 
     run(["sudo", "-n", "/usr/local/sbin/findme-worker-pool-metrics", "verify"])
-    collector = host.run(
-        [
-            "systemctl",
-            "show",
-            "findme-worker-pool-metrics.service",
-            "--property=Result",
-            "--property=ExecMainExitTimestamp",
-            "--property=ExecMainStatus",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stdout
-    properties = dict(line.split("=", 1) for line in collector.splitlines())
+    collector_deadline = time.monotonic() + 60
+    while True:
+        collector = host.run(
+            [
+                "systemctl",
+                "show",
+                "findme-worker-pool-metrics.service",
+                "--property=Result",
+                "--property=ExecMainExitTimestamp",
+                "--property=ExecMainStatus",
+                "--property=ActiveState",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+        properties = dict(line.split("=", 1) for line in collector.splitlines())
+        if properties["Result"] != "success" or properties["ExecMainStatus"] != "0":
+            raise ValueError("native collector failed")
+        if properties.get("ActiveState") not in {"activating", "active"}:
+            if not properties["ExecMainExitTimestamp"]:
+                raise ValueError("native collector has no completed cycle")
+            break
+        if time.monotonic() >= collector_deadline:
+            raise ValueError("native collector cycle timed out")
+        time.sleep(2)
     timestamp = host.run(
         ["date", "--date", properties["ExecMainExitTimestamp"], "+%s"],
         check=True,

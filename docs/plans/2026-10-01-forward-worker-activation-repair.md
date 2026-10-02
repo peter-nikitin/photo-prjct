@@ -200,6 +200,31 @@ retain re-entry no-expansion and strict fence-failure regressions.
 Deliver this separate corrective task in the same pending PR/release as Task 6, with a final
 combined package review, selector-required suites and root `make check` before merge.
 
+### 8. Read inactive Prometheus alert states during the evaluator drill
+
+Both revision-18 pools are staged and verified. Drill run `36953550008` stopped at the
+pending-to-firing transition with `drill ALERTS identity or timestamp invalid`; its cleanup
+was confirmed. The exact historical query at `1790907158` returned `WorkerPoolSaturated`
+pending samples with value zero alongside firing samples with value one for both pools.
+Zero is inactive alert state, not malformed identity or a successful delivery receipt.
+
+Files: `deploy/monitoring/prometheus/drill.py` and `tests/monitoring/test_worker_alert_drill.py`.
+First reproduce the captured mixed-state response through the real status parser. Accept only
+finite binary values after validating every row's existing identity, timestamp and duplicate
+constraints. Track duplicate identities even for zero-valued rows; exclude zero-valued rows
+from active alert evidence. Test mixed pending-zero/firing-one, all-zero recovery, nonbinary
+values and malformed zero-valued evidence. Do not filter the query to hide invalid rows,
+change production predicates or durations, relax freshness, or equate evaluation with delivery.
+
+Run the focused drill tests, selected core/operational layers and offline Prometheus contracts,
+then independent review and root `make check`. Deliver through a monitoring-only PR and exact-main
+Monitoring workflow. Retain staged application/worker revision `18b8c27`, manifests and VMs;
+cancel the automatic application Deploy before deployment for this tooling-only merge, as for
+Task 5. Verify the previous temporary file is absent, then run a new bounded drill and confirm
+its report, unchanged production-rule hash, temporary-file cleanup and human notification receipt.
+No worker replacement, processing-state mutation, new service or ADR is required; this conforms
+to [ADR 0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md).
+
 ### Final task: Architecture and ADR reconciliation
 
 Confirm one-SHA release, group/cap preservation and existing data contracts after verification.

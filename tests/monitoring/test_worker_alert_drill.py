@@ -384,6 +384,140 @@ def test_finite_audit_requires_both_pool_pending_firing_missing_stale_and_recove
     assert seen == drill.REQUIRED_EVIDENCE
 
 
+def alert_status_fixture(modules, tmp_path, monkeypatch, *, minute=11):
+    control, drill = modules
+    cfg = config(control)
+    transport = Transport(control, cfg)
+    monkeypatch.setattr(control, "_preflight_workers", lambda *_args, **_kwargs: None)
+    path = tmp_path / "receipt.json"
+    start = 1_000_000_000
+    drill.start_run(control, cfg, transport, path, "123456", "a" * 40, now=start)
+    evaluation = start + minute * 60
+    transport.snapshot = {
+        "snapshotByGroup": {
+            "findme-worker-activation-drill": [
+                {"record": alert, "state": "OK", "evaluatedAtTimeEpochMs": evaluation * 1000}
+                for alert in drill.EXPECTED_ALERTS
+            ]
+        }
+    }
+    transport.alerts = {
+        "status": "success",
+        "data": {
+            "resultType": "vector",
+            "result": [
+                {
+                    "metric": {
+                        "__name__": "ALERTS",
+                        "alertname": "WorkerPoolSaturated",
+                        "pool": "bulk",
+                        "drill": "worker-activation",
+                        "drill_run": "123456",
+                        "alertstate": "pending",
+                    },
+                    "value": [evaluation, "0.0"],
+                }
+            ],
+        },
+    }
+    return control, drill, cfg, transport, path, start, evaluation
+
+
+def test_status_reads_inactive_pending_and_active_firing_without_false_phase_evidence(
+    modules, tmp_path, monkeypatch
+):
+    control, drill, cfg, transport, path, start, evaluation = alert_status_fixture(
+        modules, tmp_path, monkeypatch
+    )
+    labels = transport.alerts["data"]["result"][0]["metric"]
+    transport.alerts["data"]["result"] = [
+        {
+            "metric": {**labels, "alertname": alert, "pool": pool, "alertstate": state},
+            "value": [evaluation, value],
+        }
+        for pool in ("bulk", "selfie")
+        for alert, state, value in (
+            ("WorkerPoolSaturated", "pending", "0.0"),
+            ("WorkerPoolSaturated", "firing", "1.0"),
+            ("WorkerReadyWorkOverdue", "firing", "1.0"),
+        )
+    ]
+    observed = drill.status(control, cfg, transport, path, "123456", "a" * 40, now=evaluation + 150)
+    assert len(observed["alerts"]) == 4
+    assert all(item["state"] == "firing" for item in observed["alerts"])
+    assert observed["delivery"] == "unverified"
+    seen = set()
+    drill.audit_observation(start, observed, seen)
+    assert seen == {"saturation-firing"}
+
+
+def test_status_all_zero_states_are_inactive_recovery_not_delivery(modules, tmp_path, monkeypatch):
+    control, drill, cfg, transport, path, start, evaluation = alert_status_fixture(
+        modules, tmp_path, monkeypatch, minute=24
+    )
+    labels = transport.alerts["data"]["result"][0]["metric"]
+    transport.alerts["data"]["result"] = [
+        {
+            "metric": {**labels, "pool": pool, "alertstate": state},
+            "value": [evaluation, "0"],
+        }
+        for pool in ("bulk", "selfie")
+        for state in ("pending", "firing")
+    ]
+    observed = drill.status(control, cfg, transport, path, "123456", "a" * 40, now=evaluation + 150)
+    assert observed["alerts"] == []
+    assert observed["phase"] == "recovered"
+    assert observed["delivery"] == "unverified"
+    seen = set()
+    drill.audit_observation(start, observed, seen)
+    assert seen == {"recovered"}
+
+
+@pytest.mark.parametrize("value", ["-1", "0.5", "2", "NaN", "Inf"])
+def test_status_rejects_nonbinary_alert_state_values(modules, tmp_path, monkeypatch, value):
+    control, drill, cfg, transport, path, _, evaluation = alert_status_fixture(
+        modules, tmp_path, monkeypatch
+    )
+    transport.alerts["data"]["result"][0]["value"][1] = value
+    with pytest.raises(drill.DrillError, match="identity or timestamp invalid"):
+        drill.status(control, cfg, transport, path, "123456", "a" * 40, now=evaluation + 150)
+
+
+@pytest.mark.parametrize(
+    "problem",
+    ["duplicate", "drill", "run", "alert", "pool", "state", "missing", "stale", "future", "nan"],
+)
+def test_status_validates_inactive_zero_rows_before_excluding_them(
+    modules, tmp_path, monkeypatch, problem
+):
+    control, drill, cfg, transport, path, _, evaluation = alert_status_fixture(
+        modules, tmp_path, monkeypatch
+    )
+    rows = transport.alerts["data"]["result"]
+    row = rows[0]
+    if problem == "duplicate":
+        rows.append({**row, "value": [evaluation, "1"]})
+    elif problem == "missing":
+        del row["metric"]["alertname"]
+    elif problem in {"stale", "future", "nan"}:
+        row["value"][0] = {
+            "stale": evaluation - 91,
+            "future": evaluation + 91,
+            "nan": "NaN",
+        }[problem]
+    else:
+        key = {
+            "drill": "drill",
+            "run": "drill_run",
+            "alert": "alertname",
+            "pool": "pool",
+            "state": "alertstate",
+        }[problem]
+        row["metric"][key] = "unexpected"
+    with pytest.raises(drill.DrillError):
+        drill.status(control, cfg, transport, path, "123456", "a" * 40, now=evaluation + 150)
+
+
 def test_run_failure_keeps_unverified_report_and_exactly_cleans_owned_file(
     modules, tmp_path, monkeypatch
 ):

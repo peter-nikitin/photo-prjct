@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -495,6 +496,15 @@ def _apply_env(
     *,
     scenario: str,
 ) -> dict[str, str]:
+    # The full-script harness models external preflight success; dedicated fleet tests
+    # exercise the real current-DB/immutable-image retirement guard.
+    _write_executable(
+        fake_bin / "python3",
+        'case " $* " in *" deployment-guard "*) exit 0 ;; esac\n'
+        + "exec "
+        + shlex.quote(sys.executable)
+        + ' "$@"',
+    )
     (tmp_path / ".env").write_bytes(PREVIOUS_ENV)
     (tmp_path / ".env").chmod(0o640)
     (tmp_path / "previous-env.expected").write_bytes(PREVIOUS_ENV)
@@ -1136,6 +1146,24 @@ def test_remote_placement_requires_reviewed_release_before_mutation(
     assert result.returncode != 0
     assert "remote placement requires" in result.stderr
     assert not (tmp_path / "apply.log").exists()
+
+
+def test_apply_retirement_guard_rejects_local_placement_before_environment_mutation(
+    tmp_path, fake_bin
+):
+    from tests.deployment.test_worker_pool_release import retirement_marker
+
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    (tmp_path / "worker-pools-local-retired.json").write_text(json.dumps(retirement_marker()))
+    (tmp_path / "worker-pools-current.json").write_text("{}")
+    (tmp_path / "worker-pools-release.json").write_text(json.dumps({"phase": "committed"}))
+    _write_executable(fake_bin / "python3", "exec " + shlex.quote(sys.executable) + ' "$@"')
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    assert "retirement boundary" in result.stderr
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+    assert not list(tmp_path.glob(".env.requested.*"))
 
 
 def test_committed_remote_normal_release_clears_gate_before_next_installer_and_release(

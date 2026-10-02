@@ -18,9 +18,11 @@ from picflow.models import Event, Photo
 from processing.models import (
     EventFaceClusterActivation,
     FaceEmbedding,
+    FaceEmbeddingVector,
 )
 from processing.services.face_cohort import (
     compatible_face_embedding_queryset,
+    eligible_face_detections,
 )
 from processing.services.face_quality import active_face_embedding_generations
 
@@ -46,6 +48,7 @@ from selfie_search.services.ranking import (
 from selfie_search.services.read_selection import (
     Reader,
     rank_selected_direct,
+    requires_native_reader,
     select_reader,
     staff_eligible,
 )
@@ -85,14 +88,20 @@ def submit_selfie_search(
 
     content = selfie.content
     content_type = selfie.content_type
-    configuration = _configuration(
-        event=event, content_type=content_type, content_size=len(content)
-    )
     key = f"selfie-search/{uuid4().hex}"
     stored = storage.put(key=key, content=content, content_type=content_type)
     public_token = secrets.token_urlsafe(32)
     try:
         with transaction.atomic():
+            try:
+                event = Event.objects.site_visible_to(user).select_for_update().get(pk=event.pk)
+            except Event.DoesNotExist:
+                raise ValueError(
+                    "selfie search requires an event visible to the current user"
+                ) from None
+            configuration = _configuration(
+                event=event, content_type=content_type, content_size=len(content)
+            )
             search = SelfieSearch.objects.create(
                 event=event,
                 public_token_digest=_token_digest(public_token),
@@ -124,6 +133,7 @@ def gallery_search_faces_by_photo(
         event=event,
         configuration=configuration,
         photo_ids=photo_ids,
+        validate_legacy_vector=not requires_native_reader(configuration),
     ).order_by("detection__attempt__photo_id", "detection__face_index", "detection_id")
     results: dict[str, list[GalleryFaceCrop]] = {}
     for detection_id, photo_id, face_index, geometry in faces.values_list(
@@ -155,7 +165,7 @@ def submit_gallery_photo_search(
     try:
         with transaction.atomic():
             try:
-                event = Event.objects.site_visible_to(user).get(pk=event.pk)
+                event = Event.objects.site_visible_to(user).select_for_update().get(pk=event.pk)
             except Event.DoesNotExist:
                 raise GallerySearchUnavailable() from None
             photo = (
@@ -176,7 +186,11 @@ def submit_gallery_photo_search(
                 event=event,
                 configuration=configuration,
                 paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-                reader=select_reader(SelfieSearch(reader_staff_eligible=staff_eligible(user))),
+                reader=select_reader(
+                    SelfieSearch(
+                        reader_staff_eligible=staff_eligible(user), configuration=configuration
+                    )
+                ),
             )
 
             public_token = secrets.token_urlsafe(32)
@@ -361,6 +375,8 @@ def _gallery_source_candidate(
     paid_watermarked_previews_enabled: bool = False,
     reader: Reader = "legacy",
 ) -> CandidateEmbedding:
+    if reader == "legacy" and requires_native_reader(configuration):
+        raise GallerySearchUnavailable()
     source = configuration.get("query_source")
     if (
         not isinstance(source, dict)
@@ -388,10 +404,8 @@ def _gallery_source_candidate(
         )
         .filter(detection_id=source["detection_id"])
         .values_list(
-            "detection__embedding_vector__vector" if reader == "pgvector" else "vector",
-            "detection__embedding_vector__model_version"
-            if reader == "pgvector"
-            else "model_version",
+            "vector",
+            "model_version",
             "detection_id",
             "detection__attempt__photo_id",
             "detection__attempt__photo__event_id",
@@ -523,14 +537,19 @@ def _compatible_gallery_embeddings(
     configuration: dict[str, object],
     photo_ids: Iterable[str] | None = None,
     validate_legacy_vector: bool = True,
-) -> QuerySet[FaceEmbedding]:
-    queryset = _compatible_embeddings(
-        event=event,
-        configuration=configuration,
-        photo_ids=photo_ids,
-    )
+) -> QuerySet[FaceEmbedding] | QuerySet[FaceEmbeddingVector]:
     if validate_legacy_vector:
-        queryset = queryset.filter(_usable_vector_predicate(configuration))
+        queryset = _compatible_embeddings(
+            event=event, configuration=configuration, photo_ids=photo_ids
+        ).filter(_usable_vector_predicate(configuration))
+    else:
+        generations = _configured_gallery_generations(configuration)
+        queryset = FaceEmbeddingVector.objects.filter(
+            detection__in=eligible_face_detections(event, generations),
+            model_version=configuration.get("embedding_model"),
+        )
+        if photo_ids is not None:
+            queryset = queryset.filter(detection__attempt__photo_id__in=photo_ids)
     return queryset.filter(
         detection__geometry__coordinate_space="preview-small-v1",
         detection__geometry__pixel_width__gt=0,
@@ -591,6 +610,16 @@ def _compatible_embeddings(
     configuration: dict[str, object],
     photo_ids: Iterable[str] | None = None,
 ) -> QuerySet[FaceEmbedding]:
+    generations = _configured_gallery_generations(configuration)
+    embeddings = compatible_face_embedding_queryset(event, generations).filter(
+        detection__attempt__photo__is_hidden=False
+    )
+    if photo_ids is not None:
+        embeddings = embeddings.filter(detection__attempt__photo_id__in=photo_ids)
+    return embeddings
+
+
+def _configured_gallery_generations(configuration: dict[str, object]) -> tuple[dict, ...]:
     configured_generations = configuration.get("gallery_face_embedding_generations")
     if not isinstance(configured_generations, list) or not all(
         isinstance(generation, dict) for generation in configured_generations
@@ -600,12 +629,7 @@ def _compatible_embeddings(
     if not generations:
         raise ValueError("invalid face-embedding generation")
 
-    embeddings = compatible_face_embedding_queryset(event, generations).filter(
-        detection__attempt__photo__is_hidden=False
-    )
-    if photo_ids is not None:
-        embeddings = embeddings.filter(detection__attempt__photo_id__in=photo_ids)
-    return embeddings
+    return generations
 
 
 def _is_usable_gallery_query(*, search: SelfieSearch, vector: object) -> bool:

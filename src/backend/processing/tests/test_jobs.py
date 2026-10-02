@@ -36,6 +36,7 @@ from processing.services.enrollment import (
     request_face_embedding_enqueue,
     request_processor,
 )
+from processing.services.face_quality import historical_adaface_face_embedding_generations
 from processing.services.jobs import (
     MAX_ATTEMPTS,
     claim_job,
@@ -509,6 +510,102 @@ class ProcessingJobServiceTests(TestCase):
 
         self.assertTrue(empty.empty)
         self.assertEqual(ProcessingJob.objects.get().status, ProcessingJob.Status.QUEUED)
+
+    def test_native_foreground_jobs_precede_historical_backlog_and_keep_fifo(self) -> None:
+        generation = historical_adaface_face_embedding_generations()[0]
+        configuration = generation["configuration"]
+        assert isinstance(configuration, dict)
+        states = []
+        for suffix, receipt in (
+            ("historical-first", {"cohort_sha256": "a" * 64, "photo_count": 3}),
+            ("historical-second", {"cohort_sha256": "a" * 64, "photo_count": 3}),
+            ("historical-third", {"cohort_sha256": "a" * 64, "photo_count": 3}),
+            ("foreground-first", None),
+            ("foreground-second", None),
+        ):
+            states.append(
+                request_processor(
+                    self.private_photo(suffix),
+                    contract_version=3,
+                    processor_type="face_embedding",
+                    processor_version=5,
+                    configuration=configuration,
+                    historical_adaface_receipt=receipt,
+                )
+            )
+            if suffix == "historical-third":
+                active = claim_job(
+                    contract_version=3,
+                    processor_type="face_embedding",
+                    processor_version=5,
+                    worker_build="cap-one-bulk",
+                )
+                self.assertEqual(active.job.photo_id, "job-historical-first")
+        now = timezone.now()
+        for index, state in enumerate(states):
+            ProcessingJob.objects.filter(pk=state.current_job_id).update(
+                available_at=now - timedelta(minutes=4 - index)
+            )
+        claims = [
+            claim_job(
+                contract_version=3,
+                processor_type="face_embedding",
+                processor_version=5,
+                worker_build="cap-one-bulk",
+                now=now,
+            )
+            for _ in states[1:]
+        ]
+        self.assertEqual(
+            [claim.job.photo_id for claim in claims],
+            [
+                "job-foreground-first",
+                "job-foreground-second",
+                "job-historical-second",
+                "job-historical-third",
+            ],
+        )
+        self.assertEqual(claims[0].job.configuration_hash, claims[2].job.configuration_hash)
+        self.assertNotIn("historical_adaface_backfill", claims[0].job.run.report)
+
+    def test_invalid_historical_receipt_does_not_deprioritize_foreground(self) -> None:
+        generation = historical_adaface_face_embedding_generations()[0]
+        configuration = generation["configuration"]
+        assert isinstance(configuration, dict)
+        states = [
+            request_processor(
+                self.private_photo("invalid-receipt"),
+                contract_version=3,
+                processor_type="face_embedding",
+                processor_version=5,
+                configuration=configuration,
+            )
+        ]
+        EventProcessingRun.objects.filter(pk=states[0].current_run_id).update(
+            report={"historical_adaface_backfill": {"cohort_sha256": "a" * 64, "photo_count": True}}
+        )
+        states.append(
+            request_processor(
+                self.private_photo("ordinary"),
+                contract_version=3,
+                processor_type="face_embedding",
+                processor_version=5,
+                configuration=configuration,
+            )
+        )
+        now = timezone.now()
+        for index, state in enumerate(states):
+            ProcessingJob.objects.filter(pk=state.current_job_id).update(
+                available_at=now - timedelta(minutes=2 - index)
+            )
+        claim = claim_job(
+            contract_version=3,
+            processor_type="face_embedding",
+            processor_version=5,
+            worker_build="bulk",
+            now=now,
+        )
+        self.assertEqual(claim.job.photo_id, "job-invalid-receipt")
 
     def test_claim_scope_selects_only_the_exact_event_and_configuration(self) -> None:
         other_event = Event.objects.create(

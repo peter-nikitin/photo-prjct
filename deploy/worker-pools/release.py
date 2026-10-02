@@ -19,6 +19,110 @@ from urllib.request import Request
 
 RUNNING = {"RUNNING_ACTUAL", "RUNNING_OUTDATED"}
 TERMINAL = {"STOPPED", "DELETED"}
+NATIVE_CAPABILITY = "ru.findme-photo.historical-adaface-contract"
+
+
+def guard_local_retirement(root, placement, activation):
+    """Consume a future reviewed retirement receipt; this package never creates it."""
+    root = Path(root)
+    marker = root / "worker-pools-local-retired.json"
+    if not marker.exists():
+        return
+    data = json.loads(marker.read_text())
+    if (
+        not isinstance(data, dict)
+        or set(data) != {"version", "phase", "release_build", "acceptance_sha256"}
+        or type(data["version"]) is not int
+        or data["version"] != 1
+        or data["phase"] != "retired"
+        or not isinstance(data["release_build"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", data["release_build"]) is None
+        or not isinstance(data["acceptance_sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", data["acceptance_sha256"]) is None
+    ):
+        raise ValueError("invalid permanent local-worker retirement marker")
+    receipt = Journal(root / "worker-pools-release.json").data
+    if not (root / "worker-pools-current.json").is_file() or (
+        receipt.get("previous") is None and receipt.get("phase") != "committed"
+    ):
+        raise ValueError("fleet complete is required before local-worker retirement")
+    if placement != "remote" or activation != "normal":
+        raise ValueError("local workers are permanently retired; use remote release recovery")
+
+
+def require_native_compatible_release(root, app_image, worker_image, *, run=subprocess.run):
+    """Read current canonical DB before changing any package, image or cloud template."""
+    root = Path(root)
+    if not (root / ".env").is_file():
+        return
+    host = Host(root, None, None)
+    host.run = run
+    # Query the DB directly: an unhealthy web must not prevent initial no-native abort.
+    # Any historical native activation on a currently AdaFace event is conservative;
+    # supported event selection forbids returning that event to legacy evidence.
+    proof = run(
+        host.compose
+        + [
+            "exec",
+            "-T",
+            "db",
+            "sh",
+            "-c",
+            "exec psql --no-psqlrc --no-password --tuples-only --no-align "
+            '--username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command "$1"',
+            "native-generation-proof",
+            "SELECT EXISTS (SELECT 1 FROM processing_eventfaceembeddingactivation a "
+            "JOIN picflow_event e ON e.id = a.event_id "
+            "WHERE e.face_search_generation = 'adaface_v5' "
+            "AND a.generations @> "
+            """'[{"configuration":{"embedding_storage":"vector_only"}}]'::jsonb)::text;""",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    native = json.loads(proof.stdout)
+    if type(native) is not bool:
+        raise ValueError("invalid active native-generation proof")
+    if not native:
+        return
+    if not app_image or not worker_image:
+        raise ValueError("active native generation requires a compatible remote release")
+    for image in (app_image, worker_image):
+        run(["docker", "pull", image], check=True, capture_output=True, timeout=600)
+        result = run(
+            ["docker", "image", "inspect", image],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        rows = json.loads(result.stdout)
+        if (
+            len(rows) != 1
+            or rows[0].get("Config", {}).get("Labels", {}).get(NATIVE_CAPABILITY)
+            != "vector-only-v1"
+        ):
+            raise ValueError("image is incompatible with active native AdaFace generations")
+
+
+def deployment_guard(root, app_image=None, worker_image=None, manifest_path=None):
+    placement = os.environ.get("PHOTO_WORKER_PLACEMENT", "local")
+    activation = os.environ.get("WORKER_POOL_ACTIVATION", "normal")
+    guard_local_retirement(root, placement, activation)
+    if not worker_image and manifest_path and Path(manifest_path).is_file():
+        worker_image = (
+            json.loads(Path(manifest_path).read_text()).get("configuration", {}).get("worker_image")
+        )
+    if not worker_image and (Path(root) / "worker-pools-current.json").is_file():
+        worker_image = Journal(Path(root) / "worker-pools-current.json").data["manifest"][
+            "configuration"
+        ]["worker_image"]
+    # Initial local abort is valid only before any event publishes native-only evidence.
+    if placement != "remote" or activation == "abort":
+        app_image = worker_image = None
+    require_native_compatible_release(root, app_image, worker_image)
 
 
 def next_step(snapshot, build):
@@ -765,6 +869,24 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
     root = Path(root)
     receipt = root / "worker-pools-release.json"
     marker = root / "worker-pools-current.json"
+    if mode != "status":
+        guard_local_retirement(root, "remote", "normal")
+    if (
+        mode == "rollback"
+        and (root / "worker-pools-local-retired.json").exists()
+        and Journal(receipt).data.get("previous") is None
+    ):
+        raise ValueError("local workers are retired; initial local rollback is forbidden")
+    if mode == "preflight":
+        deployment_guard(root, app_image, worker_image, manifest_path)
+    elif mode in {"rollout", "rollback", "stage", "activate"} and (root / ".env").is_file():
+        data = Journal(receipt).data
+        target = data.get("previous") if mode == "rollback" else data["candidate"]
+        require_native_compatible_release(
+            root,
+            target.get("proof", {}).get("web_image") if target else None,
+            target["manifest"]["configuration"]["worker_image"] if target else None,
+        )
     provision = provision_module()
     from processing.services.worker_pool_cloud import metadata_token
 
@@ -1282,6 +1404,7 @@ def main():
             "verify",
             "commit",
             "rollback",
+            "deployment-guard",
         ),
     )
     parser.add_argument("--root", type=Path, required=True)
@@ -1291,6 +1414,9 @@ def main():
     parser.add_argument("--worker-image")
     args = parser.parse_args()
     try:
+        if args.mode == "deployment-guard":
+            deployment_guard(args.root, args.app_image, args.worker_image, args.manifest)
+            return 0
         if (
             args.mode in {"activate", "commit", "receiver-close"}
             and os.environ.get("FINDME_CANONICAL_DEPLOY") != "1"

@@ -64,5 +64,6 @@ RUN --network=none python -m photo_worker.model_smoke
 
 ARG RELEASE_SHA
 LABEL org.opencontainers.image.revision=$RELEASE_SHA
+LABEL ru.findme-photo.historical-adaface-contract="vector-only-v1"
 
 CMD ["python", "-m", "photo_worker"]

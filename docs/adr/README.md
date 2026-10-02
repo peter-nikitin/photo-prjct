@@ -68,6 +68,7 @@ place, and add the new record to this index.
 | 0046 | [Isolate worker-pool management in a separate folder](0046-isolate-worker-pool-management-in-a-separate-folder.md) | Accepted |
 | 0047 | [Separate Order payment from new cart selection](0047-separate-order-payment-from-new-cart-selection.md) | Accepted |
 | 0048 | [Reuse Managed Prometheus for worker alerts](0048-reuse-managed-prometheus-for-worker-alerts.md) | Accepted |
+| 0049 | [Retire local photo-worker recovery after remote acceptance](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md) | Accepted |
 
 ## Public selfie-search outcome
 

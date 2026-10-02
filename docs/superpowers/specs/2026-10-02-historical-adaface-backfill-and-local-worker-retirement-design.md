@@ -1,6 +1,6 @@
 # Historical AdaFace backfill and local photo-worker retirement
 
-- **Status:** Proposed for written review; not approved for implementation or live enrollment
+- **Status:** Approved for implementation planning on 2026-10-02; live enrollment requires separate operational approval
 - **Date:** 2026-10-02
 - **Owner:** FindMe Photo
 - **Related architecture:** [Current worker placement](../../architecture.md#current-architecture--implemented),
@@ -15,16 +15,17 @@
   [0040](../../adr/0040-use-pgvector-for-exact-face-search.md),
   [0041](../../adr/0041-accept-pgvector-numerical-boundaries.md),
   [0042](../../adr/0042-isolate-autoscaled-photo-worker-pools.md),
-  [0046](../../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md)
+  [0046](../../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md),
+  [0049](../../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
 - **Related work:** [Production AdaFace for new events](2026-08-16-production-adaface-new-events-design.md),
   [Exact pgvector search](2026-09-25-pgvector-exact-face-search-design.md),
   [blocked historical backfill](../../future-work/2026-09-27-new-only-adaface-event-backfill.md),
   [unified worker activation](../../plans/2026-10-01-unified-worker-activation.md)
 - **ADR impact:** Conforms to ADRs 0017, 0019, 0024, 0025, 0028, 0032, 0040, 0041 and 0046
   for durable jobs, immutable results, exact PostgreSQL search and initial worker activation.
-  **Supersedes ADR 0042 only for future post-acceptance rollback to on-host photo workers**:
-  this first phase retires that fallback after remote processing is proven. A new accepted ADR
-  must define the replacement recovery boundary before implementation planning. Initial
+  [ADR 0049](../../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
+  **supersedes ADR 0042 only for future post-acceptance rollback to on-host photo workers**:
+  this first phase retires that fallback after remote processing is proven. Initial
   activation's already-approved rollback remains in force until its `complete` action succeeds.
 
 ## Outcome and boundary

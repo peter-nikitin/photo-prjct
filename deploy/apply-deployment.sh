@@ -1175,6 +1175,9 @@ if [ "${FINDME_CANONICAL_LOCK:-}" != 1 ]; then
     FINDME_CANONICAL_LOCK=1
     export FINDME_CANONICAL_LOCK
 fi
+python3 "$(dirname "$0")/worker-pools/release.py" deployment-guard --root "$DEPLOY_ROOT" \
+    --app-image "$requested_image" --worker-image "${WORKER_POOL_WORKER_DIGEST:-}" \
+    --manifest "${WORKER_POOL_RELEASE_MANIFEST:-}" || fail "Deployment violates native generation or local retirement boundary"
 if [ -e "$DEPLOY_ROOT/.deployment-recovery" ]; then
     case "$worker_pool_activation" in
         receiver|stage|activate|complete|abort) ;;

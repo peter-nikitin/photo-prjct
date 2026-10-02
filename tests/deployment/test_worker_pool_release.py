@@ -9,6 +9,7 @@ import sys
 import tarfile
 from copy import deepcopy
 from dataclasses import replace
+from datetime import date
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,282 @@ import yaml
 
 pytestmark = pytest.mark.operational
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_historical_runbook_requires_readiness_deploy_before_enrollment():
+    runbook = (ROOT / "docs/runbooks/historical-adaface-backfill.md").read_text()
+    assert "do not merge this readiness PR" in runbook
+    complete = runbook.index("## Gate 1a: finish the initial remote release")
+    readiness = runbook.index("## Gate 1b: deploy and prove the readiness code")
+    enrollment = runbook.index("## Gate 2: approve one bounded enrollment")
+    assert complete < readiness < enrollment < runbook.index("--apply")
+    proof = runbook[readiness:enrollment]
+    for required in (
+        "deployment_sha=<APPROVED_READINESS_SHA>",
+        "worker_pool_activation=normal",
+        "worker-pools-current.json",
+        "org.opencontainers.image.revision",
+        "ru.findme-photo.historical-adaface-contract",
+        "backfill_historical_adaface --help",
+        "WORKER_POOL_OPERATION=verify",
+        "no enrollment",
+    ):
+        assert required in proof
+
+
+def retirement_marker():
+    return {
+        "version": 1,
+        "phase": "retired",
+        "release_build": "a" * 40,
+        "acceptance_sha256": "b" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    "placement,action", [("local", "normal"), ("remote", "stage"), ("remote", "abort")]
+)
+def test_retired_local_workers_cannot_be_revived_by_deploy(tmp_path, placement, action):
+    release = release_module()
+    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
+    release.Journal(tmp_path / "worker-pools-current.json", {"manifest": capped_manifest()})
+    release.Journal(
+        tmp_path / "worker-pools-release.json", {"phase": "committed", "previous": None}
+    )
+    with pytest.raises(ValueError, match="retired"):
+        release.guard_local_retirement(tmp_path, placement, action)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {},
+        {**retirement_marker(), "version": True},
+        {**retirement_marker(), "acceptance_sha256": "unreviewed"},
+    ],
+)
+def test_invalid_retirement_marker_blocks_even_remote_deploy(tmp_path, marker):
+    release = release_module()
+    release.Journal(tmp_path / "worker-pools-local-retired.json", marker)
+    with pytest.raises(ValueError, match="retirement"):
+        release.guard_local_retirement(tmp_path, "remote", "normal")
+
+
+def test_retirement_cannot_discard_initial_verified_local_recovery(tmp_path):
+    release = release_module()
+    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
+    release.Journal(tmp_path / "worker-pools-release.json", {"phase": "verified", "previous": None})
+    with pytest.raises(ValueError, match="complete"):
+        release.guard_local_retirement(tmp_path, "remote", "normal")
+
+
+def test_retired_remote_releases_continue_without_a_build_allowlist(tmp_path):
+    release = release_module()
+    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
+    release.Journal(
+        tmp_path / "worker-pools-current.json", {"manifest": capped_manifest(build="c" * 40)}
+    )
+    release.Journal(
+        tmp_path / "worker-pools-release.json",
+        {"phase": "prepared", "previous": {"manifest": capped_manifest()}},
+    )
+    release.guard_local_retirement(tmp_path, "remote", "normal")
+
+
+@pytest.mark.parametrize("action", ["complete", "abort"])
+def test_without_retirement_marker_initial_acceptance_and_abort_are_unchanged(tmp_path, action):
+    release_module().guard_local_retirement(tmp_path, "remote", action)
+
+
+@pytest.mark.parametrize("placement,allowed", [("local", False), ("remote", True)])
+def test_installer_enforces_permanent_retirement_before_package_swap(tmp_path, placement, allowed):
+    source = (ROOT / "deploy/run-remote.sh").read_text()
+    guard = source.split("<<'PY_STAGE_GUARD'\n", 1)[1].split("\nPY_STAGE_GUARD", 1)[0]
+    release = release_module()
+    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
+    release.Journal(tmp_path / "worker-pools-current.json", {"manifest": capped_manifest()})
+    release.Journal(
+        tmp_path / "worker-pools-release.json", {"phase": "committed", "previous": None}
+    )
+    helper = tmp_path / "deploy/worker-pools"
+    helper.mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/worker-pools/release.py", helper / "release.py")
+    result = subprocess.run(
+        [sys.executable, "-", str(tmp_path)],
+        input=guard,
+        env={**os.environ, "PHOTO_WORKER_PLACEMENT": placement},
+        text=True,
+        capture_output=True,
+    )
+    assert (result.returncode == 0) is allowed, result.stderr
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("compatible", [False, True])
+def test_native_event_rejects_unlabelled_release_before_any_cloud_write(
+    tmp_path, native, compatible
+):
+    from django.db import connection
+    from picflow.models import Event
+    from processing.models import EventFaceEmbeddingActivation
+
+    release = release_module()
+    event = Event.objects.create(
+        slug="native-release-proof",
+        name="Native release proof",
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 1),
+    )
+    EventFaceEmbeddingActivation.objects.create(
+        event=event,
+        generations=[
+            {"configuration": {"embedding_storage": "vector_only" if native else "parallel"}}
+        ],
+        generation_set_hash="a" * 64,
+    )
+    (tmp_path / ".env").write_text("fixture=true\n")
+    images = []
+
+    def run(command, **kwargs):
+        if "db" in command:
+            assert "web" not in command
+            with connection.cursor() as cursor:
+                cursor.execute(command[-1])
+                return SimpleNamespace(stdout=cursor.fetchone()[0])
+        if command[:3] == ["docker", "image", "inspect"]:
+            images.append(command[-1])
+            labels = (
+                {"ru.findme-photo.historical-adaface-contract": "vector-only-v1"}
+                if compatible
+                else {}
+            )
+            return SimpleNamespace(stdout=json.dumps([{"Config": {"Labels": labels}}]))
+        assert command[:2] == ["docker", "pull"]
+        return SimpleNamespace(stdout="")
+
+    if native and not compatible:
+        with pytest.raises(ValueError, match="compatible"):
+            release.require_native_compatible_release(
+                tmp_path, "web-image", "worker-image", run=run
+            )
+    else:
+        release.require_native_compatible_release(tmp_path, "web-image", "worker-image", run=run)
+    assert bool(images) is native
+
+
+def test_native_database_unavailable_fails_closed_without_pulling_images(tmp_path):
+    release = release_module()
+    (tmp_path / ".env").write_text("fixture=true\n")
+
+    def run(command, **kwargs):
+        assert "db" in command
+        raise subprocess.CalledProcessError(1, command)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        release.require_native_compatible_release(tmp_path, "web", "worker", run=run)
+
+
+def test_initial_no_native_abort_can_probe_database_with_web_unavailable(tmp_path, monkeypatch):
+    release = release_module()
+    (tmp_path / ".env").write_text("fixture=true\n")
+
+    def run(command, **kwargs):
+        assert "db" in command
+        assert "web" not in command
+        return SimpleNamespace(stdout="false")
+
+    check = release.require_native_compatible_release
+    monkeypatch.setattr(
+        release,
+        "require_native_compatible_release",
+        lambda root, app, worker: check(root, app, worker, run=run),
+    )
+    monkeypatch.setenv("PHOTO_WORKER_PLACEMENT", "remote")
+    monkeypatch.setenv("WORKER_POOL_ACTIVATION", "abort")
+    release.deployment_guard(tmp_path)
+
+
+@pytest.mark.parametrize("phase", ["verified", "committed"])
+def test_retired_fleet_cannot_take_initial_local_rollback(tmp_path, monkeypatch, phase):
+    release = release_module()
+    release.Journal(tmp_path / "worker-pools-local-retired.json", retirement_marker())
+    release.Journal(tmp_path / "worker-pools-current.json", {"manifest": capped_manifest()})
+    release.Journal(tmp_path / "worker-pools-release.json", {"phase": phase, "previous": None})
+    monkeypatch.setattr(
+        release, "provision_module", lambda: pytest.fail("premature cloud preparation")
+    )
+    with pytest.raises(ValueError, match="complete|retired"):
+        release.execute("rollback", tmp_path, None, None, None)
+
+
+def test_normal_native_deploy_uses_current_pinned_worker_image_without_manifest(
+    tmp_path, monkeypatch
+):
+    release = release_module()
+    manifest = capped_manifest()
+    release.Journal(tmp_path / "worker-pools-current.json", {"manifest": manifest})
+    monkeypatch.setenv("PHOTO_WORKER_PLACEMENT", "remote")
+    observed = []
+    monkeypatch.setattr(
+        release,
+        "require_native_compatible_release",
+        lambda root, app, worker: observed.append((app, worker)),
+    )
+    release.deployment_guard(tmp_path, "candidate-web")
+    assert observed == [("candidate-web", manifest["configuration"]["worker_image"])]
+
+
+@pytest.mark.parametrize("bad_image", ["old-web", "worker"])
+def test_native_rollback_rejects_incompatible_previous_web_or_worker_before_fleet_mutation(
+    tmp_path, monkeypatch, bad_image
+):
+    release, host, _new, old = capped_fleet(tmp_path, monkeypatch)
+    # Keep the DB/image boundary real; the capped provider fixture reuses Host and
+    # overwrites its journal when constructed for a DB-only probe.
+    monkeypatch.setattr(release, "Host", release_module().Host)
+    (tmp_path / ".env").write_text("fixture=true\n")
+    host.journal.data["previous"]["proof"] = {"web_image": "old-web"}
+    host.journal.save()
+    before = deepcopy(host.journal.data)
+    worker_image = old["configuration"]["worker_image"]
+
+    def run(command, **kwargs):
+        if "db" in command:
+            return SimpleNamespace(stdout="true")
+        if command[:2] == ["docker", "pull"]:
+            return SimpleNamespace(stdout="")
+        assert command[:3] == ["docker", "image", "inspect"]
+        image = command[-1]
+        incompatible = image == ("old-web" if bad_image == "old-web" else worker_image)
+        labels = (
+            {}
+            if incompatible
+            else {"ru.findme-photo.historical-adaface-contract": "vector-only-v1"}
+        )
+        return SimpleNamespace(stdout=json.dumps([{"Config": {"Labels": labels}}]))
+
+    check = release.require_native_compatible_release
+    monkeypatch.setattr(
+        release,
+        "require_native_compatible_release",
+        lambda root, app, worker: check(root, app, worker, run=run),
+    )
+    with pytest.raises(ValueError, match="incompatible"):
+        release.execute("rollback", tmp_path, None, None, None)
+    assert host.events == []
+    assert release.Journal(host.journal.path).data == before
+
+
+def test_fleet_status_never_pulls_images_or_probes_native_db(tmp_path, monkeypatch):
+    release, _host, _old, _new = capped_fleet(tmp_path, monkeypatch)
+    (tmp_path / ".env").write_text("fixture=true\n")
+    monkeypatch.setattr(
+        release,
+        "require_native_compatible_release",
+        lambda *args: pytest.fail("status invoked a mutating-image preflight"),
+    )
+    release.execute("status", tmp_path, None, None, None)
 
 
 def test_followup_activation_reuses_receiver_digest_without_rebuilding_images():

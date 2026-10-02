@@ -12,7 +12,9 @@ from uuid import uuid4
 
 import numpy as np
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from face_cluster_contract import cluster_expansion_policy_hash
 from picflow.models import Event, Photo
@@ -24,6 +26,7 @@ from processing.models import (
     EventProcessingRun,
     FaceClusterCorpus,
     FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
@@ -50,6 +53,7 @@ from processing.services.face_cohort import (
 from processing.services.face_quality import (
     activate_face_embedding_generation,
     candidate_face_embedding_generations,
+    historical_adaface_face_embedding_generations,
 )
 
 
@@ -96,12 +100,17 @@ class FaceClusterCorpusTests(TestCase):
         contract_version: int = 1,
         processor_version: int = 1,
         model: str = "sface",
-    ) -> FaceEmbedding:
-        generation = next(
-            generation
-            for generation in (*self.generations, *self.candidate_generations)
-            if generation["contract_version"] == contract_version
-            and generation["processor_version"] == processor_version
+        native: bool = False,
+    ) -> FaceEmbedding | FaceEmbeddingVector:
+        generation = (
+            historical_adaface_face_embedding_generations()[0]
+            if native
+            else next(
+                generation
+                for generation in (*self.generations, *self.candidate_generations)
+                if generation["contract_version"] == contract_version
+                and generation["processor_version"] == processor_version
+            )
         )
         configuration = generation["configuration"]
         configuration_hash = generation["configuration_hash"]
@@ -165,7 +174,8 @@ class FaceClusterCorpusTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        embedding = FaceEmbedding.objects.create(
+        embedding_model = FaceEmbeddingVector if native else FaceEmbedding
+        embedding = embedding_model.objects.create(
             detection=detection,
             model_version=model,
             vector=vector,
@@ -179,6 +189,147 @@ class FaceClusterCorpusTests(TestCase):
             accepted_attempt=attempt,
         )
         return embedding
+
+    def test_native_corpus_freezes_only_exact_generation_without_json(self) -> None:
+        old = self.make_embedding(event=self.event, photo_id="old-sface", vector=[1.0, 0.0])
+        native = self.make_embedding(
+            event=self.event,
+            photo_id="native-only",
+            vector=[1.0] + [0.0] * 511,
+            contract_version=3,
+            processor_version=5,
+            model="adaface-ir18-webface4m",
+            native=True,
+        )
+        corpus = build_face_cluster_corpus(
+            event=self.event,
+            version=1,
+            generations=historical_adaface_face_embedding_generations(),
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+        self.assertEqual(corpus.embedding_dimensions, 512)
+        self.assertEqual(corpus.input_count, 1)
+        self.assertEqual(
+            list(corpus.members.values_list("detection_id", flat=True)), [native.detection_id]
+        )
+        self.assertNotIn(old.detection_id, corpus.members.values_list("detection_id", flat=True))
+        self.assertFalse(FaceEmbedding.objects.filter(detection=native.detection).exists())
+
+    def test_native_corpus_fails_closed_on_missing_or_wrong_vector(self) -> None:
+        self.make_embedding(
+            event=self.event,
+            photo_id="native-wrong",
+            vector=[1.0] + [0.0] * 127,
+            contract_version=3,
+            processor_version=5,
+            model="sface",
+            native=True,
+        )
+        for version in (1, 2):
+            if version == 2:
+                self.make_embedding(
+                    event=self.other_event,
+                    photo_id="native-missing",
+                    vector=[1.0] + [0.0] * 511,
+                    contract_version=3,
+                    processor_version=5,
+                    model="adaface-ir18-webface4m",
+                    native=True,
+                )
+                valid = FaceEmbeddingVector.objects.get(detection__attempt__event=self.other_event)
+                PhotoFaceDetection.objects.create(
+                    artifact=valid.detection.artifact,
+                    attempt=valid.detection.attempt,
+                    face_index=1,
+                    status="kept",
+                )
+            with self.assertRaises(ValueError):
+                build_face_cluster_corpus(
+                    event=self.event if version == 1 else self.other_event,
+                    version=version,
+                    generations=historical_adaface_face_embedding_generations(),
+                    dimensions=512,
+                    edge_threshold=0.1,
+                    representative_threshold=0.1,
+                    distance_block_size=2,
+                    max_candidate_edges=100,
+                )
+            self.assertEqual(FaceClusterCorpus.objects.get(version=version).status, "failed")
+        self.assertFalse(self.event.face_cluster_corpora.filter(members__isnull=False).exists())
+
+    def test_native_corpus_activation_uses_event_model_and_excludes_old_corpus(self) -> None:
+        old = build_face_cluster_corpus(
+            event=self.event,
+            version=1,
+            generations=self.generations,
+            dimensions=128,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+        generations = list(historical_adaface_face_embedding_generations())
+        Event.objects.filter(pk=self.event.pk).update(
+            face_search_generation=Event.FaceSearchGeneration.ADAFACE_V5
+        )
+        EventFaceEmbeddingActivation.objects.create(
+            event=self.event,
+            generations=generations,
+            generation_set_hash=hashlib.sha256(
+                json.dumps(generations, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            approved_configuration_hash=generations[0]["configuration_hash"],
+            approved_evaluation_report_hash="a" * 64,
+        )
+        self.make_embedding(
+            event=self.event,
+            photo_id="native-active",
+            vector=[1.0] + [0.0] * 511,
+            contract_version=3,
+            processor_version=5,
+            model="adaface-ir18-webface4m",
+            native=True,
+        )
+        native = build_face_cluster_corpus(
+            event=self.event,
+            version=2,
+            generations=generations,
+            edge_threshold=0.1,
+            representative_threshold=0.1,
+            distance_block_size=2,
+            max_candidate_edges=100,
+        )
+        with CaptureQueriesContext(connection) as queries:
+            activation = activate_face_cluster_corpus(
+                event=self.event,
+                corpus=native,
+                configuration_hash=cluster_expansion_policy_hash(
+                    native.configuration_hash, 0.42, 0.4
+                ),
+                anchor_threshold=0.4,
+                evaluation_report_hash="a" * 64,
+                numeric_gates_reviewed=True,
+            )
+        self.assertEqual(activation.configuration["direct_threshold"], 0.42)
+        self.assertTrue(
+            any(
+                'FROM "picflow_event"' in query["sql"] and "FOR UPDATE" in query["sql"]
+                for query in queries
+            )
+        )
+        with self.assertRaises(ValueError):
+            activate_face_cluster_corpus(
+                event=self.event,
+                corpus=old,
+                configuration_hash=cluster_expansion_policy_hash(old.configuration_hash, 0.42, 0.4),
+                anchor_threshold=0.4,
+                evaluation_report_hash="a" * 64,
+                numeric_gates_reviewed=True,
+            )
+        self.assertEqual(EventFaceClusterActivation.objects.get(active=True).corpus_id, native.pk)
 
     def make_runtime_compatible(self, corpus: FaceClusterCorpus) -> FaceClusterCorpus:
         FaceClusterCorpus.objects.filter(pk=corpus.pk).update(

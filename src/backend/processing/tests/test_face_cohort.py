@@ -14,6 +14,7 @@ from picflow.models import Event, Photo
 from processing.models import (
     EventProcessingRun,
     FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
     PhotoFaceEmbeddingProjection,
@@ -67,7 +68,8 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
         generation: dict[str, object],
         *,
         vector: list[float],
-    ) -> FaceEmbedding:
+        vector_only: bool = False,
+    ) -> FaceEmbedding | FaceEmbeddingVector:
         run = EventProcessingRun.objects.create(
             event=self.event,
             contract_version=generation["contract_version"],
@@ -109,9 +111,10 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        embedding = FaceEmbedding.objects.create(
+        store = FaceEmbeddingVector if vector_only else FaceEmbedding
+        embedding = store.objects.create(
             detection=detection,
-            model_version="sface",
+            model_version=generation["model"],
             vector=vector,
             metadata={},
         )
@@ -123,6 +126,21 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
             accepted_attempt=attempt,
         )
         return embedding
+
+    def test_native_eligibility_retains_vector_only_identity_and_exact_generation(self) -> None:
+        generation = self.generation("native-only")
+        native = self.make_projected_embedding(
+            generation, vector=[1.0] + [0.0] * 127, vector_only=True
+        )
+        detections = face_cohort.eligible_face_detections(self.event, (generation,))
+        self.assertEqual(list(detections.values_list("id", flat=True)), [native.detection_id])
+        self.assertEqual(
+            list(detections.values_list("embedding_vector__id", flat=True)), [native.pk]
+        )
+        self.assertFalse(FaceEmbedding.objects.exists())
+        self.assertFalse(
+            face_cohort.eligible_face_detections(self.event, (self.generation("other"),)).exists()
+        )
 
     def test_explicit_generation_selects_only_its_projected_embedding(self) -> None:
         baseline_generation = self.generation("baseline")

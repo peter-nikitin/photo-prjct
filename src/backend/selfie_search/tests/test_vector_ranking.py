@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from math import sqrt
 from unittest.mock import patch
 
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from processing.models import FaceEmbedding, FaceEmbeddingVector, PhotoFaceDetection
+from processing.services.face_quality import adaface_face_embedding_generations
 from processing.tests.test_face_cohort import FaceEmbeddingProjectionCohortTests
 from selfie_search.models import SelfieSearch
 from selfie_search.services.direct_ranking import rank_legacy_direct
@@ -36,6 +39,41 @@ class VectorRankingTests(FaceEmbeddingProjectionCohortTests):
             detection=embedding.detection, model_version="sface", vector=vector
         )
         return embedding
+
+    def test_marked_adaface_native_cohort_needs_no_parallel_json_row(self) -> None:
+        generation = adaface_face_embedding_generations()[0]
+        configuration = generation["configuration"]
+        assert isinstance(configuration, dict)
+        configuration["embedding_storage"] = "vector_only"
+        generation["configuration_hash"] = hashlib.sha256(
+            json.dumps(generation["configuration"], sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.search.configuration = {
+            "embedding_model": "adaface-ir18-webface4m",
+            "embedding_dimensions": 512,
+            "cosine_distance_threshold": 0.42,
+            "gallery_face_embedding_generations": [generation],
+        }
+        vector = [1.0] + [0.0] * 511
+        embedding = self.make_projected_embedding(generation, vector=vector, vector_only=True)
+        result = rank_vector_direct(self.search, vector)
+        self.assertEqual(result.eligible_face_count, 1)
+        self.assertEqual(result.photos[0].detection_id, embedding.detection_id)
+        self.assertEqual(result.photos[0].cosine_distance, 0)
+        self.assertFalse(FaceEmbedding.objects.exists())
+        PhotoFaceDetection.objects.create(
+            attempt=embedding.detection.attempt,
+            artifact=embedding.detection.artifact,
+            face_index=1,
+            status="kept",
+        )
+        with self.assertRaises(RankingError):
+            rank_vector_direct(self.search, vector)
+
+    def test_unmarked_native_face_still_requires_legacy_identity(self) -> None:
+        self.make_projected_embedding(self.frozen_generation, vector=self.query, vector_only=True)
+        with self.assertRaises(RankingError):
+            rank_vector_direct(self.search, self.query)
 
     def test_empty_and_self_match_return_same_scalar_contract(self) -> None:
         empty = rank_vector_direct(self.search, self.query)

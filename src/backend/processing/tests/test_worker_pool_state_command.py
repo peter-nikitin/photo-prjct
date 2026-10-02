@@ -132,6 +132,28 @@ class WorkerPoolStateCommandTests(TestCase):
         self.assertEqual(report["pools"]["bulk"]["jobs"]["queued"], 0)
         self.assertEqual(report["pools"]["selfie"]["claimable"], 0)
 
+    def test_unenrolled_historical_photos_are_not_worker_demand(self):
+        from django.contrib.auth import get_user_model
+
+        from processing.services.historical_adaface import historical_adaface_status
+
+        self.event.face_search_generation = Event.FaceSearchGeneration.SFACE_V3
+        self.event.save(update_fields=["face_search_generation"])
+        self.photo.src = ""
+        self.photo.original_key = "private/unenrolled.jpg"
+        self.photo.original_size = 1
+        self.photo.original_filename = "unenrolled.jpg"
+        self.photo.original_content_type = "image/jpeg"
+        self.photo.uploaded_by = get_user_model().objects.create_user(username="unenrolled-owner")
+        self.photo.uploaded_at = timezone.now()
+        self.photo.save()
+        status = historical_adaface_status(self.event)
+        self.assertEqual(status["not_enrolled_count"], 1)
+        bulk = self.report()["pools"]["bulk"]
+        self.assertEqual(bulk["claimable"], 0)
+        self.assertEqual(bulk["leases"]["active"], 0)
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+
     def test_bulk_counts_current_due_jobs_open_runs_and_preserves_all_rows(self):
         self.bulk_job(current=False)
         closed_photo = Photo.objects.create(id="closed-photo", event=self.event, src="/closed.jpg")

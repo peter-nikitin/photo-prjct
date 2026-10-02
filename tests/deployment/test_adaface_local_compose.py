@@ -130,3 +130,46 @@ def test_base_and_production_compose_ship_adaface_without_local_only_gates() -> 
         assert "1/selfie_query/2" in content
         assert "ADAFACE_LOCAL_EXPERIMENT_ENABLED" not in content
         assert "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD" not in content
+
+
+def test_remote_profiles_keep_shared_services_without_local_photo_workers() -> None:
+    environment = {
+        **os.environ,
+        "APP_IMAGE": "review-web",
+        "WORKER_IMAGE": "review-photo-worker",
+        "IMPORT_WORKER_IMAGE": "review-import-worker",
+        "SECRET_KEY": "fixture",
+        "DEBUG": "False",
+        "ALLOWED_HOSTS": "findme-photo.ru",
+        "DB_NAME": "app",
+        "DB_USER": "app",
+        "DB_PASSWORD": "fixture",
+        "PUBLIC_DOMAIN": "findme-photo.ru",
+    }
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "-f",
+            "docker-compose.deployment.yml",
+            "-f",
+            "docker-compose.https.yml",
+            "--profile",
+            "import",
+            "--profile",
+            "commerce",
+            "config",
+            "--services",
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    services = set(result.stdout.splitlines())
+    assert {"db", "web", "nginx", "import-worker", "commerce-worker"} <= services
+    assert not {"worker-bulk", "worker-selfie"} & services

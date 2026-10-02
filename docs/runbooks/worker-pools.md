@@ -38,6 +38,13 @@ Only photo processing and selfie query workers move into their own pools. The im
 and commerce worker remain unchanged. Bulk backfill remains dependent on the accepted
 pgvector capability; adding bulk VMs does not implement or approve that backfill dependency.
 
+The 2026-10-02 historical-backfill preparation starts from a fleet receipt reported as
+`verified`, not `committed`. Refresh that receipt before any operation. Initial `complete`
+and `abort` remain supported with the same pinned candidate and retained recovery package.
+[Historical AdaFace operations](historical-adaface-backfill.md) describes the separate live
+approval gates and future local-worker retirement under ADR 0049. This package neither starts
+backfill nor retires local services.
+
 Both pools use Intel Ice Lake (`standard-v3`), two cores at 100%, 8 GiB memory and a
 32 GiB `network-ssd` boot disk. Each worker processes one job at a time and preserves
 the existing container limit of two CPUs and `5g` memory (5 GiB), leaving VM headroom.
@@ -918,6 +925,14 @@ remote-check secret wrapper, set `WORKER_POOL_OPERATION=status` and invoke
 and `verify` checks the fleet; `rollback` is the existing compatible remote-release recovery.
 Initial activation and abort are **Deploy** actions so application image/public health gates and
 package/environment recovery remain coupled. An authorized operator can inspect status directly:
+
+Once an event activates historical vector-only AdaFace, canonical Deploy checks the canonical
+database's scalar native-generation state and requires the `vector-only-v1` image capability on both
+candidate images. Fleet rollout and rollback check the same boundary before changing groups.
+An older unlabeled image remains a candidate before native activation, but is rejected afterward.
+See [historical backfill and future retirement](historical-adaface-backfill.md) for approval gates,
+the permanent future retirement guard, local credential consumers and remote-only recovery.
+The guard is preparation only: there is no retirement action or marker writer in this release.
 
 ```sh
 PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \

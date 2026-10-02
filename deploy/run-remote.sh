@@ -392,12 +392,24 @@ flock -n 9 || exit 1
 export FINDME_CANONICAL_LOCK=1
 python3 - "$deployment_root" <<'PY_STAGE_GUARD'
 import json
+import importlib.util
 import os
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
 action = os.environ.get('WORKER_POOL_ACTIVATION', 'normal')
+helper = root / 'deploy/worker-pools/release.py'
+if helper.is_file():
+    spec = importlib.util.spec_from_file_location('canonical_release_guard', helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if hasattr(module, 'deployment_guard'):
+        module.deployment_guard(root, os.environ.get('APP_IMAGE'), os.environ.get('WORKER_POOL_WORKER_DIGEST'), os.environ.get('WORKER_POOL_RELEASE_MANIFEST'))
+    elif (root / 'worker-pools-local-retired.json').exists():
+        raise SystemExit(1)
+elif (root / 'worker-pools-local-retired.json').exists():
+    raise SystemExit(1)
 if action not in {'normal', 'receiver', 'stage', 'activate', 'complete', 'abort'}:
     raise SystemExit(2)
 receipt_path = root / 'worker-pools-release.json'

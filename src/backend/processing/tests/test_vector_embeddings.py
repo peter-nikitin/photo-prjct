@@ -1,3 +1,6 @@
+import hashlib
+import json
+from copy import deepcopy
 from datetime import date
 from unittest.mock import patch
 
@@ -16,13 +19,17 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
-from processing.services.vector_embeddings import persist_parallel_embedding, vector_values
+from processing.services.vector_embeddings import (
+    persist_accepted_embedding,
+    persist_parallel_embedding,
+    vector_values,
+)
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def detection():
+def detection(request):
     event = Event.objects.create(
         name="Vector", slug="vector", start_date=date.today(), end_date=date.today()
     )
@@ -35,6 +42,19 @@ def detection():
         configuration={},
         configuration_hash="a" * 64,
     )
+    if getattr(request, "param", None) == "vector_only":
+        from processing.services.enrollment import LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION
+
+        configuration = deepcopy(LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION)
+        configuration["embedding_storage"] = "vector_only"
+        fields.update(
+            contract_version=3,
+            processor_version=5,
+            configuration=configuration,
+            configuration_hash=hashlib.sha256(
+                json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        )
     run = EventProcessingRun.objects.create(**fields)
     job = ProcessingJob.objects.create(**fields, run=run, photo=photo, input_fingerprint={})
     attempt = ProcessingAttempt.objects.create(
@@ -51,6 +71,38 @@ def detection():
     return PhotoFaceDetection.objects.create(
         attempt=attempt, artifact=artifact, face_index=0, status="kept"
     )
+
+
+@pytest.mark.parametrize("detection", ["vector_only"], indirect=True)
+def test_vector_only_publication_retains_metadata_without_json_embedding(detection):
+    vector = [1.0] + [0.0] * 511
+    native = persist_accepted_embedding(
+        detection=detection,
+        model_version="adaface-ir18-webface4m",
+        vector=vector,
+        metadata={"quality": 0.9, "embedding": vector},
+    )
+    assert isinstance(native, FaceEmbeddingVector)
+    assert vector_values(native.vector) == vector
+    assert native.metadata == {"quality": 0.9}
+    assert not FaceEmbedding.objects.exists()
+
+
+@pytest.mark.parametrize("detection", ["vector_only"], indirect=True)
+@pytest.mark.parametrize("status", ["quality_rejected", "failed"])
+def test_vector_only_publication_rejects_non_kept_faces(detection, status):
+    rejected = PhotoFaceDetection.objects.create(
+        attempt=detection.attempt, artifact=detection.artifact, face_index=1, status=status
+    )
+    with pytest.raises(ValueError):
+        persist_accepted_embedding(
+            detection=rejected,
+            model_version="adaface-ir18-webface4m",
+            vector=[1.0] + [0.0] * 511,
+            metadata={},
+        )
+    assert not FaceEmbedding.objects.exists()
+    assert not FaceEmbeddingVector.objects.exists()
 
 
 @pytest.mark.parametrize(("model", "dimensions"), [("sface", 128), ("adaface-ir18-webface4m", 512)])

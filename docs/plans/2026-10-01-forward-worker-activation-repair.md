@@ -225,6 +225,32 @@ its report, unchanged production-rule hash, temporary-file cleanup and human not
 No worker replacement, processing-state mutation, new service or ADR is required; this conforms
 to [ADR 0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md).
 
+### 9. Distinguish provider evaluation time from the drill scenario clock
+
+Drill `36956138231` passed five states and cleaned up, but did not credit retained-stale.
+Its report first contains the exact stale-state alert set at elapsed 1263 seconds, outside
+the source scenario's 21-minute boundary. Direct historical queries of the same rendered
+predicate at elapsed 1144 and 1212 seconds already return the expected selfie source alert;
+at 1263 seconds the predicate has recovered. This is an evaluation-clock mismatch, not a
+worker failure or a reason to alter production alert predicates. Yandex documents a global
+two-minute rule evaluation delay in its
+[recording-rule API contract](https://yandex.cloud/en/docs/monitoring/operations/prometheus/recording-rules).
+
+Files: `deploy/monitoring/prometheus/drill.py` and its focused drill tests. Replay the actual
+report through the real audit function to reproduce the missing state. Distinguish the
+validated snapshot/query cycle clock from the effective source-scenario clock using the
+documented provider delay. Keep querying ALERTS at the validated snapshot time and retain
+its sample identity/freshness checks. Classify and audit scenario phases with their effective
+time, without widening their acceptance intervals or changing predicates, `for` durations,
+scenario lengths, cleanup identity or notification-delivery requirements. Test the complete
+captured transition sequence and early/wrong-state rejection, including initial delayed
+evaluations and final recovery. No new provider probe rules or production writes are needed.
+
+Use independent review and exact final-package verification. Deliver monitoring-only as in
+Task 8, preserving staged runtime18 and both existing VM/disk identities. Repeat the complete
+cloud drill only after the local captured-trace reproduction is GREEN; require all six states,
+unchanged production rules, confirmed cleanup and actual recipient receipts before activation.
+
 ### Final task: Architecture and ADR reconciliation
 
 Confirm one-SHA release, group/cap preservation and existing data contracts after verification.

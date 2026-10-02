@@ -540,12 +540,15 @@ def status(
             or key in seen
             or not math.isfinite(sample_time)
             or not math.isfinite(value)
-            or value != 1
+            or value not in (0, 1)
             or abs(sample_time - evaluated_at) > 90
         ):
             raise DrillError("drill ALERTS identity or timestamp invalid")
         seen.add(key)
-        alerts.append({"alert": key[0], "pool": key[1], "state": key[2], "sample_at": sample_time})
+        if value == 1:
+            alerts.append(
+                {"alert": key[0], "pool": key[1], "state": key[2], "sample_at": sample_time}
+            )
     _production(control_module, config, transport)
     return {
         "run_id": run_id,

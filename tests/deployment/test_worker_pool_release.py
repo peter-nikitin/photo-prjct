@@ -459,6 +459,7 @@ def test_initial_zero_bulk_requires_a_warm_acceptance_node_before_cutover():
     gateway = Mock()
     empty = state()
     empty["claims_paused"] = True
+    empty["target_size"] = 0
     gateway.observe.return_value = {"bulk": empty}
     manifest = {"configuration": {"worker_build": "a" * 40, "pool_max_size": 2}}
     with pytest.raises(ValueError, match="transition timeout"):
@@ -470,6 +471,20 @@ def test_initial_zero_bulk_requires_a_warm_acceptance_node_before_cutover():
     warm["members"][0]["serving"] = False
     gateway.observe.return_value = {"bulk": warm}
     release.transition(gateway, "bulk", manifest, timeout=0, pause=0)
+
+
+def test_resumed_bulk_release_accepts_settled_idle_zero():
+    release = release_module()
+    gateway = Mock()
+    empty = state()
+    empty["active_build"] = "b" * 40
+    empty["target_size"] = 0
+    gateway.observe.return_value = {"bulk": empty}
+    manifest = {"configuration": {"worker_build": "b" * 40, "pool_max_size": 1}}
+
+    release.transition(gateway, "bulk", manifest, timeout=0, pause=0)
+
+    gateway.template.assert_called_once_with("bulk", manifest, 1)
 
 
 def test_collector_reads_release_owned_build_allowlist_from_canonical_path(tmp_path):

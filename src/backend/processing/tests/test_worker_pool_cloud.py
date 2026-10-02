@@ -91,6 +91,41 @@ class CloudObservationTests(TestCase):
             ],
         )
 
+    def test_deleted_tombstone_without_instance_id_does_not_block_observation(self):
+        from processing.services.worker_pool_observation import observe_cloud
+
+        def replacement_with_tombstone(path, **parameters):
+            if path == "instanceGroups/bulk-group/instances":
+                return {
+                    "instances": [
+                        {
+                            "instanceId": "new-node",
+                            "zoneId": "ru-central1-a",
+                            "status": "AWAITING_STARTUP_DURATION",
+                        },
+                        {
+                            "instanceId": None,
+                            "zoneId": "ru-central1-a",
+                            "status": "DELETED",
+                        },
+                    ]
+                }
+            return self.get(path, **parameters)
+
+        reader = CloudReader("fake-token")
+        with patch.object(reader, "get", side_effect=replacement_with_tombstone):
+            self.assertTrue(observe_cloud("bulk", self.config, reader=reader))
+        self.assertEqual(
+            WorkerPool.objects.get(name="bulk").observed_members,
+            [
+                {
+                    "instance_id": "new-node",
+                    "status": "AWAITING_STARTUP_DURATION",
+                    "worker_build": "",
+                }
+            ],
+        )
+
     def test_omitted_zero_target_records_actual_running_member(self):
         from processing.services.worker_pool_observation import observe_cloud
 

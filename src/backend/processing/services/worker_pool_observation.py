@@ -97,6 +97,8 @@ def observe_cloud(name: str, config: dict[str, Any], *, reader: CloudReader | No
         if status not in CLOUD_STATES or row.get("zoneId") != config["zone"]:
             raise ValueError("unknown member state")
         if not instance_id:
+            if status == "DELETED":
+                continue
             if status in RUNNING | STOPPED:
                 raise ValueError("unidentified running member")
             members.append({"instance_id": "", "status": status, "worker_build": ""})

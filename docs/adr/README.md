@@ -69,6 +69,7 @@ place, and add the new record to this index.
 | 0047 | [Separate Order payment from new cart selection](0047-separate-order-payment-from-new-cart-selection.md) | Accepted |
 | 0048 | [Reuse Managed Prometheus for worker alerts](0048-reuse-managed-prometheus-for-worker-alerts.md) | Accepted |
 | 0049 | [Retire local photo-worker recovery after remote acceptance](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md) | Accepted |
+| 0050 | [Decouple processing jobs and attempts from worker builds](0050-decouple-processing-queue-from-worker-builds.md) | Accepted |
 
 ## Public selfie-search outcome
 

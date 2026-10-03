@@ -366,6 +366,13 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   functional acceptance and charged provisioning remain pending; this is not an implemented
   topology, database HA or approval to execute new-only model backfill.
 
+- [ADR 0050](adr/0050-decouple-processing-queue-from-worker-builds.md) accepts a narrow
+  processing interface: jobs and attempts carry semantic processor/model generations and lease
+  state, never worker image, release build, container or VM identity. The queue does not use fleet
+  release or cloud membership to admit work; private caller authentication and lease/result
+  validation remain mandatory. This is an accepted change to the processing boundary, not an
+  implemented migration or approval of a new image-deployment mechanism.
+
 - [ADR 0035](adr/0035-use-django-polled-yandex-disk-import.md) accepts public Yandex Disk import
   through a dedicated ingestion worker polling a private Django API backed by PostgreSQL.
   The implementation uses durable import scopes, manifests and attempt-owned storage checkpoints,

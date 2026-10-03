@@ -191,6 +191,7 @@ class Client:
         self.claim_identities: list[tuple[int, str, int]] = []
 
     def claim_job(self, **kwargs: object) -> Claim:
+        assert "worker_build" not in kwargs
         self.claim_identities.append(
             (
                 int(kwargs["contract_version"]),
@@ -1374,7 +1375,6 @@ def test_worker_processes_one_claim_then_submits_typed_result_and_removes_temp_f
         "contract_version",
         "processor_type",
         "processor_version",
-        "worker_build",
         "started_at",
         "finished_at",
         "download_ms",
@@ -1535,9 +1535,11 @@ def test_worker_submits_preview_face_result_with_declared_geometry(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("worker_build", ["previous-image", "replacement-image"])
 def test_worker_submits_maximum_v5_adaface_payload_within_contract_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    worker_build: str,
 ) -> None:
     client = Client(quality_preview_face_claim())
     monkeypatch.setattr(
@@ -1548,7 +1550,7 @@ def test_worker_submits_maximum_v5_adaface_payload_within_contract_bound(
     Worker(
         client,
         WorkerConfig(
-            worker_build="worker-test",
+            worker_build=worker_build,
             lease_seconds=60,
             temp_dir=tmp_path,
             processor_identities=("3/face_embedding/5",),
@@ -1557,6 +1559,7 @@ def test_worker_submits_maximum_v5_adaface_payload_within_contract_bound(
 
     assert len(client.completed) == 1
     assert client.completed[0]["result"]["face_count"] == 32
+    assert "worker_build" not in client.completed[0]
     payload_size = len(json.dumps(client.completed[0], separators=(",", ":")).encode())
     assert 320 * 1024 < payload_size <= 384 * 1024
     assert list(tmp_path.iterdir()) == []

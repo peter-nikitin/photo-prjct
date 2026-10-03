@@ -137,7 +137,6 @@ def test_remote_claim_contains_identity_and_local_claim_remains_unchanged():
     client.member_request("register")
     client.post_json.return_value = {"empty": True, "suggested_delay_seconds": 2}
     client.claim_job(
-        worker_build=member.worker_build,
         lease_seconds=120,
         processor_type="selfie_query",
         processor_version=2,
@@ -145,11 +144,9 @@ def test_remote_claim_contains_identity_and_local_claim_remains_unchanged():
     payload = client.post_json.call_args.args[1]
     assert payload.items() >= member.envelope().items()
     assert payload["registration_generation"] == generation
-    with pytest.raises(ValueError):
-        client.claim_job(worker_build="b" * 40, lease_seconds=120)
     unbound = HttpClient(REMOTE_API_URL, "fleet", transport="remote")
     with pytest.raises(ValueError):
-        unbound.claim_job(worker_build="a" * 40, lease_seconds=120)
+        unbound.claim_job(lease_seconds=120)
 
 
 @pytest.mark.parametrize("signals", [(), (signal.SIGTERM, signal.SIGINT, signal.SIGTERM)])
@@ -286,7 +283,6 @@ def test_registration_responses_are_installed_in_serial_order():
         first.result(timeout=5)
         later.result(timeout=5)
     client.claim_job(
-        worker_build=member.worker_build,
         lease_seconds=120,
         processor_type="selfie_query",
         processor_version=2,

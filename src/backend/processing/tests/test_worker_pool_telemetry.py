@@ -554,7 +554,6 @@ class TelemetryTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=2,
-            worker_build=BUILD,
             lease_seconds=120,
         )
         assert isinstance(claimed, ClaimedJob)

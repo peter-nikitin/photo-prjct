@@ -281,7 +281,6 @@ class ProcessingAttempt(models.Model):  # noqa: DJ008
     processor_version = models.PositiveSmallIntegerField()
     configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
     input_fingerprint = models.JSONField(default=dict, validators=[validate_bounded_json])
-    worker_build = models.CharField(max_length=128, blank=True, default="")
     pool_member = models.ForeignKey(
         WorkerPoolMember,
         on_delete=models.SET_NULL,

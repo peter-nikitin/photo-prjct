@@ -62,6 +62,23 @@ def test_json_requests_use_bearer_auth_and_do_not_put_token_in_url() -> None:
     assert timeouts == [180.0]
 
 
+def test_claim_sends_only_semantic_identity_and_lease() -> None:
+    requests = []
+
+    def opener(request, *, timeout: float):
+        requests.append(request)
+        return Response(b'{"empty": true, "suggested_delay_seconds": 5}')
+
+    client = HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener)
+    assert client.claim_job(lease_seconds=120).job is None
+    assert json.loads(requests[0].data) == {
+        "contract_version": 1,
+        "processor_type": "capture_metadata",
+        "processor_version": 2,
+        "lease_seconds": 120,
+    }
+
+
 @pytest.mark.parametrize("timeout", (0, -1, float("inf"), float("nan")))
 def test_http_client_rejects_non_positive_or_non_finite_timeout(timeout: float) -> None:
     with pytest.raises(ValueError, match="timeout"):
@@ -126,7 +143,6 @@ def test_claim_contract_error_retains_only_the_static_parser_diagnostic() -> Non
 
     with pytest.raises(ApiError) as raised:
         HttpClient("https://worker.example.test/v1", "worker-secret", opener=opener).claim_job(
-            worker_build="worker-build",
             lease_seconds=120,
         )
 

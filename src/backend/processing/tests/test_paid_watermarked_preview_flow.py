@@ -210,7 +210,6 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
             contract_version=state.current_job.contract_version,
             processor_type=processor_type,
             processor_version=state.current_job.processor_version,
-            worker_build=f"integration-{processor_type}",
             event_id=photo.event_id,
             configuration_hash=state.current_job.configuration_hash,
         )
@@ -656,7 +655,6 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
             contract_version=watermark.current_job.contract_version,
             processor_type="generate_watermarked_preview",
             processor_version=watermark.current_job.processor_version,
-            worker_build="integration-watermark-retry",
             now=watermark.next_attempt_at,
             event_id=event.id,
             configuration_hash=watermark.current_job.configuration_hash,

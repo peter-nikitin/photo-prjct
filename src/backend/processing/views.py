@@ -86,7 +86,6 @@ from processing.services.jobs import (
 from processing.services.previews import complete_preview_attempt, preview_final_key
 from processing.storage import ExactObjectDownloadStorage, ExactPreviewStorage, PreviewUploadGrant
 
-_WORKER_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SECRET_MARKER = re.compile(r"(?:[a-z][a-z0-9+.-]*://|x-amz-|signature=|credential=|token=)", re.I)
 _SOURCE_FIELDS = {"DateTime", "DateTimeDigitized", "DateTimeOriginal"}
 _V2_FACE_EMBEDDING_MAX_FACES = 32
@@ -237,10 +236,11 @@ def claim(request: HttpRequest) -> JsonResponse:
             "contract_version",
             "processor_type",
             "processor_version",
-            "worker_build",
             "lease_seconds",
         }
-        | ({"pool", "instance_id", "boot_id", "registration_generation"} if remote else set()),
+        | (
+            worker_pool_lifecycle.ENVELOPE_FIELDS | {"registration_generation"} if remote else set()
+        ),
     )
     if error is not None:
         return error
@@ -249,7 +249,6 @@ def claim(request: HttpRequest) -> JsonResponse:
         _positive_int(data["contract_version"])
         and _bounded_string(data["processor_type"], maximum=64)
         and _positive_int(data["processor_version"])
-        and _safe_worker_build(data["worker_build"])
         and _positive_int(data["lease_seconds"])
     ):
         return _invalid_request()
@@ -581,7 +580,6 @@ def _claim(data: dict[str, Any]) -> ClaimedJob | EmptyClaim | ClaimedSearchJob |
             contract_version=data["contract_version"],
             processor_type=data["processor_type"],
             processor_version=data["processor_version"],
-            worker_build=data["worker_build"],
             lease_seconds=data["lease_seconds"],
         )
     from processing.services.jobs import claim_job
@@ -590,7 +588,6 @@ def _claim(data: dict[str, Any]) -> ClaimedJob | EmptyClaim | ClaimedSearchJob |
         contract_version=data["contract_version"],
         processor_type=data["processor_type"],
         processor_version=data["processor_version"],
-        worker_build=data["worker_build"],
         lease_seconds=data["lease_seconds"],
     )
 
@@ -1129,7 +1126,6 @@ def _envelope_fields() -> set[str]:
         "contract_version",
         "processor_type",
         "processor_version",
-        "worker_build",
         "started_at",
         "finished_at",
         "download_ms",
@@ -1277,8 +1273,6 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
         and data["processor_type"] == attempt.processor_type
         and type(data["processor_version"]) is int
         and data["processor_version"] == attempt.processor_version
-        and _safe_worker_build(data["worker_build"])
-        and data["worker_build"] == attempt.worker_build
         and started_at is not None
         and finished_at is not None
         and started_at <= finished_at
@@ -1357,7 +1351,6 @@ def _valid_selfie_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: s
         and data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type
         and type(data["processor_version"]) is int
         and data["processor_version"] == SELFIE_QUERY_CONTRACT.processor_version
-        and _safe_worker_build(data["worker_build"])
         and started_at is not None
         and finished_at is not None
         and started_at <= finished_at
@@ -1836,14 +1829,6 @@ def _safe_error_detail(value: str) -> bool:
         "\x00" not in value
         and _SECRET_MARKER.search(value) is None
         and not _contains_worker_secret(value)
-    )
-
-
-def _safe_worker_build(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and _WORKER_BUILD.fullmatch(value) is not None
-        and _safe_durable_string(value)
     )
 
 

@@ -125,7 +125,6 @@ def claim_search_job(
     contract_version: int,
     processor_type: str,
     processor_version: int,
-    worker_build: str,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     now: timezone.datetime | None = None,
 ) -> ClaimedSearchJob | EmptySearchClaim:

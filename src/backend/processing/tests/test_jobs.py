@@ -179,7 +179,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=3,
             processor_type="face_embedding",
             processor_version=3,
-            worker_build="quality-worker",
         )
 
     def reenroll_quality_face(
@@ -218,7 +217,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=3,
             processor_type="face_embedding",
             processor_version=3,
-            worker_build="quality-worker",
         )
 
     def publish_preview(self, photo: Photo) -> PhotoDerivative:
@@ -284,7 +282,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             lease_seconds=120,
         )
 
@@ -307,7 +304,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
 
         complete_attempt(
@@ -330,7 +326,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
 
         complete_attempt(claimed.attempt.id, result={"capture_time": None})
@@ -353,7 +348,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=1,
-            worker_build="worker-1",
         )
 
         complete_attempt(claimed.attempt.id, result={"capture_time": "2026-08-08T12:34:56Z"})
@@ -370,7 +364,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
         acquired: list[str] = []
         original = jobs_service._lock_transition_row
@@ -415,7 +408,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
         complete_attempt(claimed.attempt.id, result={"capture_time": "2026-08-08T12:34:56Z"})
         old_attempt = ProcessingAttempt.objects.get(pk=claimed.attempt.id)
@@ -454,7 +446,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
 
         with (
@@ -480,7 +471,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
 
         with (
@@ -506,7 +496,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=1,
-            worker_build="worker-1",
         )
 
         self.assertTrue(empty.empty)
@@ -539,7 +528,6 @@ class ProcessingJobServiceTests(TestCase):
                     contract_version=3,
                     processor_type="face_embedding",
                     processor_version=5,
-                    worker_build="cap-one-bulk",
                 )
                 self.assertEqual(active.job.photo_id, "job-historical-first")
         now = timezone.now()
@@ -552,7 +540,6 @@ class ProcessingJobServiceTests(TestCase):
                 contract_version=3,
                 processor_type="face_embedding",
                 processor_version=5,
-                worker_build="cap-one-bulk",
                 now=now,
             )
             for _ in states[1:]
@@ -603,7 +590,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=3,
             processor_type="face_embedding",
             processor_version=5,
-            worker_build="bulk",
             now=now,
         )
         self.assertEqual(claim.job.photo_id, "job-invalid-receipt")
@@ -648,7 +634,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="scoped-worker",
             event_id=self.event.id,
             configuration_hash=exact_state.current_job.configuration_hash,
         )
@@ -696,7 +681,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="scoped-worker",
             event_id=self.event.id,
             configuration_hash="f" * 64,
         )
@@ -723,13 +707,11 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="face_embedding",
             processor_version=1,
-            worker_build="worker-1",
         )
         mismatch_version = claim_job(
             contract_version=1,
             processor_type="face_embedding",
             processor_version=2,
-            worker_build="worker-1",
         )
 
         self.assertFalse(claim.empty)
@@ -742,7 +724,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
 
         self.assertTrue(empty.empty)
@@ -770,7 +751,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=2,
             processor_type="generate_preview",
             processor_version=1,
-            worker_build="preview-worker",
         )
 
         with self.assertRaises(ValueError):
@@ -848,7 +828,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=2,
             processor_type="face_embedding",
             processor_version=3,
-            worker_build="worker-3",
         )
         complete_attempt(
             claimed.attempt.id,
@@ -1002,7 +981,6 @@ class ProcessingJobServiceTests(TestCase):
                             contract_version=1,
                             processor_type="face_embedding",
                             processor_version=1,
-                            worker_build="legacy-worker",
                         )
                         result = {
                             "model": "sface",
@@ -1140,7 +1118,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=3,
             processor_type="face_embedding",
             processor_version=3,
-            worker_build="quality-v3-worker",
         )
         complete_attempt(
             historical.attempt.id,
@@ -1161,7 +1138,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=3,
             processor_type="face_embedding",
             processor_version=4,
-            worker_build="quality-v4-worker",
         )
         complete_attempt(
             candidate.attempt.id,
@@ -1257,7 +1233,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=3,
             processor_type="face_embedding",
             processor_version=3,
-            worker_build="quality-worker",
         )
 
         with self.assertRaises(ValueError):
@@ -1280,7 +1255,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
         later = self.private_photo("later")
 
@@ -1300,7 +1274,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
         later = self.private_photo("forbidden-membership")
 
@@ -1326,7 +1299,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
             lease_seconds=120,
         )
@@ -1353,7 +1325,6 @@ class ProcessingJobServiceTests(TestCase):
                 contract_version=1,
                 processor_type="capture_metadata",
                 processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-                worker_build="worker-1",
                 lease_seconds=lease_seconds - 1,
                 now=now,
             )
@@ -1363,7 +1334,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             lease_seconds=lease_seconds,
             now=now,
         )
@@ -1387,7 +1357,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
             lease_seconds=120,
         )
@@ -1408,7 +1377,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
         )
 
@@ -1432,7 +1400,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=job.available_at,
         )
         fail_attempt(
@@ -1446,7 +1413,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=job.available_at,
         )
         fail_attempt(
@@ -1472,7 +1438,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
 
         fail_attempt(claimed.attempt.id, error_code="unsupported_input", retryable=False)
@@ -1511,7 +1476,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="face_embedding",
             processor_version=1,
-            worker_build="face-worker",
         )
 
         complete_attempt(claimed.attempt.id, result={"face_count": 0, "faces": [], "warnings": []})
@@ -1528,7 +1492,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
         )
         fingerprint = claimed.job.input_fingerprint
@@ -1547,7 +1510,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-2",
             now=job.available_at,
         )
 
@@ -1565,7 +1527,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
             lease_seconds=120,
         )
@@ -1593,14 +1554,12 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
         )
         second_claim = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
         )
         ProcessingAttempt.objects.filter(
@@ -1627,7 +1586,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
             lease_seconds=120,
         )
@@ -1665,7 +1623,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
             lease_seconds=120,
         )
@@ -1699,7 +1656,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
 
         fail_attempt(
@@ -1723,7 +1679,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
         )
 
@@ -1763,7 +1718,6 @@ class ProcessingJobServiceTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
         runs[0].refresh_from_db()
         runs[1].refresh_from_db()
@@ -1836,13 +1790,11 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
         second_claim = claim_job(
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
         barrier = Barrier(3)
         failures: Queue[BaseException] = Queue()
@@ -1882,7 +1834,6 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
         barrier = Barrier(3)
         failures: Queue[BaseException] = Queue()
@@ -1937,7 +1888,6 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
                         contract_version=1,
                         processor_type="capture_metadata",
                         processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-                        worker_build="worker-claim",
                     )
                 )
             finally:
@@ -1968,7 +1918,6 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
         )
 
         first = complete_attempt(
@@ -1998,7 +1947,6 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-1",
             now=now,
         )
         state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")

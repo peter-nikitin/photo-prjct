@@ -269,7 +269,6 @@ class SearchJobTests(TestCase):
             contract_version=1,
             processor_type="selfie_query",
             processor_version=2,
-            worker_build="worker-test",
             lease_seconds=120,
             now=now,
         )
@@ -307,7 +306,6 @@ class SearchJobTests(TestCase):
             contract_version=1,
             processor_type="selfie_query",
             processor_version=1,
-            worker_build="worker-test",
         )
 
         self.assertTrue(claimed.empty)
@@ -1061,7 +1059,6 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
             contract_version=1,
             processor_type="selfie_query",
             processor_version=2,
-            worker_build="worker-test",
         )
         assert isinstance(first_claim, ClaimedSearchJob)
         cohort_started = ThreadEvent()
@@ -1105,14 +1102,12 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
                 contract_version=1,
                 processor_type="selfie_query",
                 processor_version=2,
-                worker_build="worker-test",
             )
             assert isinstance(second_claim, ClaimedSearchJob)
             photo_claim = claim_job(
                 contract_version=CONTRACT_VERSION,
                 processor_type="capture_metadata",
                 processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-                worker_build="bulk-worker-test",
             )
             assert isinstance(photo_claim, ClaimedJob)
             complete_attempt(photo_claim.attempt.id, result={"capture_time": None})

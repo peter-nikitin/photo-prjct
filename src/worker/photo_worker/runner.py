@@ -85,7 +85,6 @@ class WorkerClient(Protocol):
     def claim_job(
         self,
         *,
-        worker_build: str,
         lease_seconds: int,
         processor_type: str = PROCESSOR_TYPE,
         processor_version: int | None = None,
@@ -413,7 +412,6 @@ class Worker:
         contract_version, processor_type, processor_version = identity
         self._last_claim_identity = identity
         claim = self._client.claim_job(
-            worker_build=self._config.worker_build,
             lease_seconds=self._config.lease_seconds,
             processor_type=processor_type,
             processor_version=processor_version,
@@ -574,7 +572,6 @@ class Worker:
             total_ms = _milliseconds(total_started)
             payload = _success_payload(
                 job,
-                self._config.worker_build,
                 started_at,
                 _timestamp(),
                 result_payload,
@@ -658,7 +655,6 @@ class Worker:
             total_ms = _milliseconds(total_started)
             payload = _failure_payload(
                 job,
-                self._config.worker_build,
                 started_at,
                 _timestamp(),
                 code,
@@ -832,7 +828,6 @@ class Worker:
 
 def _success_payload(
     job: ClaimedJob,
-    worker_build: str,
     started_at: str,
     finished_at: str,
     result: CaptureMetadataResult | FaceEmbeddingResult | SelfieEmbeddingResult | dict[str, object],
@@ -840,9 +835,7 @@ def _success_payload(
     compute_ms: int,
     total_ms: int,
 ) -> dict[str, object]:
-    return _envelope(
-        job, worker_build, started_at, finished_at, download_ms, compute_ms, total_ms
-    ) | {
+    return _envelope(job, started_at, finished_at, download_ms, compute_ms, total_ms) | {
         "outcome": "success",
         "result": result if isinstance(result, dict) else result.as_payload(),
     }
@@ -850,7 +843,6 @@ def _success_payload(
 
 def _failure_payload(
     job: ClaimedJob,
-    worker_build: str,
     started_at: str,
     finished_at: str,
     code: str,
@@ -859,9 +851,7 @@ def _failure_payload(
     compute_ms: int,
     total_ms: int,
 ) -> dict[str, object]:
-    return _envelope(
-        job, worker_build, started_at, finished_at, download_ms, compute_ms, total_ms
-    ) | {
+    return _envelope(job, started_at, finished_at, download_ms, compute_ms, total_ms) | {
         "outcome": "failure",
         "error_code": code,
         "retryable": retryable,
@@ -871,7 +861,6 @@ def _failure_payload(
 
 def _envelope(
     job: ClaimedJob,
-    worker_build: str,
     started_at: str,
     finished_at: str,
     download_ms: int,
@@ -884,7 +873,6 @@ def _envelope(
         "contract_version": job.contract_version,
         "processor_type": job.processor_type,
         "processor_version": job.processor_version,
-        "worker_build": worker_build,
         "started_at": started_at,
         "finished_at": finished_at,
         "download_ms": download_ms,

@@ -71,6 +71,40 @@ class WorkerApiTests(TestCase):
         )
         self.headers = {"HTTP_AUTHORIZATION": "Bearer worker-secret"}
 
+    def test_worker_replacement_retries_without_release_identity(self) -> None:
+        """A replacement can retry the same input; the expired attempt stays fenced."""
+        request_capture_metadata(self.photo())
+        body = self.claim_body()
+        with patch("processing.views.ExactObjectDownloadStorage") as storage:
+            storage.return_value.create_download_grant.return_value.url = (
+                "https://storage.test/input"
+            )
+            storage.return_value.create_download_grant.return_value.expires_at = (
+                timezone.now() + timedelta(seconds=30)
+            )
+            first = self.post("/internal/photo-processing/v1/claim", body)
+            self.assertEqual(first.status_code, 200)
+            first_job = first.json()["job"]
+            ProcessingAttempt.objects.filter(pk=first_job["attempt_id"]).update(
+                lease_expires_at=timezone.now() - timedelta(seconds=1)
+            )
+            self.post("/internal/photo-processing/v1/claim", body)
+            ProcessingJob.objects.update(available_at=timezone.now() - timedelta(seconds=1))
+            second = self.post("/internal/photo-processing/v1/claim", body)
+        self.assertEqual(second.status_code, 200)
+        second_job = second.json()["job"]
+        self.assertEqual(first_job["id"], second_job["id"])
+        self.assertNotEqual(first_job["attempt_id"], second_job["attempt_id"])
+        payload = self.terminal_body(second_job)
+        result = self.post(
+            f"/internal/photo-processing/v1/attempts/{second_job['attempt_id']}/complete", payload
+        )
+        self.assertEqual(result.status_code, 200)
+        self.assertTrue(ProcessingAttempt.objects.get(pk=second_job["attempt_id"]).accepted)
+        self.assertEqual(
+            ProcessingAttempt.objects.get(pk=first_job["attempt_id"]).status, "expired"
+        )
+
     def photo(
         self,
         identifier: str = "api-photo",
@@ -102,7 +136,6 @@ class WorkerApiTests(TestCase):
             "contract_version": 1,
             "processor_type": "capture_metadata",
             "processor_version": 2,
-            "worker_build": "worker-test",
             "lease_seconds": 120,
         } | overrides
 
@@ -157,7 +190,6 @@ class WorkerApiTests(TestCase):
             "contract_version": job.get("contract_version", 1),
             "processor_type": job.get("processor_type", "capture_metadata"),
             "processor_version": job.get("processor_version", 2),
-            "worker_build": "worker-test",
             "started_at": "2026-07-29T10:00:00Z",
             "finished_at": "2026-07-29T10:00:03Z",
             "download_ms": 1,
@@ -1953,7 +1985,6 @@ class SelfieWorkerApiTests(TestCase):
             "contract_version": 1,
             "processor_type": "selfie_query",
             "processor_version": 2,
-            "worker_build": "worker-test",
             "lease_seconds": 120,
         }
 
@@ -1964,7 +1995,6 @@ class SelfieWorkerApiTests(TestCase):
             "contract_version": 1,
             "processor_type": "selfie_query",
             "processor_version": 2,
-            "worker_build": "worker-test",
             "started_at": "2026-07-30T10:00:00Z",
             "finished_at": "2026-07-30T10:00:03Z",
             "download_ms": 1,

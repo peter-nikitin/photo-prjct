@@ -487,7 +487,6 @@ class SelfieSearchEndToEndTests(TestCase):
             contract_version=PREVIEW_CONTRACT_VERSION,
             processor_type="generate_preview",
             processor_version=GENERATE_PREVIEW_PROCESSOR_VERSION,
-            worker_build="selfie-search-e2e-preview-fixture",
         )
         self.assertEqual(preview_claim.job.id, preview_state.current_job_id)
         preview_bytes = b"accepted-preview-fixture"
@@ -548,7 +547,6 @@ class SelfieSearchEndToEndTests(TestCase):
             contract_version=PREVIEW_CONTRACT_VERSION,
             processor_type="face_embedding",
             processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-            worker_build="selfie-search-e2e-face-fixture",
         )
         self.assertEqual(face_claim.job.id, face_job.id)
         completion = complete_attempt(

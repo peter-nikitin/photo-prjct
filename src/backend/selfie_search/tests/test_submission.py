@@ -385,7 +385,6 @@ class SubmissionTests(TestCase):
             contract_version=1,
             processor_type="selfie_query",
             processor_version=2,
-            worker_build="test",
         )
         assert isinstance(claimed, ClaimedSearchJob)
         with (
@@ -417,7 +416,6 @@ class SubmissionTests(TestCase):
             contract_version=1,
             processor_type="selfie_query",
             processor_version=2,
-            worker_build="test",
         )
         assert isinstance(claimed, ClaimedSearchJob)
         with (
@@ -798,7 +796,6 @@ class SubmissionTests(TestCase):
             contract_version=1,
             processor_type="selfie_query",
             processor_version=2,
-            worker_build="worker-test",
         )
         self.assertIsInstance(claimed, ClaimedSearchJob)
         assert isinstance(claimed, ClaimedSearchJob)

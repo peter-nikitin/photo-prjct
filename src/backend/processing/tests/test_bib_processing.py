@@ -202,7 +202,6 @@ class BibCompletionTests(TestCase):
             contract_version=1,
             processor_type="bib_recognition",
             processor_version=1,
-            worker_build="bib-worker",
         )
         assert isinstance(claimed, contracts.ClaimedJob)
         return claimed
@@ -218,7 +217,6 @@ class BibCompletionTests(TestCase):
             "contract_version": 1,
             "processor_type": "bib_recognition",
             "processor_version": 1,
-            "worker_build": "bib-worker",
             "started_at": now,
             "finished_at": now,
             "download_ms": 1,
@@ -245,7 +243,6 @@ class BibCompletionTests(TestCase):
             "contract_version": 1,
             "processor_type": "bib_recognition",
             "processor_version": 1,
-            "worker_build": "bib-worker",
             "started_at": now,
             "finished_at": now,
             "download_ms": 1,

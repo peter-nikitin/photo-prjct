@@ -205,16 +205,13 @@ class HttpClient:
     def claim_job(
         self,
         *,
-        worker_build: str,
         lease_seconds: int,
         processor_type: str = PROCESSOR_TYPE,
         processor_version: int | None = None,
         contract_version: int = 1,
     ) -> Claim:
-        if self._transport == "remote" and (
-            self._member is None or self._member["worker_build"] != worker_build
-        ):
-            raise ValueError("remote claim requires matching registered host identity")
+        if self._transport == "remote" and self._member is None:
+            raise ValueError("remote claim requires registered host identity")
         with self._member_lock:
             envelope: dict[str, object] = dict(self._member or {})
             if self._transport == "remote":
@@ -233,7 +230,6 @@ class HttpClient:
                             if processor_version is None
                             else processor_version
                         ),
-                        "worker_build": worker_build,
                         "lease_seconds": lease_seconds,
                     }
                     | envelope,

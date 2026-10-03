@@ -198,7 +198,6 @@ class GalleryMediaPublicationDrainTests(TransactionTestCase):
             contract_version=2,
             processor_type=GENERATE_PREVIEW_PROCESSOR,
             processor_version=1,
-            worker_build="old-web-worker",
         )
         return photo, claimed
 

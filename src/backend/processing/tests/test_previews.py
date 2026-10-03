@@ -142,7 +142,6 @@ class _PreviewPublicationFixture:
             contract_version=2,
             processor_type="generate_preview",
             processor_version=1,
-            worker_build="preview-worker",
         )
 
     def _result(self, object: PreviewObject, **overrides: object) -> dict[str, object]:
@@ -190,7 +189,6 @@ class _PreviewPublicationFixture:
             contract_version=2,
             processor_type="generate_watermarked_preview",
             processor_version=1,
-            worker_build="watermark-worker",
         )
         return photo, clean_derivative, claimed
 
@@ -571,7 +569,6 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
             contract_version=2,
             processor_type="generate_watermarked_preview",
             processor_version=1,
-            worker_build="watermark-retry-worker",
             now=watermark.next_attempt_at,
         )
         assert isinstance(retry, ClaimedJob)
@@ -607,7 +604,6 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
             contract_version=2,
             processor_type="face_embedding",
             processor_version=3,
-            worker_build="face-failure-worker",
         )
         assert isinstance(face_claim, ClaimedJob)
 

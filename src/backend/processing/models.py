@@ -70,13 +70,6 @@ class WorkerPoolMember(models.Model):  # noqa: DJ008
     draining = models.BooleanField(default=False)
     heartbeat_at = models.DateTimeField(null=True, default=None)
     idle_since = models.DateTimeField(null=True, default=None)
-    active_processing_attempt = models.OneToOneField(
-        "ProcessingAttempt",
-        on_delete=models.PROTECT,
-        null=True,
-        default=None,
-        related_name="pool_member",
-    )
     active_selfie_attempt = models.OneToOneField(
         "selfie_search.SelfieSearchAttempt",
         on_delete=models.PROTECT,
@@ -91,11 +84,6 @@ class WorkerPoolMember(models.Model):  # noqa: DJ008
 
     class Meta:
         constraints = [
-            models.CheckConstraint(
-                condition=models.Q(active_processing_attempt__isnull=True)
-                | models.Q(active_selfie_attempt__isnull=True),
-                name="worker_member_one_attempt_chk",
-            ),
             models.CheckConstraint(
                 condition=(
                     models.Q(
@@ -294,6 +282,13 @@ class ProcessingAttempt(models.Model):  # noqa: DJ008
     configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
     input_fingerprint = models.JSONField(default=dict, validators=[validate_bounded_json])
     worker_build = models.CharField(max_length=128, blank=True, default="")
+    pool_member = models.ForeignKey(
+        WorkerPoolMember,
+        on_delete=models.SET_NULL,
+        null=True,
+        default=None,
+        related_name="processing_attempts",
+    )
     status = models.CharField(max_length=16, choices=Status, default=Status.IN_PROGRESS)
     created_at = models.DateTimeField(auto_now_add=True)
     claimed_at = models.DateTimeField(null=True, blank=True)

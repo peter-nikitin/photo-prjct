@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
+from threading import Barrier
 
 import cv2
 import numpy as np
@@ -65,6 +67,30 @@ def write_jpeg(path: Path) -> None:
     image = Image.new("RGB", (32, 32), "white")
     image.save(path, "JPEG")
     image.close()
+
+
+def test_model_runtime_is_not_shared_between_parallel_slots(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(face_embedding, "_MODEL_RUNTIMES", {})
+    monkeypatch.setattr(face_embedding, "_load_models", lambda *_args: (object(), object()))
+    barrier = Barrier(2)
+
+    def get_runtime():
+        runtime = face_embedding._get_model_runtime(
+            object(), tmp_path / "detector", tmp_path / "recognizer", "sface"
+        )
+        barrier.wait(timeout=3)
+        assert (
+            face_embedding._get_model_runtime(
+                object(), tmp_path / "detector", tmp_path / "recognizer", "sface"
+            )
+            is runtime
+        )
+        return runtime
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(get_runtime)
+        second = executor.submit(get_runtime)
+        assert first.result() is not second.result()
 
 
 def test_adaface_recovers_canonical_crop_from_displaced_scaled_rotated_landmarks() -> None:

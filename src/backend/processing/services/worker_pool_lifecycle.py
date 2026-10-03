@@ -198,17 +198,18 @@ def _live_attempts(name: str, now: datetime) -> QuerySet[Any]:
 
 
 def _has_live(member: WorkerPoolMember, now: datetime) -> bool:
-    attempt_id = member.active_processing_attempt_id or member.active_selfie_attempt_id
+    if member.pool.name == "bulk":
+        return _live_attempts("bulk", now).filter(pool_member=member).exists()
+    attempt_id = member.active_selfie_attempt_id
     if attempt_id is None:
         return False
     # A heartbeat may have sampled time before waiting on a row lock. Keep ownership
     # until existing recovery durably terminates the attempt, not merely clock expiry.
     if _live_attempts(member.pool.name, now).filter(pk=attempt_id).exists():
         return True
-    member.active_processing_attempt_id = None
     member.active_selfie_attempt_id = None
     member.idle_since = None
-    member.save(update_fields=["active_processing_attempt", "active_selfie_attempt", "idle_since"])
+    member.save(update_fields=["active_selfie_attempt", "idle_since"])
     return False
 
 
@@ -488,15 +489,14 @@ class ClaimAdmission:
         if self.member is None:
             return
         if isinstance(attempt, ProcessingAttempt) and self.member.pool.name == "bulk":
-            self.member.active_processing_attempt = attempt
+            attempt.pool_member = self.member
+            attempt.save(update_fields=["pool_member"])
         elif isinstance(attempt, SelfieSearchAttempt) and self.member.pool.name == "selfie":
             self.member.active_selfie_attempt = attempt
         else:
             raise AdmissionDenied()
         self.member.idle_since = None
-        self.member.save(
-            update_fields=["active_processing_attempt", "active_selfie_attempt", "idle_since"]
-        )
+        self.member.save(update_fields=["active_selfie_attempt", "idle_since"])
 
 
 @contextmanager
@@ -521,7 +521,9 @@ def claim_admission(identity: Identity, remote: MemberIdentity | None) -> Iterat
         allowed = (
             type(limit) is int and limit in {1, 2} and _live_attempts(name, now).count() < limit
         )
-        allowed = allowed and _serving(pool, member, now) and not _has_live(member, now)
+        allowed = allowed and _serving(pool, member, now)
+        if name == "selfie":
+            allowed = allowed and not _has_live(member, now)
         _idle(pool, member, now)
         member.save(update_fields=["idle_since"])
         yield ClaimAdmission(allowed, member)
@@ -624,9 +626,13 @@ def set_claims_paused(name: str, *, paused: bool, local: bool = False) -> None:
 @transaction.atomic
 def local_live_leases(name: str) -> int:
     pool = _pool(name)
-    field = "active_processing_attempt_id" if name == "bulk" else "active_selfie_attempt_id"
-    bound = pool.members.exclude(**{field: None}).values_list(field, flat=True)
-    return _live_attempts(name, timezone.now()).exclude(pk__in=bound).count()
+    live = _live_attempts(name, timezone.now())
+    if name == "bulk":
+        return live.filter(pool_member__isnull=True).count()
+    bound = pool.members.exclude(active_selfie_attempt_id=None).values_list(
+        "active_selfie_attempt_id", flat=True
+    )
+    return live.exclude(pk__in=bound).count()
 
 
 def wait_for_local_drain(

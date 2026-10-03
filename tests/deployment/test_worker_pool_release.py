@@ -27,7 +27,7 @@ def test_historical_runbook_requires_readiness_deploy_before_enrollment():
     assert "do not merge this readiness PR" in runbook
     complete = runbook.index("## Gate 1a: finalize the initial remote receipt")
     readiness = runbook.index("## Gate 1b: deploy and prove the readiness code")
-    enrollment = runbook.index("## Gate 2: approve one bounded enrollment")
+    enrollment = runbook.index("## Gate 2: approve historical enrollment")
     assert complete < readiness < enrollment < runbook.index("--apply")
     assert "finalize_initial_workers=true" in runbook[complete:readiness]
     proof = runbook[readiness:enrollment]

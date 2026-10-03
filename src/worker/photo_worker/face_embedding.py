@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -47,7 +48,7 @@ class _ModelRuntime:
     recognizer: Any
 
 
-_MODEL_RUNTIMES: dict[tuple[Path, Path, str], _ModelRuntime] = {}
+_MODEL_RUNTIMES: dict[tuple[int, Path, Path, str], _ModelRuntime] = {}
 
 
 def warm_models() -> None:
@@ -480,7 +481,8 @@ def _get_model_runtime(
     recognizer_model: Path,
     model: str,
 ) -> _ModelRuntime:
-    key = (scrfd_model.resolve(), recognizer_model.resolve(), model)
+    # Native recognizers are not shared across simultaneous inference threads.
+    key = (threading.get_ident(), scrfd_model.resolve(), recognizer_model.resolve(), model)
     runtime = _MODEL_RUNTIMES.get(key)
     if runtime is None:
         detector, recognizer = _load_models(cv2, scrfd_model, recognizer_model, model)

@@ -120,7 +120,7 @@ def _validate(data: dict[str, Any], now: datetime) -> lifecycle.MemberIdentity:
     if (
         not lifecycle._fresh(_time(runtime["sampled_at"]), sampled, lifecycle.OBSERVATION_MAX_AGE)
         or type(runtime["busy"]) is not int
-        or runtime["busy"] not in {0, 1}
+        or runtime["busy"] not in ({0, 1} if identity.pool == "selfie" else {0, 1, 2})
     ):
         raise ValueError()
     aggregates = _object(

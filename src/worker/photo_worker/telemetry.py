@@ -38,21 +38,20 @@ RUNTIME_PORT = 9101
 
 
 class RuntimeTelemetry:
-    """One single-concurrency process; no default collectors or arbitrary labels."""
+    """One process with bounded in-flight execution counts and no arbitrary labels."""
 
     def __init__(self, generation: Callable[[], str | None]) -> None:
         self._generation = generation
         self._current_generation: str | None = None
         self._lock = threading.Lock()
-        self._started_at: float | None = None
-        self._execution_generation: str | None = None
+        self._executing: dict[int, tuple[float, str | None]] = {}
         self._reset()
 
     def _reset(self) -> None:
         self._registry = CollectorRegistry()
         self._busy = Gauge(
             "worker_runtime_busy",
-            "An admitted execution is being handled.",
+            "Number of admitted executions being handled.",
             registry=self._registry,
         )
         self._executions = Counter(
@@ -68,7 +67,7 @@ class RuntimeTelemetry:
             buckets=DURATION_BUCKETS,
             registry=self._registry,
         )
-        self._busy.set(int(self._started_at is not None))
+        self._busy.set(len(self._executing))
 
     def _sync_generation(self) -> str | None:
         generation = self._generation()
@@ -81,29 +80,26 @@ class RuntimeTelemetry:
         if kind not in KINDS:
             raise ValueError("unsupported runtime kind")
         with self._lock:
-            self._execution_generation = self._sync_generation()
-            self._started_at = monotonic()
-            self._busy.set(1)
+            generation = self._sync_generation()
+            self._executing[threading.get_ident()] = (monotonic(), generation)
+            self._busy.set(len(self._executing))
 
     def finished(self, kind: str, outcome: str, duration_seconds: float | None = None) -> None:
         if kind not in KINDS or outcome not in OUTCOMES:
             raise ValueError("unsupported runtime kind or outcome")
         with self._lock:
             generation = self._sync_generation()
+            execution = self._executing.pop(threading.get_ident(), None)
             try:
-                if generation != self._execution_generation:
+                if execution is None or generation != execution[1]:
                     # An old in-flight attempt cannot contribute to a new registration.
                     return
                 if duration_seconds is None:
-                    if self._started_at is None:
-                        return
-                    duration_seconds = max(0.0, monotonic() - self._started_at)
+                    duration_seconds = max(0.0, monotonic() - execution[0])
                 self._executions.labels(kind, outcome).inc()
                 self._duration.labels(kind, outcome).observe(duration_seconds)
             finally:
-                self._started_at = None
-                self._execution_generation = None
-                self._busy.set(0)
+                self._busy.set(len(self._executing))
 
     def scrape(self) -> tuple[str | None, bytes]:
         with self._lock:

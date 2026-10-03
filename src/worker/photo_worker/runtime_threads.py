@@ -1,8 +1,9 @@
-"""Keep native inference pools within this single worker's container CPU budget."""
+"""Keep native inference pools within the worker container's CPU budget."""
 
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,9 @@ def cpu_thread_budget(path: Path = CPU_MAX_PATH) -> int:
         return 1
 
 
-CPU_THREADS = cpu_thread_budget()
+# Two bulk slots share the existing two-vCPU container; native libraries must not
+# each reserve the full CPU budget independently.
+CPU_THREADS = 1 if os.environ.get("PHOTO_WORKER_POOL") == "bulk" else cpu_thread_budget()
 
 
 def configure_native_environment() -> None:
@@ -35,11 +38,13 @@ def configure_native_environment() -> None:
 
 
 _TORCH_CONFIGURED = False
+_TORCH_CONFIG_LOCK = threading.Lock()
 
 
 def configure_torch(torch: Any) -> None:
     global _TORCH_CONFIGURED
-    if not _TORCH_CONFIGURED:
-        torch.set_num_threads(CPU_THREADS)
-        torch.set_num_interop_threads(1)
-        _TORCH_CONFIGURED = True
+    with _TORCH_CONFIG_LOCK:
+        if not _TORCH_CONFIGURED:
+            torch.set_num_threads(CPU_THREADS)
+            torch.set_num_interop_threads(1)
+            _TORCH_CONFIGURED = True

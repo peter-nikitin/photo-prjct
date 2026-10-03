@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -55,6 +56,149 @@ def test_runtime_aggregates_are_bounded_and_busy_resets() -> None:
         telemetry.started("face_embedding_benchmark")
     with pytest.raises(ValueError):
         telemetry.finished("capture_metadata", "exception-secret", 1)
+
+
+def test_runtime_counts_two_independent_inflight_executions() -> None:
+    telemetry = RuntimeTelemetry(lambda: "00000000-0000-0000-0000-000000000001")
+    ready = threading.Barrier(3)
+    release = threading.Event()
+
+    def execute() -> None:
+        telemetry.started("face_embedding")
+        ready.wait(timeout=3)
+        release.wait(timeout=3)
+        telemetry.finished("face_embedding", "callback_delivered", 2)
+
+    threads = [threading.Thread(target=execute) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    try:
+        ready.wait(timeout=3)
+        assert samples(telemetry)[("worker_runtime_busy", ())] == 2
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=3)
+    values = samples(telemetry)
+    assert values[("worker_runtime_busy", ())] == 0
+    labels = (("kind", "face_embedding"), ("outcome", "callback_delivered"))
+    assert values[("worker_runtime_executions_total", labels)] == 2
+
+
+def test_bulk_entrypoint_runs_two_slots_and_drains_together(monkeypatch) -> None:
+    from photo_worker import __main__ as entrypoint
+    from photo_worker.runner import Worker, WorkerConfig
+
+    config = WorkerConfig("a" * 40, 120, concurrency=2, remote_pool="bulk")
+    client = HttpClient(REMOTE_API_URL, "fleet", transport="remote")
+    monkeypatch.setattr(WorkerConfig, "from_env", lambda: (config, client))
+    monkeypatch.setattr(entrypoint, "install_signal_handlers", lambda _worker: None)
+    monkeypatch.setattr(
+        HostIdentity,
+        "read",
+        lambda **_kwargs: HostIdentity(
+            "bulk", "instance-1", "00000000-0000-0000-0000-000000000003", "a" * 40
+        ),
+    )
+    monkeypatch.setattr("photo_worker.lifecycle._warm_models", lambda: None)
+    warmed_threads = set()
+
+    def warm_models() -> None:
+        warmed_threads.add(threading.get_ident())
+
+    monkeypatch.setattr(entrypoint, "warm_models", warm_models, raising=False)
+
+    def start(fleet: FleetLifecycle) -> None:
+        fleet._warmup()
+        fleet._warm = True
+        fleet._admitted = True
+
+    monkeypatch.setattr(FleetLifecycle, "start", start)
+    monkeypatch.setattr(FleetLifecycle, "pulse", lambda _fleet: None)
+    monkeypatch.setattr(FleetLifecycle, "close", lambda _fleet: None)
+    entered = threading.Barrier(3)
+    release = threading.Event()
+    workers = []
+
+    def run(worker: Worker) -> None:
+        assert threading.get_ident() in warmed_threads
+        workers.append(worker)
+        entered.wait(timeout=3)
+        release.wait(timeout=3)
+
+    monkeypatch.setattr(Worker, "run_forever", run)
+    main_thread = threading.Thread(target=entrypoint.main)
+    main_thread.start()
+    try:
+        entered.wait(timeout=3)
+        assert len(workers) == 2
+        assert workers[0] is not workers[1]
+        assert workers[0].fleet is workers[1].fleet
+        assert workers[0].drain is workers[1].drain
+        assert not workers[0].drain.completed.is_set()
+    finally:
+        if workers:
+            workers[0].request_drain()
+        release.set()
+        main_thread.join(timeout=3)
+    assert not main_thread.is_alive()
+    assert workers[0].drain.completed.is_set()
+
+
+def test_bulk_slot_failure_keeps_drain_deadline_until_other_slot_finishes(monkeypatch) -> None:
+    from photo_worker import __main__ as entrypoint
+    from photo_worker.runner import Worker, WorkerConfig
+
+    config = WorkerConfig("a" * 40, 120, concurrency=2, remote_pool="bulk")
+    client = HttpClient(REMOTE_API_URL, "fleet", transport="remote")
+    monkeypatch.setattr(WorkerConfig, "from_env", lambda: (config, client))
+    monkeypatch.setattr(entrypoint, "install_signal_handlers", lambda _worker: None)
+    monkeypatch.setattr(entrypoint, "warm_models", lambda: None)
+    monkeypatch.setattr(
+        HostIdentity,
+        "read",
+        lambda **_kwargs: HostIdentity(
+            "bulk", "instance-1", "00000000-0000-0000-0000-000000000003", "a" * 40
+        ),
+    )
+
+    def start(fleet: FleetLifecycle) -> None:
+        fleet._warmup()
+
+    monkeypatch.setattr(FleetLifecycle, "start", start)
+    monkeypatch.setattr(FleetLifecycle, "pulse", lambda _fleet: None)
+    monkeypatch.setattr(FleetLifecycle, "close", lambda _fleet: None)
+    entered = threading.Barrier(3)
+    release = threading.Event()
+    workers = []
+    errors = []
+
+    def run(worker: Worker) -> None:
+        workers.append(worker)
+        entered.wait(timeout=3)
+        if worker is workers[0]:
+            raise RuntimeError("slot failed")
+        release.wait(timeout=3)
+
+    def run_main() -> None:
+        try:
+            entrypoint.main()
+        except RuntimeError as error:
+            errors.append(str(error))
+
+    monkeypatch.setattr(Worker, "run_forever", run)
+    main_thread = threading.Thread(target=run_main)
+    main_thread.start()
+    try:
+        entered.wait(timeout=3)
+        assert workers[0].draining.wait(timeout=3)
+        assert not workers[0].drain.completed.is_set()
+        assert main_thread.is_alive()
+    finally:
+        release.set()
+        main_thread.join(timeout=3)
+    assert errors == ["slot failed"]
+    assert workers[0].drain.completed.is_set()
 
 
 def test_real_loopback_scrape_fences_current_registration_and_resets_baseline() -> None:

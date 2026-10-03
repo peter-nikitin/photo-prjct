@@ -22,7 +22,7 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
     leaves = executor.loader.graph.leaf_nodes()
     assert executor.loader.detect_conflicts() == {}
     assert [node for node in leaves if node[0] == "processing"] == [
-        ("processing", "0014_bibreadingchange")
+        ("processing", "0015_bulk_member_attempts")
     ]
     try:
         executor.migrate(baseline)
@@ -135,6 +135,9 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
 
         def snapshot(registry, app, name):
             rows = list(registry.get_model(app, name).objects.order_by("pk").values())
+            if name == "ProcessingAttempt":
+                for row in rows:
+                    row.pop("pool_member_id", None)
             if name == "FaceEmbeddingVector":
                 for row in rows:
                     row["vector"] = list(row["vector"])

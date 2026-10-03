@@ -43,6 +43,7 @@ def test_telemetry_upgrade_preserves_terminal_retryable_active_expired_and_unenr
             ("processing", "in_progress", now - timedelta(minutes=5)),
             ("retry_wait", "expired", now - timedelta(minutes=10)),
         ]
+        live_attempt = None
         for index, (job_status, attempt_status, expiry) in enumerate(cases):
             photo = Photo.objects.create(id=f"upgrade-{index}", event=event, src="old.jpg")
             job = Job.objects.create(
@@ -70,6 +71,8 @@ def test_telemetry_upgrade_preserves_terminal_retryable_active_expired_and_unenr
                 result_hash="b" * 64,
                 error_code="old_failure" if attempt_status == "failed" else "",
             )
+            if index == 4:
+                live_attempt = attempt
             apps.get_model("processing", "PhotoProcessingState").objects.create(
                 photo=photo,
                 processor_type="face_embedding",
@@ -88,12 +91,13 @@ def test_telemetry_upgrade_preserves_terminal_retryable_active_expired_and_unenr
         pool = apps.get_model("processing", "WorkerPool").objects.create(
             name="bulk", group_id="group", active_build="a" * 40, staged_build="b" * 40
         )
-        apps.get_model("processing", "WorkerPoolMember").objects.create(
+        member = apps.get_model("processing", "WorkerPoolMember").objects.create(
             pool=pool,
             instance_id="old-instance",
             boot_id="12345678-1234-1234-1234-123456789012",
             worker_build="a" * 40,
             ready=True,
+            active_processing_attempt=live_attempt,
         )
         names = [("picflow", "Photo")] + [
             ("processing", name)
@@ -109,16 +113,28 @@ def test_telemetry_upgrade_preserves_terminal_retryable_active_expired_and_unenr
         ]
 
         def inventory(registry):
-            return {
+            rows = {
                 pair: list(registry.get_model(*pair).objects.order_by("pk").values())
                 for pair in names
             }
+            for row in rows[("processing", "ProcessingAttempt")]:
+                row.pop("pool_member_id", None)
+            for row in rows[("processing", "WorkerPoolMember")]:
+                row.pop("active_processing_attempt_id", None)
+            return rows
 
         before = inventory(apps)
         executor = MigrationExecutor(connection)
         executor.migrate(leaves)
         current = executor.loader.project_state(leaves).apps
         assert inventory(current) == before
+        assert live_attempt is not None
+        assert (
+            current.get_model("processing", "ProcessingAttempt")
+            .objects.get(pk=live_attempt.pk)
+            .pool_member_id
+            == member.pk
+        )
         assert current.get_model("processing", "WorkerPoolTelemetry").objects.count() == 0
         assert (
             current.get_model("processing", "ProcessingJob")

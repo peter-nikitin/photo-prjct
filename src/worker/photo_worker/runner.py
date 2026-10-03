@@ -1,4 +1,4 @@
-"""Single-concurrency polling loop for the private photo worker processors."""
+"""Polling loop for the private photo worker processors."""
 
 from __future__ import annotations
 
@@ -147,8 +147,8 @@ class WorkerConfig:
     def __post_init__(self) -> None:
         if self.runtime_telemetry_enabled and self.remote_pool is None:
             raise ValueError("runtime telemetry requires remote worker transport")
-        if self.concurrency != 1:
-            raise ValueError("worker concurrency must be exactly 1")
+        if self.concurrency not in {1, 2} or (self.concurrency == 2 and self.remote_pool != "bulk"):
+            raise ValueError("worker concurrency must be 1 or 2 on the remote bulk pool")
         supported = {
             PROCESSOR_TYPE,
             PROCESSOR_TYPE_FACE_EMBEDDING,
@@ -224,6 +224,11 @@ class WorkerConfig:
                 processor_types=processor_types,
                 log_secrets=(token,),
                 remote_pool=os.environ["PHOTO_WORKER_POOL"] if transport == "remote" else None,
+                concurrency=(
+                    2
+                    if transport == "remote" and os.environ.get("PHOTO_WORKER_POOL") == "bulk"
+                    else 1
+                ),
                 runtime_telemetry_enabled=os.environ.get(
                     "PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED", "False"
                 )

@@ -1763,9 +1763,37 @@ def test_claimed_configuration_sets_the_next_poll_delay(tmp_path: Path) -> None:
     assert worker._next_poll_delay_seconds == 5
 
 
-def test_worker_configuration_rejects_parallel_concurrency() -> None:
-    with pytest.raises(ValueError, match="concurrency"):
-        WorkerConfig(worker_build="worker-test", lease_seconds=60, concurrency=2)
+def test_worker_configuration_bounds_parallel_concurrency_to_bulk() -> None:
+    assert (
+        WorkerConfig(
+            worker_build="worker-test", lease_seconds=60, concurrency=2, remote_pool="bulk"
+        ).concurrency
+        == 2
+    )
+    for concurrency, pool in ((0, "bulk"), (3, "bulk"), (2, "selfie")):
+        with pytest.raises(ValueError, match="concurrency"):
+            WorkerConfig(
+                worker_build="worker-test",
+                lease_seconds=60,
+                concurrency=concurrency,
+                remote_pool=pool,
+            )
+
+
+def test_remote_bulk_environment_uses_two_slots_and_selfie_one(monkeypatch) -> None:
+    from photo_worker.transport import POOL_IDENTITIES, REMOTE_API_URL
+
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", REMOTE_API_URL)
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv("PHOTO_WORKER_TRANSPORT", "remote")
+    monkeypatch.setenv("WORKER_POOL_PRIVATE_API_IPV4", "10.0.0.1")
+    monkeypatch.setenv("PHOTO_WORKER_BUILD", "a" * 40)
+    monkeypatch.setenv("PHOTO_WORKER_IMAGE", "ghcr.io/findme/photo-worker@sha256:" + "b" * 64)
+    for pool, concurrency in (("bulk", 2), ("selfie", 1)):
+        monkeypatch.setenv("PHOTO_WORKER_POOL", pool)
+        monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", POOL_IDENTITIES[pool])
+        config, _client = WorkerConfig.from_env()
+        assert config.concurrency == concurrency
 
 
 def test_environment_configuration_rejects_an_empty_worker_token(

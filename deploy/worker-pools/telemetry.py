@@ -265,7 +265,7 @@ def parse_runtime(raw, generation, pool, sampled_at):
             seen.add(key)
             if sample.name == "worker_runtime_busy" and not sample.labels:
                 busy = number(sample.value, integer=True)
-                if busy not in {0, 1}:
+                if busy not in ({0, 1} if pool == "selfie" else {0, 1, 2}):
                     raise ValueError("invalid runtime busy")
                 continue
             label_keys = (

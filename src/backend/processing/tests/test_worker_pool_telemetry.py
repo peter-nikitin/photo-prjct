@@ -15,6 +15,7 @@ from prometheus_client.parser import text_string_to_metric_families
 from processing.contracts import ClaimedJob
 from processing.models import WorkerPool, WorkerPoolMember
 from processing.services import worker_pool_lifecycle as lifecycle
+from processing.services import worker_pool_telemetry
 
 BUILD = "a" * 40
 URL = "/internal/photo-processing/v1/members/telemetry"
@@ -95,6 +96,16 @@ class TelemetryTests(TestCase):
             HTTP_X_FINDME_WORKER_TRANSPORT="private-tls",
             **headers,
         )
+
+    def test_bulk_runtime_accepts_two_busy_slots_but_selfie_does_not(self):
+        data = copy.deepcopy(self.data)
+        data["pool"] = "bulk"
+        data["runtime"]["busy"] = 2
+        data["runtime"]["aggregates"] = {}
+        self.assertEqual(worker_pool_telemetry._validate(data, self.now).pool, "bulk")
+        data["pool"] = "selfie"
+        with self.assertRaises(ValueError):
+            worker_pool_telemetry._validate(data, self.now)
 
     def samples(self):
         response = self.client.get("/worker-diagnostics/metrics/")

@@ -16,7 +16,7 @@ from selfie_search.services.jobs import fail_search_attempt, heartbeat_search_at
 from selfie_search.services.submission import _configuration
 from selfie_search.storage import StoredTemporarySelfie
 
-from processing.models import WorkerPool, WorkerPoolMember
+from processing.models import ProcessingAttempt, WorkerPool, WorkerPoolMember
 from processing.services import worker_pool_lifecycle as lifecycle
 from processing.services.enrollment import request_capture_metadata
 from processing.views import _claim_with_grant
@@ -647,7 +647,7 @@ class LifecycleTests(TransactionTestCase):
             event=event,
             src="",
             uploaded_by=get_user_model().objects.create_user(username=uuid4().hex),
-            original_key="originals/0123456789abcdef0123456789abcdef",
+            original_key=f"originals/{uuid4().hex}",
             original_size=1024,
             original_content_type="image/jpeg",
             original_filename="photo.jpg",
@@ -685,6 +685,38 @@ class LifecycleTests(TransactionTestCase):
             idle_since=self.now - timedelta(minutes=20)
         )
         return identities
+
+    def test_one_bulk_member_claims_two_attempts_and_retains_both_leases(self):
+        member = self.bulk_members()[0]
+        identity, storage_path, storage = self.queued_claim("bulk")
+        self.queued_claim("bulk")
+        self.queued_claim("bulk")
+        body = {
+            "contract_version": identity[0],
+            "processor_type": identity[1],
+            "processor_version": identity[2],
+            "worker_build": BUILD,
+            "lease_seconds": 120,
+        }
+        with patch(storage_path, return_value=storage):
+            claims = [_claim_with_grant(body, member=member) for _ in range(3)]
+        self.assertFalse(claims[0]["empty"])
+        self.assertFalse(claims[1]["empty"])
+        self.assertTrue(claims[2]["empty"])
+        attempt_ids = []
+        for claim in claims[:2]:
+            job = claim["job"]
+            assert isinstance(job, dict)
+            attempt_ids.append(job["attempt_id"])
+        self.assertEqual(len(set(attempt_ids)), 2)
+        self.assertEqual(
+            ProcessingAttempt.objects.filter(
+                pk__in=attempt_ids, pool_member__instance_id=member.instance_id
+            ).count(),
+            2,
+        )
+        self.assertIsNone(lifecycle.request_retirement(member))
+        self.assertEqual(lifecycle.local_live_leases("bulk"), 0)
 
     def test_claim_and_retire_serialize_with_actual_attempt_binding_in_both_stores(self):
         for pool, member in (("selfie", self.envelopes[0]), ("bulk", self.bulk_members()[0])):
@@ -736,7 +768,11 @@ class LifecycleTests(TransactionTestCase):
                     self.assertIsNone(retired.result(timeout=5))
                     self.assertFalse(payload["empty"])
                     current = WorkerPoolMember.objects.get(instance_id=member.instance_id)
-                    bound = current.active_processing_attempt_id or current.active_selfie_attempt_id
+                    bound = (
+                        current.active_selfie_attempt_id
+                        if pool == "selfie"
+                        else current.processing_attempts.get(status="in_progress").pk
+                    )
                     self.assertEqual(str(bound), payload["job"]["attempt_id"])
                     self.assertTrue(_claim_with_grant(body, member=member)["empty"])
 

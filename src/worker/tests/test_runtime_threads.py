@@ -31,6 +31,22 @@ def test_import_caps_native_library_pools_before_they_start():
     assert set(limits.values()) <= {"1", "2"}
 
 
+def test_bulk_parallel_slots_each_use_one_native_cpu_thread():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from photo_worker.runtime_threads import CPU_THREADS; print(CPU_THREADS)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=os.environ
+        | {"PYTHONPATH": str(Path(__file__).parents[1]), "PHOTO_WORKER_POOL": "bulk"},
+    )
+    assert result.stdout.strip() == "1"
+
+
 @pytest.mark.parametrize(
     ("quota", "expected"),
     [("200000 100000", 2), ("100000 100000", 1), ("max 100000", 1), ("400000 100000", 2)],

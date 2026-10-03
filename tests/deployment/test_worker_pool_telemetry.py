@@ -67,6 +67,15 @@ def test_runtime_parser_compacts_real_exposition_and_rejects_private_or_unknown_
             probe.parse_runtime(text, GENERATION, "selfie", NOW)
 
 
+def test_runtime_parser_accepts_two_busy_bulk_slots_but_not_selfie():
+    probe = module()
+    raw = runtime_text().replace(b"worker_runtime_busy 0.0", b"worker_runtime_busy 2.0")
+    raw = raw.replace(b'kind="selfie_query"', b'kind="face_embedding"')
+    assert probe.parse_runtime(raw, GENERATION, "bulk", NOW)["busy"] == 2
+    with pytest.raises(ValueError, match="busy"):
+        probe.parse_runtime(raw, GENERATION, "selfie", NOW)
+
+
 def test_host_resources_measure_root_pressure_and_keep_failed_fields_unknown(monkeypatch):
     probe = module()
     monkeypatch.setattr(probe.psutil, "cpu_percent", lambda interval: 25.0)

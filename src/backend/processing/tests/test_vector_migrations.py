@@ -172,10 +172,10 @@ def test_previous_processing_and_search_rows_survive_vector_schema_expansion():
         executor.migrate(leaves)
         current = executor.loader.project_state(leaves).apps
         for name in names:
-            assert (
-                list(current.get_model("processing", name).objects.order_by("pk").values())
-                == before[name]
-            )
+            rows = list(current.get_model("processing", name).objects.order_by("pk").values())
+            if name == "ProcessingAttempt":
+                assert all(row.pop("pool_member_id") is None for row in rows)
+            assert rows == before[name]
         rows = list(
             current.get_model("selfie_search", "SelfieSearch").objects.order_by("pk").values()
         )

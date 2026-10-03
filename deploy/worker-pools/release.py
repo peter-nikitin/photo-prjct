@@ -744,11 +744,13 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
     if mode == "preflight":
         print("FLEET_PREFLIGHT_STEP=manifest", flush=True)
         manifest = json.loads(Path(manifest_path).read_text())
+        print("FLEET_PREFLIGHT_STEP=manifest-validation", flush=True)
         validate_manifest(manifest)
-        if (
-            checksum != manifest["checksum"]
-            or provision.prepare(manifest["configuration"]) != manifest
-        ):
+        print("FLEET_PREFLIGHT_STEP=manifest-checksum", flush=True)
+        if checksum != manifest["checksum"]:
+            raise ValueError("candidate differs from reviewed package")
+        print("FLEET_PREFLIGHT_STEP=manifest-rebuild", flush=True)
+        if provision.prepare(manifest["configuration"]) != manifest:
             raise ValueError("candidate differs from reviewed package")
         print("FLEET_PREFLIGHT_STEP=previous", flush=True)
         previous = json.loads(marker.read_text())

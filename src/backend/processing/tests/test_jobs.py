@@ -9,6 +9,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, close_old_connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -1769,6 +1770,36 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(claimed.job.run_id, runs[0].id)
         self.assertEqual(runs[0].status, EventProcessingRun.Status.SEALED)
         self.assertEqual(runs[1].status, EventProcessingRun.Status.COLLECTING)
+
+    def test_enrollment_checks_only_latest_collecting_run_when_older_runs_are_full(self) -> None:
+        configuration = self.quality_configuration()
+        configuration["max_cohort_size"] = 2
+        for number in range(6):
+            request_processor(
+                self.private_photo(f"many-runs-{number}"),
+                contract_version=3,
+                processor_type="face_embedding",
+                processor_version=3,
+                configuration=configuration,
+            )
+
+        with CaptureQueriesContext(transaction.get_connection()) as queries:
+            state = request_processor(
+                self.private_photo("many-runs-next"),
+                contract_version=3,
+                processor_type="face_embedding",
+                processor_version=3,
+                configuration=configuration,
+            )
+
+        count_queries = [
+            row["sql"]
+            for row in queries.captured_queries
+            if "COUNT(" in row["sql"] and "processing_processingjob" in row["sql"]
+        ]
+        self.assertEqual(len(count_queries), 1)
+        self.assertEqual(EventProcessingRun.objects.count(), 4)
+        self.assertEqual(state.current_run.jobs.count(), 1)
 
 
 class ProcessingConcurrentCompletionTests(TransactionTestCase):

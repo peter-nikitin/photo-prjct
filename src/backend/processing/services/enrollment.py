@@ -1476,9 +1476,11 @@ def _locked_collecting_run(
     configured_maximum = configuration["max_cohort_size"]
     if not isinstance(configured_maximum, int):
         raise ValueError("max_cohort_size must be an integer")
-    for run in query:
-        if run.jobs.count() < configured_maximum:
-            return run
+    # Enrollment holds the event lock, so only the newest collecting run can be
+    # partially filled. Do not recount every full run for a large backfill.
+    run = query.order_by("-created_at", "-id").first()
+    if run is not None and run.jobs.count() < configured_maximum:
+        return run
     return EventProcessingRun.objects.create(
         event=event,
         contract_version=contract_version,

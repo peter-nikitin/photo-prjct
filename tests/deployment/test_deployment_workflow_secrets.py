@@ -734,7 +734,8 @@ def test_failed_deploy_relays_only_known_fleet_preflight_steps(
         SSH_FAIL_AFTER_OUTPUT="1",
         SSH_STDOUT=(
             "FLEET_PREFLIGHT_STEP=lock\n"
-            "FLEET_PREFLIGHT_STEP=cloud\n"
+            "FLEET_PREFLIGHT_STEP=manifest-validation\n"
+            "FLEET_PREFLIGHT_STEP=manifest-checksum\n"
             f"FLEET_PREFLIGHT_STEP={sentinel}\n"
             "Fleet release preflight failed\n"
         ),
@@ -744,7 +745,10 @@ def test_failed_deploy_relays_only_known_fleet_preflight_steps(
 
     assert result.returncode == 2
     assert result.stdout == (
-        "FLEET_PREFLIGHT_STEP=lock\nFLEET_PREFLIGHT_STEP=cloud\nFleet release preflight failed\n"
+        "FLEET_PREFLIGHT_STEP=lock\n"
+        "FLEET_PREFLIGHT_STEP=manifest-validation\n"
+        "FLEET_PREFLIGHT_STEP=manifest-checksum\n"
+        "Fleet release preflight failed\n"
     )
     assert sentinel not in result.stdout + result.stderr
 

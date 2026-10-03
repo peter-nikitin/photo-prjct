@@ -726,6 +726,7 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
     if mode not in {"preflight", "rollout", "rollback", "status", "verify", "commit"}:
         raise ValueError("unsupported remote release operation")
     if mode == "preflight":
+        print("FLEET_PREFLIGHT_STEP=guard", flush=True)
         deployment_guard(root, app_image, worker_image, manifest_path)
     elif mode in {"rollout", "rollback"}:
         data = Journal(receipt).data
@@ -741,6 +742,7 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
     from processing.services.worker_pool_cloud import metadata_token
 
     if mode == "preflight":
+        print("FLEET_PREFLIGHT_STEP=manifest", flush=True)
         manifest = json.loads(Path(manifest_path).read_text())
         validate_manifest(manifest)
         if (
@@ -748,16 +750,21 @@ def execute(mode, root, manifest_path, checksum, app_image, worker_image=None):
             or provision.prepare(manifest["configuration"]) != manifest
         ):
             raise ValueError("candidate differs from reviewed package")
+        print("FLEET_PREFLIGHT_STEP=previous", flush=True)
         previous = json.loads(marker.read_text())
         validate_manifest(previous["manifest"])
         verify_image(
             previous["manifest"]["configuration"]["worker_image"],
             previous["manifest"]["configuration"]["worker_build"],
         )
+        print("FLEET_PREFLIGHT_STEP=observation", flush=True)
         config = observation_config(manifest, previous)
         cloud = provision.Cloud(metadata_token())
+        print("FLEET_PREFLIGHT_STEP=cloud", flush=True)
         provision.inspect(manifest["configuration"], cloud)
+        print("FLEET_PREFLIGHT_STEP=image", flush=True)
         proof = image_proof(manifest, app_image)
+        print("FLEET_PREFLIGHT_STEP=receipt", flush=True)
         Journal(
             receipt,
             {
@@ -872,6 +879,8 @@ def main():
             raise ValueError("activation requires canonical Deploy health gates")
         # Deploy holds fd9 over package installation, app reconciliation and every fleet phase.
         # A direct invocation takes exactly that same lock; there is no second writer authority.
+        if args.mode == "preflight":
+            print("FLEET_PREFLIGHT_STEP=lock", flush=True)
         if os.environ.get("FINDME_CANONICAL_LOCK") == "1":
             lock_fd = 9
             if os.fstat(lock_fd).st_ino != (args.root / ".deployment.lock").stat().st_ino:

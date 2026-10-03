@@ -726,6 +726,29 @@ def test_failed_deploy_relays_exact_candidate_pull_failure_without_other_output(
     assert sentinel not in result.stdout + result.stderr
 
 
+def test_failed_deploy_relays_only_known_fleet_preflight_steps(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    environment, sentinel = _remote_environment(tmp_path, remote_boundary)
+    environment.update(
+        SSH_FAIL_AFTER_OUTPUT="1",
+        SSH_STDOUT=(
+            "FLEET_PREFLIGHT_STEP=lock\n"
+            "FLEET_PREFLIGHT_STEP=cloud\n"
+            f"FLEET_PREFLIGHT_STEP={sentinel}\n"
+            "Fleet release preflight failed\n"
+        ),
+    )
+
+    result = _run_helper(["deploy"], environment)
+
+    assert result.returncode == 2
+    assert result.stdout == (
+        "FLEET_PREFLIGHT_STEP=lock\nFLEET_PREFLIGHT_STEP=cloud\nFleet release preflight failed\n"
+    )
+    assert sentinel not in result.stdout + result.stderr
+
+
 def test_deploy_helper_preserves_the_existing_deployment_apply_boundary() -> None:
     source = HELPER.read_text(encoding="utf-8")
 

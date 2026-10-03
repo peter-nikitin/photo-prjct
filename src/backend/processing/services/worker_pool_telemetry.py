@@ -203,7 +203,6 @@ def receive(data: dict[str, Any]) -> bool:
         not lifecycle._cloud_fresh(pool, now)
         or observed is None
         or observed["status"] in lifecycle.STOPPED
-        or observed["worker_build"] != identity.worker_build
     ):
         raise lifecycle.AdmissionDenied()
     member = WorkerPoolMember.objects.filter(pool=pool, instance_id=identity.instance_id).first()
@@ -376,7 +375,6 @@ def generate_diagnostic_metrics() -> bytes:
                 row
                 and cloud_fresh
                 and observed
-                and observed["worker_build"] == row.envelope["worker_build"]
                 and (member is None or member.boot_id == UUID(row.envelope["boot_id"]))
             )
             host_fresh = bool(

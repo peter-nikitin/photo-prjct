@@ -283,7 +283,11 @@ def _member_request(request: HttpRequest, operation: str) -> JsonResponse:
     if request.headers.get("X-FindMe-Worker-Transport") != "private-tls":
         return _error("worker_unauthorized", "Unauthorized.", status=401)
     required = worker_pool_lifecycle.ENVELOPE_FIELDS | (
-        {"ready", "draining", "registration_generation"} if operation == "heartbeat" else set()
+        {"ready", "draining", "registration_generation"}
+        if operation == "heartbeat"
+        else {"registration_generation"}
+        if operation == "retire"
+        else set()
     )
     data, error = _json_object(request, required=required, maximum_bytes=1024)
     if error is not None:

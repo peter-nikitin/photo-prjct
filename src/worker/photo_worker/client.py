@@ -153,9 +153,9 @@ class HttpClient:
         # or send a heartbeat while its registration response is still in flight.
         with self._member_lock:
             payload: dict[str, object] = self._member | fields
-            if operation == "heartbeat":
+            if operation in {"heartbeat", "retire"}:
                 if self._registration_generation is None:
-                    raise ValueError("member heartbeat requires registration")
+                    raise ValueError("member operation requires registration")
                 payload["registration_generation"] = self._registration_generation
             result = self.post_json(f"members/{operation}", payload)
             if operation == "register":

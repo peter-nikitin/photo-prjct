@@ -216,7 +216,9 @@ def test_real_loopback_scrape_fences_current_registration_and_resets_baseline() 
         ]
     )
     client.post_json = lambda *_args, **_kwargs: {"registration_generation": next(generations)}
-    telemetry = RuntimeTelemetry(lambda: fleet.registration_generation)
+    telemetry = RuntimeTelemetry(
+        lambda: fleet.registration_generation, ready=lambda: fleet.can_claim
+    )
     server = start_runtime_server(telemetry, port=0)
     assert server.server_address[0] == "127.0.0.1"
     try:
@@ -240,7 +242,8 @@ def test_real_loopback_scrape_fences_current_registration_and_resets_baseline() 
         client.member_request("register")
         with urlopen(url + "/status", timeout=2) as response:
             assert json.load(response) == {
-                "registration_generation": "00000000-0000-0000-0000-000000000002"
+                "registration_generation": "00000000-0000-0000-0000-000000000002",
+                "ready": False,
             }
         with urlopen(url + "/metrics", timeout=2) as response:
             assert response.headers["X-Worker-Registration-Generation"].endswith("2")
@@ -249,6 +252,43 @@ def test_real_loopback_scrape_fences_current_registration_and_resets_baseline() 
             urlopen(url + "/anything", timeout=2)
         assert unknown.value.code == 404
     finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_runtime_status_reports_admitted_ready_and_draining_process() -> None:
+    client = HttpClient(REMOTE_API_URL, "fleet", transport="remote")
+    client.post_json = lambda *_args, **_kwargs: {
+        "registration_generation": "00000000-0000-0000-0000-000000000001",
+        "ready": True,
+    }
+    drain = DrainController()
+    fleet = FleetLifecycle(
+        client,
+        HostIdentity("selfie", "instance-1", "00000000-0000-0000-0000-000000000003", "a" * 40),
+        drain,
+        warmup=lambda: None,
+    )
+    telemetry = RuntimeTelemetry(
+        lambda: fleet.registration_generation, ready=lambda: fleet.can_claim
+    )
+    server = start_runtime_server(telemetry, port=0)
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        with pytest.raises(HTTPError) as cold:
+            urlopen(url + "/status", timeout=2)
+        assert cold.value.code == 503
+        fleet.start()
+        with urlopen(url + "/status", timeout=2) as response:
+            assert json.load(response)["ready"] is True
+        drain.request()
+        with urlopen(url + "/status", timeout=2) as response:
+            assert json.load(response)["ready"] is False
+        with urlopen(url + "/metrics", timeout=2) as response:
+            assert response.status == 200
+    finally:
+        drain.completed.set()
+        fleet.close()
         server.shutdown()
         server.server_close()
 

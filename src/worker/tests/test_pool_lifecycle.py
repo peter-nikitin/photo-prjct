@@ -84,7 +84,33 @@ def test_warmup_failure_never_reports_ready():
         lifecycle.start()
     lifecycle.close()
     assert not lifecycle.can_claim
+    client.member_request.assert_not_called()
     assert all(not call.kwargs.get("ready") for call in client.member_request.call_args_list)
+
+
+def test_replacement_warms_before_registration_transfers_claim_ownership():
+    client = Mock()
+    client.member_request.return_value = {"ready": True, "draining": False}
+    phases = []
+
+    def warm():
+        client.member_request.assert_not_called()
+        phases.append("warm")
+
+    def register(operation, **_fields):
+        assert operation == "register"
+        assert phases == ["warm"]
+        phases.append("register")
+        return {"ready": True, "draining": False}
+
+    client.member_request.side_effect = register
+    lifecycle = FleetLifecycle(client, identity(), DrainController(), warmup=warm)
+    try:
+        lifecycle.start()
+        assert lifecycle.can_claim
+        assert phases == ["warm", "register"]
+    finally:
+        lifecycle.close()
 
 
 def test_hung_warmup_has_bounded_startup_and_never_claims():
@@ -149,6 +175,23 @@ def test_remote_claim_contains_identity_and_local_claim_remains_unchanged():
         unbound.claim_job(lease_seconds=120)
 
 
+def test_member_retirement_uses_current_process_generation():
+    client = HttpClient(REMOTE_API_URL, "fleet", transport="remote")
+    member = identity()
+    client.bind_member(member.envelope())
+    with pytest.raises(ValueError):
+        client.member_request("retire")
+    generation = str(uuid4())
+    client.post_json = Mock(return_value={"registration_generation": generation, "ready": True})
+    client.member_request("register")
+    client.post_json.return_value = {"grant": None}
+    assert client.member_request("retire") == {"grant": None}
+    assert client.post_json.call_args.args == (
+        "members/retire",
+        member.envelope() | {"registration_generation": generation},
+    )
+
+
 @pytest.mark.parametrize("signals", [(), (signal.SIGTERM, signal.SIGINT, signal.SIGTERM)])
 def test_server_drain_starts_one_deadline_before_repeated_signals(monkeypatch, signals):
     handlers = {}
@@ -182,14 +225,13 @@ def test_server_drain_starts_one_deadline_before_repeated_signals(monkeypatch, s
         lifecycle.close()
 
 
-@pytest.mark.parametrize("operation", ["register", "heartbeat"])
-def test_retryable_startup_outage_remains_bounded_without_intentional_drain(operation):
+def test_retryable_startup_outage_remains_bounded_without_intentional_drain():
     client = Mock()
     expired = threading.Event()
     drain = DrainController()
 
     def request(name, **fields):
-        if name == operation:
+        if name == "register":
             raise ApiError("unavailable", retryable=True)
         return {"registration_generation": str(uuid4())}
 
@@ -209,16 +251,10 @@ def test_retryable_startup_outage_remains_bounded_without_intentional_drain(oper
     assert not lifecycle.can_claim
 
 
-def test_stale_generation_recovers_once_per_pulse_without_draining_attempt_keeper():
+def test_superseded_generation_drains_without_displacing_warmed_replacement():
     client = Mock()
     client.member_request.side_effect = [
-        {"registration_generation": str(uuid4())},
-        {"ready": True, "draining": False},
-        ApiError("registration_changed", retryable=True),
-        {"registration_generation": str(uuid4())},
-        {"ready": True, "draining": False},
-        ApiError("registration_changed", retryable=True),
-        {"registration_generation": str(uuid4())},
+        {"registration_generation": str(uuid4()), "ready": True, "draining": False},
         ApiError("registration_changed", retryable=True),
     ]
     drain = DrainController()
@@ -226,23 +262,14 @@ def test_stale_generation_recovers_once_per_pulse_without_draining_attempt_keepe
     lifecycle.start()
     try:
         lifecycle.pulse()
-        assert lifecycle.can_claim
-        assert not drain.requested.is_set()
-        with pytest.raises(ApiError):
-            lifecycle.pulse()
         assert not lifecycle.can_claim
-        assert not drain.requested.is_set()
+        assert drain.requested.is_set()
         assert [call.args[0] for call in client.member_request.call_args_list] == [
-            "register",
-            "heartbeat",
-            "heartbeat",
-            "register",
-            "heartbeat",
-            "heartbeat",
             "register",
             "heartbeat",
         ]
     finally:
+        drain.completed.set()
         lifecycle.close()
 
 

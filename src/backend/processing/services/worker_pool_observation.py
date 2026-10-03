@@ -72,13 +72,7 @@ def observe_cloud(name: str, config: dict[str, Any], *, reader: CloudReader | No
     ):
         raise ValueError("wrong cloud scope")
     template = group["instanceTemplate"]
-    release = template.get("metadata", {})
-    if (
-        release.get("findme-worker-build") not in config["releases"]
-        or release.get("findme-worker-image")
-        != config["releases"].get(release.get("findme-worker-build"))
-        or template["bootDiskSpec"]["diskSpec"]["imageId"] != config["boot_image_id"]
-    ):
+    if template["bootDiskSpec"]["diskSpec"]["imageId"] != config["boot_image_id"]:
         raise ValueError("unknown group template")
     managed = group["managedInstancesState"]
     if not isinstance(managed, dict):
@@ -118,11 +112,9 @@ def observe_cloud(name: str, config: dict[str, Any], *, reader: CloudReader | No
                 raise ValueError("wrong actual instance")
             actual = instance.get("metadata", {})
             build = actual.get("findme-worker-build", "")
-            if (
-                build not in config["releases"]
-                or actual.get("findme-worker-image") != config["releases"][build]
-            ):
-                raise ValueError("unverified actual image")
+            # Launch metadata is diagnostic only; an in-place container update leaves it stale.
+            if not isinstance(build, str) or re.fullmatch(r"[0-9a-f]{40}", build) is None:
+                build = ""
             disk_id = identifier(instance["bootDisk"]["diskId"])
             disk = reader.get(f"disks/{disk_id}")
             if (

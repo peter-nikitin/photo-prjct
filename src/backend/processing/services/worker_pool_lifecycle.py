@@ -129,7 +129,7 @@ def _member(
         )
     except WorkerPoolMember.DoesNotExist:
         raise AdmissionDenied() from None
-    if member.boot_id != identity.boot_id or member.worker_build != identity.worker_build:
+    if member.boot_id != identity.boot_id:
         raise AdmissionDenied()
     if process and (
         identity.registration_generation is None
@@ -146,7 +146,6 @@ def _fresh(timestamp: datetime | None, now: datetime, age: timedelta) -> bool:
 def _cloud_fresh(pool: WorkerPool, now: datetime) -> bool:
     return bool(
         pool.group_id
-        and _build(pool.active_build)
         and pool.observation_sequence
         and _fresh(pool.observation_completed_at, now, OBSERVATION_MAX_AGE)
     )
@@ -158,12 +157,7 @@ def _observed(pool: WorkerPool, instance_id: str) -> dict[str, str] | None:
 
 def _running(pool: WorkerPool, member: WorkerPoolMember, now: datetime) -> bool:
     row = _observed(pool, member.instance_id)
-    return bool(
-        _cloud_fresh(pool, now)
-        and row
-        and row["status"] in RUNNING
-        and row["worker_build"] == member.worker_build
-    )
+    return bool(_cloud_fresh(pool, now) and row and row["status"] in RUNNING)
 
 
 def _serving(pool: WorkerPool, member: WorkerPoolMember, now: datetime) -> bool:
@@ -172,7 +166,6 @@ def _serving(pool: WorkerPool, member: WorkerPoolMember, now: datetime) -> bool:
         and member.ready
         and not member.draining
         and member.retirement_grant is None
-        and member.worker_build == pool.active_build
         and _fresh(member.heartbeat_at, now, HEARTBEAT_MAX_AGE)
         and _running(pool, member, now)
     )
@@ -404,17 +397,12 @@ def record_queue_observation(name: str, *, observed_at: datetime, endpoint_avail
 
 @transaction.atomic
 def register(identity: MemberIdentity) -> dict[str, object]:
+    """Atomically admit a warmed process, fencing the previous generation's new claims."""
     identity.validate()
     pool = _pool(identity.pool)
     now = timezone.now()
     row = _observed(pool, identity.instance_id)
-    if (
-        not _cloud_fresh(pool, now)
-        or not row
-        or row["status"] not in RUNNING
-        or row["worker_build"] != identity.worker_build
-        or identity.worker_build not in {pool.active_build, pool.staged_build}
-    ):
+    if not _cloud_fresh(pool, now) or not row or row["status"] not in RUNNING:
         raise AdmissionDenied()
     member = (
         WorkerPoolMember.objects.select_for_update()
@@ -442,19 +430,27 @@ def register(identity: MemberIdentity) -> dict[str, object]:
             member.reconciled_at
         ) = None
         member.save()
-    elif (
-        member.worker_build != identity.worker_build
-        or member.retirement_grant is not None
-        or member.draining
-    ):
+    elif member.retirement_grant is not None:
         raise AdmissionDenied()
     member.registration_generation = uuid4()
-    member.ready = False
-    member.heartbeat_at = None
+    member.worker_build = identity.worker_build
+    member.ready = True
+    member.draining = False
+    member.heartbeat_at = now
     member.idle_since = None
-    member.save(update_fields=["registration_generation", "ready", "heartbeat_at", "idle_since"])
+    member.save(
+        update_fields=[
+            "registration_generation",
+            "worker_build",
+            "ready",
+            "draining",
+            "heartbeat_at",
+            "idle_since",
+        ]
+    )
     return {
         "registered": True,
+        "ready": True,
         "draining": member.draining,
         "registration_generation": str(member.registration_generation),
     }
@@ -467,12 +463,7 @@ def heartbeat(identity: MemberIdentity, *, ready: bool, draining: bool) -> dict[
     now = timezone.now()
     member.heartbeat_at = now
     member.draining = member.draining or draining or member.retirement_grant is not None
-    member.ready = bool(
-        ready
-        and not member.draining
-        and _running(pool, member, now)
-        and member.worker_build in {pool.active_build, pool.staged_build}
-    )
+    member.ready = bool(ready and not member.draining and _running(pool, member, now))
     _idle(pool, member, now)
     member.save(update_fields=["heartbeat_at", "draining", "ready", "idle_since"])
     return {"ready": member.ready, "draining": member.draining}
@@ -604,7 +595,7 @@ def _reserve(
 @transaction.atomic
 def request_retirement(identity: MemberIdentity) -> dict[str, str] | None:
     pool = _pool(identity.pool)
-    member = _member(pool, identity)
+    member = _member(pool, identity, process=True)
     if member.retirement_grant is not None:
         return _grant(member)
     now = timezone.now()

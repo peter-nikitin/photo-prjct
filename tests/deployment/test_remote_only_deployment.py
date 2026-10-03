@@ -1,27 +1,8 @@
-import importlib.util
 import subprocess
 
-import pytest
 import yaml
 
 from tests.deployment.test_deployment_scripts import ROOT
-
-
-@pytest.mark.parametrize("phase", [None, "verified"])
-def test_normal_deployment_requires_committed_remote_marker(tmp_path, phase):
-    spec = importlib.util.spec_from_file_location(
-        "remote_release", ROOT / "deploy/worker-pools/release.py"
-    )
-    release = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(release)
-    if phase:
-        import json
-
-        (tmp_path / "worker-pools-release.json").write_text(
-            json.dumps({"phase": phase, "previous": None})
-        )
-    with pytest.raises(ValueError, match="committed remote"):
-        release.deployment_guard(tmp_path)
 
 
 def test_production_compose_has_no_local_photo_workers():
@@ -38,19 +19,17 @@ def test_production_deploy_has_no_local_placement_or_restore_path():
     assert "PHOTO_PROCESSING_WORKER_TOKEN" not in source
     assert "worker-bulk" not in source
     assert "worker-selfie" not in source
-    assert "fleet_phase rollback" in source
-    assert "fleet_phase rollout" in source
+    assert "fleet_phase" not in source
+    assert "verify-native-release.py" in source
     workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
     assert "PHOTO_WORKER_REPLICAS:" not in workflow
     assert "PHOTO_WORKER_CPUS:" not in workflow
     assert "PHOTO_WORKER_MEMORY_LIMIT:" not in workflow
 
 
-def test_release_cannot_restore_or_start_local_photo_workers():
-    source = (ROOT / "deploy/worker-pools/release.py").read_text()
-    assert "def rollback_initial" not in source
-    assert "def stop_local" not in source
-    assert "local=True" not in source
+def test_obsolete_fleet_release_and_finalizer_are_removed():
+    assert not (ROOT / "deploy/worker-pools/release.py").exists()
+    assert not (ROOT / "deploy/worker-pools/finalize_initial.py").exists()
 
 
 def test_production_commands_cannot_run_legacy_compose_identity_cutover():

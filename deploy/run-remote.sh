@@ -193,7 +193,7 @@ run_quietly_with_stdin() {
 
 relay_deployment_markers() {
     LC_ALL=C grep -Eo \
-        '(DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+|DEPLOY_RESULT=(success|failure) phase=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) rollback=(not-needed|succeeded|failed) elapsed_seconds=[0-9]+|^DEPLOY_IMAGE_PRUNE_RESULT=(success|failure))$|^(FLEET_PREFLIGHT_STEP=(lock|guard|manifest|manifest-validation|manifest-checksum|manifest-rebuild|previous|observation|cloud|image|receipt)|Container registry login failed|Candidate application image pull failed|Import image pull failed|Fleet release preflight failed)$' \
+        '(DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+|DEPLOY_RESULT=(success|failure) phase=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) rollback=(not-needed|succeeded|failed) elapsed_seconds=[0-9]+|^DEPLOY_IMAGE_PRUNE_RESULT=(success|failure))$|^(Container registry login failed|Candidate application image pull failed|Import image pull failed)$' \
         "$command_output" || true
 }
 
@@ -390,23 +390,17 @@ deployment_root=/opt/photo-prjct
 exec 9>"$deployment_root/.deployment.lock"
 flock -n 9 || exit 1
 export FINDME_CANONICAL_LOCK=1
-python3 - "$deployment_root" <<'PY_STAGE_GUARD'
-import json
-import os
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-if os.environ.get('WORKER_POOL_ACTIVATION', 'normal') != 'normal':
-    raise SystemExit(2)
-marker = root / 'worker-pools-current.json'
-receipt_path = root / 'worker-pools-release.json'
-if not marker.is_file() or not receipt_path.is_file() or (root / '.deployment-recovery').exists():
-    raise SystemExit('committed remote fleet marker is required')
-receipt = json.loads(receipt_path.read_text())
-if receipt.get('phase') not in {'committed', 'rolled-back'}:
-    raise SystemExit('committed remote fleet release is required')
-PY_STAGE_GUARD
+recover_forward=${RECOVER_FORWARD:-False}
+case "$recover_forward" in
+  True) test -f "$deployment_root/.deployment-recovery/candidate.env" ;;
+  False)
+    [ ! -e "$deployment_root/.deployment-recovery" ] || {
+      echo 'canonical deployment recovery remains unfinished' >&2
+      exit 1
+    }
+    ;;
+  *) exit 2 ;;
+esac
 case "$DEPLOYMENT_ARCHIVE_NAME" in
   *[!a-zA-Z0-9.-]*|'') exit 2 ;;
   .deployment-candidate.*.tar) ;;
@@ -417,14 +411,33 @@ candidate_package="$(mktemp -d "$deployment_root/.deployment-candidate.XXXXXX")"
 previous_package="$(mktemp -d "$deployment_root/.deployment-previous.XXXXXX")"
 package_mutation_started=0
 previous_package_exists=0
+replacement_entries=''
+package_install_complete=0
 
 restore_install_failure() {
   status=$?
   trap - EXIT HUP INT TERM
   if [ -d "$deployment_root/.deployment-recovery" ]; then
-    # Candidate web may still own remote attempts. Never restore incompatible tooling or
-    # erase the exact prior package/env while canonical recovery remains incomplete.
+    if [ "$recover_forward" = True ] && [ "$package_mutation_started" -eq 1 ] && \
+      [ "$package_install_complete" -eq 0 ]; then
+      # Restore each displaced last-compatible candidate entry, never the pre-cutover package.
+      # Record entries before moving so a signal between either move and shell bookkeeping is safe.
+      for entry in $replacement_entries; do
+        if [ -e "$previous_package/$entry" ]; then
+          if ! rm -rf "$deployment_root/$entry" || \
+            ! mv "$previous_package/$entry" "$deployment_root/$entry"; then
+            echo 'candidate package restoration failed; staging retained' >&2
+            exit 1
+          fi
+        fi
+      done
+    fi
+    # Retain exact prior web package/env while canonical recovery remains incomplete.
     rm -rf "$candidate_package" "$candidate_archive"
+    if [ "$recover_forward" = True ]; then
+      # Only the transient prior candidate was displaced; original evidence is elsewhere.
+      rm -rf "$previous_package"
+    fi
     if [ "$status" -eq 0 ]; then
       retained_package="$(sed -n '1p' "$deployment_root/.deployment-recovery/package-path")"
       [ -n "$retained_package" ] || exit 1
@@ -459,19 +472,13 @@ tar -xf "$candidate_archive" -C "$candidate_package"
 for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
   test -e "$candidate_package/$entry"
 done
-python3 - "$deployment_root" "$candidate_package" <<'PY_CANDIDATE_GUARD'
-import importlib.util
-import os
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-helper = Path(sys.argv[2]) / 'deploy/worker-pools/release.py'
-spec = importlib.util.spec_from_file_location('candidate_release_guard', helper)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-module.deployment_guard(root, os.environ.get('APP_IMAGE'), os.environ.get('WORKER_POOL_WORKER_DIGEST'), os.environ.get('WORKER_POOL_RELEASE_MANIFEST'))
-PY_CANDIDATE_GUARD
+if [ "$recover_forward" = True ]; then
+  DEPLOY_ROOT="$deployment_root" COMPOSE_PROJECT_NAME=photo-prjct \
+    sh "$candidate_package/deploy/apply-deployment.sh" --verify-forward-candidate
+  retained_predecessor="$(sed -n '1p' "$deployment_root/.deployment-recovery/package-path")"
+else
+  python3 "$candidate_package/deploy/verify-native-release.py" --root "$deployment_root" --app-image "$APP_IMAGE"
+fi
 previous_entry_count=0
 for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
   if [ -e "$deployment_root/$entry" ]; then
@@ -490,11 +497,13 @@ fi
 
 package_mutation_started=1
 for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
+  replacement_entries="$replacement_entries $entry"
   if [ "$previous_package_exists" -eq 1 ]; then
     mv "$deployment_root/$entry" "$previous_package/$entry"
   fi
   mv "$candidate_package/$entry" "$deployment_root/$entry"
 done
+package_install_complete=1
 if [ "$previous_package_exists" -eq 1 ]; then
   PREVIOUS_DEPLOYMENT_PACKAGE_ROOT="$previous_package" \
   DEPLOY_ROOT="$deployment_root" COMPOSE_PROJECT_NAME=photo-prjct \
@@ -503,21 +512,14 @@ else
   DEPLOY_ROOT="$deployment_root" COMPOSE_PROJECT_NAME=photo-prjct \
     sh "$deployment_root/deploy/apply-deployment.sh"
 fi
-package_mutation_started=0'''
+package_mutation_started=0
+if [ "$recover_forward" = True ]; then
+  # The preflight validated this exact child directory; application commit cleared its gate.
+  rm -rf "$retained_predecessor"
+fi'''
 
 commands = {
     'deploy': deployment_command,
-    'finalize-initial-workers': r'''set -eu
-exec python3 "$INITIAL_FINALIZER_REMOTE_PATH" \
- --source-sha256 "$INITIAL_FINALIZER_SOURCE_SHA256" \
- --expected-web-sha "$INITIAL_FINALIZER_WEB_SHA" \
- --expected-worker-digest "$INITIAL_FINALIZER_WORKER_DIGEST" \
- --expected-bulk-group "$INITIAL_FINALIZER_BULK_GROUP" \
- --expected-selfie-group "$INITIAL_FINALIZER_SELFIE_GROUP"''',
-    'worker-pools': r'''set -eu
-case "$WORKER_POOL_OPERATION" in status|rollout|rollback|verify) ;; *) exit 2 ;; esac
-export PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical
-exec python3 /opt/photo-prjct/deploy/worker-pools/release.py "$WORKER_POOL_OPERATION" --root /opt/photo-prjct''',
     'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
     'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
     'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
@@ -569,23 +571,17 @@ export TBANK_RECEIPT_TAXATION TBANK_RECEIPT_TAX TBANK_RECEIPT_PAYMENT_METHOD
 export TBANK_RECEIPT_PAYMENT_OBJECT TBANK_RECEIPT_MEASUREMENT_UNIT
 export TBANK_RECEIPT_CLOSING_REQUIRED
 
-WORKER_POOL_ACTIVATION="${WORKER_POOL_ACTIVATION:-normal}"
 WORKER_POOL_PRIVATE_API_IPV4="${WORKER_POOL_PRIVATE_API_IPV4:-}"
-WORKER_POOL_RELEASE_MANIFEST="${WORKER_POOL_RELEASE_MANIFEST:-}"
-WORKER_POOL_RELEASE_CHECKSUM="${WORKER_POOL_RELEASE_CHECKSUM:-}"
-WORKER_POOL_WORKER_DIGEST="${WORKER_POOL_WORKER_DIGEST:-}"
 export WORKER_POOL_PRIVATE_API_IPV4
-export WORKER_POOL_ACTIVATION WORKER_POOL_RELEASE_MANIFEST WORKER_POOL_RELEASE_CHECKSUM
-export WORKER_POOL_WORKER_DIGEST
+RECOVER_FORWARD="${RECOVER_FORWARD:-False}"
+RELEASE_SHA="${RELEASE_SHA:-}"
+export RECOVER_FORWARD RELEASE_SHA
 
 REMOTE_DEPLOYMENT_VALUES='
 APP_IMAGE
-WORKER_IMAGE
-WORKER_POOL_ACTIVATION
+RECOVER_FORWARD
+RELEASE_SHA
 WORKER_POOL_PRIVATE_API_IPV4
-WORKER_POOL_RELEASE_MANIFEST
-WORKER_POOL_RELEASE_CHECKSUM
-WORKER_POOL_WORKER_DIGEST
 IMPORT_WORKER_IMAGE
 PHOTO_IMPORT_ENABLED
 PHOTO_IMPORT_BUILD
@@ -613,7 +609,6 @@ PHOTO_PROCESSING_PREVIEW_ENABLED
 PHOTO_PROCESSING_FACE_ENABLED
 PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS
 PHOTO_PROCESSING_MAX_REQUEST_BYTES
-PHOTO_WORKER_BUILD
 PHOTO_WORKER_LEASE_SECONDS
 PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES
 PHOTO_WORKER_BULK_PROCESSOR_TYPES
@@ -721,7 +716,7 @@ mode=$1
 remote_deployment_values="$REMOTE_DEPLOYMENT_VALUES"
 
 case "$mode" in
-    deploy|worker-pools|finalize-initial-workers|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
+    deploy|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
     *) fail arguments unknown_operation ;;
 esac
 
@@ -769,18 +764,6 @@ if [ "$mode" = stage-paused-observability-release ]; then
 fi
 
 case "$mode" in
-    finalize-initial-workers)
-        case "${INITIAL_FINALIZER_SOURCE_SHA256:-}" in ''|*[!0-9a-f]*) fail finalizer invalid_source_checksum ;; esac
-        [ "${#INITIAL_FINALIZER_SOURCE_SHA256}" -eq 64 ] || fail finalizer invalid_source_checksum
-        [ "$(sha256sum deploy/worker-pools/finalize_initial.py | cut -d ' ' -f 1)" = "$INITIAL_FINALIZER_SOURCE_SHA256" ] || fail finalizer source_checksum_mismatch
-        INITIAL_FINALIZER_REMOTE_PATH=/opt/photo-prjct/.initial-finalizer.$INITIAL_FINALIZER_SOURCE_SHA256.py
-        export INITIAL_FINALIZER_REMOTE_PATH
-        run_quietly copy copy_failed scp -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" deploy/worker-pools/finalize_initial.py "$remote_target:$INITIAL_FINALIZER_REMOTE_PATH"
-        remote_environment=$temporary_root/remote.env
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" INITIAL_FINALIZER_REMOTE_PATH INITIAL_FINALIZER_SOURCE_SHA256 INITIAL_FINALIZER_WEB_SHA INITIAL_FINALIZER_WORKER_DIGEST INITIAL_FINALIZER_BULK_GROUP INITIAL_FINALIZER_SELFIE_GROUP >"$command_output" 2>&1; then
-            fail environment materialization_failed
-        fi
-        ;;
     deploy)
         deployment_package=$temporary_root/deployment-package.tar
         DEPLOYMENT_ARCHIVE_NAME=".deployment-candidate.$(python3 -c 'import uuid; print(uuid.uuid4().hex)').tar"
@@ -792,12 +775,6 @@ case "$mode" in
         remote_environment=$temporary_root/remote.env
         # shellcheck disable=SC2086
         if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" $remote_deployment_values DEPLOYMENT_ARCHIVE_NAME >"$command_output" 2>&1; then
-            fail environment materialization_failed
-        fi
-        ;;
-    worker-pools)
-        remote_environment=$temporary_root/remote.env
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" WORKER_POOL_OPERATION >"$command_output" 2>&1; then
             fail environment materialization_failed
         fi
         ;;
@@ -848,9 +825,6 @@ esac
 quoted_program=$(quote_for_remote_shell "$REMOTE_PROGRAM")
 run_quietly_with_stdin remote remote_failed "$remote_environment" ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i "$key_file" "$remote_target" "exec python3 -c '$quoted_program' '$mode'"
 if [ "$mode" = face-embedding-benchmark ]; then
-    cat "$command_output"
-fi
-if [ "$mode" = worker-pools ]; then
     cat "$command_output"
 fi
 if [ "$mode" = deploy ]; then

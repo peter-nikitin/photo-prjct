@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import shlex
@@ -6,6 +5,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import textwrap
 from pathlib import Path
 
@@ -56,6 +56,7 @@ def test_remote_application_reconciles_commerce_forward_and_after_failed_candida
 compose() { printf '%s %s\n' "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" "$*"; }
 fleet_phase() { [ "$1" = rollback ]; }
 stop_import_before_web_change() { :; }
+previous_web_matches_processing_schema() { :; }
 restore_previous_deployment_markers() { :; }
 compose_reconcile_requested_runtime_profiles
 recover_previous_deployment
@@ -447,12 +448,11 @@ def _apply_env(
     *,
     scenario: str,
 ) -> dict[str, str]:
-    # The full-script harness models external preflight success; dedicated fleet tests
-    # exercise the real current-DB/immutable-image retirement guard.
+    # Dedicated component-release tests exercise the real native DB/image guard.
     _write_executable(
         fake_bin / "python3",
-        'case " $* " in *"worker-pools/release.py"*) '
-        'printf "fleet %s\\n" "$2" >> "$COMMAND_LOG"; exit 0 ;; esac\n'
+        'case " $* " in *"verify-native-release.py"*) '
+        'printf "native-web-guard\\n" >> "$COMMAND_LOG"; exit 0 ;; esac\n'
         + "exec "
         + shlex.quote(sys.executable)
         + ' "$@"',
@@ -720,7 +720,7 @@ validate_candidate_env() {
   candidate_secret_key="$(sed -n 's/^PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=//p' "$compose_env_file")"
   [ "$compose_env_file" != "$DEPLOY_ROOT/.env" ]
   [ "$APP_ENV_FILE" = "$compose_env_file" ]
-  [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = new-image ]
+  [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = "${EXPECTED_REQUESTED_IMAGE:-new-image}" ]
   [ "$(sed -n 's/^SECRET_KEY=//p' "$compose_env_file")" = "$EXPECTED_REQUESTED_SECRET" ]
   [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
   [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
@@ -744,6 +744,21 @@ validate_migration_preflight_env() {
   printf 'candidate-migration-env-mode-0600\n' >> "$COMMAND_LOG"
 }
 case " $* " in
+  *"org.opencontainers.image.revision"*)
+    printf '%s\n' "${EXPECTED_IMAGE_REVISION:-unknown}"
+    exit 0
+    ;;
+  *"FORWARD_RECOVERY_PROTOCOL"*)
+    validate_candidate_env
+    printf 'forward-candidate-probe\n' >> "$COMMAND_LOG"
+    case "$APPLY_SCENARIO" in
+      forward-incompatible|forward-unpaused)
+        printf 'private-forward-probe-detail\n' >&2
+        exit 1
+        ;;
+    esac
+    exit 0
+    ;;
   *"pg_database_collation_actual_version"*)
     validate_candidate_env
     printf 'candidate-vector-collation-check\n' >> "$COMMAND_LOG"
@@ -762,12 +777,30 @@ case " $* " in
   *" run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput "*)
     validate_candidate_env
     printf 'candidate-migrate\n' >> "$COMMAND_LOG"
-    [ "$APPLY_SCENARIO" != gallery-projection-migration-failure ]
+    case "$APPLY_SCENARIO" in
+      processing-schema-migrate-failure|processing-schema-drain-failure|processing-schema-health-failure)
+        touch "$DEPLOY_ROOT/processing-column-dropped"
+        ;;
+    esac
+    case "$APPLY_SCENARIO" in
+      gallery-projection-migration-failure|processing-schema-migrate-failure) exit 1 ;;
+    esac
+    ;;
+  *"list(ProcessingAttempt.objects.all()[:1])"*)
+    [ "${APP_IMAGE-unset}" = unset ]
+    cmp "$compose_env_file" "$PREVIOUS_ENV_EXPECTED"
+    case " $* " in *"SET TRANSACTION READ ONLY"*"statement_timeout"*) : ;; *) exit 1 ;; esac
+    printf 'previous-web-processing-schema-probe\n' >> "$COMMAND_LOG"
+    if [ -f "$DEPLOY_ROOT/processing-column-dropped" ]; then
+      printf 'private-db-detail-must-not-reach-output\n' >&2
+      exit 1
+    fi
     ;;
   *" drain_gallery_media_publications --all-events "*)
     validate_candidate_env
     printf 'candidate-gallery-publication-drain\n' >> "$COMMAND_LOG"
-    if [ "$APPLY_SCENARIO" = gallery-projection-publication-drain-failure ]; then
+    if [ "$APPLY_SCENARIO" = gallery-projection-publication-drain-failure ] ||
+       [ "$APPLY_SCENARIO" = processing-schema-drain-failure ]; then
       printf 'private-key-must-not-reach-output photo-id-must-not-reach-output\n' >&2
       exit 1
     fi
@@ -852,7 +885,8 @@ case " $* " in
   *" compose "*" stop nginx"*)
     [ "$compose_env_file" = "$DEPLOY_ROOT/.env" ]
     [ "$APP_ENV_FILE" = "$DEPLOY_ROOT/.env" ]
-    [ "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" = new-image ]
+    [ "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" = \
+      "${EXPECTED_REQUESTED_IMAGE:-new-image}" ]
     [ "$(sed -n 's/^SECRET_KEY=//p' "$DEPLOY_ROOT/.env")" = new-secret ]
     printf 'requested-env-promoted-before-stop\n' >> "$COMMAND_LOG"
     ;;
@@ -995,6 +1029,7 @@ esac
         """
 printf 'curl %s\n' "$*" >> "$COMMAND_LOG"
 if [ "$APPLY_SCENARIO" = health-failure ] || \
+   [ "$APPLY_SCENARIO" = processing-schema-health-failure ] || \
    [ "$APPLY_SCENARIO" = worker-recovery ] || \
    [ "$APPLY_SCENARIO" = worker-recovery-disabled ] || \
    [ "$APPLY_SCENARIO" = fresh-first-health-failure ]; then
@@ -1129,18 +1164,16 @@ def test_unused_images_are_pruned_only_after_successful_commit(
             assert "Unused Docker image cleanup failed" in result.stderr
 
 
-def test_remote_placement_requires_reviewed_release_before_mutation(
-    tmp_path: Path, fake_bin: Path
-) -> None:
+def test_remote_api_requires_private_edge_before_mutation(tmp_path: Path, fake_bin: Path) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="success")
-    env.pop("WORKER_POOL_RELEASE_MANIFEST")
+    env.pop("WORKER_POOL_PRIVATE_API_IPV4")
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode != 0
     assert "Remote deployment requires" in result.stderr
     assert not (tmp_path / "apply.log").exists()
 
 
-def test_committed_remote_normal_release_clears_gate_before_next_installer_and_release(
+def test_web_release_clears_recovery_before_next_installer_and_release(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     env = _apply_env(tmp_path, fake_bin, scenario="success")
@@ -1162,7 +1195,7 @@ def test_committed_remote_normal_release_clears_gate_before_next_installer_and_r
         fake_bin / "python3",
         """
 case "$*" in
-  *worker-pools/release.py*) printf 'fleet %s\n' "$2" >> "$COMMAND_LOG"; exit 0 ;;
+  *verify-native-release.py*) printf 'native-web-guard\n' >> "$COMMAND_LOG"; exit 0 ;;
 esac
 exec """
         + sys.executable
@@ -1171,7 +1204,7 @@ exec """
     )
     first = _run("deploy/apply-deployment.sh", env=env)
     assert first.returncode == 0, first.stderr
-    assert "fleet commit" in _apply_log(tmp_path)
+    assert "native-web-guard" in _apply_log(tmp_path)
     assert not (tmp_path / ".deployment-recovery").exists()
 
     source = (ROOT / "deploy/run-remote.sh").read_text()
@@ -1197,10 +1230,8 @@ exec """
     assert not (tmp_path / ".deployment-recovery").exists()
 
 
-@pytest.mark.parametrize(("action", "expected_code"), [("normal", 1), ("receiver", 2)])
-@pytest.mark.parametrize("aborted_receipt", [False, True])
-def test_installer_fences_remote_first_activation_before_package_replacement(
-    tmp_path: Path, action: str, expected_code: int, aborted_receipt: bool
+def test_installer_fences_unfinished_web_recovery_before_package_replacement(
+    tmp_path: Path,
 ) -> None:
     source = (ROOT / "deploy/run-remote.sh").read_text()
     installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
@@ -1209,23 +1240,19 @@ def test_installer_fences_remote_first_activation_before_package_replacement(
     fake_bin.mkdir()
     _write_executable(fake_bin / "flock", "exit 0")
     (tmp_path / "docker-compose.deployment.yml").write_text("original\n")
-    if aborted_receipt:
-        (tmp_path / "worker-pools-release.json").write_text(
-            json.dumps({"phase": "receiver-aborted", "previous": None})
-        )
+    (tmp_path / ".deployment-recovery").mkdir()
     result = subprocess.run(
         ["sh", "-c", installer],
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "WORKER_POOL_ACTIVATION": action,
-            "PHOTO_WORKER_PLACEMENT": "remote",
             "DEPLOYMENT_ARCHIVE_NAME": "invalid",
         },
         text=True,
         capture_output=True,
     )
-    assert result.returncode == expected_code, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert "recovery remains unfinished" in result.stderr
     assert (tmp_path / "docker-compose.deployment.yml").read_text() == "original\n"
 
 
@@ -1800,8 +1827,7 @@ def test_missing_processing_prerequisite_prevents_deployment(
 
     assert result.returncode == 2
     assert (
-        "Remote deployment requires enabled API, fleet credential and reviewed release"
-        in result.stderr
+        "Remote deployment requires enabled API, fleet credential and private edge" in result.stderr
     )
     assert not (tmp_path / "apply.log").exists()
 
@@ -2040,8 +2066,7 @@ def test_selfie_prerequisites_are_required_for_every_deployment(
 
     assert result.returncode == 2
     assert (
-        "Remote deployment requires enabled API, fleet credential and reviewed release"
-        in result.stderr
+        "Remote deployment requires enabled API, fleet credential and private edge" in result.stderr
     )
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
 
@@ -2173,7 +2198,7 @@ def test_deployment_rejects_worker_identity_lists_the_worker_would_not_accept(
     [
         (
             {"PHOTO_PROCESSING_PREVIEW_ENABLED": "True"},
-            "Remote deployment requires enabled API, fleet credential and reviewed release",
+            "Remote deployment requires enabled API, fleet credential and private edge",
         ),
     ],
 )
@@ -2243,7 +2268,7 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
     [
         (
             {"PHOTO_PROCESSING_ENABLED": "true"},
-            "Remote deployment requires enabled API, fleet credential and reviewed release",
+            "Remote deployment requires enabled API, fleet credential and private edge",
         ),
         (
             {"PHOTO_PROCESSING_FACE_ENABLED": "true"},
@@ -2257,15 +2282,11 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
             ),
         ),
         (
-            {"PHOTO_PROCESSING_ENABLED": "True"},
-            "Set WORKER_IMAGE",
-        ),
-        (
             {
                 "PHOTO_PROCESSING_ENABLED": "True",
                 "WORKER_IMAGE": "worker-image",
             },
-            "Remote deployment requires enabled API, fleet credential and reviewed release",
+            "Remote deployment requires enabled API, fleet credential and private edge",
         ),
     ],
 )
@@ -2277,10 +2298,8 @@ def test_processing_activation_requires_exact_valid_configuration(
 ) -> None:
     """Invalid activation never changes the live deployment environment."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    if message == "Set WORKER_IMAGE":
-        env.pop("WORKER_IMAGE")
-    elif (
-        message == "Remote deployment requires enabled API, fleet credential and reviewed release"
+    if (
+        message == "Remote deployment requires enabled API, fleet credential and private edge"
         and overrides.get("WORKER_IMAGE")
     ):
         env.pop("PHOTO_PROCESSING_FLEET_TOKEN")
@@ -2450,7 +2469,9 @@ def test_gallery_projection_cutover_preserves_old_web_until_clean_candidate_reco
     )
     smoke = commands.index("candidate-gallery-projection-smoke")
     worker_health = next(
-        index for index, command in enumerate(commands) if command == "fleet rollout"
+        index
+        for index, command in enumerate(commands)
+        if "findme-worker-pool-metrics verify" in command
     )
 
     assert candidate_pull < migrate < drain < rebuild < verify < candidate_up < smoke
@@ -2627,7 +2648,7 @@ def test_postgres_volume_inspection_error_fails_safely_before_mutation(
         "DEPLOY_PHASE=snapshot",
         "DEPLOY_RESULT=failure phase=snapshot rollback=not-needed",
     ]
-    assert _apply_log(tmp_path) == ["fleet deployment-guard", "volume-inspect photo-prjct_pgdata"]
+    assert _apply_log(tmp_path) == ["native-web-guard", "volume-inspect photo-prjct_pgdata"]
     for name in (".env", "deployed-image"):
         assert not (tmp_path / name).exists()
     _assert_no_env_temporary_files(tmp_path)
@@ -2884,6 +2905,252 @@ def test_post_mutation_compose_failure_reports_the_recovery_outcome(
         assert "Previous application and worker profile reconciled" in result.stderr
     else:
         assert "Previous deployment recovery failed" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "processing-schema-migrate-failure",
+        "processing-schema-drain-failure",
+        "processing-schema-health-failure",
+    ],
+)
+def test_dropped_processing_column_blocks_old_web_recovery_and_preserves_candidate(
+    tmp_path: Path, fake_bin: Path, scenario: str
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    env["PHOTO_PROCESSING_FLEET_TOKEN"] = "fleet-test-only"
+    previous_package = tmp_path / "previous-package"
+    (previous_package / "deploy").mkdir(parents=True)
+    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
+        (previous_package / name).write_text("old package\n")
+    (previous_package / "deploy/old-package").write_text("old source\n")
+    env["PREVIOUS_DEPLOYMENT_PACKAGE_ROOT"] = str(previous_package)
+    candidate_compose = (tmp_path / "docker-compose.deployment.yml").read_bytes()
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "rollback=failed" in result.stdout
+    assert (
+        "Previous web is incompatible with the current processing schema; "
+        "automatic recovery blocked" in result.stderr
+    )
+    commands = _apply_log(tmp_path)
+    assert "previous-web-processing-schema-probe" in commands
+    assert any(" stop web" in command for command in commands)
+    assert not any(
+        "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
+        for command in commands
+    )
+    assert (tmp_path / "docker-compose.deployment.yml").read_bytes() == candidate_compose
+    assert (previous_package / "deploy/old-package").is_file()
+    recovery = tmp_path / ".deployment-recovery"
+    assert (recovery / "previous.env").read_bytes() == PREVIOUS_ENV
+    assert (recovery / "package-path").read_text().strip() == str(previous_package)
+    candidate_env = recovery / "candidate.env"
+    assert candidate_env.stat().st_mode & 0o777 == 0o600
+    assert "APP_IMAGE=new-image\n" in candidate_env.read_text()
+    assert 'PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only"\n' in candidate_env.read_text()
+    if scenario == "processing-schema-health-failure":
+        assert (tmp_path / ".env").read_bytes() == candidate_env.read_bytes()
+    else:
+        assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / "deployed-image").read_text().strip() == "old-image"
+    assert "private-db-detail-must-not-reach-output" not in result.stdout + result.stderr
+    assert "fleet-test-only" not in result.stdout + result.stderr
+    _assert_no_env_temporary_files(tmp_path)
+
+
+def test_schema_compatible_web_recovers_only_after_read_only_probe(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh", env=_apply_env(tmp_path, fake_bin, scenario="compose-failure")
+    )
+    assert result.returncode != 0
+    assert "rollback=succeeded" in result.stdout
+    commands = _apply_log(tmp_path)
+    old_start = next(
+        i
+        for i, command in enumerate(commands)
+        if "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
+    )
+    assert commands.index("previous-web-processing-schema-probe") < old_start
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / ".deployment-recovery").exists()
+
+
+def _trapped_forward_recovery(tmp_path, fake_bin, *, timing, fix_sha):
+    original_sha = "a" * 40
+    env = _apply_env(tmp_path, fake_bin, scenario=f"processing-schema-{timing}-failure")
+    env["APP_IMAGE"] = f"ghcr.io/example/photo-prjct:{original_sha}"
+    env["EXPECTED_REQUESTED_IMAGE"] = env["APP_IMAGE"]
+    predecessor = tmp_path / ".deployment-previous.original"
+    (predecessor / "deploy").mkdir(parents=True)
+    for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
+        (predecessor / name).write_text("original predecessor\n")
+    (predecessor / "deploy/evidence").write_text("pre-cutover source\n")
+    env["PREVIOUS_DEPLOYMENT_PACKAGE_ROOT"] = str(predecessor)
+    initial = _run("deploy/apply-deployment.sh", env=env)
+    assert initial.returncode != 0
+    assert (tmp_path / ".deployment-recovery/candidate.env").is_file()
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    (tmp_path / "apply.log").write_text("")
+    env.update(
+        APPLY_SCENARIO="success",
+        RECOVER_FORWARD="True",
+        RELEASE_SHA=fix_sha,
+        APP_IMAGE=f"ghcr.io/example/photo-prjct:{fix_sha}",
+        EXPECTED_REQUESTED_IMAGE=f"ghcr.io/example/photo-prjct:{fix_sha}",
+        EXPECTED_IMAGE_REVISION=fix_sha,
+        SECRET_KEY="workflow-replacement-secret-must-not-win",
+    )
+    env.pop("PREVIOUS_DEPLOYMENT_PACKAGE_ROOT")
+    return env, predecessor
+
+
+def _run_forward_installer(tmp_path, fake_bin, env, *, candidate_deploy=None):
+    candidate_deploy = candidate_deploy or tmp_path / "deploy"
+    shutil.copy2(ROOT / "deploy/apply-deployment.sh", candidate_deploy / "apply-deployment.sh")
+    archive_name = ".deployment-candidate.forward.tar"
+    with tarfile.open(tmp_path / archive_name, "w") as archive:
+        for name in ("docker-compose.deployment.yml", "docker-compose.https.yml", "deploy"):
+            archive.add(candidate_deploy if name == "deploy" else tmp_path / name, arcname=name)
+    source = (ROOT / "deploy/run-remote.sh").read_text()
+    installer = source.split("deployment_command = r'''", 1)[1].split("'''\n", 1)[0]
+    installer = installer.replace("deployment_root=/opt/photo-prjct", f"deployment_root={tmp_path}")
+    _write_executable(fake_bin / "flock", 'printf "canonical-lock\\n" >> "$COMMAND_LOG"')
+    return subprocess.run(
+        ["sh", "-c", installer],
+        env={**os.environ, **env, "DEPLOYMENT_ARCHIVE_NAME": archive_name},
+        text=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.parametrize("timing", ["migrate", "health"])
+@pytest.mark.parametrize("fix_sha", ["a" * 40, "b" * 40], ids=["same-candidate", "forward-fix"])
+def test_canonical_forward_recovery_consumes_retained_inputs_and_commits(
+    tmp_path, fake_bin, timing, fix_sha
+):
+    env, predecessor = _trapped_forward_recovery(tmp_path, fake_bin, timing=timing, fix_sha=fix_sha)
+    result = _run_forward_installer(tmp_path, fake_bin, env)
+    assert result.returncode == 0, result.stderr
+    assert "DEPLOY_RESULT=success phase=commit" in result.stdout
+    assert (tmp_path / "deployed-image").read_text().strip() == env["APP_IMAGE"]
+    assert "SECRET_KEY=new-secret\n" in (tmp_path / ".env").read_text()
+    assert not (tmp_path / ".deployment-recovery").exists()
+    assert not predecessor.exists()
+    commands = _apply_log(tmp_path)
+    assert commands.index("canonical-lock") < commands.index("forward-candidate-probe")
+    assert "previous-web-processing-schema-probe" not in commands
+    assert "private-forward-probe-detail" not in result.stdout + result.stderr
+    assert "workflow-replacement-secret-must-not-win" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "scenario", ["forward-incompatible", "forward-unpaused", "wrong-revision", "health-failure"]
+)
+@pytest.mark.parametrize("timing", ["migrate", "health"])
+def test_failed_forward_recovery_keeps_original_snapshot_and_never_rolls_back(
+    tmp_path, fake_bin, scenario, timing
+):
+    env, predecessor = _trapped_forward_recovery(
+        tmp_path, fake_bin, timing=timing, fix_sha="b" * 40
+    )
+    snapshot = tmp_path / ".deployment-recovery"
+    before = {p.name: p.read_bytes() for p in snapshot.iterdir()}
+    (tmp_path / "deploy/candidate-generation").write_text("last-compatible candidate\n")
+    prospective = tmp_path / "prospective-deploy"
+    shutil.copytree(tmp_path / "deploy", prospective)
+    (prospective / "candidate-generation").write_text("forward-fix candidate\n")
+    env["APPLY_SCENARIO"] = scenario
+    if scenario == "wrong-revision":
+        env["EXPECTED_IMAGE_REVISION"] = "c" * 40
+    result = _run_forward_installer(tmp_path, fake_bin, env, candidate_deploy=prospective)
+    assert result.returncode != 0
+    assert {p.name: p.read_bytes() for p in snapshot.iterdir()} == before
+    assert (predecessor / "deploy/evidence").read_text() == "pre-cutover source\n"
+    commands = _apply_log(tmp_path)
+    assert "previous-web-processing-schema-probe" not in commands
+    if scenario == "wrong-revision":
+        assert "does not match the approved SHA" in result.stderr
+    else:
+        assert "forward-candidate-probe" in commands
+    assert not any("up -d --no-deps web nginx" in c and "APP_IMAGE=unset" in c for c in commands)
+    if scenario == "health-failure":
+        assert any(" stop web" in c for c in commands)
+        assert (tmp_path / "deploy/candidate-generation").read_text() == "forward-fix candidate\n"
+    else:
+        assert not any(" up -d --no-deps web nginx" in c for c in commands)
+        assert (
+            tmp_path / "deploy/candidate-generation"
+        ).read_text() == "last-compatible candidate\n"
+    assert "private-forward-probe-detail" not in result.stdout + result.stderr
+    assert "workflow-replacement-secret-must-not-win" not in result.stdout + result.stderr
+    env["RECOVER_FORWARD"] = "False"
+    ordinary = _run_forward_installer(tmp_path, fake_bin, env)
+    assert ordinary.returncode != 0
+    assert "recovery remains unfinished" in ordinary.stderr
+
+
+@pytest.mark.parametrize("restore_fails", [False, True], ids=["restored", "restore-failed"])
+def test_interrupted_forward_package_install_preserves_retryable_candidate(
+    tmp_path, fake_bin, restore_fails
+):
+    env, predecessor = _trapped_forward_recovery(
+        tmp_path, fake_bin, timing="health", fix_sha="b" * 40
+    )
+    snapshot = tmp_path / ".deployment-recovery"
+    snapshot_before = {p.name: p.read_bytes() for p in snapshot.iterdir()}
+    env_before = (tmp_path / ".env").read_bytes()
+    image_before = (tmp_path / "deployed-image").read_bytes()
+    https_before = (tmp_path / "docker-compose.https.yml").read_bytes()
+    (tmp_path / "deploy/candidate-generation").write_text("last-compatible candidate\n")
+    prospective = tmp_path / "prospective-deploy"
+    shutil.copytree(tmp_path / "deploy", prospective)
+    (prospective / "candidate-generation").write_text("forward-fix candidate\n")
+    restore_failure = (
+        "  */.deployment-previous.*/docker-compose.https.yml) exit 1 ;;\n" if restore_fails else ""
+    )
+    _write_executable(
+        fake_bin / "mv",
+        'case "$1" in\n'
+        '  */.deployment-candidate.*/docker-compose.https.yml) kill -TERM "$PPID"; exit 143 ;;\n'
+        + restore_failure
+        + 'esac\nexec /bin/mv "$@"\n',
+    )
+    result = _run_forward_installer(tmp_path, fake_bin, env, candidate_deploy=prospective)
+    assert result.returncode != 0
+    assert {p.name: p.read_bytes() for p in snapshot.iterdir()} == snapshot_before
+    assert (predecessor / "deploy/evidence").read_text() == "pre-cutover source\n"
+    assert (tmp_path / ".env").read_bytes() == env_before
+    assert (tmp_path / "deployed-image").read_bytes() == image_before
+    assert (tmp_path / "deploy/candidate-generation").read_text() == "last-compatible candidate\n"
+    assert "previous-web-processing-schema-probe" not in _apply_log(tmp_path)
+    assert "workflow-replacement-secret-must-not-win" not in result.stdout + result.stderr
+    if restore_fails:
+        retained = [p for p in tmp_path.glob(".deployment-previous.*") if p != predecessor]
+        assert len(retained) == 1
+        assert (retained[0] / "docker-compose.https.yml").read_bytes() == https_before
+        staging = list(tmp_path.glob(".deployment-candidate.*/"))
+        assert len(staging) == 1
+        assert (staging[0] / "docker-compose.https.yml").is_file()
+        assert (staging[0] / "deploy/candidate-generation").read_text() == "forward-fix candidate\n"
+        return
+    assert result.returncode == 143
+    assert (tmp_path / "docker-compose.deployment.yml").is_file()
+    assert (tmp_path / "docker-compose.https.yml").read_bytes() == https_before
+    assert list(tmp_path.glob(".deployment-previous.*")) == [predecessor]
+    assert not list(tmp_path.glob(".deployment-candidate.*/"))
+    (fake_bin / "mv").unlink()
+    retried = _run_forward_installer(tmp_path, fake_bin, env, candidate_deploy=prospective)
+    assert retried.returncode == 0, retried.stderr
+    assert "DEPLOY_RESULT=success phase=commit" in retried.stdout
+    assert (tmp_path / "deploy/candidate-generation").read_text() == "forward-fix candidate\n"
+    assert not snapshot.exists()
+    assert not predecessor.exists()
 
 
 def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliation(

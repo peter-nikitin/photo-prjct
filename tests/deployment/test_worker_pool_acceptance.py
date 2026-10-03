@@ -104,7 +104,8 @@ def test_functional_entrypoint_runs_existing_policy_and_interrupted_release_fixt
                 "test",
                 "TESTS=-m operational tests/deployment/test_worker_pool_acceptance.py "
                 "tests/deployment/test_worker_pool_provisioning.py "
-                "tests/deployment/test_worker_pool_release.py "
+                "tests/deployment/test_component_release.py "
+                "tests/deployment/test_worker_image_updater.py "
                 "tests/deployment/test_worker_pool_retire.py",
             ],
             ROOT,

@@ -7,15 +7,28 @@ or promotion target; this repository has no GitHub Environment deployment bounda
 
 ## Ordinary automatic deployment
 
-A `main` push that does not change the privileged observability package builds immutable application
-and worker images and applies them to the deployed VM. A manual application deployment must supply
+A `main` push publishes affected components. Documentation-only changes build and deploy nothing.
+Backend/import/canonical deployment inputs publish web/import SHA images and deploy the canonical
+VM without pulling or restarting photo workers. Worker inputs publish a worker SHA image and
+advance `latest`; host updaters replace containers in place. Mixed changes do both. Pinned models
+and dependencies live in a separately reusable base selected by its input hash; the code Dockerfile
+receives its resolved immutable digest. Publication and deployment are serialized. A failed release
+needs an explicit retry; a later documentation push does not retry it.
+
+A manual deployment must supply
 an exact 40-character commit as `deployment_sha`; the workflow rejects a missing, malformed,
 unavailable, or non-commit object. Leave `verify_paused_observability_release=false` for an
-ordinary retry and leave `configure_monitoring_agent` disabled unless that separate operation is
+ordinary retry. The selected commit is classified against its parent, preserving web-only or
+worker-only retries. Leave `configure_monitoring_agent` disabled unless that separate operation is
 the purpose of the dispatch.
 
 Review the **Deploy** workflow result and run the acceptance checks below. Do not SSH to invoke
 `deploy/apply-deployment.sh` directly or use a mutable checkout as a deployment source.
+
+The first updater installation is a separate one-time operation at the current cap one after
+claims are paused/drained and the new web protocol/migration is deployed. Ordinary Deploy does not
+install templates or recreate worker VMs. Follow [worker-pool operations](worker-pools.md).
+The historical fleet receipt and shared web/worker SHA are no longer deployment gates.
 
 After a release commits, the apply script removes Docker images unused by any container
 from the canonical VM. It skips this cleanup on failed deployments. The workflow prints
@@ -104,7 +117,13 @@ renumbering, editing, or squashing migrations merely to retry. Inspect the deplo
 migration ledger and follow the [Django migration-conflict runbook](django-migration-conflicts.md).
 
 `deploy/apply-deployment.sh` preserves the previous profile and attempts rollback after a
-post-mutation failure. A red workflow is not proof that the VM is unavailable, and a green rollback
+post-mutation failure only after the previous web's bounded, read-only `ProcessingAttempt` query
+succeeds against the current database. A failed or uncertain probe blocks recovery, stops web,
+retains the installed candidate package and `.deployment-recovery`, and saves the candidate inputs
+as `.deployment-recovery/candidate.env` (mode 0600). Keep claims paused and recover forward with a
+schema-compatible candidate; do not restore the pre-0016 web after its column was dropped, even
+when the overall migration command failed. Preserve the snapshot until explicit recovery is verified.
+A red workflow is not proof that the VM is unavailable, and a green rollback
 is not proof that the candidate was applied. Preserve the workflow URL and named failed phase,
 then verify the previous state before a corrected retry.
 

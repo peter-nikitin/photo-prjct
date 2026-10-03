@@ -43,7 +43,7 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
     preflight = jobs["lockbox-preflight"]
     assert preflight["if"] == (
         "${{ github.event_name == 'workflow_dispatch' && inputs.preflight && "
-        "!inputs.finalize_initial_workers }}"
+        "!inputs.recover_forward }}"
     )
     assert preflight["runs-on"] == "ubuntu-latest"
     assert "environment" not in preflight
@@ -92,28 +92,25 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
     assert "appleboy/" not in serialized_preflight
     assert "${{ secrets." not in remote_preflight["run"]
 
-    assert jobs["classify-release"]["if"] == (
-        "${{ !inputs.preflight && !inputs.finalize_initial_workers }}"
-    )
-    assert jobs["build"]["if"] == (
-        "${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && "
-        "!inputs.preflight && !inputs.stage_paused_observability_release && "
-        "!inputs.finalize_initial_workers }}"
-    )
-    assert jobs["deploy"]["if"] == jobs["build"]["if"]
-    assert jobs["reconcile-deploy-issue"]["if"] == (
-        "${{ always() && !inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue && !inputs.preflight && "
-        "!inputs.stage_paused_observability_release && !inputs.finalize_initial_workers }}"
-    )
+    assert jobs["classify-release"]["if"] == "${{ !inputs.preflight || inputs.recover_forward }}"
+    for job in ("build", "deploy", "reconcile-deploy-issue"):
+        for excluded in (
+            "configure_monitoring_agent",
+            "validate_deploy_issue",
+            "preflight",
+            "stage_paused_observability_release",
+        ):
+            assert f"!inputs.{excluded}" in jobs[job]["if"]
+        assert "web_changed == 'true'" in jobs[job]["if"]
+    assert "worker_changed == 'true'" in jobs["build"]["if"]
+    assert "always()" in jobs["reconcile-deploy-issue"]["if"]
     assert jobs["validate-deploy-issue"]["if"] == (
         "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && "
-        "!inputs.preflight && !inputs.finalize_initial_workers }}"
+        "!inputs.preflight && !inputs.recover_forward }}"
     )
     assert jobs["configure-monitoring-agent"]["if"] == (
         "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue && !inputs.preflight && "
-        "!inputs.finalize_initial_workers }}"
+        "!inputs.validate_deploy_issue && !inputs.preflight && !inputs.recover_forward }}"
     )
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -139,10 +136,7 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
         assert "GITHUB_OUTPUT" not in serialized
 
     stage = jobs["stage-observability-release"]
-    assert stage["if"] == (
-        "${{ inputs.stage_paused_observability_release && !inputs.preflight && "
-        "!inputs.finalize_initial_workers }}"
-    )
+    assert stage["if"] == ("${{ inputs.stage_paused_observability_release && !inputs.preflight }}")
     assert stage["permissions"] == {"contents": "read", "id-token": "write"}
     assert stage["needs"] == ["classify-release"]
     assert "environment" not in stage
@@ -228,6 +222,7 @@ def _assert_staged_deployment_source_identity(tmp_path: Path) -> None:
     for expression, value in {
         "${{ github.sha }}": "f" * 40,
         "${{ github.event_name }}": "workflow_dispatch",
+        "${{ inputs.recover_forward }}": "false",
         "${{ inputs.configure_monitoring_agent }}": "false",
         "${{ inputs.validate_deploy_issue }}": "false",
         "${{ inputs.stage_paused_observability_release }}": "false",
@@ -241,10 +236,16 @@ def _assert_staged_deployment_source_identity(tmp_path: Path) -> None:
         '#!/bin/sh\ncase "$1" in\n'
         "  cat-file) exit 0 ;;\n"
         "  rev-parse) printf '%s\\n' \"$EXPECTED_SHA\" ;;\n"
+        "  diff) printf 'src/backend/config/settings.py\\n' ;;\n"
         "  *) exit 2 ;;\nesac\n",
         encoding="utf-8",
     )
     fake_git.chmod(0o755)
+    (fake_bin / "python").symlink_to(sys.executable)
+    (tmp_path / "deploy").mkdir()
+    (tmp_path / "deploy/classify-release.py").write_bytes(
+        (ROOT / "deploy/classify-release.py").read_bytes()
+    )
     output = tmp_path / "classifier-output"
     expected_sha = "a" * 40
     environment = {

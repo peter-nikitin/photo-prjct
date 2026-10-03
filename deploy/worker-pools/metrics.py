@@ -12,9 +12,9 @@ def collect(config, *, run=subprocess.run):
     if set(config) != {"deploy_root", "cloud"} or not Path(config["deploy_root"]).is_absolute():
         raise ValueError("invalid collector config")
     root = Path(config["deploy_root"])
-    # The canonical release journal owns the current two-build observation allowlist.
+    # Operator-owned configuration identifies the exact cloud scope for observation.
     if config["cloud"] != str(root / "worker-pools-observation.json"):
-        raise ValueError("invalid release observation path")
+        raise ValueError("invalid cloud observation path")
     cloud = json.loads(Path(config["cloud"]).read_text())
     if not isinstance(cloud, dict):
         raise ValueError("invalid cloud configuration")

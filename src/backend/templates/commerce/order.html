@@ -80,13 +80,13 @@
           {% if payment_continuation == 'support' %}
             <p role="status">Проверяем данные оплаты. Свяжитесь с поддержкой.</p>
           {% elif payment_continuation == 'waiting' %}
-            <p role="status">Проверяем связь с банком; повторите позже</p>
+            <p role="status">Платёжная ссылка недоступна. Банк всё ещё обрабатывает попытку. Мы проверяем её статус; обновите страницу позже.</p>
           {% elif payment_continuation == 'retry' %}
             <p role="status">Оплата не завершена</p>
           {% else %}
             <p>Можно вернуться к оплате в банке.</p>
           {% endif %}
-          {% if payment_continuation != 'support' %}
+          {% if payment_continuation == 'hosted' or payment_continuation == 'retry' %}
           <form class="order-resend" method="post" action="{% url 'commerce:order_retry_payment' public_number=order_presentation.public_number %}">
             {% csrf_token %}
             <button type="submit">Повторить оплату</button>

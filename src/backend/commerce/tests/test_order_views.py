@@ -609,6 +609,7 @@ class OrderPaymentContinuationTests(OrderViewFixture):
         attempt = self.attempt(
             provider_payment_id="existing", confirmation_url="https://bank.test/pay"
         )
+        self.assertContains(self.client.get(self.order_url(self.pending_order)), "Повторить оплату")
         del self.client.cookies["findme_cart"]
         with patch("commerce.views._payment_gateway") as gateway:
             response = self.client.post(self.retry_url)
@@ -620,9 +621,13 @@ class OrderPaymentContinuationTests(OrderViewFixture):
     def test_active_no_url_and_unsafe_url_show_waiting_without_new_attempt(self):
         for url in ("", "javascript:alert(1)", "https://[malformed"):
             attempt = self.attempt(confirmation_url=url)
+            page = self.client.get(self.order_url(self.pending_order))
+            self.assertContains(page, "Банк всё ещё обрабатывает попытку")
+            self.assertNotContains(page, "Повторить оплату")
             with patch("commerce.views._payment_gateway") as gateway:
                 response = self.client.post(self.retry_url)
-            self.assertContains(response, "Проверяем связь с банком; повторите позже")
+            self.assertContains(response, "Банк всё ещё обрабатывает попытку")
+            self.assertNotContains(response, "Повторить оплату")
             gateway.assert_not_called()
             self.assertEqual(
                 self.pending_order.payment_attempts.filter(status="pending").count(), 1
@@ -672,8 +677,8 @@ class OrderPaymentContinuationTests(OrderViewFixture):
         with patch("commerce.views._payment_gateway", return_value=gateway):
             first = self.client.post(self.retry_url)
             second = self.client.post(self.retry_url)
-        self.assertContains(first, "Проверяем связь с банком; повторите позже")
-        self.assertContains(second, "Проверяем связь с банком; повторите позже")
+        self.assertContains(first, "Банк всё ещё обрабатывает попытку")
+        self.assertContains(second, "Банк всё ещё обрабатывает попытку")
         self.assertEqual(self.pending_order.payment_attempts.count(), 2)
         self.assertEqual(len(gateway.requests), 1)
         active = self.pending_order.payment_attempts.get(status=PaymentAttempt.Status.PENDING)

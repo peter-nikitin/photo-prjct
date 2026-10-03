@@ -1601,8 +1601,8 @@ def test_worker_returns_server_delay_for_an_empty_claim() -> None:
     assert worker.run_once() == 7
 
 
-def test_worker_polls_configured_exact_identities_round_robin_without_parallel_claims() -> None:
-    """One process advances through identities even when an earlier queue is empty."""
+def test_worker_waits_only_after_every_configured_identity_is_empty() -> None:
+    """An empty queue delays one polling round, not each individual identity."""
     client = Client(Claim.empty(3))
     worker = Worker(
         client,
@@ -1617,12 +1617,48 @@ def test_worker_polls_configured_exact_identities_round_robin_without_parallel_c
         ),
     )
 
-    assert [worker.run_once() for _ in range(4)] == [3, 3, 3, 3]
+    assert worker.run_once() == 3
     assert client.claim_identities == [
         (1, "capture_metadata", 2),
         (2, "generate_preview", 1),
         (2, "face_embedding", 3),
+    ]
+
+
+def test_worker_reaches_backlogged_identity_without_sleeping_between_empty_queues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remote bulk configuration must claim each next photo without five idle delays."""
+    current_face = (3, PROCESSOR_TYPE_FACE_EMBEDDING, 5)
+    identities = (
+        "1/capture_metadata/2",
+        "2/generate_preview/1",
+        "2/generate_watermarked_preview/1",
+        "2/face_embedding/3",
+        "3/face_embedding/5",
+        "1/bib_recognition/1",
+    )
+    client = SchedulingClient({current_face})
+    worker = Worker(
+        client,
+        WorkerConfig(worker_build="worker-test", lease_seconds=60, processor_identities=identities),
+    )
+    monkeypatch.setattr(worker, "_process", lambda _job: None)
+
+    assert worker.run_once() is None
+    assert worker.run_once() is None
+    assert client.claim_identities == [
         (1, "capture_metadata", 2),
+        (2, "generate_preview", 1),
+        (2, "generate_watermarked_preview", 1),
+        (2, "face_embedding", 3),
+        current_face,
+        (1, "bib_recognition", 1),
+        (1, "capture_metadata", 2),
+        (2, "generate_preview", 1),
+        (2, "generate_watermarked_preview", 1),
+        (2, "face_embedding", 3),
+        current_face,
     ]
 
 

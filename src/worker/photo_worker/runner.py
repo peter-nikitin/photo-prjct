@@ -325,7 +325,6 @@ class Worker:
         self._config = config
         self._lease_keeper_factory = lease_keeper_factory
         self._next_poll_delay_seconds = config.minimum_delay_seconds
-        self._identity_index = 0
         self._photo_identity_index = 0
         self._prefer_selfie = True
         self._last_claim_identity: tuple[int, str, int] | None = None
@@ -343,10 +342,7 @@ class Worker:
         empty_delays: list[int] = []
         claim: Claim | None
         if not self._config.processor_types:
-            contract_version, processor_type, processor_version = self._next_identity()
-            claim = self._claim_identity(
-                (contract_version, processor_type, processor_version), empty_delays
-            )
+            claim = self._claim_photo_opportunity(self._priority_identities(), empty_delays)
         else:
             claim = self._claim_plural(empty_delays)
         if claim is None or claim.job is None:
@@ -422,17 +418,6 @@ class Worker:
             assert claim.suggested_delay_seconds is not None
             empty_delays.append(claim.suggested_delay_seconds)
         return claim
-
-    def _next_identity(self) -> tuple[int, str, int]:
-        identities = tuple(
-            _parse_processor_identity(value) for value in self._config.processor_identities
-        )
-        if identities:
-            identity = identities[self._identity_index]
-            self._identity_index = (self._identity_index + 1) % len(identities)
-            return identity
-        assert self._config.processor_type is not None
-        return _default_processor_identity(self._config.processor_type)
 
     def _identities_for_type(self, processor_type: str) -> tuple[tuple[int, str, int], ...]:
         identities = tuple(

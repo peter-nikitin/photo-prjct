@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Worker-host bootstrap: narrow pinned Lockbox payload and immutable OCI revision gate."""
+"""Worker-host bootstrap: narrow Lockbox payload and host-owned current-image updater."""
 
 from __future__ import annotations
 
@@ -104,20 +104,15 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run,
     base = root / "etc/findme-worker"
     image = config["worker_image"]
     if (
-        re.fullmatch(r"[0-9a-f]{40}", config["worker_build"]) is None
-        or re.fullmatch(
-            r"ghcr\.io/[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9._-]*-worker@sha256:[0-9a-f]{64}", image
-        )
+        re.fullmatch(r"ghcr\.io/[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9._-]*-worker:latest", image)
         is None
     ):
-        raise ValueError("immutable GHCR worker release required")
+        raise ValueError("current GHCR worker pointer required")
     # No secrets in argv, userdata or logging. Docker auth is a private standard config file.
     auth = {"auths": {"ghcr.io": {"auth": values["IMAGE_PULL_AUTH"]}}}
     private_file(base / "docker/config.json", json.dumps(auth))
     from_config = {
         "PHOTO_WORKER_POOL": pool,
-        "PHOTO_WORKER_BUILD": config["worker_build"],
-        "WORKER_IMAGE": image,
         "PHOTO_WORKER_API_URL": "https://findme-photo.ru:8443/internal/photo-processing/v1",
         "WORKER_POOL_PRIVATE_API_IPV4": config["private_api_ipv4"],
         "PHOTO_WORKER_PROCESSOR_IDENTITIES": config["identities"],
@@ -158,21 +153,6 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run,
         != config["compose_version"]
     ):
         raise ValueError("unreviewed Compose version")
-    mark_phase("docker-pull")
-    invoke(["docker", "pull", image], timeout=900)
-    mark_phase("image-identity")
-    actual = invoke(
-        [
-            "docker",
-            "image",
-            "inspect",
-            "--format",
-            '{{index .Config.Labels "org.opencontainers.image.revision"}}',
-            image,
-        ]
-    ).stdout.strip()
-    if actual != config["worker_build"]:
-        raise ValueError("worker OCI revision mismatch")
     mark_phase("compose-prepare")
     hosts = root / "etc/hosts"
     original = hosts.read_text() if hosts.exists() else ""
@@ -181,23 +161,12 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run,
     ):
         raise ValueError("unexpected canonical host mapping")
     hosts.write_text(original + f"\n{config['private_api_ipv4']} findme-photo.ru\n")
-    mark_phase("compose-start")
-    invoke(
-        [
-            "docker",
-            "compose",
-            "--project-name",
-            "findme-worker",
-            "--env-file",
-            str(base / "runtime.env"),
-            "-f",
-            str(root / "usr/local/lib/findme-worker/compose.yml"),
-            "up",
-            "-d",
-        ]
-    )
     mark_phase("service-start")
     invoke(["systemctl", "daemon-reload"])
+    mark_phase("image-update")
+    invoke(["systemctl", "start", "findme-worker-updater.service"], timeout=2700)
+    mark_phase("service-start")
+    invoke(["systemctl", "enable", "--now", "findme-worker-updater.timer"])
     invoke(["systemctl", "enable", "--now", "findme-worker-retire.timer"])
     if telemetry_enabled:
         try:
@@ -220,7 +189,6 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run,
             )
             telemetry_env = {
                 "PHOTO_WORKER_POOL": pool,
-                "PHOTO_WORKER_BUILD": config["worker_build"],
                 "PHOTO_WORKER_ZONE": config["zone"],
                 "PHOTO_PROCESSING_FLEET_TOKEN": values["PHOTO_PROCESSING_FLEET_TOKEN"],
             }

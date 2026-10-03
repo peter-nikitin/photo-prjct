@@ -79,9 +79,20 @@ def test_status_is_bounded_read_only_and_missing_sources_are_unknown():
         "missing": 1,
         "host_fresh": 0,
         "runtime_fresh": 0,
-        "scalar_samples": 13,
+        "scalar_samples": 14,
     }
     assert report["pools"]["bulk"]["expected"] == 0
+    samples = {
+        sample.name: sample.value
+        for family in text_string_to_metric_families(generate_diagnostic_metrics().decode())
+        for sample in family.samples
+        if sample.labels.get("pool") == "selfie"
+    }
+    assert samples["worker_pool_queue_observation_available"] == 0
+    assert "worker_pool_claimable" not in samples
+    assert "worker_pool_workload" not in samples
+    assert samples["worker_host_observation_missing"] == 1
+    assert samples["worker_runtime_observation_fresh"] == 0
     assert report["remote_write"] == "unverified"
     assert report["alerts"] == "deferred"
     assert len(output.getvalue()) < 2048

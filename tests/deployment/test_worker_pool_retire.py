@@ -58,8 +58,9 @@ def test_grant_for_old_boot_is_rejected_before_any_host_action():
     runner.assert_not_called()
 
 
-def test_helper_stops_only_named_container_then_own_host_and_stop_failure_aborts():
+def test_helper_stops_only_named_container_then_own_host_and_stop_failure_aborts(monkeypatch):
     module = helper()
+    monkeypatch.setattr(module, "active_slot", lambda: {"slot": "b"})
     envelope = {
         "pool": "bulk",
         "instance_id": "instance-1",
@@ -76,7 +77,7 @@ def test_helper_stops_only_named_container_then_own_host_and_stop_failure_aborts
     runner = Mock()
     assert module.retire(envelope, reply, dry_run=False, run=runner) == "retiring"
     assert [call.args[0] for call in runner.call_args_list] == [
-        ["docker", "stop", "--time", "930", "findme-photo-worker"],
+        ["docker", "stop", "--time", "930", "findme-photo-worker-b"],
         ["systemctl", "poweroff"],
     ]
     runner = Mock(side_effect=subprocess.CalledProcessError(1, ["docker", "stop"]))

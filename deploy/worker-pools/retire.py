@@ -12,9 +12,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import UUID
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from host import SLOTS, active_slot, host_lock, status  # noqa: E402
 
 API = "https://findme-photo.ru:8443/internal/photo-processing/v1/members/retire"
 BOOT_PATH = Path("/proc/sys/kernel/random/boot_id")
@@ -27,11 +31,14 @@ class RejectRedirects(HTTPRedirectHandler):
 
 
 def own_identity() -> dict[str, str]:
+    active = active_slot()
+    generation = status(SLOTS[active["slot"]])["registration_generation"]
     identity = {
         "pool": os.environ["PHOTO_WORKER_POOL"],
         "instance_id": INSTANCE_PATH.read_text().strip(),
         "boot_id": BOOT_PATH.read_text().strip(),
-        "worker_build": os.environ["PHOTO_WORKER_BUILD"],
+        "worker_build": active["build"],
+        "registration_generation": generation,
     }
     if (
         identity["pool"] not in {"bulk", "selfie"}
@@ -83,7 +90,7 @@ def retire(identity: dict[str, str], reply: dict, *, dry_run: bool, run=subproce
     if dry_run:
         return "would_retire"
     run(
-        ["docker", "stop", "--time", "930", "findme-photo-worker"],
+        ["docker", "stop", "--time", "930", f"findme-photo-worker-{active_slot()['slot']}"],
         check=True,
         timeout=960,
         stdout=subprocess.DEVNULL,
@@ -109,11 +116,22 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        identity = own_identity()
-        reply = permission(identity)
-        if own_identity() != identity:
-            raise ValueError("host changed during retirement request")
-        print(retire(identity, reply, dry_run=not args.apply or args.dry_run))
+        with host_lock():
+            active = active_slot()
+            identity = own_identity()
+            reply = permission(identity)
+            # The durable grant fences further registrations. Its worker may finish drain
+            # and close /status before this request returns; recheck host/slot, not readiness.
+            if (
+                active_slot() != active
+                or BOOT_PATH.read_text().strip() != identity["boot_id"]
+                or INSTANCE_PATH.read_text().strip() != identity["instance_id"]
+            ):
+                raise ValueError("host changed during retirement request")
+            print(retire(identity, reply, dry_run=not args.apply or args.dry_run))
+    except BlockingIOError:
+        print("retirement_host_busy")
+        return 0
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         print("retirement_unavailable")
         return 1

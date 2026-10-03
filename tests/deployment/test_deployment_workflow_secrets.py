@@ -698,6 +698,34 @@ def test_failed_deploy_relays_only_safe_phase_markers_before_sanitized_error(
     assert not list(tmp_path.glob("findme-remote.*"))
 
 
+def test_failed_deploy_relays_exact_candidate_pull_failure_without_other_output(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    environment, sentinel = _remote_environment(tmp_path, remote_boundary)
+    environment.update(
+        SSH_FAIL_AFTER_OUTPUT="1",
+        SSH_STDOUT=(
+            "DEPLOY_PHASE=candidate-pull elapsed_seconds=0\n"
+            f"unsafe diagnostic {sentinel}\n"
+            "Fleet release preflight failed\n"
+            "DEPLOY_RESULT=failure phase=candidate-pull "
+            "rollback=not-needed elapsed_seconds=5\n"
+        ),
+    )
+
+    result = _run_helper(["deploy"], environment)
+
+    assert result.returncode == 2
+    assert result.stdout == (
+        "DEPLOY_PHASE=candidate-pull elapsed_seconds=0\n"
+        "Fleet release preflight failed\n"
+        "DEPLOY_RESULT=failure phase=candidate-pull "
+        "rollback=not-needed elapsed_seconds=5\n"
+    )
+    assert result.stderr == "[remote] stage=remote status=error code=remote_failed\n"
+    assert sentinel not in result.stdout + result.stderr
+
+
 def test_deploy_helper_preserves_the_existing_deployment_apply_boundary() -> None:
     source = HELPER.read_text(encoding="utf-8")
 

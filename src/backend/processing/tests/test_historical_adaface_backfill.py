@@ -193,12 +193,20 @@ class HistoricalAdaFaceBackfillTests(TestCase):
 
     def test_positive_bound_and_explicit_snapshot_are_required(self) -> None:
         self.photo("historical-a")
-        for limit in (0, -1, 17):
+        for limit in (0, -1):
             with self.assertRaises(CommandError):
                 self.command(apply=True, limit=limit, cohort_sha256="a" * 64)
         with self.assertRaises(CommandError):
             self.command(apply=True, limit=1)
         self.assertEqual(ProcessingJob.objects.filter(processor_version=5).count(), 0)
+
+    def test_one_event_can_enroll_more_than_sixteen_photos(self) -> None:
+        for index in range(17):
+            self.photo(f"historical-{index}")
+        report = self.apply(limit=17)
+        self.assertEqual(report["created_job_count"], 17)
+        self.assertEqual(report["not_enrolled_count"], 0)
+        self.assertEqual(ProcessingJob.objects.filter(processor_version=5).count(), 17)
 
     def test_missing_source_or_preview_remains_backlog_blocker(self) -> None:
         photo = self.photo("historical-a")

@@ -34,7 +34,6 @@ from processing.services.face_quality import (
 )
 
 BACKFILL_REPORT_KEY = "historical_adaface_backfill"
-MAX_BATCH_LIMIT = 16
 ACTIVE_STATES = ("queued", "processing", "retry_wait")
 
 
@@ -339,8 +338,8 @@ def historical_adaface_status(event: Event) -> dict[str, Any]:
 
 
 def enroll_historical_adaface(event: Event, *, cohort_sha256: str, limit: int) -> dict[str, Any]:
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_BATCH_LIMIT:
-        raise ValueError(f"limit must be between 1 and {MAX_BATCH_LIMIT}")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer")
     with transaction.atomic():
         event = Event.objects.select_for_update().get(pk=event.pk)
         if event.face_search_generation != Event.FaceSearchGeneration.SFACE_V3:

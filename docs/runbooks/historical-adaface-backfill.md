@@ -150,14 +150,16 @@ Record `cohort_sha256`, `photo_count`, `configuration_hash`, all terminal and bl
 changes, stop and review the new cohort hash. The private source evidence must be restored or
 explicitly resolved before enrollment; the command does not waive source/replacement blockers.
 
-## Gate 2: approve one bounded enrollment
+## Gate 2: approve historical enrollment
 
-Approve one event, its current cohort hash and a limit from 1 to 16. Review expected worker time,
+Approve the explicit event scope, current cohort hashes and positive per-invocation limits. Review expected worker time,
 preemptible bulk VM/disk uptime and object-transfer/model-inference impact. The accepted ceiling
 remains bulk 0..1 and warm selfie 1..1; no extra pool/VM or canonical-host downsizing is included.
 There is no current price quote in this package; resolve cost against the current billing context
 before paid work. Foreground work has claim priority, but cannot interrupt an already running
-historical attempt; bounded batch size limits the backlog introduced by each action.
+historical attempt. An operator may enqueue an entire eligible event; use smaller invocations
+when a large transaction or foreground queue impact warrants them. The limit is an operator
+choice, not a product-wide ceiling on historical photos.
 
 All mutating event commands use the same canonical deployment lock so a native event cannot
 activate between an image compatibility preflight and a package change. This is a host invocation
@@ -170,7 +172,7 @@ sudo flock -n /opt/photo-prjct/.deployment.lock \
   -f /opt/photo-prjct/docker-compose.deployment.yml \
   -f /opt/photo-prjct/docker-compose.https.yml \
   exec -T web python manage.py backfill_historical_adaface --event-id <EVENT_ID> \
-  --apply --cohort-sha256 <CURRENT_COHORT_SHA256> --limit <1_TO_16>
+  --apply --cohort-sha256 <CURRENT_COHORT_SHA256> --limit <POSITIVE_BATCH_SIZE>
 ```
 
 Each invocation ends after its batch. Pausing means issuing no further `--apply`; it does not

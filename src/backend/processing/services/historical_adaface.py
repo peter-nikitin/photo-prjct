@@ -16,7 +16,6 @@ from processing.models import (
     EventFaceClusterActivation,
     EventFaceEmbeddingActivation,
     EventProcessingRun,
-    FaceEmbedding,
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
@@ -136,7 +135,6 @@ class _Evidence:
     states: dict[str, PhotoProcessingState]
     projections: set[tuple[str, UUID]]
     vectors: dict[UUID, list[tuple[UUID, str, int]]]
-    json_attempts: set[UUID]
     old_searchable: set[str]
 
 
@@ -188,7 +186,6 @@ def _terminal_outcome(
         or any(
             model != generation["model"] or dimensions != 512 for _, model, dimensions in vectors
         )
-        or attempt.pk in evidence.json_attempts
     ):
         return "evidence_blocker_count"
     if kept:
@@ -287,13 +284,8 @@ def historical_adaface_status(event: Event) -> dict[str, Any]:
             ).values_list("photo_id", "accepted_attempt_id")
         ),
         vectors=vectors,
-        json_attempts=set(
-            FaceEmbedding.objects.filter(detection__attempt__event=event).values_list(
-                "detection__attempt_id", flat=True
-            )
-        ),
         old_searchable=set(
-            FaceEmbedding.objects.filter(
+            FaceEmbeddingVector.objects.filter(
                 detection__attempt__event=event,
                 detection__status="kept",
                 detection__attempt__accepted=True,
@@ -406,7 +398,6 @@ def activate_historical_adaface(
     event: Event, *, cohort_sha256: str, quality_review_sha256: str, review_confirmed: bool
 ) -> dict[str, Any]:
     from selfie_search.models import SelfieSearch, SelfieSearchAttempt
-    from selfie_search.services.read_selection import select_reader
 
     if review_confirmed is not True or not enrollment._is_sha256(quality_review_sha256):
         raise ValueError("explicit model quality review is required")
@@ -438,17 +429,6 @@ def activate_historical_adaface(
             raise ValueError("event searches must drain before activation")
         generation = historical_adaface_face_embedding_generations()[0]
         generations = [generation]
-        if any(
-            select_reader(
-                SelfieSearch(
-                    configuration={"gallery_face_embedding_generations": generations},
-                    reader_staff_eligible=staff,
-                )
-            )
-            != "pgvector"
-            for staff in (True, False)
-        ):
-            raise ValueError("historical AdaFace requires a safe native reader")
         latest = (
             EventFaceEmbeddingActivation.objects.filter(event=event)
             .order_by("-activated_at", "-id")

@@ -644,6 +644,7 @@ marker_tmp=""
 candidate_command_output_tmp=""
 mutation_started=0
 deployment_committed=0
+native_only_activation_started=0
 recovery_in_progress=0
 observability_installed=0
 candidate_import_worker_start_attempted=0
@@ -1004,9 +1005,16 @@ on_exit() {
         [ "$status" -ne 0 ] || status=1
         if [ "$recovery_in_progress" -eq 0 ]; then
             recovery_in_progress=1
-            if [ "$RECOVER_FORWARD" = True ]; then
+            if [ "$RECOVER_FORWARD" = True ] || [ "$native_only_activation_started" -eq 1 ]; then
                 rollback_result=failed
+                if [ "$candidate_import_worker_start_attempted" -eq 1 ]; then
+                    stop_import_before_web_change True || \
+                        echo "Forward recovery could not drain candidate import leases" >&2
+                fi
                 compose stop web || echo "Forward recovery could not stop web" >&2
+                if [ "$RECOVER_FORWARD" = False ]; then
+                    restore_previous_deployment_markers || echo "Committed image marker recovery failed" >&2
+                fi
                 echo "Forward recovery failed; original snapshot retained and claims must stay paused" >&2
             elif ! recover_previous_deployment; then
                 rollback_result=failed
@@ -1061,7 +1069,7 @@ fail() {
 
 phase() {
     case "$1" in
-        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit)
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit|legacy-schema-retirement)
             deployment_phase="$1"
             printf 'DEPLOY_PHASE=%s elapsed_seconds=%s\n' "$1" "$(elapsed_seconds)"
             ;;
@@ -1394,6 +1402,12 @@ if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput; then
     fail "Candidate migration failed"
 fi
+# This branch includes native-only writers: reject any current vector gap before activation.
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py \
+    retire_json_face_embeddings; then
+    fail "All-event native release gate failed before activation"
+fi
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     run --rm --no-deps -T --entrypoint python web manage.py \
     drain_gallery_media_publications --all-events; then
@@ -1423,6 +1437,11 @@ if ! compose_with_requested_runtime_profiles pull; then
     fail "Deployment image pull failed"
 fi
 
+# Retain candidate inputs before it can accept native-only writes. Any failure
+# from activation onward requires forward recovery, even while JSON still exists.
+if [ "$RECOVER_FORWARD" = False ]; then
+    install -m 0600 "$DEPLOY_ROOT/.env" "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
+fi
 phase compose-reconcile
 compose_up_status=0
 attempt=1
@@ -1440,6 +1459,7 @@ while [ "$attempt" -le "$max_compose_attempts" ]; do
             compose_reconcile_requested_runtime_profiles
         }
     fi
+    native_only_activation_started=1
     if compose_up_command; then
         break
     else
@@ -1564,4 +1584,28 @@ if ! docker image prune -a -f >/dev/null; then
     printf 'DEPLOY_IMAGE_PRUNE_RESULT=failure\n'
 else
     printf 'DEPLOY_IMAGE_PRUNE_RESULT=success\n'
+fi
+
+# Physical contraction is deliberately after deployment commit. A failure keeps the
+# compatible candidate running and requires forward recovery, never old-image rollback.
+if [ "${RETIRE_JSON_FACE_EMBEDDINGS:-False}" = True ]; then
+    phase legacy-schema-retirement
+    if [ "${JSON_FACE_RETIREMENT_REVIEWED:-False}" != True ] || \
+        [ "${JSON_FACE_OLD_PROCESSES_DRAINED:-False}" != True ]; then
+        printf 'DEPLOY_JSON_RETIREMENT_RESULT=incomplete\n'
+        fail "Physical retirement requires reviewed release and old-process drain evidence"
+    fi
+    web_container="$(compose ps -q web)"
+    running_image="$(docker inspect --format '{{.Config.Image}}' "$web_container")"
+    [ "$running_image" = "$requested_image" ] || fail "Committed candidate web is not active"
+    candidate_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$requested_image")"
+    if ! run_private_candidate_command compose exec -T web python manage.py \
+        retire_json_face_embeddings --execute --reviewed-release --old-processes-drained \
+        --active-build "$candidate_revision"; then
+        printf 'DEPLOY_JSON_RETIREMENT_RESULT=incomplete\n'
+        fail "Committed physical retirement incomplete; keep candidate and recover forward"
+    fi
+    printf 'DEPLOY_JSON_RETIREMENT_RESULT=success\n'
+else
+    printf 'DEPLOY_JSON_RETIREMENT_RESULT=retained\n'
 fi

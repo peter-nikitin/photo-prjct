@@ -18,7 +18,6 @@ from selfie_search.models import SelfieSearch
 
 from processing.models import (
     EventFaceEmbeddingActivation,
-    FaceEmbedding,
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
@@ -261,7 +260,6 @@ class HistoricalAdaFaceBackfillTests(TestCase):
             configuration["embedding_storage"],
             "vector_only",
         )
-        self.assertEqual(FaceEmbedding.objects.count(), 0)
         call_command_result = self.activate()
         self.assertEqual(call_command_result["mode"], "activate")
         self.assertEqual(EventFaceEmbeddingActivation.objects.count(), 1)
@@ -378,7 +376,7 @@ class HistoricalAdaFaceBackfillTests(TestCase):
         detection = PhotoFaceDetection.objects.create(
             attempt=old, artifact=artifact, face_index=0, status="kept"
         )
-        FaceEmbedding.objects.create(
+        FaceEmbeddingVector.objects.create(
             detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127
         )
         PhotoProcessingState.objects.filter(pk=state.pk).update(
@@ -390,7 +388,7 @@ class HistoricalAdaFaceBackfillTests(TestCase):
         with self.assertRaises(CommandError):
             self.activate()
 
-    def test_live_photo_lease_and_unsafe_reader_prevent_activation(self) -> None:
+    def test_live_photo_lease_prevents_activation_until_expired(self) -> None:
         photo = self.photo("historical-a")
         self.apply()
         accepted, _ = self.terminal(photo)
@@ -412,11 +410,9 @@ class HistoricalAdaFaceBackfillTests(TestCase):
         ProcessingAttempt.objects.filter(pk=lease.pk).update(
             status="expired", terminal_at=timezone.now()
         )
-        with patch("selfie_search.services.read_selection.select_reader", return_value="legacy"):
-            with self.assertRaises(CommandError):
-                self.activate()
+        self.activate()
         self.event.refresh_from_db()
-        self.assertEqual(self.event.face_search_generation, Event.FaceSearchGeneration.SFACE_V3)
+        self.assertEqual(self.event.face_search_generation, Event.FaceSearchGeneration.ADAFACE_V5)
 
     def test_new_photos_after_activation_use_the_native_generation(self) -> None:
         first = self.photo("historical-a")

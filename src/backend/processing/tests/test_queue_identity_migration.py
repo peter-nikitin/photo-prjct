@@ -155,7 +155,12 @@ def test_previous_attempts_and_evidence_survive_release_identity_removal():
             for field in current.get_model("processing", "ProcessingAttempt")._meta.fields
         }
         for name in names:
+            if name == "FaceEmbedding":
+                assert snapshot(apps, name) == before[name]
+                continue
             assert snapshot(current, name) == before[name]
+        with pytest.raises(LookupError):
+            current.get_model("processing", "FaceEmbedding")
         assert (
             list(current.get_model("picflow", "Photo").objects.order_by("pk").values())
             == photo_rows

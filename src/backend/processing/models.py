@@ -684,47 +684,6 @@ class PhotoFaceDetection(models.Model):  # noqa: DJ008
             raise ValidationError(errors)
 
 
-class FaceEmbedding(models.Model):  # noqa: DJ008
-    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
-    detection = models.OneToOneField(
-        PhotoFaceDetection,
-        on_delete=models.PROTECT,
-        related_name="embedding",
-    )
-    model_version = models.CharField(max_length=64, blank=True, default="")
-    vector = models.JSONField(default=list, validators=[validate_bounded_json])
-    metadata = models.JSONField(default=dict, validators=[validate_bounded_json])
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["detection"], name="proc_face_embed_det_idx"),
-        ]
-
-    def save(self, *args, **kwargs) -> None:
-        if (
-            self.pk
-            and self.__class__.objects.filter(pk=self.pk)
-            .filter(detection__attempt__status__in=_TERMINAL_ATTEMPT_STATUSES)
-            .exists()
-        ):
-            raise ValidationError("Face embeddings are immutable after terminal attempts.")
-        super().save(*args, **kwargs)
-
-    def clean(self) -> None:
-        super().clean()
-        errors = {}
-        if self.detection_id and self.detection.attempt.status not in _TERMINAL_ATTEMPT_STATUSES:
-            errors["detection"] = "Face embeddings are only allowed for terminal attempts."
-        if (
-            self.detection_id
-            and self.detection.status == PhotoFaceDetection.Status.QUALITY_REJECTED
-        ):
-            errors["detection"] = "Quality-rejected face detections cannot own embeddings."
-        if errors:
-            raise ValidationError(errors)
-
-
 class FaceEmbeddingVector(models.Model):  # noqa: DJ008
     """Independent immutable evidence, retained after the JSON store is retired."""
 

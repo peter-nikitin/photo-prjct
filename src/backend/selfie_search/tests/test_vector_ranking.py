@@ -3,15 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from math import sqrt
-from unittest.mock import patch
 
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
-from processing.models import FaceEmbedding, FaceEmbeddingVector, PhotoFaceDetection
+from processing.models import FaceEmbeddingVector, PhotoFaceDetection
 from processing.services.face_quality import adaface_face_embedding_generations
 from processing.tests.test_face_cohort import FaceEmbeddingProjectionCohortTests
 from selfie_search.models import SelfieSearch
-from selfie_search.services.direct_ranking import rank_legacy_direct
 from selfie_search.services.ranking import QueryVectorError, RankingError
 from selfie_search.services.vector_ranking import rank_vector_direct
 
@@ -35,9 +33,6 @@ class VectorRankingTests(FaceEmbeddingProjectionCohortTests):
 
     def add_face(self, vector: list[float]):
         embedding = self.make_projected_embedding(self.frozen_generation, vector=vector)
-        FaceEmbeddingVector.objects.create(
-            detection=embedding.detection, model_version="sface", vector=vector
-        )
         return embedding
 
     def test_marked_adaface_native_cohort_needs_no_parallel_json_row(self) -> None:
@@ -60,7 +55,6 @@ class VectorRankingTests(FaceEmbeddingProjectionCohortTests):
         self.assertEqual(result.eligible_face_count, 1)
         self.assertEqual(result.photos[0].detection_id, embedding.detection_id)
         self.assertEqual(result.photos[0].cosine_distance, 0)
-        self.assertFalse(FaceEmbedding.objects.exists())
         PhotoFaceDetection.objects.create(
             attempt=embedding.detection.attempt,
             artifact=embedding.detection.artifact,
@@ -70,20 +64,18 @@ class VectorRankingTests(FaceEmbeddingProjectionCohortTests):
         with self.assertRaises(RankingError):
             rank_vector_direct(self.search, vector)
 
-    def test_unmarked_native_face_still_requires_legacy_identity(self) -> None:
+    def test_unmarked_native_face_is_eligible_without_json(self) -> None:
         self.make_projected_embedding(self.frozen_generation, vector=self.query, vector_only=True)
-        with self.assertRaises(RankingError):
-            rank_vector_direct(self.search, self.query)
+        result = rank_vector_direct(self.search, self.query)
+        self.assertEqual(result.eligible_face_count, 1)
+        self.assertEqual(len(result.photos), 1)
 
-    def test_empty_and_self_match_return_same_scalar_contract(self) -> None:
+    def test_empty_and_self_match_return_scalar_contract(self) -> None:
         empty = rank_vector_direct(self.search, self.query)
         self.assertEqual(empty.photos, ())
         self.assertEqual(empty.eligible_face_count, 0)
         embedding = self.add_face(self.query)
         native = rank_vector_direct(self.search, self.query)
-        legacy = rank_legacy_direct(self.search, self.query)
-        self.assertEqual(native.photos, legacy.photos)
-        self.assertEqual(native.snapshot, legacy.snapshot)
         self.assertEqual(native.eligible_photo_count, 1)
         self.assertEqual(native.photos[0].detection_id, embedding.detection_id)
         self.assertEqual(native.photos[0].cosine_distance, 0)
@@ -176,9 +168,6 @@ class VectorRankingTests(FaceEmbeddingProjectionCohortTests):
                 status="kept",
             )
             faces.append(detection)
-            FaceEmbedding.objects.create(
-                detection=detection, model_version="sface", vector=self.query
-            )
             FaceEmbeddingVector.objects.create(
                 detection=detection, model_version="sface", vector=self.query
             )
@@ -187,17 +176,12 @@ class VectorRankingTests(FaceEmbeddingProjectionCohortTests):
         self.assertEqual(result.eligible_face_count, 3)
         self.assertEqual(result.eligible_photo_count, 1)
 
-    def test_adversarial_threshold_difference_is_accepted_native_arithmetic(self) -> None:
+    def test_native_arithmetic_excludes_boundary_candidate(self) -> None:
         self.add_face([0.6370000243186951, 0.7708638310432434] + [0.0] * 126)
-        legacy = rank_legacy_direct(self.search, self.query)
-        native = rank_vector_direct(self.search, self.query, comparison_evidence=True)
-        self.assertEqual(len(legacy.photos), 1)
+        native = rank_vector_direct(self.search, self.query)
         self.assertEqual(native.photos, ())
-        self.assertLess(
-            abs(native.best_candidates[0].cosine_distance - legacy.photos[0].cosine_distance), 1e-6
-        )
 
-    def test_adaface_inclusive_threshold_and_nonboundary_parity(self) -> None:
+    def test_adaface_inclusive_threshold(self) -> None:
         generation = self.generation("adaface")
         generation["model"] = "adaface-ir18-webface4m"
         self.search.configuration = {
@@ -207,23 +191,10 @@ class VectorRankingTests(FaceEmbeddingProjectionCohortTests):
             "gallery_face_embedding_generations": [generation],
         }
         vector = [0.64, sqrt(1 - 0.64**2)] + [0.0] * 510
-        create = FaceEmbedding.objects.create
-
-        def create_adaface(**kwargs):
-            return create(**(kwargs | {"model_version": "adaface-ir18-webface4m"}))
-
-        with patch.object(FaceEmbedding.objects, "create", side_effect=create_adaface):
-            embedding = self.make_projected_embedding(generation, vector=vector)
-        FaceEmbeddingVector.objects.create(
-            detection=embedding.detection, model_version="adaface-ir18-webface4m", vector=vector
-        )
+        embedding = self.make_projected_embedding(generation, vector=vector)
         query = [1.0] + [0.0] * 511
         native = rank_vector_direct(self.search, query)
-        legacy = rank_legacy_direct(self.search, query)
-        self.assertEqual(native.photos[0].detection_id, legacy.photos[0].detection_id)
-        self.assertLess(
-            abs(native.photos[0].cosine_distance - legacy.photos[0].cosine_distance), 1e-6
-        )
+        self.assertEqual(native.photos[0].detection_id, embedding.detection_id)
         threshold = native.photos[0].cosine_distance
         self.search.configuration["cosine_distance_threshold"] = threshold
         self.assertEqual(len(rank_vector_direct(self.search, query).photos), 1)
@@ -239,21 +210,11 @@ class VectorRankingTests(FaceEmbeddingProjectionCohortTests):
                 [0.8, 0.6] + [0.0] * 126 if photo_id != "outside-native" else [-1.0] + [0.0] * 127
             )
         native = rank_vector_direct(self.search, self.query)
-        legacy = rank_legacy_direct(self.search, self.query, comparison_evidence=True)
         self.assertEqual([row.photo_id for row in native.photos], ["a-native", "z-native"])
-        self.assertEqual(
-            [row.detection_id for row in native.photos], [row.detection_id for row in legacy.photos]
-        )
-        self.assertEqual(native.best_candidates, ())
-        self.assertEqual(len(legacy.best_candidates), 3)
         self.assertEqual(native.eligible_face_count, 3)
 
     def test_divergent_model_blocks_partial_cohort(self) -> None:
-        embedding = self.make_projected_embedding(self.frozen_generation, vector=self.query)
-        FaceEmbeddingVector.objects.create(
-            detection=embedding.detection,
-            model_version="adaface-ir18-webface4m",
-            vector=[1.0] + [0.0] * 511,
-        )
+        other_generation = self.frozen_generation | {"model": "adaface-ir18-webface4m"}
+        self.make_projected_embedding(other_generation, vector=[1.0] + [0.0] * 511)
         with self.assertRaises(RankingError):
             rank_vector_direct(self.search, self.query)

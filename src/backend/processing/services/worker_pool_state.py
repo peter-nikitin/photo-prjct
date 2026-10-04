@@ -21,7 +21,7 @@ from processing.auth import worker_endpoint_enabled
 from processing.models import (
     BibReading,
     EventProcessingRun,
-    FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
@@ -136,7 +136,9 @@ def _bulk(identity: Identity, now: datetime) -> dict[str, Any]:
             attempt__in=attempts
         ).count(),
         "face_detections": PhotoFaceDetection.objects.filter(attempt__in=attempts).count(),
-        "face_embeddings": FaceEmbedding.objects.filter(detection__attempt__in=attempts).count(),
+        "face_embeddings": FaceEmbeddingVector.objects.filter(
+            detection__attempt__in=attempts
+        ).count(),
         "bib_readings": BibReading.objects.filter(source_attempt__in=attempts).count(),
     }
     return report

@@ -16,7 +16,7 @@ from processing.contracts import ClaimedJob
 from processing.models import (
     BibReading,
     EventProcessingRun,
-    FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
     PhotoProcessingState,
@@ -26,10 +26,12 @@ from processing.models import (
 from processing.services.bibs import BIB_INFERENCE_CONFIGURATION_SHA256, complete_bib_attempt
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
+    FACE_EMBEDDING_CONFIGURATION,
     capture_metadata_configuration,
     request_bib_recognition,
     request_capture_metadata,
     request_generate_preview,
+    request_processor,
 )
 from processing.services.jobs import claim_job, complete_attempt, fail_attempt
 from processing.services.previews import complete_preview_attempt
@@ -237,8 +239,17 @@ class ProcessingRunReportTests(TestCase):
 
     def test_report_exposes_face_embedding_counters_per_photo(self) -> None:
         photo = self.private_photo("faces")
-        request_capture_metadata(photo)
-        claimed = self.claim()
+        request_processor(
+            photo,
+            processor_type="face_embedding",
+            contract_version=1,
+            processor_version=1,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+        )
+        claimed = claim_job(
+            contract_version=1, processor_type="face_embedding", processor_version=1
+        )
+        assert isinstance(claimed, ClaimedJob)
         now = timezone.now()
         ProcessingAttempt.objects.filter(pk=claimed.attempt.id).update(
             status=ProcessingAttempt.Status.SUCCEEDED,
@@ -289,10 +300,10 @@ class ProcessingRunReportTests(TestCase):
             geometry={"x": 2, "y": 2, "w": 1, "h": 1},
             features={"error_code": "model_inference_error"},
         )
-        FaceEmbedding.objects.create(
+        FaceEmbeddingVector.objects.create(
             detection=kept,
-            model_version="sface-v1",
-            vector=[0.1, 0.2, 0.3],
+            model_version="sface",
+            vector=[1.0] + [0.0] * 127,
             metadata={"source": "unit"},
         )
 

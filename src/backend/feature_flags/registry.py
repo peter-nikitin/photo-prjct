@@ -53,10 +53,6 @@ EVENT_COVER_CDN_IMAGES: Final = FeatureDefinition(
     "event-cover-cdn-images", "Deliver event catalog covers through CDN"
 )
 
-PGVECTOR_FACE_SEARCH_READ: Final = FeatureDefinition(
-    "pgvector-face-search-read", "Use native exact face search"
-)
-
 FEATURE_DEFINITIONS: Final = (
     PAID_EVENTS,
     PAID_WATERMARKED_PREVIEWS,
@@ -67,7 +63,6 @@ FEATURE_DEFINITIONS: Final = (
     YANDEX_DISK_IMPORT,
     GALLERY_CDN_IMAGES,
     EVENT_COVER_CDN_IMAGES,
-    PGVECTOR_FACE_SEARCH_READ,
 )
 
 validate_feature_definitions(FEATURE_DEFINITIONS)

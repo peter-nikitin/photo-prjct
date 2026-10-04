@@ -12,7 +12,6 @@ from feature_flags.registry import (
     PAID_PHOTO_PAYMENT_SIMULATOR,
     PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
-    PGVECTOR_FACE_SEARCH_READ,
     YANDEX_DISK_IMPORT,
     FeatureDefinition,
     validate_feature_definitions,
@@ -59,7 +58,6 @@ class FeatureDefinitionTests(SimpleTestCase):
                 YANDEX_DISK_IMPORT,
                 GALLERY_CDN_IMAGES,
                 EVENT_COVER_CDN_IMAGES,
-                PGVECTOR_FACE_SEARCH_READ,
             ),
         )
         self.assertEqual(
@@ -86,6 +84,5 @@ class FeatureDefinitionTests(SimpleTestCase):
                     "Deliver gallery grid images through CDN",
                 ),
                 ("event-cover-cdn-images", "Deliver event catalog covers through CDN"),
-                ("pgvector-face-search-read", "Use native exact face search"),
             ),
         )

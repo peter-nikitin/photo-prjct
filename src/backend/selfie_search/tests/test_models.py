@@ -552,7 +552,7 @@ class SelfieSearchModelTests(TestCase):
     def make_embedding_id(self, *, other_event: bool = False, photo=None):
         from processing.models import (
             EventProcessingRun,
-            FaceEmbedding,
+            FaceEmbeddingVector,
             FaceProcessingAttemptArtifact,
             PhotoFaceDetection,
             ProcessingAttempt,
@@ -592,6 +592,7 @@ class SelfieSearchModelTests(TestCase):
             input_fingerprint={},
             status=ProcessingAttempt.Status.SUCCEEDED,
             terminal_at=timezone.now(),
+            accepted=True,
         )
         artifact = FaceProcessingAttemptArtifact.objects.create(attempt=attempt)
         detection = PhotoFaceDetection.objects.create(
@@ -600,12 +601,14 @@ class SelfieSearchModelTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        return FaceEmbedding.objects.create(detection=detection).id
+        return FaceEmbeddingVector.objects.create(
+            detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127
+        ).id
 
     def make_detection_id(self, *, other_event: bool = False, photo=None):
-        from processing.models import FaceEmbedding
+        from processing.models import FaceEmbeddingVector
 
-        return FaceEmbedding.objects.get(
+        return FaceEmbeddingVector.objects.get(
             pk=self.make_embedding_id(other_event=other_event, photo=photo)
         ).detection_id
 

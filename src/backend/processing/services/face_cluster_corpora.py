@@ -7,7 +7,6 @@ from collections.abc import Mapping, Sequence
 from time import monotonic
 from typing import Any
 
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from face_cluster_contract import (
@@ -30,13 +29,7 @@ from processing.models import (
 from processing.services.face_clustering import ClusterFace, build_face_clusters
 from processing.services.face_cohort import (
     CompatibleFaceEmbedding,
-    eligible_face_detections,
     load_compatible_face_embeddings,
-)
-from processing.services.vector_embeddings import (
-    generation_uses_vector_only_storage,
-    validate_embedding,
-    vector_values,
 )
 
 
@@ -60,14 +53,9 @@ def activate_face_cluster_corpus(
         # corpora. Serialize selection so a concurrent old-corpus activation cannot revive it.
         event = Event.objects.select_for_update().get(pk=event.pk)
         generations = _default_generations(event)
-        native = any(generation_uses_vector_only_storage(generation) for generation in generations)
-        direct_threshold: Any
-        if native:
-            from selfie_search.services.submission import _search_parameters
+        from selfie_search.services.submission import _search_parameters
 
-            _, direct_threshold = _search_parameters(_model_version(generations))
-        else:
-            direct_threshold = getattr(settings, "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD", None)
+        _, direct_threshold = _search_parameters(_model_version(generations))
         if (
             numeric_gates_reviewed is not True
             or not is_sha256(configuration_hash)
@@ -135,17 +123,10 @@ def build_face_cluster_corpus(
     from processing.services.face_quality import validate_face_embedding_generations
 
     normalized_generations = validate_face_embedding_generations(generations)
-    native = any(
-        generation_uses_vector_only_storage(generation) for generation in normalized_generations
-    )
     if dimensions is None:
-        if native:
-            from selfie_search.services.submission import _search_parameters
+        from selfie_search.services.submission import _search_parameters
 
-            dimensions, _ = _search_parameters(_model_version(normalized_generations))
-        else:
-            configured_dimensions = getattr(settings, "SELFIE_SEARCH_EMBEDDING_DIMENSIONS", 128)
-            dimensions = configured_dimensions if isinstance(configured_dimensions, int) else 128
+        dimensions, _ = _search_parameters(_model_version(normalized_generations))
     configuration = corpus_configuration(
         algorithm_version=algorithm_version,
         generations=normalized_generations,
@@ -185,11 +166,7 @@ def build_face_cluster_corpus(
     started = monotonic()
 
     try:
-        rows = (
-            _load_native_embeddings(event, normalized_generations, dimensions)
-            if native
-            else load_compatible_face_embeddings(event, normalized_generations, dimensions)
-        )
+        rows = load_compatible_face_embeddings(event, normalized_generations, dimensions)
         input_hash = _input_hash(rows)
         cluster_faces = tuple(
             ClusterFace(face_id=row.detection_id, vector=row.vector) for row in rows
@@ -280,58 +257,6 @@ def build_face_cluster_corpus(
     return corpus
 
 
-def _load_native_embeddings(
-    event: Event, generations: Sequence[Mapping[str, object]], dimensions: int
-) -> tuple[CompatibleFaceEmbedding, ...]:
-    """Keep offline membership pinned to the same accepted native identity as exact search."""
-    if len(generations) != 1 or not generation_uses_vector_only_storage(generations[0]):
-        raise ValueError("native corpus requires one exact generation")
-    generation = generations[0]
-    rows = []
-    for detection in (
-        eligible_face_detections(event, generations)
-        .order_by("pk")
-        .values(
-            "pk",
-            "embedding_vector__id",
-            "embedding_vector__model_version",
-            "embedding_vector__vector",
-            "attempt_id",
-            "attempt__photo_id",
-            "attempt__event_id",
-            "attempt__photo__event_id",
-        )
-        .iterator(chunk_size=2000)
-    ):
-        if (
-            detection["embedding_vector__id"] is None
-            or detection["embedding_vector__model_version"] != generation["model"]
-        ):
-            raise ValueError("native corpus vector identity is incomplete")
-        model = _model_version(generations)
-        values = validate_embedding(
-            vector_values(detection["embedding_vector__vector"]), model_version=model
-        )
-        if len(values) != dimensions:
-            raise ValueError("native corpus dimensions disagree with generation")
-        rows.append(
-            CompatibleFaceEmbedding(
-                vector=tuple(values),
-                model_version=model,
-                detection_id=detection["pk"],
-                photo_id=detection["attempt__photo_id"],
-                photo_event_id=detection["attempt__photo__event_id"],
-                attempt_event_id=detection["attempt__event_id"],
-                attempt_photo_id=detection["attempt__photo_id"],
-                attempt_id=detection["attempt_id"],
-                contract_version=_contract_version(generations),
-                processor_version=_processor_version(generations),
-                configuration_hash=str(generation["configuration_hash"]),
-            )
-        )
-    return tuple(rows)
-
-
 def _mark_failed(corpus: FaceClusterCorpus, error: Exception) -> None:
     FaceClusterCorpus.objects.filter(pk=corpus.pk, status=FaceClusterCorpus.Status.BUILDING).update(
         status=FaceClusterCorpus.Status.FAILED,
@@ -405,19 +330,12 @@ def _runtime_compatible(corpus: FaceClusterCorpus) -> bool:
     from selfie_search.services.submission import _face_embedding_generations
 
     generations = list(_face_embedding_generations(corpus.event))
-    if any(generation_uses_vector_only_storage(generation) for generation in generations):
-        from selfie_search.services.submission import _search_parameters
+    from selfie_search.services.submission import _search_parameters
 
-        model = _model_version(generations)
-        dimensions, _ = _search_parameters(model)
-        return (
-            corpus.model_version == model
-            and corpus.embedding_dimensions == dimensions
-            and corpus.configuration.get("face_embedding_generations") == generations
-        )
+    model = _model_version(generations)
+    dimensions, _ = _search_parameters(model)
     return (
-        corpus.model_version == getattr(settings, "SELFIE_SEARCH_EMBEDDING_MODEL", None)
-        and corpus.embedding_dimensions
-        == getattr(settings, "SELFIE_SEARCH_EMBEDDING_DIMENSIONS", None)
+        corpus.model_version == model
+        and corpus.embedding_dimensions == dimensions
         and corpus.configuration.get("face_embedding_generations") == generations
     )

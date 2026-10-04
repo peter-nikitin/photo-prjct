@@ -4,9 +4,25 @@ on:
     branches: [main]
     paths:
       - deploy/monitoring/prometheus/**
+      - deploy/monitoring/probe-vm/**
+      - deploy/monitoring/commerce-vm/**
+      - deploy/monitoring/merge_native_agent.py
+      - deploy/monitoring/unified-agent.yml.template
+      - deploy/observability/**
+      - deploy/image-origin/monitoring/**
+      - deploy/selfie-observability/**
+      - deploy/worker-pools/metrics*
+      - deploy/configure-monitoring-agent.sh
+      - deploy/run-commerce-worker-health.sh
+      - deploy/bootstrap-selfie-observability.sh
+      - deploy/verify-selfie-observability.sh
+      - scripts/monitor_public_health.py
+      - scripts/monitor_commerce.py
+      - .github/workflows/deploy-public-probe.yml
+      - .github/workflows/deploy-image-origin.yml
+      - .github/workflows/deploy.yml
       - .github/workflows/monitoring.yml
       - deploy/classify-release.py
-      - deploy/observability/wait-host-releases.py
       - "!**/*.md"
   pull_request:
     paths:

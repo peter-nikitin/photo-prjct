@@ -40,6 +40,8 @@ When one merge changes host collection and cloud rules/dashboard together, the c
 the selected host jobs at the same push SHA and then for fresh samples from their new routes. A
 missing, skipped or failed required host job, or a source that remains stale, fails the cloud job
 within a bounded interval; it does not apply against the preceding host configuration.
+Host-only observability merges also rerun cloud reconciliation after the selected host jobs. This
+recovers a previously blocked cloud apply automatically once its source is repaired.
 
 After activation, read back fresh Prometheus samples for `sys_memory_MemAvailable{job="findme-image-linux"}`,
 `origin_image_origin_responses_total{job="findme-image-origin"}`, and

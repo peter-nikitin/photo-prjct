@@ -1,5 +1,7 @@
 import importlib.util
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -110,6 +112,23 @@ def host_module():
     loaded = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(loaded)
     return loaded
+
+
+def test_root_owned_agent_binary_accepts_only_root_group_write():
+    module = host_module()
+
+    def file(mode, group=0):
+        return SimpleNamespace(
+            lstat=lambda: SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=0, st_gid=group)
+        )
+
+    module.root_owned(file(0o775), allow_root_group_write=True)
+    with pytest.raises(ValueError, match="unsafe root-owned file"):
+        module.root_owned(file(0o775))
+    with pytest.raises(ValueError, match="unsafe root-owned file"):
+        module.root_owned(file(0o775, group=1000), allow_root_group_write=True)
+    with pytest.raises(ValueError, match="unsafe root-owned file"):
+        module.root_owned(file(0o777), allow_root_group_write=True)
 
 
 def test_reconciliation_rolls_back_even_when_reviewed_dependency_import_fails(

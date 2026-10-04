@@ -715,9 +715,13 @@ def install_updater(config, *, cloud):
         group = cloud.get(f"instanceGroups/{entry['id']}", view="FULL")
         policy = group.get("scalePolicy", {}).get("autoScale", {})
         deploy = group.get("deployPolicy", {})
+        min_zone_size = policy.get("minZoneSize")
+        min_zone_size_valid = (
+            pool == "bulk" and ("minZoneSize" not in policy or str(min_zone_size) == "0")
+        ) or (pool == "selfie" and str(min_zone_size) == "1")
         if (
             str(policy.get("maxSize")) != "1"
-            or str(policy.get("minZoneSize")) != ("0" if pool == "bulk" else "1")
+            or not min_zone_size_valid
             or str(deploy.get("maxExpansion", "0")) != "0"
         ):
             raise ValueError("one-time install requires cap one without expansion")

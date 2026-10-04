@@ -13,9 +13,6 @@ services:
       - ./deploy/nginx:/opt/nginx:ro
       - letsencrypt:/etc/letsencrypt:ro
       - certbot-webroot:/var/www/certbot:ro
-    depends_on:
-      web:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health/"]
       interval: 10s

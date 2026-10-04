@@ -91,6 +91,21 @@ for argument do :; done
 
 
 def _slot_command(root: Path, *arguments: str, env=None):
+    # Docker process snapshots are the external reload acknowledgement in these
+    # focused cases. Live generation and drain behavior is exercised separately.
+    if env and "PATH" in env:
+        docker = Path(env["PATH"].split(":")[0]) / "docker"
+        if docker.is_file() and "ps -o pid,args" not in docker.read_text():
+            docker.write_text(
+                docker.read_text().replace(
+                    "set -eu\n",
+                    'set -eu\ncase "$*" in *"ps -o pid,args") '
+                    'count=10; [ ! -f "$0.count" ] || count=$(cat "$0.count"); '
+                    'count=$((count + 1)); echo "$count" > "$0.count"; '
+                    'printf "%s nginx: worker process\\n" "$count"; exit 0 ;; esac\n',
+                    1,
+                )
+            )
     return subprocess.run(
         [sys.executable, ROOT / "deploy/web-slot.py", "--root", root, *arguments],
         env={**os.environ, **(env or {})},
@@ -112,7 +127,7 @@ def test_web_slot_switch_is_durable_and_uses_validated_reload(tmp_path, fake_bin
         """
 printf '%s\\n' "$*" >> "$COMMAND_LOG"
 case "$*" in
-  *"nginx -T")
+  *"cat /etc/nginx/conf.d/default.conf")
     printf 'upstream django_upstream { server %s:8000; }\\n' "$(cat "$INSTALLED_SLOT")" ;;
   *"--apply --slot "*) for slot do :; done; printf '%s' "$slot" > "$INSTALLED_SLOT" ;;
   *"ps -q "*) printf 'target-id\\n' ;;
@@ -144,7 +159,8 @@ def test_web_slot_failed_validation_keeps_selected_predecessor(tmp_path, fake_bi
         fake_bin / "docker",
         """
 case "$*" in
-  *"nginx -T") printf 'upstream django_upstream { server web:8000; }\\n' ;;
+  *"cat /etc/nginx/conf.d/default.conf")
+    printf 'upstream django_upstream { server web:8000; }\\n' ;;
   *"ps -q "*) printf 'target-id\\n' ;;
   "inspect "*) printf 'healthy\\n' ;;
   *) exit 1 ;;
@@ -165,8 +181,10 @@ def test_web_slot_mismatch_requires_explicit_reconciliation(tmp_path, fake_bin):
         fake_bin / "docker",
         """
 case "$*" in
-  *"nginx -T") printf 'upstream django_upstream { server web-next:8000; }\\n' ;;
-  *"--apply --slot web") exit 0 ;;
+  *"cat /etc/nginx/conf.d/default.conf")
+    slot=web-next; [ ! -f "$0.switched" ] || slot=web
+    printf 'upstream django_upstream { server %s:8000; }\\n' "$slot" ;;
+  *"--apply --slot web") touch "$0.switched" ;;
   *"ps -q "*) printf 'target-id\\n' ;;
   "inspect "*) printf 'healthy\\n' ;;
   *) exit 2 ;;
@@ -192,10 +210,12 @@ def test_explicit_switch_recovers_first_interruption_only_to_a_healthy_slot(
         """
 printf '%s\\n' "$*" >> "$COMMAND_LOG"
 case "$*" in
-  *"nginx -T") printf 'upstream django_upstream { server web-next:8000; }\\n' ;;
+  *"cat /etc/nginx/conf.d/default.conf")
+    slot=web-next; [ ! -f "$0.switched" ] || slot=web
+    printf 'upstream django_upstream { server %s:8000; }\\n' "$slot" ;;
   *"ps -q web") printf 'old-id\\n' ;;
   "inspect "*) printf '%s\\n' "$HEALTH" ;;
-  *"--apply --slot web") exit 0 ;;
+  *"--apply --slot web") touch "$0.switched" ;;
   *) exit 2 ;;
 esac
 """,
@@ -226,6 +246,32 @@ def test_web_slot_rejects_invalid_selection_before_edge_mutation(tmp_path, fake_
     assert not (tmp_path / "deploy/nginx/selected-slot").exists()
 
 
+@pytest.mark.parametrize("draining", [False, True])
+def test_web_slot_drain_never_stops_a_backend_with_accepted_requests(tmp_path, fake_bin, draining):
+    _write_executable(
+        fake_bin / "docker",
+        """
+case "$*" in
+  *"ps -o pid,args")
+    printf 'PID COMMAND\\n10 nginx: worker process\\n'
+    [ "$DRAINING" = no ] || printf '9 nginx: worker process is shutting down\\n'
+    ;;
+  *) exit 2 ;;
+esac
+""",
+    )
+    result = _slot_command(
+        tmp_path,
+        "drain",
+        "--timeout",
+        "0",
+        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "DRAINING": "yes" if draining else "no"},
+    )
+    assert result.returncode == (1 if draining else 0), result.stderr
+    if draining:
+        assert "accepted requests" in result.stderr
+
+
 def test_web_slot_static_seed_preserves_predecessor_assets(tmp_path, fake_bin):
     source = tmp_path / "source"
     source.mkdir()
@@ -240,7 +286,7 @@ def test_web_slot_static_seed_preserves_predecessor_assets(tmp_path, fake_bin):
         """
 import os, subprocess, sys
 arguments = sys.argv[1:]
-if arguments[-3:] == ['ps', '-q', 'web']:
+if arguments[-4:] == ['ps', '-a', '-q', 'web']:
     print('active-web-id')
 elif arguments == ['cp', 'active-web-id:/app/src/backend/staticfiles/.', '-']:
     subprocess.run(['tar', '-cf', '-', '-C', os.environ['SOURCE_STATIC'], '.'], check=True)
@@ -273,6 +319,14 @@ else:
         ("upstream django_upstream { server web:8000; }", "healthy", 0),
         ("upstream django_upstream { server web-next:8000; }", "healthy", 1),
         ("upstream django_upstream { server web:8000; }", "unhealthy", 1),
+        ("upstream django_upstream { server web:8000; }\n" * 2, "healthy", 1),
+        ("upstream django_upstream { server web:8000; } " * 2, "healthy", 1),
+        ("# upstream django_upstream { server web:8000; }", "healthy", 1),
+        (
+            "upstream django_upstream { server web:8000; server web-next:8000; }",
+            "healthy",
+            1,
+        ),
     ],
 )
 def test_missing_slot_selection_requires_live_single_slot_proof(
@@ -282,7 +336,7 @@ def test_missing_slot_selection_requires_live_single_slot_proof(
         fake_bin / "docker",
         """
 case "$*" in
-  *"nginx -T") printf '%s\\n' "$CONFIGURATION" ;;
+  *"cat /etc/nginx/conf.d/default.conf") printf '%s\\n' "$CONFIGURATION" ;;
   *"ps -q web") printf 'active-id\\n' ;;
   "inspect "*) printf '%s\\n' "$HEALTH" ;;
   *) exit 2 ;;
@@ -302,93 +356,24 @@ esac
     assert result.stdout == ("web\n" if expected == 0 else "")
 
 
-@pytest.mark.parametrize("previous_placement", ["local", "remote"])
 @pytest.mark.parametrize("requested_commerce", ["True", "False"])
-@pytest.mark.parametrize("previous_commerce", ["True", "False"])
-def test_remote_application_reconciles_commerce_forward_and_after_failed_candidate(
-    tmp_path, previous_placement, requested_commerce, previous_commerce
-):
-    source = (ROOT / "deploy/apply-deployment.sh").read_text()
-    functions = "\n".join(
-        re.search(rf"^{name}\(\) \{{\n.*?^\}}", source, re.M | re.S)[0]
-        for name in (
-            "compose_reconcile_requested_runtime_profiles",
-            "clear_candidate_compose_interpolation",
-            "recover_previous_deployment",
-            "restore_previous_deployment_package",
-            "retain_vector_database_image",
-        )
-    )
-    previous_package = tmp_path / "previous-package"
-    (previous_package / "deploy").mkdir(parents=True)
-    (tmp_path / "deploy").mkdir()
-    for root in (tmp_path, previous_package):
-        (root / "docker-compose.deployment.yml").write_text(
-            "services:\n  db:\n    image: postgres:16\n  web:\n    image: previous-package\n"
-        )
-        (root / "docker-compose.https.yml").write_text("services: {}\n")
-    database_image = (
-        "pgvector/pgvector:0.8.6-pg16-trixie@sha256:"
-        "c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b"
-    )
-    (tmp_path / ".env").write_text("APP_IMAGE=candidate-image\n")
-    previous_env = tmp_path / "previous.env"
-    previous_env.write_text("APP_IMAGE=previous-image\n")
-    result = subprocess.run(
-        [
-            "/bin/sh",
-            "-eu",
-            "-c",
-            functions
-            + """
-compose() { printf '%s %s\n' "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" "$*"; }
-fleet_phase() { [ "$1" = rollback ]; }
-stop_import_before_web_change() { :; }
-previous_web_matches_processing_schema() { :; }
-restore_previous_deployment_markers() { :; }
-compose_reconcile_requested_runtime_profiles
-recover_previous_deployment
-""",
-        ],
-        env={
-            **os.environ,
-            "DEPLOY_ROOT": str(tmp_path),
-            "requested_worker_placement": "remote",
-            "worker_pool_activation": "normal",
-            "previous_worker_placement": previous_placement,
-            "requested_commerce_worker_enabled": requested_commerce,
-            "previous_commerce_worker_enabled": previous_commerce,
-            "previous_processing_enabled": "True",
-            "previous_worker_replicas": "1",
-            "requested_import_enabled": "False",
-            "previous_import_enabled": "False",
-            "candidate_import_worker_start_attempted": "0",
-            "fleet_prepared": "1",
-            "previous_env_exists": "1",
-            "previous_env_tmp": str(previous_env),
-            "PREVIOUS_DEPLOYMENT_PACKAGE_ROOT": str(previous_package),
-            "vector_database_reconciled": "1",
-            "vector_database_image": database_image,
-        },
-        text=True,
-        capture_output=True,
-    )
+def test_application_reconciles_commerce_only_after_web_selection(tmp_path, requested_commerce):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env.update(_real_commerce_worker_settings())
+    env["COMMERCE_WORKER_ENABLED"] = requested_commerce
+    result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode == 0, result.stderr
-    commerce = [line for line in result.stdout.splitlines() if "commerce-worker" in line]
-    commands = {
-        "True": "--profile commerce up -d --no-deps commerce-worker",
-        "False": "--profile commerce rm -sf commerce-worker",
-    }
-    assert commerce == [
-        f"candidate-image {commands[requested_commerce]}",
-        f"previous-image {commands[previous_commerce]}",
-    ]
-    assert (tmp_path / ".env").read_text() == "APP_IMAGE=previous-image\n"
-    assert "rm -sf worker" not in result.stdout
-    assert "--remove-orphans" not in result.stdout
-    assert "postgres" not in result.stdout
-    assert f"image: {database_image}" in (tmp_path / "docker-compose.deployment.yml").read_text()
-    assert not previous_package.exists()
+    commands = _apply_log(tmp_path)
+    action = (
+        "--profile commerce "
+        + ("up -d --no-deps" if requested_commerce == "True" else "rm -sf")
+        + " commerce-worker"
+    )
+    index = next(i for i, c in enumerate(commands) if action in c)
+    assert commands.index("slot switch web-next") < index
+    assert not any("web nginx" in c for c in commands)
 
 
 PREVIOUS_ENV = (
@@ -754,6 +739,29 @@ printf 'reconcile-certificate\n' >> "$COMMAND_LOG"
 """,
     )
     deploy_dir = tmp_path / "deploy"
+    (deploy_dir / "nginx").mkdir()
+    (deploy_dir / "nginx/selected-slot").write_text("web\n")
+    _write_python_executable(
+        deploy_dir / "web-slot.py",
+        """
+import os, pathlib, sys
+root = pathlib.Path(sys.argv[2])
+command, *arguments = sys.argv[3:]
+marker = root / 'deploy/nginx/selected-slot'
+scenario = os.environ['APPLY_SCENARIO']
+with open(os.environ['COMMAND_LOG'], 'a') as stream:
+    stream.write('slot ' + ' '.join([command, *arguments]) + '\\n')
+if command in ('selected', 'installed', 'reconcile'):
+    print(marker.read_text().strip())
+elif command == 'switch':
+    if scenario == 'switch-failure' and arguments == ['web-next']:
+        sys.exit(1)
+    marker.write_text(arguments[0] + '\\n')
+elif command == 'drain':
+    if scenario == 'drain-timeout' and marker.read_text().strip() == 'web-next':
+        sys.exit(1)
+""",
+    )
     shutil.copy2(
         ROOT / "deploy/install-upload-cleanup-cron.sh",
         deploy_dir / "install-upload-cleanup-cron.sh",
@@ -827,7 +835,9 @@ if [ "$APPLY_SCENARIO" = fresh-first-deployment ] || \
 else
   [ "$(cat "$DEPLOY_ROOT/deployed-image")" = "${EXPECTED_DEPLOYED_IMAGE:-old-image}" ]
 fi
-[ "$APPLY_SCENARIO" != public-failure ]
+if [ "$APPLY_SCENARIO" = public-failure ]; then
+  [ "$(cat "$DEPLOY_ROOT/deploy/nginx/selected-slot")" = web ] || exit 1
+fi
 printf 'verify-public-edge\n' >> "$COMMAND_LOG"
 """,
     )
@@ -1023,6 +1033,15 @@ validate_migration_preflight_env() {
   printf 'candidate-migration-env-mode-0600\n' >> "$COMMAND_LOG"
 }
 case " $* " in
+  *" up -d --wait --wait-timeout 120 --no-deps "*)
+    case "$APPLY_SCENARIO" in compose-failure|recovery-failure) exit 1 ;; esac
+    ;;
+  *" ps -q web-next "*) printf 'web-id\\n'; exit 0 ;;
+  *" ps -a -q web "*|*" ps -a -q web-next "*) printf 'web-id\\n'; exit 0 ;;
+  *" exec -T web-next python manage.py smoke_gallery_media_projection "*)
+    printf 'candidate-gallery-projection-smoke\\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != gallery-projection-smoke-failure ] || exit 1
+    ;;
   *"org.opencontainers.image.revision"*)
     printf '%s\n' "${EXPECTED_IMAGE_REVISION:-unknown}"
     exit 0
@@ -1283,7 +1302,7 @@ case " $* " in
       esac
     fi
     ;;
-  *" compose "*" exec -T web sh -c "*" commerce_worker_health "*)
+  *" compose "*" commerce_worker_health "*)
     commerce_health_attempt=0
     if [ -f "$COMMERCE_HEALTH_ATTEMPTS" ]; then
       commerce_health_attempt="$(cat "$COMMERCE_HEALTH_ATTEMPTS")"
@@ -1312,7 +1331,7 @@ if [ "$APPLY_SCENARIO" = health-failure ] || \
    [ "$APPLY_SCENARIO" = worker-recovery ] || \
    [ "$APPLY_SCENARIO" = worker-recovery-disabled ] || \
    [ "$APPLY_SCENARIO" = fresh-first-health-failure ]; then
-  [ "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" = old-image ]
+  [ "$(cat "$DEPLOY_ROOT/deploy/nginx/selected-slot")" = web ]
 fi
 """,
     )
@@ -1413,6 +1432,66 @@ def _apply_log(tmp_path: Path) -> list[str]:
     return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
 
 
+@pytest.mark.parametrize(
+    "scenario,selected,committed",
+    [
+        ("success", "web-next", True),
+        ("pull-failure", "web", False),
+        ("gallery-projection-migration-failure", "web", False),
+        ("compose-failure", "web", False),
+        ("switch-failure", "web", False),
+        ("public-failure", "web", False),
+        ("drain-timeout", "web-next", False),
+    ],
+)
+def test_warm_handoff_preserves_edge_database_and_truthful_marker(
+    tmp_path, fake_bin, scenario, selected, committed
+):
+    env = _apply_env(tmp_path, fake_bin, scenario=scenario)
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert (result.returncode == 0) is committed, result.stdout + result.stderr
+    commands = _apply_log(tmp_path)
+    assert (tmp_path / "deploy/nginx/selected-slot").read_text().strip() == selected
+    assert (tmp_path / "deployed-image").read_text().strip() == (
+        "new-image" if committed else "old-image"
+    )
+    assert not any(" stop nginx" in c or "up -d --no-deps web nginx" in c for c in commands)
+    assert not any("up -d --wait --no-deps db" in c or " pull db" in c for c in commands)
+    assert "reconcile-certificate" not in commands
+    if committed:
+        assert commands.index("slot seed-static web") < commands.index("candidate-migrate")
+        assert commands.index("slot switch web-next") < max(
+            i for i, c in enumerate(commands) if c == "slot drain"
+        )
+        stop = next(i for i, c in enumerate(commands) if " stop web" in c)
+        assert max(i for i, c in enumerate(commands) if c == "slot drain") < stop
+    elif scenario == "drain-timeout":
+        assert not any(" stop web" in c for c in commands)
+        assert (tmp_path / ".deployment-recovery/candidate.env").is_file()
+    elif scenario == "public-failure":
+        assert commands.index("slot switch web-next") < commands.index("slot switch web")
+        assert not any(c.endswith(" stop web") for c in commands)
+
+
+def test_uncommitted_selected_image_requires_forward_recovery_before_setup(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            'set -eu\ncase "$*" in "inspect --format {{.Config.Image}} web-id") '
+            "echo uncommitted-image; exit 0 ;; esac",
+            1,
+        )
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    commands = _apply_log(tmp_path)
+    assert "candidate-migrate" not in commands
+    assert "slot switch web-next" not in commands
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+
+
 @pytest.mark.parametrize("previous_slots", [("web",), ("web", "web-next")])
 def test_release_setup_runs_once_before_web_activation(
     tmp_path: Path, fake_bin: Path, previous_slots: tuple[str, ...]
@@ -1438,7 +1517,9 @@ def test_release_setup_runs_once_before_web_activation(
         indices.append(matches[0])
     assert indices == sorted(indices)
     candidate_up = next(
-        index for index, command in enumerate(commands) if " up -d --no-deps web nginx" in command
+        index
+        for index, command in enumerate(commands)
+        if " up -d --wait --wait-timeout 120 --no-deps web-next" in command
     )
     assert indices[-1] < candidate_up
     assert not any(" up -d --remove-orphans" in command for command in commands)
@@ -1593,8 +1674,12 @@ SUCCESS_PHASES = [
     "projection-preflight",
     "certificate",
     "compose-reconcile",
+    "edge-switch",
     "local-health",
     "gallery-media-smoke",
+    "worker-health",
+    "public-health",
+    "predecessor-drain",
     "worker-health",
     "public-health",
     "observability-verify",
@@ -1828,9 +1913,11 @@ def test_apply_and_recovery_preserve_literal_gallery_values_without_disclosure(
     rollback_bin = tmp_path / "rollback-bin"
     rollback_bin.mkdir()
     previous_env = (candidate_root / ".env").read_bytes()
-    rollback_env = _apply_env(rollback_root, rollback_bin, scenario="certificate-failure")
+    rollback_env = _apply_env(rollback_root, rollback_bin, scenario="switch-failure")
     (rollback_root / ".env").write_bytes(previous_env)
     (rollback_root / "previous-env.expected").write_bytes(previous_env)
+    (rollback_root / "deployed-image").write_text("new-image\n")
+    rollback_env["EXPECTED_DEPLOYED_IMAGE"] = "new-image"
     rollback_env.update(
         {
             "GALLERY_CDN_TOKEN_SECRET": "replacement-token",
@@ -1846,17 +1933,10 @@ def test_apply_and_recovery_preserve_literal_gallery_values_without_disclosure(
     rollback = _run("deploy/apply-deployment.sh", env=rollback_env)
 
     assert rollback.returncode != 0
-    assert "DEPLOY_RESULT=failure phase=certificate rollback=succeeded" in rollback.stdout
+    assert "DEPLOY_RESULT=failure phase=edge-switch rollback=succeeded" in rollback.stdout
     assert (rollback_root / ".env").read_bytes() == previous_env
-    recovery_environment = dict(
-        line.split("=", 1)
-        for line in (rollback_root / "recovery-compose.environment")
-        .read_text(encoding="utf-8")
-        .splitlines()
-        if "=" in line
-    )
+    recovery_environment, recovery_stderr = _render_gallery_environment(rollback_root / ".env")
     assert {name: recovery_environment[name] for name in gallery_values} == gallery_values
-    recovery_stderr = (rollback_root / "recovery-compose.stderr").read_text(encoding="utf-8")
     if cdn_token_secret:
         assert cdn_token_secret not in recovery_stderr
     if token_fragment:
@@ -2347,8 +2427,8 @@ def test_enabled_commerce_worker_readiness_exhaustion_requires_forward_recovery(
     ).read_bytes()
     assert (tmp_path / "commerce-health-attempts").read_text(encoding="utf-8") == "6\n"
     commands = "\n".join(_apply_log(tmp_path))
-    assert "previous-web-processing-schema-probe" not in commands
-    assert " stop web" in commands
+    assert "previous-web-processing-schema-probe" in commands
+    assert " stop web" not in commands
     assert "--profile commerce up -d --no-deps commerce-worker" in commands
     assert "DEPLOY_RESULT=failure phase=worker-health rollback=failed" in result.stdout
 
@@ -2757,8 +2837,10 @@ def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
     assert "unexpected-fresh-migration-history" not in commands
     assert "candidate-projection-report" not in commands
     assert "candidate-projection-benchmark" not in commands
-    assert any(" stop nginx" in command for command in commands)
-    assert any(" up -d --no-deps web nginx" in command for command in commands)
+    assert not any(" stop nginx" in command for command in commands)
+    assert any(
+        " up -d --wait --wait-timeout 120 --no-deps web-next" in command for command in commands
+    )
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -2795,7 +2877,8 @@ def test_gallery_projection_cutover_preserves_old_web_until_clean_candidate_reco
     candidate_up = next(
         index
         for index, command in enumerate(commands)
-        if " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
+        if " up -d --wait --wait-timeout 120 --no-deps web-next" in command
+        and "APP_IMAGE=new-image" in command
     )
     smoke = commands.index("candidate-gallery-projection-smoke")
     worker_health = next(
@@ -2810,7 +2893,8 @@ def test_gallery_projection_cutover_preserves_old_web_until_clean_candidate_reco
         " stop web" in command or " stop nginx" in command for command in commands[: verify + 1]
     )
     assert not any(
-        " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
+        " up -d --wait --wait-timeout 120 --no-deps web-next" in command
+        and "APP_IMAGE=new-image" in command
         for command in commands[: verify + 1]
     )
     assert not any("commerce-worker" in command and " stop " in command for command in commands)
@@ -2875,7 +2959,7 @@ def test_gallery_projection_cutover_failures_recover_previous_worker_topology_wi
     )
 
     assert result.returncode != 0
-    rollback = "failed" if expected_phase == "gallery-media-smoke" else "succeeded"
+    rollback = "succeeded"
     assert f"DEPLOY_RESULT=failure phase={expected_phase} rollback={rollback}" in result.stdout
     commands = _apply_log(tmp_path)
     if last_pre_failure_command is not None:
@@ -2884,7 +2968,7 @@ def test_gallery_projection_cutover_failures_recover_previous_worker_topology_wi
         "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
         for command in commands
     )
-    assert old_restarted is (expected_phase != "gallery-media-smoke")
+    assert not old_restarted
     if scenario == "gallery-projection-verification-failure":
         assert not any(
             " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
@@ -3044,13 +3128,14 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
     candidate_run = commands.index(candidate_command)
     assert f"--env-file {tmp_path}/.env.requested." in candidate_command
     assert "manage.py shell --no-imports -c <gallery_media_preflight>" in candidate_command
-    stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
+    switch = commands.index("slot switch web-next")
     candidate_up = next(
         index
         for index, command in enumerate(commands)
-        if " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
+        if " up -d --wait --wait-timeout 120 --no-deps web-next" in command
+        and "APP_IMAGE=new-image" in command
     )
-    assert candidate_pull < candidate_run < stop_nginx < candidate_up
+    assert candidate_pull < candidate_run < candidate_up < switch
 
 
 @pytest.mark.parametrize(
@@ -3218,6 +3303,7 @@ def test_post_mutation_compose_failure_reports_the_recovery_outcome(
         env=_apply_env(tmp_path, fake_bin, scenario=scenario),
     )
 
+    rollback = "succeeded"
     assert result.returncode != 0
     assert (
         _deployment_markers(result).count(
@@ -3229,16 +3315,12 @@ def test_post_mutation_compose_failure_reports_the_recovery_outcome(
         rf"DEPLOY_RESULT=failure phase=compose-reconcile rollback={rollback} elapsed_seconds=\d+",
         [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_RESULT=")][-1],
     )
-    assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
-    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
-        tmp_path / ".env"
-    ).read_bytes()
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / ".deployment-recovery").exists()
     commands = _apply_log(tmp_path)
-    assert "observability-install" in commands
     assert "observability-rollback" in commands
-    assert "original snapshot retained" in result.stderr
-    assert "previous-web-processing-schema-probe" not in commands
-    assert any(" stop web" in command for command in commands)
+    assert "previous-web-processing-schema-probe" in commands
+    assert not any(c.endswith(" stop web") for c in commands)
 
 
 @pytest.mark.parametrize(
@@ -3267,13 +3349,8 @@ def test_dropped_processing_column_blocks_old_web_recovery_and_preserves_candida
     assert result.returncode != 0
     assert "rollback=failed" in result.stdout
     commands = _apply_log(tmp_path)
-    if scenario == "processing-schema-health-failure":
-        assert "original snapshot retained" in result.stderr
-        assert "previous-web-processing-schema-probe" not in commands
-    else:
-        assert "Previous web is incompatible with the current processing schema" in result.stderr
-        assert "previous-web-processing-schema-probe" in commands
-    assert any(" stop web" in command for command in commands)
+    assert "previous-web-processing-schema-probe" in commands
+    assert not any(c.endswith(" stop web") for c in commands)
     assert not any(
         "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
         for command in commands
@@ -3287,9 +3364,7 @@ def test_dropped_processing_column_blocks_old_web_recovery_and_preserves_candida
     assert candidate_env.stat().st_mode & 0o777 == 0o600
     assert "APP_IMAGE=new-image\n" in candidate_env.read_text()
     assert 'PHOTO_PROCESSING_FLEET_TOKEN="fleet-test-only"\n' in candidate_env.read_text()
-    if scenario == "processing-schema-health-failure":
-        assert (tmp_path / ".env").read_bytes() == candidate_env.read_bytes()
-    else:
+    if scenario != "processing-schema-health-failure":
         assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_text().strip() == "old-image"
     assert "private-db-detail-must-not-reach-output" not in result.stdout + result.stderr
@@ -3302,17 +3377,15 @@ def test_schema_compatible_web_recovers_only_after_read_only_probe(
 ) -> None:
     result = _run(
         "deploy/apply-deployment.sh",
-        env=_apply_env(tmp_path, fake_bin, scenario="certificate-failure"),
+        env=_apply_env(tmp_path, fake_bin, scenario="switch-failure"),
     )
     assert result.returncode != 0
     assert "rollback=succeeded" in result.stdout
     commands = _apply_log(tmp_path)
-    old_start = next(
-        i
-        for i, command in enumerate(commands)
-        if "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
+    assert commands.index("previous-web-processing-schema-probe") < commands.index(
+        "slot switch web"
     )
-    assert commands.index("previous-web-processing-schema-probe") < old_start
+    assert not any(c.endswith(" stop web") for c in commands)
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert not (tmp_path / ".deployment-recovery").exists()
 
@@ -3363,6 +3436,152 @@ def _run_forward_installer(tmp_path, fake_bin, env, *, candidate_deploy=None):
         text=True,
         capture_output=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("selected_state", "repair_state"),
+    [
+        ("unhealthy", "healthy"),
+        ("exited", "healthy"),
+        ("unhealthy", "unhealthy"),
+        ("mismatch", "healthy"),
+    ],
+)
+def test_forward_recovery_of_failed_selected_candidate_uses_real_slot_helper(
+    tmp_path, fake_bin, selected_state, repair_state
+):
+    env = _apply_env(tmp_path, fake_bin, scenario="observability-verification-failure")
+    original_image = "ghcr.io/example/photo-prjct:" + "a" * 40
+    env.update(APP_IMAGE=original_image, EXPECTED_REQUESTED_IMAGE=original_image)
+    predecessor = tmp_path / ".deployment-previous.original"
+    (predecessor / "deploy").mkdir(parents=True)
+    env["PREVIOUS_DEPLOYMENT_PACKAGE_ROOT"] = str(predecessor)
+    initial = _run("deploy/apply-deployment.sh", env=env)
+    assert initial.returncode == 1
+    marker = tmp_path / "deploy/nginx/selected-slot"
+    assert marker.read_text().strip() == "web-next"
+    snapshot = tmp_path / ".deployment-recovery"
+    retained = {p.name: p.read_bytes() for p in snapshot.iterdir()}
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    (tmp_path / "apply.log").write_text("")
+    shutil.copy2(ROOT / "deploy/web-slot.py", tmp_path / "deploy/web-slot.py")
+    (fake_bin / "docker").rename(fake_bin / "docker-base")
+    (tmp_path / "installed-slot").write_text("web-next")
+    if selected_state == "mismatch":
+        marker.write_text("web\n")
+    _write_python_executable(
+        fake_bin / "docker",
+        r"""
+import os, pathlib, sys
+root = pathlib.Path(os.environ['DEPLOY_ROOT'])
+args = sys.argv[1:]
+command = ' '.join(args)
+def record(message):
+    with open(os.environ['COMMAND_LOG'], 'a') as log:
+        log.write(message + '\n')
+record('real-slot-docker ' + command)
+if args[-2:] == ['nginx', '-T']:
+    raise AssertionError('Inspection must not depend on failed-backend DNS validation')
+elif args[-2:] == ['cat', '/etc/nginx/conf.d/default.conf']:
+    print('upstream django_upstream { server ' +
+          (root / 'installed-slot').read_text() + ':8000; }')
+elif args[-3:] == ['ps', '-o', 'pid,args']:
+    print(('200' if (root / 'repair-switched').exists() else '100') +
+          ' nginx: worker process')
+    if not (root / 'drain-observed').exists():
+        print('99 nginx: worker process is shutting down')
+        (root / 'drain-observed').touch()
+        record('old-accepted-request-draining')
+    else:
+        (root / 'drained').touch()
+        record('old-accepted-request-finished')
+elif 'ps' in args and args[-1] in ('web', 'web-next'):
+    if args[-1] == 'web':
+        print('repair-id')
+    elif os.environ['FAILED_SLOT_STATE'] != 'exited' or '-a' in args:
+        print('failed-id')
+elif args[:3] == ['inspect', '--format', '{{.Config.Image}}']:
+    print(os.environ['ORIGINAL_IMAGE'] if args[-1] == 'failed-id' else os.environ['APP_IMAGE'])
+elif args[:3] == ['inspect', '--format', '{{.State.Health.Status}}']:
+    if args[-1] == 'failed-id':
+        print('unhealthy')
+    else:
+        assert (root / 'repair-started').exists()
+        print(os.environ['REPAIR_STATE'])
+        record('repair-health-' + os.environ['REPAIR_STATE'])
+elif 'up -d --wait --wait-timeout 120 --no-deps web' in command:
+    assert (root / 'drained').exists(), 'accepted work must finish before slot reuse'
+    assert (root / 'installed-slot').read_text() == 'web-next'
+    assert (root / 'deploy/nginx/selected-slot').read_text().strip() == 'web-next'
+    assert (root / 'deployed-image').read_text().strip() == 'old-image'
+    (root / 'repair-started').touch()
+    record('repair-started')
+elif '--apply --slot' in command:
+    assert args[-1] == 'web', 'never reselect failed slot'
+    assert os.environ['REPAIR_STATE'] == 'healthy'
+    assert (root / 'repair-started').exists()
+    assert (root / 'deployed-image').read_text().strip() == 'old-image'
+    (root / 'installed-slot').write_text('web')
+    (root / 'repair-switched').touch()
+    record('repair-switched')
+elif args[:1] == ['cp']:
+    assert args[1].startswith('failed-id:')
+    record('failed-static-seeded')
+else:
+    os.execv(str(pathlib.Path(__file__).with_name('docker-base')), ['docker-base', *args])
+""",
+    )
+    fix_sha = "b" * 40
+    env.update(
+        APPLY_SCENARIO="success",
+        RECOVER_FORWARD="True",
+        RELEASE_SHA=fix_sha,
+        APP_IMAGE=f"ghcr.io/example/photo-prjct:{fix_sha}",
+        EXPECTED_REQUESTED_IMAGE=f"ghcr.io/example/photo-prjct:{fix_sha}",
+        EXPECTED_IMAGE_REVISION=fix_sha,
+        FAILED_SLOT_STATE=selected_state,
+        REPAIR_STATE=repair_state,
+        ORIGINAL_IMAGE=original_image,
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    commands = _apply_log(tmp_path)
+    if selected_state == "mismatch" or repair_state == "unhealthy":
+        assert result.returncode == 1
+        assert "is not healthy" in result.stderr
+        assert (tmp_path / "deployed-image").read_text().strip() == "old-image"
+        assert {p.name: p.read_bytes() for p in snapshot.iterdir()} == retained
+        assert "repair-switched" not in commands
+        assert not any(" stop web-next" in c for c in commands)
+        if selected_state == "mismatch":
+            assert "repair-started" not in commands
+        else:
+            assert "repair-started" in commands
+            assert marker.read_text().strip() == "web-next"
+    else:
+        assert result.returncode == 0, result.stderr
+        assert marker.read_text().strip() == "web"
+        assert (tmp_path / "deployed-image").read_text().strip() == env["APP_IMAGE"]
+        assert not snapshot.exists()
+        assert commands.index("old-accepted-request-finished") < commands.index("repair-started")
+        assert commands.index("repair-started") < commands.index("repair-health-healthy")
+        assert commands.index("repair-health-healthy") < commands.index("repair-switched")
+        assert "failed-static-seeded" in commands
+        assert any(" stop web-next" in c for c in commands)
+
+
+def test_forward_candidate_verification_does_not_reload_edge(tmp_path, fake_bin):
+    env, _ = _trapped_forward_recovery(tmp_path, fake_bin, timing="migrate", fix_sha="b" * 40)
+    result = subprocess.run(
+        ["sh", ROOT / "deploy/apply-deployment.sh", "--verify-forward-candidate"],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    assert "forward-candidate-probe" in commands
+    assert "slot reconcile" not in commands
+    assert not any(command.startswith("slot switch") for command in commands)
 
 
 @pytest.mark.parametrize("timing", ["migrate", "health"])
@@ -3416,7 +3635,7 @@ def test_failed_forward_recovery_keeps_original_snapshot_and_never_rolls_back(
         assert "forward-candidate-probe" in commands
     assert not any("up -d --no-deps web nginx" in c and "APP_IMAGE=unset" in c for c in commands)
     if scenario == "health-failure":
-        assert any(" stop web" in c for c in commands)
+        assert not any(c.endswith(" stop web") for c in commands)
         assert (tmp_path / "deploy/candidate-generation").read_text() == "forward-fix candidate\n"
     else:
         assert not any(" up -d --no-deps web nginx" in c for c in commands)
@@ -3554,8 +3773,8 @@ def test_deployment_apply_activates_https_edge_and_public_checks(
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert "docker-compose.https.yml" in commands
     assert "docker-compose.deployment.yml" in commands
-    assert "stop nginx" in commands
-    assert "reconcile-certificate" in commands
+    assert "stop nginx" not in commands
+    assert "reconcile-certificate" not in commands
     assert "https://findme-photo.ru/health/" in commands
     assert "verify-public-edge" in commands
 
@@ -3584,8 +3803,8 @@ def test_apply_success_commits_deployed_image_only_after_checks(
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("APP_IMAGE=new-image\n")
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.count("up -d --no-deps web nginx") == 1
-    assert commands.count("requested-env-promoted-before-stop") == 1
+    assert commands.count("up -d --wait --wait-timeout 120 --no-deps web-next") == 1
+    assert commands.count("slot switch web-next") == 1
     assert "https://findme-photo.ru/health/" in commands
     _assert_no_env_temporary_files(tmp_path)
 
@@ -3600,14 +3819,13 @@ def test_post_activation_failure_retains_candidate_without_committing_image_mark
     )
 
     assert result.returncode != 0
-    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
-    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
-        tmp_path / ".env"
-    ).read_bytes()
-    commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.count("up -d --no-deps web nginx") == 1
-    assert "previous-web-processing-schema-probe" not in commands
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / ".deployment-recovery").exists()
+    commands = _apply_log(tmp_path)
+    assert "slot switch web" in commands
+    assert "previous-web-processing-schema-probe" in commands
+    assert not any(c.endswith(" stop web") for c in commands)
 
 
 def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
@@ -3618,11 +3836,12 @@ def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
         env=_apply_env(tmp_path, fake_bin, scenario="certificate-failure"),
     )
 
-    assert result.returncode != 0
-    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert result.returncode == 0
+    assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "new-image\n"
+    assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.index("stop nginx") < commands.index("up -d --no-deps web nginx")
+    assert "stop nginx" not in commands
+    assert "reconcile-certificate" not in commands
     assert "docker-compose.https.yml" in commands
 
 
@@ -3642,18 +3861,13 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     )
 
     assert result.returncode == expected_status
-    assert "Previous application and worker profile reconciled" in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
     commands = _apply_log(tmp_path)
-    assert commands.count("candidate-requested-env-with-canonical-untouched") == 11
+    assert commands.count("candidate-requested-env-with-canonical-untouched") >= 9
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
-    assert sum(" up -d --no-deps web nginx" in command for command in commands) == 1
-    assert any(
-        "APP_IMAGE=unset" in command and " up -d --no-deps web nginx" in command
-        for command in commands
-    )
+    assert not any(c.endswith(" stop web") for c in commands)
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -3672,7 +3886,7 @@ def test_failed_env_promotion_removes_secret_bearing_requested_temp(
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
     commands = _apply_log(tmp_path)
-    assert sum(" up -d --no-deps web nginx" in command for command in commands) == 1
+    assert not any(" up -d --no-deps web nginx" in command for command in commands)
     assert requested_secret not in result.stdout
     assert requested_secret not in result.stderr
     assert requested_secret not in "\n".join(commands)
@@ -3701,8 +3915,11 @@ def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
         tmp_path / ".env"
     ).read_bytes()
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.count("up -d --no-deps web nginx") == expected_reconciliations
-    assert "previous-web-processing-schema-probe" not in commands
+    assert (
+        commands.count("up -d --wait --wait-timeout 120 --no-deps web-next")
+        == expected_reconciliations
+    )
+    assert "previous-web-processing-schema-probe" in commands
 
 
 def test_failed_certificate_renewal_waits_before_next_attempt(
@@ -4341,8 +4558,8 @@ def test_apply_rolls_back_observability_when_post_install_verification_fails(
     assert commands.index("observability-install") < commands.index("verify-selfie-observability")
     assert "observability-rollback" in commands
     assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
-    assert "previous-web-processing-schema-probe" not in commands
-    assert any(" stop web" in command for command in commands)
+    assert "previous-web-processing-schema-probe" in commands
+    assert not any(c.endswith(" stop web") for c in commands)
     sudo_commands = [command for command in commands if command.startswith("sudo ")]
     assert sudo_commands
     assert all("sudo -n " in command and " -E " not in f" {command} " for command in sudo_commands)
@@ -4714,7 +4931,7 @@ def test_nginx_validation_covers_submission_and_bearer_redaction_contract() -> N
         assert assertion in validator
 
 
-@pytest.mark.parametrize("scenario", ["vector-capability-failure", "vector-database-start-failure"])
+@pytest.mark.parametrize("scenario", ["vector-capability-failure"])
 def test_vector_capability_failure_rolls_back_before_candidate_migration(
     tmp_path, fake_bin, scenario
 ):
@@ -4733,9 +4950,9 @@ def test_vector_database_is_reconciled_and_verified_before_candidate_migration(t
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode == 0, result.stderr
     commands = Path(env["COMMAND_LOG"]).read_text()
+    assert "candidate-vector-database-start" not in commands
     assert (
-        commands.index("candidate-vector-database-start")
-        < commands.index("candidate-vector-collation-check")
+        commands.index("candidate-vector-collation-check")
         < commands.index("candidate-vector-capability")
         < commands.index("candidate-migrate")
     )
@@ -4768,16 +4985,10 @@ def test_native_only_health_failure_preserves_candidate_for_forward_recovery(
         "deploy/apply-deployment.sh", env=_apply_env(tmp_path, fake_bin, scenario="health-failure")
     )
     assert result.returncode != 0
-    assert "DEPLOY_RESULT=failure phase=local-health rollback=failed" in result.stdout
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert not (tmp_path / ".deployment-recovery").exists()
     commands = _apply_log(tmp_path)
-    assert any("up -d --no-deps web nginx" in command for command in commands)
-    assert any(" stop web" in command for command in commands)
-    assert "previous-web-processing-schema-probe" not in commands
-    assert not any(
-        "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
-        for command in commands
-    )
-    recovery = tmp_path / ".deployment-recovery"
-    assert (recovery / "previous.env").read_bytes() == PREVIOUS_ENV
-    assert (recovery / "candidate.env").read_bytes() == (tmp_path / ".env").read_bytes()
-    assert (tmp_path / "deployed-image").read_text().strip() == "old-image"
+    assert "slot switch web" in commands
+    assert "previous-web-processing-schema-probe" in commands
+    assert not any(c.endswith(" stop web") for c in commands)

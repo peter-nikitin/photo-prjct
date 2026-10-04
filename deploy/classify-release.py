@@ -57,6 +57,11 @@ def classify_observability(paths):
             selected["canonical_changed"] = True
         if path == "deploy/monitoring/prometheus/units/findme-prometheus-public.service":
             selected["public_changed"] = True
+        if path in {
+            "deploy/observability/bootstrap.py",
+            "deploy/monitoring/probe-vm/run-remote.sh",
+        }:
+            selected["public_changed"] = True
         if (
             path.startswith("deploy/monitoring/probe-vm/")
             or path == ".github/workflows/deploy-public-probe.yml"
@@ -80,6 +85,17 @@ def classify_observability(paths):
             "deploy/observability/wait-host-releases.py",
         }:
             selected["cloud_changed"] = True
+    # Cloud apply also retries after a host-only merge. A previous cloud run may have stopped at
+    # the same-SHA host barrier, so unchanged rules/dashboard still need reconciliation.
+    selected["cloud_changed"] |= any(
+        selected[key]
+        for key in (
+            "canonical_changed",
+            "public_changed",
+            "probe_changed",
+            "image_monitoring_changed",
+        )
+    )
     return selected
 
 

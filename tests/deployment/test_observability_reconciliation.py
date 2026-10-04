@@ -18,12 +18,20 @@ def classifier():
     ("paths", "selected"),
     [
         (["deploy/monitoring/prometheus/rules.yml"], {"cloud_changed"}),
-        (["deploy/monitoring/prometheus/exporter.py"], {"canonical_changed", "public_changed"}),
-        (["deploy/selfie-observability/root-helper.sh"], {"canonical_changed"}),
-        (["deploy/monitoring/probe-vm/install.py"], {"probe_changed"}),
+        (
+            ["deploy/monitoring/prometheus/exporter.py"],
+            {"canonical_changed", "public_changed", "cloud_changed"},
+        ),
+        (["deploy/selfie-observability/root-helper.sh"], {"canonical_changed", "cloud_changed"}),
+        (["deploy/monitoring/probe-vm/install.py"], {"probe_changed", "cloud_changed"}),
+        (["deploy/observability/bootstrap.py"], {"public_changed", "cloud_changed"}),
+        (
+            ["deploy/monitoring/probe-vm/run-remote.sh"],
+            {"probe_changed", "public_changed", "cloud_changed"},
+        ),
         (
             ["deploy/image-origin/monitoring/unified-agent.yml.template"],
-            {"image_monitoring_changed"},
+            {"image_monitoring_changed", "cloud_changed"},
         ),
         (["docs/architecture.md"], set()),
         (["src/backend/processing/views.py"], set()),
@@ -44,6 +52,10 @@ def workflow(name):
 def test_cloud_automatically_applies_exact_push_sha_and_retains_backup_on_failure():
     package = workflow("monitoring.yml")
     assert package.get("on", package.get(True))["push"]["branches"] == ["main"]
+    paths = package.get("on", package.get(True))["push"]["paths"]
+    assert "deploy/observability/**" in paths
+    assert "deploy/monitoring/probe-vm/**" in paths
+    assert "deploy/image-origin/monitoring/**" in paths
     reconcile = package["jobs"]["reconcile"]
     assert "cloud_changed" in reconcile["if"]
     assert reconcile["environment"] == "monitoring"

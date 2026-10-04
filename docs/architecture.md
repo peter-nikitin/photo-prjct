@@ -116,19 +116,19 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   [worker-pool runbook](runbooks/worker-pools.md).
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
   PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
-  event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first
-  policy; when the separate `PHOTO_PROCESSING_PREVIEW_ENABLED` gate is enabled it queues
-  `2/generate_preview/1`, publishes a verified immutable preview, and only then queues preview-
-  backed face work using `3/face_embedding/5`, SCRFD/AdaFace, and 512-dimensional embeddings.
+  event-scoped reports. Newly confirmed eligible photos receive the preview-first policy and queue
+  `2/generate_preview/1`; persisted legacy photos retain their explicit legacy policy. Django
+  publishes a verified immutable preview and only then queues preview-backed face work using
+  `3/face_embedding/5`, SCRFD/AdaFace, and 512-dimensional embeddings.
   Existing accepted AdaFace outcomes remain valid; missing current recognition is not synthesized.
   The direct distance threshold remains `0.42`. The standalone worker polls the private Django API with one-at-a-
   time round-robin identity scheduling, has no Django/database or permanent Object Storage
   credentials, and receives only short-lived grants for exact input/output objects. Local targeted
   tests exercise real-JPEG preview generation, publication, gallery selection, preview-backed face
-  enrollment, reporting, and the no-credential container contract. The feature is shipped and
-  locally verified, but tracked defaults leave preview activation false. A seven-day temporary-preview
-  lifecycle rule, representative original-versus-preview ML comparison, and concurrency-one capacity
-  measurement remain canonical-deployment activation blockers. No preview worker is enabled.
+  enrollment, reporting, and the no-credential container contract. The canonical deployment
+  uses remote bulk and selfie worker pools; their dedicated bearer credentials, leases, resource
+  limits, temporary-preview lifecycle, and service controls remain independent operational boundaries.
+  This repository change alone is not live evidence for the new release.
 - The repository implements disabled-default bib-number recognition for new uploads. An event's
   `bib_search_enabled` value is copied at photo confirmation into an immutable per-photo policy;
   later checkbox changes only show or hide the event's public bib form and affect photos confirmed
@@ -225,10 +225,11 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md): browser-local seven-day selfie
   preservation, one immutable feedback record per terminal search, optional saved-result labels,
   explicit consent and contact validation, restricted audited staff inspection, and dedicated
-  private feedback storage with guarded 30-day lifecycle and deployment preflight commands. The
-  implementation is disabled by default (`SELFIE_FEEDBACK_ENABLED=False`); no canonical-deployment
-  activation, published-policy gate, bucket/KMS preflight, or customer-outcome evidence is
-  claimed yet.
+  private feedback storage with guarded 30-day lifecycle and deployment preflight commands. Eligible
+  terminal results expose feedback without an availability switch. Consent,
+  dedicated storage/KMS validation, and audited staff access remain mandatory. This repository
+  change alone does not establish canonical customer-path or legal-policy acceptance evidence.
+  The approved browser-wide feedback opt-out is not implemented.
 - The canonical-deployment web image runs migrations, then the transactional
   `sync_feature_flags` reconciliation before remaining bootstrap, static collection, and Gunicorn.
   Reconciliation creates missing code-owned definitions in `off`, preserves existing operator
@@ -389,12 +390,13 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 - [ADR 0035](adr/0035-use-django-polled-yandex-disk-import.md) accepts public Yandex Disk import
   through a dedicated ingestion worker polling a private Django API backed by PostgreSQL.
   The implementation uses durable import scopes, manifests and attempt-owned storage checkpoints,
-  the private `/internal/photo-import/v1/` API, and an opt-in `import` Compose profile. It makes a
+  the private `/internal/photo-import/v1/` API, and the canonical import worker. It makes a
   narrow exception to ADRs 0013/0014 while retaining local browser uploads, private original
-  publication, and standard processing enrollment. The capability and `yandex-disk-import` gate
-  default to off. [Local acceptance](plans/2026-09-07-yandex-disk-import-acceptance.md) records
-  container and upgrade checks; [the runbook](runbooks/yandex-disk-photo-import.md) separates
-  these from deployment, real-source acceptance, and activation.
+  publication, and standard processing enrollment. Upload permission, source and owner validation,
+  worker bearer credentials, leases, and service control remain mandatory.
+  [Local acceptance](plans/2026-09-07-yandex-disk-import-acceptance.md) records container and
+  upgrade checks; [the runbook](runbooks/yandex-disk-photo-import.md) separates these from
+  deployment and real-source acceptance.
 
 - Start as a Django modular monolith; extract services only after measured operational need.
 - Use PostgreSQL as the transactional system of record.
@@ -433,7 +435,7 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   reads require active staff with both event and photo view permissions; photo and folder mutations
   additionally require their specific Django permissions. Upload permission remains independent.
   The upload entry page selects an event, while the fixed-event workspace owns one local queue and
-  a separate Yandex Disk import controller. Folder selection and feature gates do not grant
+  a separate Yandex Disk import controller. Folder selection does not grant
   administrative or media authority.
 - Run Stage 3 photo processors as two independently runnable services from the same immutable
   worker image. The configurable bulk service owns metadata, preview, watermark, face-embedding,
@@ -503,9 +505,9 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   seven days, stores immutable feedback/contact/consent/labels in PostgreSQL, and stores one selfie
   in a dedicated private KMS-encrypted bucket whose 30-day lifecycle is authoritative. Public media
   routes and the ML worker cannot access feedback media, and staff access is explicit and audited,
-  as defined by [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md). The feature remains
-  disabled by default and has no canonical-deployment activation evidence until its policy, bucket,
-  KMS, and preflight gates are satisfied.
+  as defined by [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md). The dedicated
+  bucket, KMS, and storage preflight remain required; the published personal-data policy still
+  needs separate reconciliation with feedback purpose and retention.
 - The browser source boundary accepts JPEG, PNG, HEIC, and HEIF; Django bounds and decodes the
   source, preserving JPEG/PNG or normalizing HEIC/HEIF to canonical JPEG bytes before temporary
   storage and worker input. Stored objects and worker configuration remain canonical JPEG/PNG only,
@@ -532,8 +534,9 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   gallery embeddings, evaluates them through the private closed-benchmark CLI, records immutable
   direct/cluster provenance in PostgreSQL, and exposes bounded source-separated feedback and
   observability aggregates. Direct results remain first; unavailable or incompatible optional data
-  falls back to the unchanged direct snapshot. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` is
-  the repository and worktree default, and no canonical-deployment or customer activation is evidenced in
+  falls back to the unchanged direct snapshot. The database feature flag
+  `selfie-search-cluster-expansion` is created `off` by `sync_feature_flags`; only `on` enables
+  expansion for new searches, while `staff` and a missing row remain direct-only. No canonical-deployment or customer activation is evidenced in
   this branch. The accepted design adds no named identity, cross-event matching, contextual
   evidence, automatic feedback tuning, persistent query vector, worker credential/configuration
   expansion, or online vector service, as defined by
@@ -567,11 +570,11 @@ The MVP remains one product with modules that have explicit responsibilities:
 | --- | --- | --- |
 | Catalog | Events, free/paid type, publication state, public pages | Implemented |
 | Ingestion | Photographer permissions, request-driven batch upload, object promotion, and resumable upload state | Implemented |
-| Media | Private originals and activation-gated previews; thumbnails, watermarks, and purchased exports | Implemented for originals, preview-first, and the gated paid-watermark repository slice; real watermark activation and purchased exports remain unimplemented |
+| Media | Private originals and preview-first presentation; thumbnails, watermarks, and purchased exports | Implemented for originals, preview-first, and the gated paid-watermark repository slice; real watermark activation and purchased exports remain unimplemented |
 | Recognition | Face, bib-region, OCR, image embeddings, and anonymous event-scoped face clusters | Preview-backed face processing and opt-in bib recognition are active in the canonical deployment; the offline face-cluster corpus path remains disabled by default. Bib generation 1 has the recorded apparel-number precision limitation. |
 | Search | Event-scoped face/bib/time/location queries | Public direct face search and opt-in exact event bib search are active; direct-first face-cluster expansion remains disabled by default, and remaining modes are proposed. |
 | Moderation | Manual corrections, hiding, complaints, audit history | Proposed |
-| Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, paid-original entitlement, and page-scoped archive delivery | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, Commerce worker deployment wiring, local T-Bank eacq adapter, and ADR 0034's streaming page-scoped ZIP delivery are implemented behind runtime gates. The deployed adapter remains the staff simulator. Bank sandbox acceptance, approved fiscal values, public activation, maximum-page capacity acceptance, and live customer evidence remain outstanding |
+| Commerce | Anonymous event carts, orders, staff-only simulated payment, email delivery, paid-original entitlement, and page-scoped archive delivery | Anonymous event carts, immutable Orders/PaymentAttempts, permanent order grants, purchased-original signing, Postbox email adapter, Commerce worker deployment wiring, and a local T-Bank eacq adapter are implemented behind retained paid runtime gates. ADR 0034's page-scoped ZIP delivery uses existing free-result or paid-Order authorization without its former shared gate. The deployed adapter remains the staff simulator. Bank sandbox acceptance, approved fiscal values, public activation, maximum-page capacity acceptance, and live customer evidence remain outstanding |
 | Operations | Processing visibility, structured logs, health and backups | Selfie structured-event/journald/daily-summary plus aggregate face-cluster report slice implemented in repository; dashboards, alerts, central logging, and backups proposed |
 
 Logical module boundaries do not imply separately deployed services. Django owns product rules and
@@ -621,18 +624,17 @@ broker, vector engine, and ML implementations shown for later processing require
 5. The Stage 3 worker extracts bounded JPEG EXIF capture metadata through a Django-polled private
    API with one-at-a-time local worker concurrency, explicit per-photo states, immutable attempts,
    and immutable event-run reports. The preview-first implementation adds the versioned
-   `generate_preview` processor: after explicit activation it normalizes one JPEG through an
+   `generate_preview` processor: for each newly confirmed eligible photo it normalizes one JPEG through an
    attempt-scoped temporary upload (the processing term, not a deployment name), Django verifies and publishes an immutable derivative, and only
-   then makes the photo tile-eligible and queues preview-backed face work. Its Docker profile is
-   locally opt-in and the API-only/no-credential container contract is locally verified. Tracked
-   defaults remain disabled; lifecycle, ML-comparison, and capacity gates prevent canonical-deployment
-   activation. The worker-image and deployment validator package the optional exact
-   `2/generate_watermarked_preview/1` identity, but all worker and deployment defaults and the
-   required preview-processing identity set omit it. The `paid-watermarked-previews` feature-flag
+   then makes the photo tile-eligible and queues preview-backed face work. The API-only/no-credential
+   container contract is locally verified; the canonical worker is part of the deployment topology.
+   Lifecycle, ML-comparison, and capacity evidence remain operational checks. The worker image
+   includes `2/generate_watermarked_preview/1`; deployment defaults include and require this exact
+   bulk-worker identity. The `paid-watermarked-previews` feature-flag
    row is absent or off by default, and no migration creates or enables it. A code deploy can
    therefore package placeholder assets but cannot enqueue the new policy or expose its public
    gallery to anonymous users. Activation must first use approved non-placeholder assets with their
-   declared checksums, explicitly enable the worker identity, pass one real staff-only smoke, and
+   declared checksums, pass one real staff-only smoke, and
    only then enable the public gate. A broker remains later-stage design.
 6. Recognition stages detect people/faces and likely bib regions, perform OCR, and create candidate
    embeddings. The implemented preview-first contract records preview coordinate space and source
@@ -750,9 +752,9 @@ non-root build-time smoke through both `face_embedding` and
 Public selfie search is always available when its existing processing prerequisites are healthy;
 the retired availability switch is no longer an active setting. No temporary-lifecycle mutation,
 bucket preflight, exact rollout-image smoke, VM capacity smoke, cluster
-corpus activation, canonical-deployment activation, or customer outcome is claimed. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False`
-remains the independent repository default. Corpus build, private benchmark, aggregate report, and
-guarded activation commands are repository interfaces only until the release gate and an explicit
+corpus activation, canonical-deployment activation, or customer outcome is claimed. The independent
+`selfie-search-cluster-expansion` database flag is reconciled in `off`. Corpus build, private benchmark, aggregate report, and
+guarded activation commands are repository interfaces only until an explicit
 later rollout approve them.
 
 The gallery-photo source is locally verified by 145 focused Python tests, 70 JavaScript tests for
@@ -761,7 +763,7 @@ and four-face event-gallery fixture at desktop and 390px mobile widths. The root
 also passes with 1,256 tests passed and 3 skipped, 83.28% coverage, and clean system/migration
 checks. The gallery-photo source has no canonical-deployment evidence. Public selfie search is not
 controlled by an availability flag; the independent
-cluster-expansion flag remains disabled by default.
+cluster-expansion database flag remains `off` by default.
 
 ### Purchase and download
 
@@ -793,9 +795,9 @@ disabled-default deployment wiring are implemented locally. Bank sandbox accepta
 fiscal settings, legal review, and public activation remain separate; the deployed acceptance
 payment path is the staff-only simulator. Refunds remain later work. ADR 0034's repository
 implementation adds a page-scoped streaming ZIP only for an authorized free ready-result page or
-paid Order page. It stores no archive, streams one private original at a time through Django, and
-is hidden and denied by the reconciled default-off `bulk-photo-download` gate. Deployment, gate
-activation, representative maximum-page capacity acceptance, and live customer evidence remain
+paid Order page. It stores no archive and streams one private original at a time through Django.
+Result bearer capability or paid Order entitlement, page membership, and original-delivery policy
+remain required. Representative maximum-page capacity acceptance and live customer evidence remain
 explicitly incomplete.
 
 ADR 0047 replaces ADR 0031's cart-retention and cart-based retry rules: an Order consumes its
@@ -904,8 +906,9 @@ local tests and visual fixtures do not establish public activation or live bank 
    photos before delivering corrections and event-scoped search.
 6. **Face governance, validation, and search:** approve biometric policy and independently benchmark
    face models before delivering embeddings, event filtering, removal, and candidate UX.
-7. **Commerce:** the accepted anonymous event-cart selection, purchase boundaries, and default-off
-   page-scoped ZIP delivery are implemented behind runtime gates. The staff acceptance path uses a
+7. **Commerce:** the accepted anonymous event-cart selection and purchase boundaries remain behind
+   their paid runtime gates; page-scoped ZIP delivery follows the existing free-result or paid-Order
+   authorization without a separate archive gate. The staff acceptance path uses a
    simulated payment adapter, Postbox email sender, and one canonical-deployment Commerce worker.
    A real bank adapter, fiscal/legal approval, public rollout evidence, packages, promotions,
    refunds, and archive capacity acceptance remain later work.

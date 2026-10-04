@@ -18,19 +18,16 @@ def local_worker_enabled() -> bool:
 
 def worker_endpoint_enabled() -> bool:
     return bool(
-        settings.PHOTO_PROCESSING_ENABLED
-        and (
-            settings.PHOTO_PROCESSING_FLEET_TOKEN
-            or (local_worker_enabled() and settings.PHOTO_PROCESSING_WORKER_TOKEN)
-        )
+        settings.PHOTO_PROCESSING_FLEET_TOKEN
+        or (local_worker_enabled() and settings.PHOTO_PROCESSING_WORKER_TOKEN)
     )
 
 
 def has_worker_token(request: HttpRequest) -> bool:
     """Return whether one exact configured bearer credential authorizes this request.
 
-    Disabled or unconfigured deployments deliberately use the same response as a bad credential,
-    so this endpoint never confirms feature or token configuration to an unauthenticated caller.
+    Unconfigured deployments deliberately use the same response as a bad credential,
+    so this endpoint never confirms token configuration to an unauthenticated caller.
     """
     local_token = settings.PHOTO_PROCESSING_WORKER_TOKEN
     fleet_token = settings.PHOTO_PROCESSING_FLEET_TOKEN
@@ -48,13 +45,7 @@ def has_worker_token(request: HttpRequest) -> bool:
     # Keep the denial path's comparison operation independent of configuration and header shape.
     # A fixed dummy also avoids passing an empty secret to a timing-sensitive branch.
     compared = compare_digest(configured or "!worker-token-unconfigured!", supplied)
-    return bool(
-        settings.PHOTO_PROCESSING_ENABLED
-        and transport_valid
-        and configured
-        and valid_shape
-        and compared
-    )
+    return bool(transport_valid and configured and valid_shape and compared)
 
 
 def require_worker_token(view: Callable[..., HttpResponse]) -> Callable[..., HttpResponse]:

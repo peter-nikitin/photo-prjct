@@ -6,6 +6,7 @@ import subprocess
 import yaml
 
 from tests.deployment.test_deployment_scripts import ROOT
+from tests.deployment.test_local_purchase_compose import _isolated_service_checks
 
 
 def test_local_adaface_compose_isolated_runtime_contract() -> None:
@@ -88,6 +89,23 @@ def test_local_adaface_compose_isolated_runtime_contract() -> None:
     )
     assert corpus_mount[0]["target"] == "/corpus"
     assert corpus_mount[0]["read_only"] is True
+    for service in ("web", "seed-local-preview-corpus"):
+        app_environment = compose["services"][service]["environment"]
+        assert app_environment["SELFIE_FEEDBACK_S3_BUCKET"] == "disposable-adaface-feedback"
+        assert (
+            app_environment["SELFIE_FEEDBACK_S3_BUCKET"]
+            != app_environment["PRIVATE_MEDIA_S3_BUCKET"]
+        )
+        check_environment = {**app_environment}
+        if service == "web":
+            # This experiment independently requires DEBUG=True; isolate feedback checks.
+            check_environment["DEBUG"] = "True"
+        startup = _isolated_service_checks(check_environment)
+        assert startup.returncode == 0, startup.stderr
+        assert "selfie_search.E008" not in startup.stdout
+        assert "selfie_search.E009" not in startup.stdout
+    assert not any(name.startswith("SELFIE_FEEDBACK_") for name in bulk_environment)
+    assert not any(name.startswith("SELFIE_FEEDBACK_") for name in selfie_environment)
     assert all(
         volume["name"].startswith("photo-adaface-contract_")
         for volume in compose["volumes"].values()

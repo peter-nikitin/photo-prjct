@@ -23,12 +23,11 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
 from feature_flags.registry import (
-    BULK_PHOTO_DOWNLOAD,
     PAID_EVENTS,
     PAID_PHOTO_CART,
     PAID_WATERMARKED_PREVIEWS,
 )
-from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
+from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.archive import ArchiveObservation, ArchiveSourceMissing, ArchiveSourceUnavailable
@@ -171,20 +170,9 @@ class PublicSelfieSearchMarkupTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
-    @override_settings(SELFIE_FEEDBACK_ENABLED=False)
-    def test_disabled_feedback_entry_exposes_no_preservation_marker_or_correlation(
-        self,
-    ) -> None:
+    def test_feedback_search_entry_accepts_a_browser_correlation(self) -> None:
         response = self.client.get(reverse("event_detail", kwargs={"slug": self.free_event.slug}))
 
-        self.assertContains(response, 'data-selfie-feedback-enabled="false"')
-        self.assertNotContains(response, 'name="feedback_correlation"')
-
-    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
-    def test_enabled_feedback_search_entry_accepts_a_browser_correlation(self) -> None:
-        response = self.client.get(reverse("event_detail", kwargs={"slug": self.free_event.slug}))
-
-        self.assertContains(response, 'data-selfie-feedback-enabled="true"')
         self.assertContains(
             response,
             '<input type="hidden" name="feedback_correlation" value="">',
@@ -255,7 +243,6 @@ class PublicSelfieSearchMarkupTests(TestCase):
         self.assertContains(response, "Искать по другому селфи")
         self.assertContains(response, reverse("event_detail", kwargs={"slug": event.slug}))
 
-    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_result_exposes_a_valid_redirect_correlation_without_session_binding(self) -> None:
         token = "correlated-search-token"
         SelfieSearch.objects.create(
@@ -638,7 +625,6 @@ class GalleryPhotoSearchViewTests(TestCase):
         self.assertContains(gallery, "Начать поиск похожих фотографий")
         self.assertNotContains(selfie, "data-gallery-search-process")
 
-    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_ready_gallery_result_has_no_selfie_copy_feedback_or_feedback_post(self) -> None:
         token = "ready-gallery-feedback"
         search = self.make_queued_gallery_search(
@@ -1243,7 +1229,7 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
 
-    def test_free_ready_result_archive_is_gate_controlled_and_streams_the_saved_page(self) -> None:
+    def test_free_ready_result_archive_streams_the_saved_page(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         later = self.make_private_photo(search.event, photo_id="archive-later")
         first = self.make_private_photo(search.event, photo_id="archive-first")
@@ -1253,7 +1239,6 @@ class PublicSelfieResultViewTests(TestCase):
         storage = Mock()
 
         with (
-            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
             patch("selfie_search.views._archive_storage", return_value=storage) as storage_factory,
             patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
         ):
@@ -1281,6 +1266,13 @@ class PublicSelfieResultViewTests(TestCase):
             prepare.call_args.kwargs["observation"],
             ArchiveObservation(context="free_result", page=1),
         )
+        SelfieSearchDirectEvidence.objects.filter(result__search=search).delete()
+        SelfieSearchResult.objects.filter(search=search).delete()
+        SelfieSearch.objects.filter(pk=search.pk).delete()
+        with patch("selfie_search.views._archive_storage") as expired_storage:
+            expired = self.client.get(self.result_archive_url(event=search.event, token=token))
+        self.assertEqual(expired.status_code, 404)
+        expired_storage.assert_not_called()
 
     def test_free_result_archive_excludes_a_hidden_saved_member_before_storage(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -1294,7 +1286,6 @@ class PublicSelfieResultViewTests(TestCase):
         archive = iter((b"visible-only-zip",))
 
         with (
-            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
             patch("selfie_search.views._archive_storage") as storage_factory,
             patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
         ):
@@ -1319,15 +1310,12 @@ class PublicSelfieResultViewTests(TestCase):
         archive = iter((b"second-page-zip",))
         storage = Mock()
 
-        with override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}):
-            page = self.client.get(self.result_url(event=search.event, token=token), {"page": 2})
-            with (
-                patch(
-                    "selfie_search.views._archive_storage", return_value=storage
-                ) as storage_factory,
-                patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
-            ):
-                response = self.client.get(f"{archive_url}?page=2")
+        page = self.client.get(self.result_url(event=search.event, token=token), {"page": 2})
+        with (
+            patch("selfie_search.views._archive_storage", return_value=storage) as storage_factory,
+            patch("selfie_search.views.prepare_zip_archive", return_value=archive) as prepare,
+        ):
+            response = self.client.get(f"{archive_url}?page=2")
 
         self.assertContains(page, f'href="{archive_url}?page=2"')
         self.assertContains(page, "Скачать эту страницу")
@@ -1355,38 +1343,6 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertIs(prepare.call_args.kwargs["storage_factory"], storage_factory)
         storage_factory.assert_not_called()
 
-    def test_free_ready_result_archive_denies_off_and_anonymous_staff_gate(self) -> None:
-        search, token = self.make_search(status=SelfieSearch.Status.READY)
-        for rank in (1, 2):
-            self.add_result(
-                search=search,
-                photo=self.make_private_photo(search.event),
-                rank=rank,
-            )
-        staff = get_user_model().objects.create_user(username="archive-staff", is_staff=True)
-
-        with (
-            patch(
-                "selfie_search.views._archive_storage",
-                side_effect=StorageUnavailable(),
-            ) as storage,
-        ):
-            with override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_OFF}):
-                off = self.client.get(self.result_archive_url(event=search.event, token=token))
-            with override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_STAFF}):
-                anonymous = self.client.get(
-                    self.result_archive_url(event=search.event, token=token)
-                )
-                self.client.force_login(staff)
-                staff_allowed = self.client.get(
-                    self.result_archive_url(event=search.event, token=token)
-                )
-
-        self.assertEqual(off.status_code, 404)
-        self.assertEqual(anonymous.status_code, 404)
-        self.assertEqual(staff_allowed.status_code, 503)
-        storage.assert_called_once()
-
     def test_archive_denies_paid_invalid_and_small_result_pages_without_opening_storage(
         self,
     ) -> None:
@@ -1407,7 +1363,6 @@ class PublicSelfieResultViewTests(TestCase):
             )
 
         with (
-            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
             patch("selfie_search.views._archive_storage") as storage,
         ):
             responses = (
@@ -1436,7 +1391,6 @@ class PublicSelfieResultViewTests(TestCase):
         storage = Mock()
 
         with (
-            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
             patch("selfie_search.views._archive_storage", return_value=storage),
             patch(
                 "selfie_search.views.prepare_zip_archive",
@@ -1468,7 +1422,6 @@ class PublicSelfieResultViewTests(TestCase):
         storage_failure.args = (sensitive_exception,)
 
         with (
-            override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON}),
             patch(
                 "selfie_search.views._archive_storage",
                 side_effect=storage_failure,
@@ -1510,7 +1463,7 @@ class PublicSelfieResultViewTests(TestCase):
             self.assertNotIn(sensitive_value, formatted_record)
         self.assertIsNone(record.exc_info)
 
-    def test_free_result_page_shows_archive_only_when_enabled_and_paid_cart_stays_bulk_free(
+    def test_free_result_page_shows_archive_and_paid_cart_stays_bulk_free(
         self,
     ) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -1533,9 +1486,7 @@ class PublicSelfieResultViewTests(TestCase):
                 rank=rank,
             )
 
-        with override_feature_flags(
-            {BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON, PAID_EVENTS: FEATURE_FLAG_ON}
-        ):
+        with override_feature_flags({PAID_EVENTS: FEATURE_FLAG_ON}):
             free = self.client.get(self.result_url(event=search.event, token=token))
             paid = self.client.get(self.result_url(event=paid_event, token=paid_token))
 
@@ -1786,7 +1737,7 @@ class PublicSelfieResultViewTests(TestCase):
             response, 'data-cart-price data-photo-id="cart-result-watermarked"', count=2
         )
         self.assertContains(response, 'aria-label="Удалить из корзины"', count=2)
-        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=2)
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=3)
         self.assertContains(
             response,
             'name="return_to" value="/events/%3Cevent%3E/selfie-search/%3Cbearer%3E/"',
@@ -1874,7 +1825,7 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertIn("private-report-event", report)
         self.assertIn("forced paid result", report)
 
-    def test_legacy_only_paid_result_is_byte_identical_and_has_no_cart_context_when_gate_opens(
+    def test_legacy_only_paid_result_has_the_same_markup_and_no_cart_context_when_gate_opens(
         self,
     ) -> None:
         states = {
@@ -1901,13 +1852,15 @@ class PublicSelfieResultViewTests(TestCase):
             states[PAID_PHOTO_CART] = FEATURE_FLAG_ON
             gate_on = self.client.get(self.result_url(event=paid_event, token=token))
 
-        self.assertEqual(gate_off.content, gate_on.content)
+        self.assertEqual(
+            gate_off.content.decode().replace(str(gate_off.context["csrf_token"]), "CSRF"),
+            gate_on.content.decode().replace(str(gate_on.context["csrf_token"]), "CSRF"),
+        )
         self.assertIsNone(gate_off.context["cart_presentation"])
         self.assertIsNone(gate_on.context["cart_presentation"])
         self.assertNotContains(gate_on, f"/events/{paid_event.slug}/cart/")
         self.assertContains(gate_on, 'class="gallery-download"')
 
-    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_paid_feedback_presentation_uses_the_same_request_gate_as_visible_results(
         self,
     ) -> None:
@@ -1988,7 +1941,6 @@ class PublicSelfieResultViewTests(TestCase):
         )
         self.assertContains(response, "Поиск показывает вероятные совпадения.")
 
-    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_terminal_feedback_markup_uses_the_saved_result_membership_and_exact_consent(
         self,
     ) -> None:
@@ -2055,7 +2007,6 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertContains(response, "ui/legal/personal-data-policy.pdf")
         self.assertNotContains(response, 'type="file"')
 
-    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_terminal_problem_feedback_has_no_result_questions(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.NO_FACE)
 
@@ -2079,7 +2030,6 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertNotContains(response, "Я есть")
         self.assertNotContains(response, "Меня нет")
 
-    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_terminal_result_confirms_already_submitted_feedback_without_new_form(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.NO_FACE)
         SelfieSearchFeedback.objects.create(

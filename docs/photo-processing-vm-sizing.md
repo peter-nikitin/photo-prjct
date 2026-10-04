@@ -1,8 +1,8 @@
 # Sizing the preview-first photo-processing worker VM
 
-This document defines the evidence required before a supervised preview-first worker check. It does
-not authorize a Yandex Cloud resize, VM creation, capacity decision, or canonical-deployment
-worker activation beyond the measurement configuration below.
+This document defines the evidence required for a supervised preview-first worker capacity check. It
+does not authorize a Yandex Cloud resize, VM creation, or capacity decision. The worker is part of
+the canonical deployment; this procedure uses finite, separately started local measurement phases.
 
 ## What is known, and what is not
 
@@ -12,17 +12,18 @@ temporarily holds input and output files, uploads an attempt-scoped staging obje
 verifies/publishes it. Preview-backed `face_embedding` separately decodes that published preview.
 Django and PostgreSQL hold only short queue transactions.
 
-The deployed Compose stack contains Nginx, Django/Gunicorn, and PostgreSQL. The worker is opt-in
-and resource-bounded in canonical-deployment configuration. Read-only Yandex Cloud discovery
-recorded the deployed VM as **8 vCPU and 32 GiB RAM**. That inventory fact does not establish disk
-headroom, sustainable throughput, or a capacity decision.
+The deployed Compose stack contains Nginx, Django/Gunicorn, PostgreSQL, and resource-bounded import,
+bulk-processing, and selfie workers. Older read-only Yandex Cloud discovery recorded **8 vCPU and
+32 GiB RAM**; the 2026-09-14 incident below records a later temporary **8 vCPU and 16 GiB RAM**
+configuration. Recheck the live VM before using either measurement profile. Neither snapshot
+establishes disk headroom, sustainable throughput, or a capacity decision.
 
 ## Measurement configuration
 
 | Use | VM | Disk | Worker container limits | Scope |
 | --- | --- | --- | --- | --- |
-| Initial face-worker baseline | Verified deployed VM: 8 vCPU, 32 GiB RAM | Verify free space before activation; no disk-capacity claim is made here. | `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64` | `PHOTO_WORKER_REPLICAS=1`, one representative event and the frozen benchmark cohort. |
-| Measured second replica | Same verified deployed VM | Re-check free space and Docker image growth during the two-worker run. | Two independent workers, each `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64`. | Set `PHOTO_WORKER_REPLICAS=2` only after the gate below passes. |
+| Initial face-worker baseline | Rechecked canonical VM | Verify free space before measurement; no disk-capacity claim is made here. | `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64` | `PHOTO_WORKER_REPLICAS=1`, one representative event and the frozen benchmark cohort. |
+| Measured second replica | Same rechecked VM | Re-check free space and Docker image growth during the two-worker run. | Two independent workers, each `cpus: 1.0`, `mem_limit: 2g`, `pids_limit: 64`. | Set `PHOTO_WORKER_REPLICAS=2` only after the gate below passes. |
 
 These are staged measurement configurations, not a capacity decision or a promise of performance.
 `PHOTO_WORKER_REPLICAS` counts bulk workers; one separate `worker-selfie` also runs in the
@@ -31,9 +32,8 @@ automatic consequence of a 32-GiB host. The local finite phases below start only
 
 The limit values leave memory and CPU for the existing stack while containing a face-model OOM to
 one worker. The 50 MiB temporary input limit does not by itself set disk size: the disk must also
-accommodate Docker images, PostgreSQL's volume, logs, and deployment headroom. The measurement profile
-declares these limits, but an operator must not enable it before the measurements and gates below
-are satisfied.
+accommodate Docker images, PostgreSQL's volume, logs, and deployment headroom. Stop the affected
+worker if the measured resource limits or lease behavior regress.
 
 ## Required preview-first measurement procedure
 
@@ -63,7 +63,7 @@ docker compose --profile worker stop worker-bulk
 ```
 
 If the loop reaches sample 300, if any preview is not `succeeded`, or if the worker restarts, mark
-the preview phase failed and keep preview processing disabled. Inspect and record published
+the preview phase failed and stop the affected worker. Inspect and record published
 derivatives and queued face `2/3` states before continuing, as required by the local runbook.
 
 Then start a new worker with only `2/face_embedding/3`. Stop it after the final face row succeeds;
@@ -133,7 +133,7 @@ the deployment transaction reconciles the previous replica count on a failed rol
 
 Also record worker CPU/RSS, temporary-disk high-water mark, Django/Gunicorn CPU/RSS, PostgreSQL
 connections/RSS/IO, Nginx request latency, original/preview bytes, per-stage latencies,
-retry/failure codes, and free disk. If a gate fails, keep the worker disabled: do not use swap,
+retry/failure codes, and free disk. If a gate fails, stop the affected worker: do not use swap,
 increase concurrency, or add a broker to hide a capacity problem. Resize or separate the worker
 only through a new approved operational change.
 
@@ -144,21 +144,22 @@ concurrency 1. A different decoder, model, image limit, quality setting, vector 
 concurrency requires a fresh workload measurement and a new sizing/activation decision before it
 runs on a real VM.
 
-## Recognition-quality activation evidence
+## Recognition-quality comparison evidence
 
-Activation also requires a representative original-versus-preview comparison using the same face
+The quality check uses a representative original-versus-preview comparison with the same face
 model and thresholds. The repository contains the local `experiments/face_recognition_spike`, but
 does not contain a checked-in representative photo cohort or model artifacts that can make this
 comparison reproducible here. No detection coverage, embedding, or search delta is claimed by this
 change.
 
-Before an operator enables `PHOTO_PROCESSING_PREVIEW_ENABLED=True`, create two immutable,
+For a representative quality review, create two immutable,
 operator-local experiment outputs from the same private representative cohort: one from originals
 and one from the generated `preview-small-v1` files. Record photo denominator, detector successes
 and misses, accepted face count, embedding failures, and the existing holdout retrieval/search
 metrics and deltas. Preserve the commands, model hashes, input manifests, and machine-readable
-results beside the private experiment artifacts, not in Git. Any material regression blocks
-activation; absence of this comparison means preview processing remains disabled.
+results beside the private experiment artifacts, not in Git. A material regression requires
+stopping the affected worker and a reviewed corrective release; do not reinterpret existing face
+evidence or change thresholds through this capacity procedure.
 
 ## Cost and approval
 

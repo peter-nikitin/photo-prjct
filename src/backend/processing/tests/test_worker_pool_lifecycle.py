@@ -612,7 +612,6 @@ class LifecycleTests(TransactionTestCase):
 
     @override_settings(
         DEBUG=False,
-        PHOTO_PROCESSING_ENABLED=True,
         PHOTO_PROCESSING_WORKER_TOKEN="local",
         PHOTO_PROCESSING_FLEET_TOKEN="fleet",
     )

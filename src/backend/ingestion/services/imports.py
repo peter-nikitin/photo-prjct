@@ -14,8 +14,6 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
 from django.utils import timezone
-from feature_flags.registry import YANDEX_DISK_IMPORT
-from feature_flags.services import is_enabled
 from picflow.models import Event, EventFolder
 
 from ingestion.models import (
@@ -711,8 +709,6 @@ def _fresh_eligible_owner(owner_id: object) -> AbstractBaseUser:
     owner = get_user_model().objects.get(pk=owner_id)
     if not owner.is_active or not owner.has_perm("ingestion.upload_photos"):
         raise ImportConflict("permission_denied", "Photo upload permission is required.")
-    if not is_enabled(YANDEX_DISK_IMPORT, owner):
-        raise ImportConflict("feature_paused", "Yandex Disk import is paused.")
     return owner
 
 
@@ -740,7 +736,7 @@ def _persist_callback_transition(
         yield
     except ImportConflict as error:
         observed_at = clock()
-        if error.code in {"feature_paused", "permission_denied"}:
+        if error.code == "permission_denied":
             _persist_paused_batch(attempt_id=attempt_id, now=observed_at)
         elif error.code == "stale_attempt":
             _persist_expired_attempt(attempt_id=attempt_id, now=observed_at)

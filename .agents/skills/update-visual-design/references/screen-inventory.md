@@ -139,8 +139,12 @@ paid, and staff-preview baselines were refreshed; no visual route or snapshot na
 
 On 2026-09-13, the fixed-event upload workspace grouped device selection and Yandex Disk import
 inside one `Новая загрузка` panel. The existing desktop and 390px mobile upload baselines were
-refreshed: enabled imports render the two source cards side by side on desktop and stacked on
-mobile, while gate-off fixtures retain the device-only source card.
+refreshed: imports render the two source cards side by side on desktop and stacked on mobile.
+
+On 2026-09-25, the six local-upload states (`empty`, `active`, `partial`, `processing`,
+`complete`, and `folders`) were refreshed at desktop and 390px mobile widths for the permanent
+Yandex Disk import source and history alongside device uploads. The existing twelve snapshot names
+and visual routes are unchanged. Visual fixtures route import polling to the test-only API.
 
 On 2026-10-01, the production event-photo workspace baselines were refreshed for compact bib-number
 labels and eligible-card edit controls. The populated fixture includes an editable card with two

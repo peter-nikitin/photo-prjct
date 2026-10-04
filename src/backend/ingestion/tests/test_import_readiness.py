@@ -6,7 +6,7 @@ from ingestion.models import ImportAttempt
 
 
 class ImportReadinessTests(TestCase):
-    @override_settings(PHOTO_IMPORT_ENABLED=True, PHOTO_IMPORT_WORKER_TOKEN="ready-token")
+    @override_settings(PHOTO_IMPORT_WORKER_TOKEN="ready-token")
     def test_readiness_with_gate_off_is_authenticated_versioned_and_nonmutating(self):
         before = list(FeatureFlag.objects.values())
         for token, version, status in [

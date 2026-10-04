@@ -929,10 +929,7 @@ class CommerceWorkerTests(TransactionTestCase):
         with self.assertRaisesRegex(CommandError, "worker is not live"):
             call_command("commerce_worker_health", "--max-ready-age-seconds", "300")
 
-    @override_settings(
-        PHOTO_PROCESSING_ENABLED=False,
-        PHOTO_PROCESSING_FACE_ENABLED=False,
-    )
+    @override_settings()
     def test_worker_command_does_not_require_unrelated_photo_processing(self) -> None:
         """Commerce startup must not inherit web-only selfie-search prerequisites."""
         with self.assertRaisesRegex(CommandError, "COMMERCE_WORKER_FACTORY"):

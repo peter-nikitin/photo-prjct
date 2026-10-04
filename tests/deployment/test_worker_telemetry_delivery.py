@@ -205,7 +205,6 @@ def runtime_container(tmp_path):
 
 @pytest.mark.django_db(transaction=True)
 @override_settings(
-    PHOTO_PROCESSING_ENABLED=True,
     PHOTO_PROCESSING_FLEET_TOKEN="fixture-fleet",
     PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True,
 )

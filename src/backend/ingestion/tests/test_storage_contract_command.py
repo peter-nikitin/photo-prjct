@@ -55,7 +55,6 @@ def rejected_request() -> urllib.error.HTTPError:
 
 
 @override_settings(
-    PHOTO_UPLOAD_ENABLED=True,
     PHOTO_UPLOAD_MAX_FILE_BYTES=52_428_800,
     PRIVATE_MEDIA_ALLOWED_ORIGINS=["https://findme-photo.ru"],
     PRIVATE_MEDIA_S3_ENDPOINT_URL="https://storage.yandexcloud.net",
@@ -111,14 +110,3 @@ class VerifyPrivateStorageCommandTests(SimpleTestCase):
         self.assertIn("verified", output.getvalue())
         self.assertNotIn("signed-policy", output.getvalue())
         self.assertNotIn("incoming/", output.getvalue())
-
-
-@override_settings(PHOTO_UPLOAD_ENABLED=False)
-class VerifyPrivateStorageDisabledTests(SimpleTestCase):
-    def test_refuses_to_write_when_the_feature_is_disabled(self) -> None:
-        with self.assertRaisesMessage(CommandError, "must be True"):
-            call_command(
-                "verify_private_upload_storage",
-                confirm_real_storage=True,
-                origin="https://findme-photo.ru",
-            )

@@ -233,6 +233,7 @@ for line in sys.stdin:
         raise SystemExit(2)
     environment[name] = decode(encoded)
 mode = sys.argv[1]
+
 deployment_command = r'''set -eu
 deployment_root=/opt/photo-prjct
 exec 9>"$deployment_root/.deployment.lock"
@@ -366,9 +367,9 @@ fi'''
 
 commands = {
     'deploy': deployment_command,
-    'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
+    'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
     'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
-    'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
+    'selfie-feedback-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
     'reconcile-observability': 'exec sudo -n /usr/local/sbin/findme-observability-reconcile "$RELEASE_SHA"',
     'configure-monitoring': 'exec sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"',
     'verify-deployed-image': r'''set -eu
@@ -429,7 +430,6 @@ RECOVER_FORWARD
 RELEASE_SHA
 WORKER_POOL_PRIVATE_API_IPV4
 IMPORT_WORKER_IMAGE
-PHOTO_IMPORT_ENABLED
 PHOTO_IMPORT_BUILD
 DEBUG
 ALLOWED_HOSTS
@@ -447,12 +447,8 @@ MEDIA_STORAGE_BACKEND
 MEDIA_S3_ENDPOINT_URL
 MEDIA_S3_REGION
 MEDIA_S3_PUBLIC_BUCKET
-PHOTO_UPLOAD_ENABLED
 PRIVATE_MEDIA_S3_BUCKET
 PRIVATE_MEDIA_ALLOWED_ORIGINS
-PHOTO_PROCESSING_ENABLED
-PHOTO_PROCESSING_PREVIEW_ENABLED
-PHOTO_PROCESSING_FACE_ENABLED
 PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS
 PHOTO_PROCESSING_MAX_REQUEST_BYTES
 PHOTO_WORKER_LEASE_SECONDS
@@ -467,7 +463,6 @@ SELFIE_SEARCH_MAX_PIXELS
 SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS
 SELFIE_SEARCH_TEMPORARY_PREFIX
 SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS
-SELFIE_FEEDBACK_ENABLED
 SELFIE_FEEDBACK_S3_BUCKET
 SELFIE_FEEDBACK_S3_ENDPOINT_URL
 SELFIE_FEEDBACK_S3_REGION
@@ -634,7 +629,7 @@ case "$mode" in
         ;;
     selfie-feedback-storage)
         remote_environment=$temporary_root/remote.env
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" SELFIE_FEEDBACK_ENABLED SELFIE_FEEDBACK_S3_BUCKET SELFIE_FEEDBACK_KMS_KEY_ID >"$command_output" 2>&1; then
+        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" SELFIE_FEEDBACK_S3_BUCKET SELFIE_FEEDBACK_KMS_KEY_ID >"$command_output" 2>&1; then
             fail environment materialization_failed
         fi
         ;;

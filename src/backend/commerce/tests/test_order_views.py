@@ -5,7 +5,6 @@ from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from django.views.debug import technical_500_response
-from feature_flags.registry import BULK_PHOTO_DOWNLOAD
 from feature_flags.states import FEATURE_FLAG_ON
 from ingestion.storage import ObjectMissing
 from selfie_search.middleware import PublicSelfieBearerProtectionMiddleware
@@ -182,7 +181,6 @@ class OrderViewTests(OrderViewFixture):
         self,
     ) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
-        self.feature_flag_states[BULK_PHOTO_DOWNLOAD] = FEATURE_FLAG_ON
         paid_order = self.make_order(total_kopecks=60000)
         self.add_order_photos(paid_order, count=1)
         archive_url = reverse(
@@ -205,7 +203,6 @@ class OrderViewTests(OrderViewFixture):
 
     def test_page_two_archive_action_preserves_the_open_page(self) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)
-        self.feature_flag_states[BULK_PHOTO_DOWNLOAD] = FEATURE_FLAG_ON
         order = self.make_order(total_kopecks=102 * 30000)
         self.add_order_photos(order, count=101)
 

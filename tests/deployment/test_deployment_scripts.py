@@ -53,6 +53,8 @@ def test_remote_application_reconciles_commerce_forward_and_after_failed_candida
             functions
             + """
 compose() { printf '%s %s\n' "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" "$*"; }
+compose_with_env_file() { shift; compose "$@"; }
+start_import_after_web_ready() { :; }
 fleet_phase() { [ "$1" = rollback ]; }
 stop_import_before_web_change() { :; }
 previous_web_matches_processing_schema() { :; }
@@ -113,7 +115,11 @@ PREVIOUS_ENV = (
     b"DB_HOST=old-db\n"
     b"DB_PORT=6543\n"
     b"PUBLIC_DOMAIN=old.example\n"
-    b"PHOTO_UPLOAD_ENABLED=True\n"
+    b"WORKER_IMAGE=old-worker-image\n"
+    b"IMPORT_WORKER_IMAGE=import:old-image\n"
+    b"PHOTO_IMPORT_BUILD=old-release\n"
+    b"PHOTO_IMPORT_WORKER_TOKEN=old-import-token\n"
+    b"PHOTO_PROCESSING_WORKER_TOKEN=old-worker-token\n"
     b"PRIVATE_MEDIA_S3_BUCKET=old-private-bucket\n"
     b"KEEP_EXACTLY=old-only-setting\n"
 )
@@ -749,6 +755,11 @@ case " $* " in
     esac
     exit 0
     ;;
+  *" run --rm --no-deps -T --entrypoint python web manage.py check "*)
+    validate_candidate_env
+    printf 'candidate-web-check\n' >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != web-check-failure ]
+    ;;
   *"pg_database_collation_actual_version"*)
     validate_candidate_env
     printf 'candidate-vector-collation-check\n' >> "$COMMAND_LOG"
@@ -900,13 +911,6 @@ fi
 if [ "${1-}" = stop ] && [ "$APPLY_SCENARIO" = gallery-projection-worker-stop-failure ]; then
   exit 1
 fi
-if [ "$APPLY_SCENARIO" = worker-removal-failure ] && \
-   case " $* " in
-     *" compose "*" --profile worker rm -sf worker-bulk worker-selfie "*) true ;;
-     *) false ;;
-   esac; then
-  exit 1
-fi
 if [ "$APPLY_SCENARIO" = worker-recovery ] && \
    [ "${APP_IMAGE-unset}" = unset ] && \
    case " $* " in *" compose "*" up -d --no-deps web nginx "*) true ;; *) false ;; esac; then
@@ -915,21 +919,15 @@ if [ "$APPLY_SCENARIO" = worker-recovery ] && \
   [ "${PHOTO_WORKER_LEASE_SECONDS-unset}" = unset ]
   [ "${DB_NAME-unset}" = unset ]
   [ "${PUBLIC_DOMAIN-unset}" = unset ]
-  [ "$(sed -n 's/^PHOTO_PROCESSING_WORKER_TOKEN=//p' "$compose_env_file")" = old-worker-token ]
+  previous_worker_token="$(
+    sed -n 's/^PHOTO_PROCESSING_WORKER_TOKEN=//p' "$compose_env_file" | tail -n 1
+  )"
+  [ "$previous_worker_token" = old-worker-token ]
   [ "$(sed -n 's/^PHOTO_WORKER_BUILD=//p' "$compose_env_file")" = old-capture-metadata ]
   [ "$(sed -n 's/^PHOTO_WORKER_LEASE_SECONDS=//p' "$compose_env_file")" = 90 ]
   [ "$(sed -n 's/^DB_NAME=//p' "$compose_env_file")" = old-app ]
   [ "$(sed -n 's/^PUBLIC_DOMAIN=//p' "$compose_env_file")" = old.example ]
   printf 'recovery-compose-uses-restored-environment\n' >> "$COMMAND_LOG"
-fi
-if [ "$APPLY_SCENARIO" = worker-recovery-disabled ] && \
-   [ "${APP_IMAGE-unset}" = unset ] && \
-   case " $* " in
-     *" compose "*" --profile worker rm -sf worker-bulk worker-selfie "*) true ;;
-     *) false ;;
-   esac; then
-  [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$compose_env_file")" = False ]
-  printf 'recovery-removes-worker-from-restored-disabled-environment\n' >> "$COMMAND_LOG"
 fi
 if [ "$APPLY_SCENARIO" = compose-failure ] && \
    [ "${APP_IMAGE-unset}" = new-image ] && \
@@ -944,8 +942,7 @@ case " $* " in
   *" compose "*" pull "*) [ "$APPLY_SCENARIO" != pull-failure ] ;;
   *" compose "*" ps -q web "*) printf 'web-id\n' ;;
   *" compose "*" ps -q worker-bulk "*)
-    [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] || exit 0
-    worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' "$DEPLOY_ROOT/.env" | tail -n 1)"
     case "$APPLY_SCENARIO" in
       worker-second-missing)
         printf 'worker-bulk-first\n'
@@ -959,7 +956,6 @@ case " $* " in
     esac
     ;;
   *" compose "*" ps -q worker-selfie "*)
-    [ "$(sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] || exit 0
     printf 'worker-selfie\n'
     ;;
   *" compose "*" ps -q commerce-worker "*)
@@ -1021,7 +1017,6 @@ printf 'curl %s\n' "$*" >> "$COMMAND_LOG"
 if [ "$APPLY_SCENARIO" = health-failure ] || \
    [ "$APPLY_SCENARIO" = processing-schema-health-failure ] || \
    [ "$APPLY_SCENARIO" = worker-recovery ] || \
-   [ "$APPLY_SCENARIO" = worker-recovery-disabled ] || \
    [ "$APPLY_SCENARIO" = fresh-first-health-failure ]; then
   [ "$(sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env")" = old-image ]
 fi
@@ -1102,9 +1097,10 @@ esac
         "DB_NAME": "app",
         "DB_USER": "app",
         "DB_PASSWORD": "password",
-        "PHOTO_UPLOAD_ENABLED": "False",
-        "PHOTO_PROCESSING_ENABLED": "True",
-        "PHOTO_PROCESSING_FACE_ENABLED": "True",
+        "PRIVATE_MEDIA_ALLOWED_ORIGINS": "https://findme-photo.ru",
+        "IMPORT_WORKER_IMAGE": "import:new-image",
+        "PHOTO_IMPORT_BUILD": "release",
+        "PHOTO_IMPORT_WORKER_TOKEN": "import-token",
         "WORKER_IMAGE": "worker-image",
         "PHOTO_PROCESSING_FLEET_TOKEN": "fleet-token",
         "WORKER_POOL_PRIVATE_API_IPV4": "10.0.0.2",
@@ -1113,6 +1109,11 @@ esac
         "PRIVATE_MEDIA_S3_BUCKET": "requested-private-bucket",
         "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "requested-private-access",
         "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "requested-private-secret",
+        "SELFIE_FEEDBACK_S3_BUCKET": "feedback-bucket",
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "feedback-access",
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "feedback-secret",
+        "SELFIE_FEEDBACK_KMS_KEY_ID": "feedback-kms",
+        "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED": "True",
         "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
         "PUBLIC_DOMAIN": "findme-photo.ru",
         "PUBLIC_DOMAIN_ALIAS": "",
@@ -1175,9 +1176,7 @@ def test_web_release_clears_recovery_before_next_installer_and_release(
         WORKER_POOL_RELEASE_MANIFEST="/reviewed.json",
         WORKER_POOL_RELEASE_CHECKSUM="a" * 64,
     )
-    previous_remote = (
-        PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\nPHOTO_PROCESSING_ENABLED=True\n"
-    )
+    previous_remote = PREVIOUS_ENV + b"PHOTO_WORKER_PLACEMENT=remote\n"
     (tmp_path / ".env").write_bytes(previous_remote)
     (tmp_path / "previous-env.expected").write_bytes(previous_remote)
     (tmp_path / "worker-pools-current.json").write_text("{}\n")
@@ -1804,13 +1803,11 @@ def test_missing_processing_prerequisite_prevents_deployment(
 ) -> None:
     """The always-available selfie page cannot deploy without its processor."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env["PHOTO_PROCESSING_ENABLED"] = "False"
+    env["PHOTO_PROCESSING_FLEET_TOKEN"] = ""
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode == 2
-    assert (
-        "Remote deployment requires enabled API, fleet credential and private edge" in result.stderr
-    )
+    assert "Remote deployment requires fleet credential and private edge" in result.stderr
     assert not (tmp_path / "apply.log").exists()
 
 
@@ -2006,69 +2003,13 @@ def test_enabled_commerce_worker_readiness_exhaustion_requires_forward_recovery(
     assert "DEPLOY_RESULT=failure phase=worker-health rollback=failed" in result.stdout
 
 
-def test_missing_face_embedding_prerequisite_preserves_existing_deployment(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """A failed prerequisite check cannot mutate an existing deployment."""
-    previous_env = PREVIOUS_ENV + (
-        b"WORKER_IMAGE=old-worker-image\n"
-        b"PHOTO_PROCESSING_ENABLED=True\n"
-        b"PHOTO_PROCESSING_WORKER_TOKEN=old-worker-token\n"
-        b"PHOTO_WORKER_REPLICAS=2\n"
-    )
-    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env["PHOTO_PROCESSING_FACE_ENABLED"] = "False"
-    (tmp_path / ".env").write_bytes(previous_env)
-    (tmp_path / "previous-env.expected").write_bytes(previous_env)
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode == 2
-    assert (tmp_path / ".env").read_bytes() == previous_env
-    assert not (tmp_path / "apply.log").exists()
-
-
-def test_missing_processing_prerequisite_does_not_reconcile_worker_profile(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    """The validation failure occurs before worker reconciliation."""
-    env = _apply_env(tmp_path, fake_bin, scenario="worker-removal-failure")
-    env["PHOTO_PROCESSING_ENABLED"] = "False"
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode != 0
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-    assert not (tmp_path / "apply.log").exists()
-
-
-def test_selfie_prerequisites_are_required_for_every_deployment(
-    tmp_path: Path, fake_bin: Path
-) -> None:
-    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env["PHOTO_PROCESSING_ENABLED"] = "False"
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode == 2
-    assert (
-        "Remote deployment requires enabled API, fleet credential and private edge" in result.stderr
-    )
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-
-
-def test_preview_first_activation_accepts_and_persists_current_worker_identities(
-    tmp_path: Path, fake_bin: Path
-) -> None:
+def test_deployment_persists_current_worker_identities(tmp_path: Path, fake_bin: Path) -> None:
     """The complete worker contract must reach the deployed environment unchanged."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
-            "PHOTO_PROCESSING_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token-must-not-be-logged",
-            "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
-            "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES": (
                 "1/capture_metadata/2,2/generate_preview/1,"
                 "2/generate_watermarked_preview/1,"
@@ -2081,8 +2022,6 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
 
     assert result.returncode == 0, result.stderr
     deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    assert "PHOTO_PROCESSING_PREVIEW_ENABLED=True" in deployed_env
-    assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
         "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,"
         "2/generate_preview/1,2/generate_watermarked_preview/1,"
@@ -2098,11 +2037,8 @@ def test_deployment_default_worker_identities_are_disjoint_and_complete(
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
-            "PHOTO_PROCESSING_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
-            "PHOTO_PROCESSING_FACE_ENABLED": "True",
         }
     )
     result = _run("deploy/apply-deployment.sh", env=env)
@@ -2129,11 +2065,8 @@ def test_deployment_persists_the_fixed_watermarked_preview_bulk_identity(
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
-            "PHOTO_PROCESSING_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
-            "PHOTO_PROCESSING_FACE_ENABLED": "True",
         }
     )
 
@@ -2164,7 +2097,6 @@ def test_deployment_rejects_worker_identity_lists_the_worker_would_not_accept(
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
-            "PHOTO_PROCESSING_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
             "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES": identities,
@@ -2180,30 +2112,6 @@ def test_deployment_rejects_worker_identity_lists_the_worker_would_not_accept(
 
 
 @pytest.mark.parametrize(
-    ("overrides", "message"),
-    [
-        (
-            {"PHOTO_PROCESSING_PREVIEW_ENABLED": "True"},
-            "Remote deployment requires enabled API, fleet credential and private edge",
-        ),
-    ],
-)
-def test_preview_first_activation_rejects_partial_or_implicit_configuration(
-    tmp_path: Path, fake_bin: Path, overrides: dict[str, str], message: str
-) -> None:
-    """Preview and face work must be a conscious operator activation, not an image side effect."""
-    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    env["PHOTO_PROCESSING_ENABLED"] = "False"
-    env.update(overrides)
-
-    result = _run("deploy/apply-deployment.sh", env=env)
-
-    assert result.returncode == 2
-    assert message in result.stderr
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
-
-
-@pytest.mark.parametrize(
     "missing_identity",
     (
         "1/capture_metadata/2",
@@ -2213,7 +2121,7 @@ def test_preview_first_activation_rejects_partial_or_implicit_configuration(
         "1/bib_recognition/1",
     ),
 )
-def test_preview_activation_requires_every_approved_photo_identity_before_mutation(
+def test_processing_requires_every_approved_photo_identity_before_mutation(
     tmp_path: Path, fake_bin: Path, missing_identity: str
 ) -> None:
     required_identities = (
@@ -2226,11 +2134,8 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
-            "PHOTO_PROCESSING_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
-            "PHOTO_PROCESSING_PREVIEW_ENABLED": "True",
-            "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES": ",".join(
                 identity for identity in required_identities if identity != missing_identity
             ),
@@ -2251,46 +2156,26 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
     ("overrides", "message"),
     [
         (
-            {"PHOTO_PROCESSING_ENABLED": "true"},
-            "Remote deployment requires enabled API, fleet credential and private edge",
-        ),
-        (
-            {"PHOTO_PROCESSING_FACE_ENABLED": "true"},
-            "PHOTO_PROCESSING_FACE_ENABLED must be True or False",
-        ),
-        (
             {"PHOTO_WORKER_BULK_PROCESSOR_TYPES": "capture_metadata"},
-            (
-                "PHOTO_WORKER_BULK_PROCESSOR_TYPES must be bib_recognition,face_embedding,"
-                "capture_metadata,generate_preview,generate_watermarked_preview"
-            ),
+            "PHOTO_WORKER_BULK_PROCESSOR_TYPES must be bib_recognition,face_embedding,"
+            "capture_metadata,generate_preview,generate_watermarked_preview",
         ),
         (
-            {
-                "PHOTO_PROCESSING_ENABLED": "True",
-                "WORKER_IMAGE": "worker-image",
-            },
-            "Remote deployment requires enabled API, fleet credential and private edge",
+            {"PHOTO_PROCESSING_FLEET_TOKEN": ""},
+            "Remote deployment requires fleet credential and private edge",
         ),
     ],
 )
-def test_processing_activation_requires_exact_valid_configuration(
+def test_processing_requires_exact_valid_configuration(
     tmp_path: Path,
     fake_bin: Path,
     overrides: dict[str, str],
     message: str,
 ) -> None:
-    """Invalid activation never changes the live deployment environment."""
+    """Invalid worker configuration never changes the live deployment environment."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
-    if (
-        message == "Remote deployment requires enabled API, fleet credential and private edge"
-        and overrides.get("WORKER_IMAGE")
-    ):
-        env.pop("PHOTO_PROCESSING_FLEET_TOKEN")
     env.update(overrides)
-
     result = _run("deploy/apply-deployment.sh", env=env)
-
     assert result.returncode == 2
     assert message in result.stderr
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
@@ -2372,7 +2257,7 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
 
     assert result.returncode == 0, result.stderr
     assert "gallery-private-media-preflight-skipped:no-eligible-photo\n" in result.stdout
-    assert "Removed upload cleanup schedule.\n" in result.stdout
+    assert "Installed daily upload cleanup using host timezone" in result.stdout
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
         "DEPLOY_IMAGE_PRUNE_RESULT=success",
@@ -2417,9 +2302,7 @@ def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
 
 def _projection_cutover_env(tmp_path: Path, fake_bin: Path, *, scenario: str) -> dict[str, str]:
     env = _apply_env(tmp_path, fake_bin, scenario=scenario)
-    previous_env = PREVIOUS_ENV + (
-        b"PHOTO_PROCESSING_ENABLED=True\nPHOTO_WORKER_REPLICAS=1\nCOMMERCE_WORKER_ENABLED=False\n"
-    )
+    previous_env = PREVIOUS_ENV + (b"PHOTO_WORKER_REPLICAS=1\nCOMMERCE_WORKER_ENABLED=False\n")
     (tmp_path / ".env").write_bytes(previous_env)
     (tmp_path / "previous-env.expected").write_bytes(previous_env)
     return env
@@ -2652,6 +2535,10 @@ def test_failed_first_deployment_after_metadata_markers_restores_no_env_state(
     assert result.returncode != 0
     for name in (".env", "deployed-image"):
         assert not (tmp_path / name).exists()
+    assert (
+        not Path(env["CRONTAB_STATE"]).exists()
+        or "# BEGIN photo-prjct-upload-cleanup" not in Path(env["CRONTAB_STATE"]).read_text()
+    )
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -2665,7 +2552,7 @@ def test_candidate_private_media_preflight_reads_when_photo_exists(
 
     assert result.returncode == 0, result.stderr
     assert "gallery-private-media-preflight-ok\n" in result.stdout
-    assert "Removed upload cleanup schedule.\n" in result.stdout
+    assert "Installed daily upload cleanup using host timezone" in result.stdout
     assert result.stderr == "docker compose up exit status: 0\n"
     commands = _apply_log(tmp_path)
     assert commands.count("preflight-storage-init") == 1
@@ -2692,9 +2579,12 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
     candidate_command = next(
         command
         for command in commands
-        if " run --rm --no-deps -T --entrypoint python web " in command
+        if "manage.py shell --no-imports -c <gallery_media_preflight>" in command
     )
     candidate_run = commands.index(candidate_command)
+    candidate_check = next(
+        index for index, command in enumerate(commands) if "manage.py check" in command
+    )
     assert f"--env-file {tmp_path}/.env.requested." in candidate_command
     assert "manage.py shell --no-imports -c <gallery_media_preflight>" in candidate_command
     stop_nginx = next(index for index, command in enumerate(commands) if " stop nginx" in command)
@@ -2703,7 +2593,7 @@ def test_candidate_private_media_preflight_runs_before_service_switch(
         for index, command in enumerate(commands)
         if " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
     )
-    assert candidate_pull < candidate_run < stop_nginx < candidate_up
+    assert candidate_pull < candidate_check < candidate_run < stop_nginx < candidate_up
 
 
 @pytest.mark.parametrize(
@@ -2741,7 +2631,7 @@ def test_failed_candidate_private_media_preflight_leaves_canonical_env_untouched
     assert "reconcile-certificate" not in commands
     assert not any(" up -d --no-deps web nginx" in command for command in commands)
     assert not any(command.startswith("crontab ") for command in commands)
-    assert commands.count("candidate-requested-env-with-canonical-untouched") == 2
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 3
     _assert_no_env_temporary_files(tmp_path)
 
 
@@ -2974,6 +2864,7 @@ def _trapped_forward_recovery(tmp_path, fake_bin, *, timing, fix_sha):
     original_sha = "a" * 40
     env = _apply_env(tmp_path, fake_bin, scenario=f"processing-schema-{timing}-failure")
     env["APP_IMAGE"] = f"ghcr.io/example/photo-prjct:{original_sha}"
+    env["IMPORT_WORKER_IMAGE"] = f"ghcr.io/example/photo-prjct-import-worker:{original_sha}"
     env["EXPECTED_REQUESTED_IMAGE"] = env["APP_IMAGE"]
     predecessor = tmp_path / ".deployment-previous.original"
     (predecessor / "deploy").mkdir(parents=True)
@@ -3299,7 +3190,7 @@ def test_signal_after_env_promotion_enters_existing_image_only_recovery(
     assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
     assert (tmp_path / "deployed-image").read_bytes() == b"old-image\n"
     commands = _apply_log(tmp_path)
-    assert commands.count("candidate-requested-env-with-canonical-untouched") == 11
+    assert commands.count("candidate-requested-env-with-canonical-untouched") == 12
     assert not any(" stop nginx" in command for command in commands)
     assert "reconcile-certificate" not in commands
     assert sum(" up -d --no-deps web nginx" in command for command in commands) == 1
@@ -3380,25 +3271,23 @@ def test_failed_certificate_renewal_waits_before_next_attempt(
     ]
 
 
-def test_feedback_activation_requires_a_confirmed_storage_preflight_before_mutation(
+def test_feedback_requires_a_confirmed_storage_preflight_before_mutation(
     tmp_path: Path, fake_bin: Path
 ) -> None:
-    """Feedback must remain disabled if the operator has not confirmed its real-bucket probe."""
+    """The deployment cannot start without an operator-confirmed real-bucket probe."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
             "PRIVATE_MEDIA_S3_BUCKET": "private-search",
             "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "private-access",
             "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "private-secret",
-            "SELFIE_FEEDBACK_ENABLED": "True",
             "SELFIE_FEEDBACK_S3_BUCKET": "feedback-private",
             "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "feedback-access",
             "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "feedback-secret",
             "SELFIE_FEEDBACK_KMS_KEY_ID": "kms-feedback-key",
+            "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED": "False",
         }
     )
 
@@ -3410,21 +3299,18 @@ def test_feedback_activation_requires_a_confirmed_storage_preflight_before_mutat
     assert not (tmp_path / "apply.log").exists()
 
 
-def test_confirmed_feedback_activation_persists_web_only_storage_configuration(
+def test_confirmed_feedback_persists_web_only_storage_configuration(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     """The candidate web environment receives the dedicated bucket, KMS key, and no worker copy."""
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         {
-            "PHOTO_PROCESSING_ENABLED": "True",
-            "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "WORKER_IMAGE": "worker-image",
             "PHOTO_PROCESSING_WORKER_TOKEN": "worker-token",
             "PRIVATE_MEDIA_S3_BUCKET": "private-search",
             "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "private-access",
             "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "private-secret",
-            "SELFIE_FEEDBACK_ENABLED": "True",
             "SELFIE_FEEDBACK_S3_BUCKET": "feedback-private",
             "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "feedback-access",
             "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "feedback-secret-must-not-be-logged",
@@ -3437,7 +3323,6 @@ def test_confirmed_feedback_activation_persists_web_only_storage_configuration(
 
     assert result.returncode == 0, result.stderr
     deployed_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "SELFIE_FEEDBACK_ENABLED=True" in deployed_env
     assert "SELFIE_FEEDBACK_S3_BUCKET=feedback-private" in deployed_env
     assert "SELFIE_FEEDBACK_KMS_KEY_ID=kms-feedback-key" in deployed_env
     assert "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED=True" in deployed_env
@@ -3453,7 +3338,6 @@ def test_feedback_workflow_forwards_web_credentials_and_keeps_them_out_of_worker
     workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
     compose = (ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8")
 
-    assert "SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}" in workflow
     assert "SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}" in workflow
     assert "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID" not in workflow
     assert "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY" not in workflow
@@ -4232,9 +4116,7 @@ def test_root_helper_reads_only_the_root_owned_package() -> None:
 def test_observability_verifier_checks_caps_timer_driver_tags_and_probe(
     tmp_path: Path, fake_bin: Path, scenario: str, expected_success: bool
 ) -> None:
-    (tmp_path / ".env").write_text(
-        "APP_IMAGE=test\nPHOTO_PROCESSING_ENABLED=True\n", encoding="utf-8"
-    )
+    (tmp_path / ".env").write_text("APP_IMAGE=test\n", encoding="utf-8")
     (tmp_path / "docker-compose.deployment.yml").write_text("services: {}\n", encoding="utf-8")
     (tmp_path / "docker-compose.https.yml").write_text("services: {}\n", encoding="utf-8")
     (tmp_path / "journal").mkdir()

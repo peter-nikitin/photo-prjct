@@ -2,7 +2,7 @@ from datetime import date
 from typing import cast
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -131,16 +131,6 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(state.status, PhotoProcessingState.Status.NOT_REQUESTED)
         self.assertIsNone(state.current_job)
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=False)
-    def test_face_embedding_request_is_gated_by_feature_flag(self) -> None:
-        photo = self.private_photo("face-disabled")
-        state = request_face_embedding_enqueue(photo)
-
-        self.assertEqual(state.processor_type, FACE_EMBEDDING_PROCESSOR)
-        self.assertEqual(state.status, PhotoProcessingState.Status.NOT_REQUESTED)
-        self.assertIsNone(state.current_job)
-
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_embedding_request_creates_job_with_expected_configuration(self) -> None:
         photo = self.private_photo("face-enabled")
         self.publish_preview(photo)
@@ -158,7 +148,6 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(state.current_job.processor_type, FACE_EMBEDDING_PROCESSOR)
         self.assertEqual(state.current_job.processor_version, 5)
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_reconciliation_creates_missing_states_and_bounded_jobs(self) -> None:
         first = self.private_photo("face-first")
         second = self.private_photo("face-second")
@@ -356,7 +345,6 @@ class CaptureMetadataEnrollmentTests(TestCase):
             ).exists()
         )
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_preview_first_face_enrollment_uses_only_the_published_derivative(self) -> None:
         photo = self.private_photo("preview-face")
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
@@ -451,7 +439,6 @@ class CaptureMetadataEnrollmentTests(TestCase):
             },
         )
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_new_adaface_event_enqueues_v5_from_the_published_preview(self) -> None:
         photo = self.private_photo("adaface-preview")
         derivative = self.publish_preview(photo)

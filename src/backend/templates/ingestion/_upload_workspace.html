@@ -15,7 +15,7 @@
        data-registration-chunk="{{ upload_limits.registration_chunk|default:100 }}"
        data-concurrency="{{ upload_limits.concurrency|default:4 }}"
        data-event-id="{{ event.pk }}">
-    <section class="upload-workspace{% if photo_import_enabled %} upload-workspace--with-import{% endif %}" aria-labelledby="upload-settings-title">
+    <section class="upload-workspace upload-workspace--with-import" aria-labelledby="upload-settings-title">
       <div class="upload-guidance" data-upload-guidance role="status" aria-live="polite" aria-atomic="true">
         <p class="summary-message" data-summary-message>
           {% if upload_state == "complete" %}Все фотографии загружены. Можно закрыть страницу{% elif upload_state == "partial" %}Успешные файлы сохранены. Повторите передачу файлов с ошибкой.{% elif upload_state == "active" %}Держите страницу открытой — идёт загрузка{% else %}Здесь появится общий прогресс.{% endif %}
@@ -56,7 +56,6 @@
               <span>Закрытие или перезагрузка страницы остановит незавершённые передачи. Уже загруженные фотографии сохранятся.</span>
             </p>
           </section>
-          {% if photo_import_enabled %}
           <section class="upload-source-card upload-source-import" data-upload-source-import aria-labelledby="yandex-upload-source-title">
             <div class="upload-source-heading">
               <p class="eyebrow">Яндекс Диск</p>
@@ -65,7 +64,6 @@
             </div>
             {% include "ingestion/_yandex_disk_import_form.html" %}
           </section>
-          {% endif %}
         </div>
       </div>
 

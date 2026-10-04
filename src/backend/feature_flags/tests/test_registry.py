@@ -3,7 +3,6 @@ from dataclasses import FrozenInstanceError
 from django.test import SimpleTestCase
 
 from feature_flags.registry import (
-    BULK_PHOTO_DOWNLOAD,
     EVENT_COVER_CDN_IMAGES,
     FEATURE_DEFINITIONS,
     GALLERY_CDN_IMAGES,
@@ -12,7 +11,7 @@ from feature_flags.registry import (
     PAID_PHOTO_PAYMENT_SIMULATOR,
     PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
-    YANDEX_DISK_IMPORT,
+    SELFIE_SEARCH_CLUSTER_EXPANSION,
     FeatureDefinition,
     validate_feature_definitions,
 )
@@ -54,10 +53,9 @@ class FeatureDefinitionTests(SimpleTestCase):
                 PAID_PHOTO_CART,
                 PAID_PHOTO_PURCHASE,
                 PAID_PHOTO_PAYMENT_SIMULATOR,
-                BULK_PHOTO_DOWNLOAD,
-                YANDEX_DISK_IMPORT,
                 GALLERY_CDN_IMAGES,
                 EVENT_COVER_CDN_IMAGES,
+                SELFIE_SEARCH_CLUSTER_EXPANSION,
             ),
         )
         self.assertEqual(
@@ -74,15 +72,14 @@ class FeatureDefinitionTests(SimpleTestCase):
                     "paid-photo-payment-simulator",
                     "Use the feature-gated test payment screen",
                 ),
-                ("bulk-photo-download", "Allow page-scoped photo archive downloads"),
-                (
-                    "yandex-disk-import",
-                    "Allow server-side photo import from Yandex Disk",
-                ),
                 (
                     "gallery-cdn-images",
                     "Deliver gallery grid images through CDN",
                 ),
                 ("event-cover-cdn-images", "Deliver event catalog covers through CDN"),
+                (
+                    "selfie-search-cluster-expansion",
+                    "Expand selfie search through event face clusters (staff acts as off)",
+                ),
             ),
         )

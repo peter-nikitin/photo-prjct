@@ -5,14 +5,13 @@ from uuid import UUID
 from django.conf import settings
 from django.http import HttpRequest
 from django.urls import reverse
-from feature_flags.registry import YANDEX_DISK_IMPORT
-from feature_flags.services import is_enabled
 
 _URL_BATCH = UUID("00000000-0000-4000-8000-000000000001")
 _URL_ITEM = UUID("00000000-0000-4000-8000-000000000002")
 
 
 def upload_workspace_context(request: HttpRequest) -> dict[str, object]:
+    del request
     return {
         "upload_limits": {
             "max_files": settings.PHOTO_UPLOAD_MAX_FILES,
@@ -24,9 +23,6 @@ def upload_workspace_context(request: HttpRequest) -> dict[str, object]:
         },
         "upload_state": "empty",
         "upload_control_urls": _upload_control_urls(),
-        "photo_import_enabled": settings.PHOTO_IMPORT_ENABLED
-        and is_enabled(YANDEX_DISK_IMPORT, request.user),
-        "photo_import_history_enabled": True,
         "photo_import_urls": _photo_import_urls(),
     }
 

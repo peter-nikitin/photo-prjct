@@ -7,17 +7,12 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.test import TestCase, override_settings
 from django.urls import reverse
-from feature_flags.models import FeatureFlag
-from feature_flags.registry import YANDEX_DISK_IMPORT
 from ingestion.models import ImportBatch
 from picflow.models import Event, EventFolder
 
 
 @override_settings(
-    PHOTO_UPLOAD_ENABLED=True,
-    PHOTO_IMPORT_ENABLED=True,
     PHOTO_IMPORT_WORKER_TOKEN="dedicated-import-token",
-    PHOTO_PROCESSING_ENABLED=True,
     PHOTO_PROCESSING_WORKER_TOKEN="photo-worker-token",
     PHOTO_IMPORT_MAX_JSON_BYTES=1024 * 1024,
 )
@@ -51,13 +46,6 @@ class ImportPermissionTests(TestCase):
             city="Moscow",
         )
         cls.foreign_folder = EventFolder.objects.create(event=cls.other_event, name="Foreign")
-
-    def setUp(self) -> None:
-        FeatureFlag.objects.create(
-            key=YANDEX_DISK_IMPORT.key,
-            description=YANDEX_DISK_IMPORT.description,
-            state=FeatureFlag.State.ON,
-        )
 
     def post_json(self, url: str, data: Mapping[str, object], **extra: object):
         return self.client.post(
@@ -143,35 +131,6 @@ class ImportPermissionTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertFalse(ImportBatch.objects.filter(submission_key="cross-event").exists())
 
-    def test_gate_and_capability_block_mutations_but_not_owned_progress_reads(self) -> None:
-        batch = self.create_as_owner()
-        flag = FeatureFlag.objects.get(key=YANDEX_DISK_IMPORT.key)
-        flag.state = FeatureFlag.State.OFF
-        flag.save(update_fields=["state"])
-
-        gate_blocked = self.post_json(
-            reverse("import_collection"),
-            {
-                "contract_version": 1,
-                "event_id": self.event.pk,
-                "folder_id": None,
-                "source_url": "https://disk.yandex.ru/d/other-key",
-                "submission_key": "gate-blocked",
-            },
-        )
-        read_with_gate_off = self.client.get(reverse("import_detail", args=[batch.pk]))
-        with override_settings(PHOTO_IMPORT_ENABLED=False):
-            capability_blocked = self.post_json(
-                reverse("import_retry", args=[batch.pk]), {"contract_version": 1}
-            )
-            read_with_capability_off = self.client.get(reverse("import_detail", args=[batch.pk]))
-
-        self.assertEqual(gate_blocked.status_code, 409)
-        self.assertEqual(gate_blocked.json()["error"]["code"], "feature_paused")
-        self.assertEqual(capability_blocked.status_code, 404)
-        self.assertEqual(read_with_gate_off.status_code, 200)
-        self.assertEqual(read_with_capability_off.status_code, 200)
-
     def test_worker_requires_only_dedicated_token_and_handles_malformed_headers(self) -> None:
         url = reverse("import_worker_claim")
         body = {"contract_version": 1, "lease_seconds": 120}
@@ -191,15 +150,12 @@ class ImportPermissionTests(TestCase):
             )
         self.assertEqual(accepted.status_code, 200)
 
-    def test_disabled_or_unconfigured_worker_capability_fails_closed(self) -> None:
+    def test_unconfigured_worker_token_fails_closed(self) -> None:
         url = reverse("import_worker_claim")
         body = {"contract_version": 1, "lease_seconds": 120}
-        with override_settings(PHOTO_IMPORT_ENABLED=False):
-            disabled = self.post_json(url, body, HTTP_AUTHORIZATION="Bearer dedicated-import-token")
         with override_settings(PHOTO_IMPORT_WORKER_TOKEN=""):
             unconfigured = self.post_json(
                 url, body, HTTP_AUTHORIZATION="Bearer dedicated-import-token"
             )
 
-        self.assertEqual(disabled.status_code, 401)
         self.assertEqual(unconfigured.status_code, 401)

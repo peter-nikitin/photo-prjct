@@ -13,7 +13,6 @@ django.setup()
 
 def seed():
     from django.contrib.auth import get_user_model
-    from feature_flags.models import FeatureFlag
     from ingestion.models import ImportBatch
     from picflow.models import Event
 
@@ -25,7 +24,6 @@ def seed():
         start_date="2026-09-07",
         end_date="2026-09-07",
     )
-    FeatureFlag.objects.filter(key="yandex-disk-import").update(state="on")
     # Equivalent durable result of an owned browser submission; browser/API flow is
     # separately exercised by test_import_flow. No external source is authorized here.
     ImportBatch.objects.create(

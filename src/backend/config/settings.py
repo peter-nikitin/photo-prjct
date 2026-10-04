@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -9,17 +8,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env()
 environ.Env.read_env(BASE_DIR / ".env")
-
-
-def _exact_environment_boolean(name: str, *, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    if value == "True":
-        return True
-    if value == "False":
-        return False
-    raise ImproperlyConfigured(f"{name} must be True or False")
 
 
 DATABASES = {
@@ -150,7 +138,6 @@ TBANK_RECEIPT_CLOSING_REQUIRED = (
     False if env("TBANK_RECEIPT_CLOSING_REQUIRED", default="") == "False" else None
 )
 
-PHOTO_UPLOAD_ENABLED = env.bool("PHOTO_UPLOAD_ENABLED", default=False)
 PHOTO_UPLOAD_MAX_FILES = env.int("PHOTO_UPLOAD_MAX_FILES", default=10_000)
 PHOTO_UPLOAD_MAX_FILE_BYTES = env.int("PHOTO_UPLOAD_MAX_FILE_BYTES", default=50 * 1024 * 1024)
 PHOTO_UPLOAD_REGISTRATION_CHUNK = env.int("PHOTO_UPLOAD_REGISTRATION_CHUNK", default=100)
@@ -158,20 +145,15 @@ PHOTO_UPLOAD_CONCURRENCY = env.int("PHOTO_UPLOAD_CONCURRENCY", default=4)
 PHOTO_UPLOAD_GRANT_TTL_SECONDS = env.int("PHOTO_UPLOAD_GRANT_TTL_SECONDS", default=600)
 PHOTO_UPLOAD_STALE_AFTER_SECONDS = env.int("PHOTO_UPLOAD_STALE_AFTER_SECONDS", default=86_400)
 
-# The import worker is an independent capability with its own bearer credential.  Both remain
-# disabled unless explicitly configured; the browser release gate is checked separately.
-PHOTO_IMPORT_ENABLED = _exact_environment_boolean("PHOTO_IMPORT_ENABLED")
+# Import is a permanent capability. Its private worker API requires an independent
+# environment-provided bearer credential.
 PHOTO_IMPORT_WORKER_TOKEN = env("PHOTO_IMPORT_WORKER_TOKEN", default="")
 PHOTO_IMPORT_MAX_JSON_BYTES = env.int("PHOTO_IMPORT_MAX_JSON_BYTES", default=1024 * 1024)
 if not 256 <= PHOTO_IMPORT_MAX_JSON_BYTES <= 1024 * 1024:
     raise ImproperlyConfigured("PHOTO_IMPORT_MAX_JSON_BYTES must be between 256 and 1048576")
 
-# Disabled by default: the private worker API also denies every request unless its separate
-# environment-provided bearer token is present.  This token is never shared with Django, users,
-# or object storage and must never be logged or persisted.
-PHOTO_PROCESSING_ENABLED = _exact_environment_boolean("PHOTO_PROCESSING_ENABLED")
-PHOTO_PROCESSING_FACE_ENABLED = _exact_environment_boolean("PHOTO_PROCESSING_FACE_ENABLED")
-PHOTO_PROCESSING_PREVIEW_ENABLED = _exact_environment_boolean("PHOTO_PROCESSING_PREVIEW_ENABLED")
+# Processing is a permanent capability. Its private worker API requires an independent
+# environment-provided bearer credential that must never be logged or persisted.
 PHOTO_PROCESSING_WORKER_TOKEN = env("PHOTO_PROCESSING_WORKER_TOKEN", default="")
 PHOTO_PROCESSING_FLEET_TOKEN = env("PHOTO_PROCESSING_FLEET_TOKEN", default="")
 # Infrastructure admission only: does not enroll or expose any product feature.
@@ -186,9 +168,6 @@ PHOTO_PROCESSING_MAX_REQUEST_BYTES = env.int(
     "PHOTO_PROCESSING_MAX_REQUEST_BYTES", default=384 * 1024
 )
 
-SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED = _exact_environment_boolean(
-    "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED"
-)
 SELFIE_SEARCH_MAX_UPLOAD_BYTES = env.int("SELFIE_SEARCH_MAX_UPLOAD_BYTES", default=20 * 1024 * 1024)
 SELFIE_SEARCH_MAX_PIXELS = env.int("SELFIE_SEARCH_MAX_PIXELS", default=25_000_000)
 SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS = env.int("SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS", default=120)
@@ -209,51 +188,18 @@ if (
 ):
     raise ImproperlyConfigured("Selfie-search settings do not match the approved contract")
 
-SELFIE_FEEDBACK_ENABLED = _exact_environment_boolean("SELFIE_FEEDBACK_ENABLED")
-if SELFIE_FEEDBACK_ENABLED:
-    SELFIE_FEEDBACK_S3_BUCKET = env("SELFIE_FEEDBACK_S3_BUCKET", default="")
-    SELFIE_FEEDBACK_S3_ACCESS_KEY_ID = env("SELFIE_FEEDBACK_S3_ACCESS_KEY_ID", default="")
-    SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY = env("SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY", default="")
-    SELFIE_FEEDBACK_S3_ENDPOINT_URL = env(
-        "SELFIE_FEEDBACK_S3_ENDPOINT_URL", default="https://storage.yandexcloud.net"
-    )
-    SELFIE_FEEDBACK_S3_REGION = env("SELFIE_FEEDBACK_S3_REGION", default="ru-central1")
-    SELFIE_FEEDBACK_KMS_KEY_ID = env("SELFIE_FEEDBACK_KMS_KEY_ID", default="")
-    SELFIE_FEEDBACK_MAX_UPLOAD_BYTES = env.int(
-        "SELFIE_FEEDBACK_MAX_UPLOAD_BYTES", default=20 * 1024 * 1024
-    )
-    SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS = env.int(
-        "SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS", default=60
-    )
-    required_values = {
-        "SELFIE_FEEDBACK_S3_BUCKET": SELFIE_FEEDBACK_S3_BUCKET,
-        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": SELFIE_FEEDBACK_S3_ACCESS_KEY_ID,
-        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY,
-        "SELFIE_FEEDBACK_KMS_KEY_ID": SELFIE_FEEDBACK_KMS_KEY_ID,
-    }
-    if not all(isinstance(value, str) and value.strip() for value in required_values.values()):
-        raise ImproperlyConfigured(
-            "Selfie-feedback requires dedicated bucket credentials and KMS key"
-        )
-    if SELFIE_FEEDBACK_S3_BUCKET == PRIVATE_MEDIA_S3_BUCKET:
-        raise ImproperlyConfigured("Selfie-feedback bucket must be separate from private media")
-    if (
-        SELFIE_FEEDBACK_MAX_UPLOAD_BYTES != 20 * 1024 * 1024
-        or SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS != 60
-        or SELFIE_FEEDBACK_S3_ENDPOINT_URL != "https://storage.yandexcloud.net"
-        or SELFIE_FEEDBACK_S3_REGION != "ru-central1"
-    ):
-        raise ImproperlyConfigured("Selfie-feedback settings do not match the approved contract")
-else:
-    SELFIE_FEEDBACK_S3_BUCKET = ""
-    SELFIE_FEEDBACK_S3_ACCESS_KEY_ID = ""
-    SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY = ""
-    SELFIE_FEEDBACK_S3_ENDPOINT_URL = "https://storage.yandexcloud.net"
-    SELFIE_FEEDBACK_S3_REGION = "ru-central1"
-    SELFIE_FEEDBACK_KMS_KEY_ID = ""
-    SELFIE_FEEDBACK_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
-    SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS = 60
-
+SELFIE_FEEDBACK_S3_BUCKET = env("SELFIE_FEEDBACK_S3_BUCKET", default="")
+SELFIE_FEEDBACK_S3_ACCESS_KEY_ID = env("SELFIE_FEEDBACK_S3_ACCESS_KEY_ID", default="")
+SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY = env("SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY", default="")
+SELFIE_FEEDBACK_S3_ENDPOINT_URL = env(
+    "SELFIE_FEEDBACK_S3_ENDPOINT_URL", default="https://storage.yandexcloud.net"
+)
+SELFIE_FEEDBACK_S3_REGION = env("SELFIE_FEEDBACK_S3_REGION", default="ru-central1")
+SELFIE_FEEDBACK_KMS_KEY_ID = env("SELFIE_FEEDBACK_KMS_KEY_ID", default="")
+SELFIE_FEEDBACK_MAX_UPLOAD_BYTES = env.int(
+    "SELFIE_FEEDBACK_MAX_UPLOAD_BYTES", default=20 * 1024 * 1024
+)
+SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS = env.int("SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS", default=60)
 LOGIN_URL = "photographer_login"
 
 LOGGING = {

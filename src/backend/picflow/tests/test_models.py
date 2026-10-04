@@ -505,7 +505,6 @@ class PhotoModelTests(TestCase):
             ["AlterField", "AlterField", "RemoveConstraint", "AddConstraint"],
         )
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_free_photo_policy_stays_preview_first_when_paid_gate_is_enabled(self) -> None:
         from picflow.photo_policy import policy_for_new_photo
 
@@ -515,7 +514,6 @@ class PhotoModelTests(TestCase):
                 ("preview_first_v1", "preview_required"),
             )
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_paid_photo_policy_stays_preview_first_when_gate_is_missing_or_off(self) -> None:
         from picflow.photo_policy import policy_for_new_photo
 
@@ -534,7 +532,6 @@ class PhotoModelTests(TestCase):
                 ("preview_first_v1", "preview_required"),
             )
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_enabled_paid_caller_receives_the_watermarked_policy(self) -> None:
         from picflow.photo_policy import policy_for_new_photo
 

@@ -1,27 +1,27 @@
 # Локальная ручная проверка preview-first photo-processing worker
 
-Эта инструкция проверяет сквозной путь с настоящими private Object Storage: браузер загружает JPEG через штатную страницу фотографа, Django подтверждает его и ставит `generate_preview`, отдельный worker получает временную GET-ссылку, создаёт нормализованный preview JPEG и загружает его только в attempt-scoped temporary object. Django сам проверяет и публикует derivative, после чего ставит preview-backed `face_embedding` 2/3 с SCRFD. Она не включает worker на canonical deployment. Перед решением о реальной VM используйте отдельную [оценку конфигурации VM](photo-processing-vm-sizing.md): эта ручная проверка собирает для неё нужные измерения, но сама не разрешает resize или включение worker.
+Эта инструкция проверяет сквозной путь с настоящими private Object Storage: браузер загружает JPEG через штатную страницу фотографа, Django подтверждает его и ставит `generate_preview`, отдельный worker получает временную GET-ссылку, создаёт нормализованный preview JPEG и загружает его только в attempt-scoped temporary object. Django сам проверяет и публикует derivative, после чего ставит preview-backed `face_embedding` 2/3 с SCRFD. Проверка работает в локальном Compose-профиле и не меняет canonical deployment. Перед решением о размере реальной VM используйте отдельную [оценку конфигурации VM](photo-processing-vm-sizing.md): эта ручная проверка собирает для неё нужные измерения, но сама не разрешает resize.
 
 После создания `.env` по инструкции ниже запустите быстрый автоматизированный preflight перед
 ручной проверкой:
 
 ```bash
-cd /Users/petrnikitin/Documents/Projects/photo-prjct/.worktrees/event-photo-processing-worker
+cd /path/to/photo-prjct-checkout
 docker compose up -d db
 set -a; source .env; set +a
-DB_HOST=127.0.0.1 DB_PORT=5432 ../../.venv/bin/pytest -q tests/processing/test_pipeline_e2e.py
+DB_HOST=127.0.0.1 DB_PORT=5432 .venv/bin/pytest -q tests/processing/test_pipeline_e2e.py
 ```
 
 Этот тест использует настоящий Django API и worker, но подменяет скачивание exact-object JPEG. Это детерминированная проверка контракта, **не** ручная проверка настоящего S3/Object Storage.
 
-## Блокер активации: lifecycle для temporary preview objects
+## Проверка lifecycle для temporary preview objects
 
-До включения `PHOTO_PROCESSING_PREVIEW_ENABLED` на canonical deployment оператор обязан настроить правило
+Для canonical deployment оператор обязан проверить правило
 удаления только для временных preview-объектов. Целевое правило имеет ID
 `expire-preview-staging-after-7-days`, prefix `processing-pending/previews/` и expiration
 `days: "7"`. Оно не должно затрагивать опубликованные derivatives
-(`derivatives/previews/`) или оригиналы. Пока это правило не применено и не проверено, activation
-preview worker **заблокирована**.
+(`derivatives/previews/`) или оригиналы. При отсутствии правила остановите затронутый worker и
+не принимайте новый deployment до исправления storage contract.
 
 `staging` в literal rule ID и временных путях — техническое имя объекта, не имя deployment
 environment. `hires-staging` ниже — retained legacy bucket name; routine deployment commands всё
@@ -71,7 +71,8 @@ jq -e 'has("lifecycleRules") and (.lifecycleRules | type == "array")' \
 ```
 
 Если discovery не возвращает current state или эта проверка не проходит, остановитесь: lifecycle
-activation остаётся blocked, а worker не включается.
+mutation остаётся blocked. При несовместимом текущем правиле остановите затронутый worker до
+проверки storage contract.
 
 ### Подготовка изменения и approval gate
 
@@ -166,7 +167,7 @@ cmp -s /private/tmp/hires-staging-lifecycle-before-20260730.json \
 ```
 
 Перед объявлением gate passed сравните все non-target lifecycle rules с сохранённым `before`
-snapshot. Если validation не проходит, не включайте preview processing. Rollback тоже заменяет
+snapshot. Если validation не проходит, остановите затронутый worker. Rollback тоже заменяет
 lifecycle configuration и требует нового явного approval непосредственно перед ним. После такого
 approval восстановите сохранённый точный rule set, затем перечитайте и сравните его:
 
@@ -185,8 +186,8 @@ cmp -s /private/tmp/hires-staging-lifecycle-before-20260730.json \
 
 Успешный rollback восстанавливает только configuration; он не возвращает staging objects, уже
 удалённые семидневным правилом. При разрешённом `VERSIONING_DISABLED` data impact lifecycle rule
-ограничен staging preview objects старше семи дней. При любом другом или unknown status activation
-остаётся blocked до отдельного reviewed решения о noncurrent cleanup.
+ограничен staging preview objects старше семи дней. При любом другом или unknown status lifecycle
+mutation остаётся blocked до отдельного reviewed решения о noncurrent cleanup.
 
 ## Перед началом
 
@@ -213,14 +214,14 @@ docker compose exec web python -c 'from PIL import Image; from pathlib import Pa
 ```dotenv
 DEBUG=True
 ALLOWED_HOSTS=localhost,127.0.0.1,web
-PHOTO_UPLOAD_ENABLED=True
 PRIVATE_MEDIA_S3_BUCKET=<real-private-bucket>
 PRIVATE_MEDIA_S3_ACCESS_KEY_ID=<real-access-key>
 PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=<real-secret>
 PRIVATE_MEDIA_ALLOWED_ORIGINS=http://localhost:8000
-PHOTO_PROCESSING_ENABLED=True
-PHOTO_PROCESSING_PREVIEW_ENABLED=True
-PHOTO_PROCESSING_FACE_ENABLED=True
+SELFIE_FEEDBACK_S3_BUCKET=test-feedback-media
+SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=test-feedback-access
+SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY=test-feedback-secret
+SELFIE_FEEDBACK_KMS_KEY_ID=test-feedback-kms
 PHOTO_PROCESSING_WORKER_TOKEN=<new-random-shared-token>
 PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=120
 PHOTO_WORKER_BUILD=capture-metadata-v1
@@ -231,11 +232,17 @@ PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=1/selfie_query/2
 PHOTO_WORKER_SELFIE_PROCESSOR_TYPES=selfie_query
 ```
 
+The four feedback values are local test-only placeholders for this photo-processing check. They
+must identify a bucket separate from `PRIVATE_MEDIA_S3_BUCKET`; they do not permit a feedback
+storage operation. A real feedback submission or canonical deployment requires dedicated real
+credentials, KMS key, and storage preflight. Keep the approved feedback endpoint, region, upload
+limit, and download TTL defaults from settings.
+
 Start with `test -f .env || cp .env.example .env`, then edit it. Generate the worker token locally
 and paste it into `.env`; do not use the placeholder, commit it, or echo it again after saving:
 
 ```bash
-../../.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
+.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
 Keep the default `DB_*` values for Compose. `PRIVATE_MEDIA_*` values belong only to `web`; `worker-bulk` and `worker-selfie` receive the narrow worker environment, including their disjoint identities/types and role timeouts. `PHOTO_WORKER_REPLICAS` counts bulk replicas; canonical deployment also runs one separate selfie worker.
@@ -475,15 +482,17 @@ docker compose --profile worker stop worker-bulk worker-selfie
 docker compose down
 ```
 
-For a local functional rollback, set `PHOTO_PROCESSING_ENABLED=False` in the ignored `.env` and start only `db web` again. Do not use `docker compose down -v` unless deleting the local database and all evidence is intentional.
+For a local functional rollback, stop the affected worker and start only `db web` while preserving
+the local database. For an application failure, use the prior successful image. Do not use
+`docker compose down -v` unless deleting the local database and all evidence is intentional.
 
 ## Troubleshooting
 
 | Symptom | Check and action |
 | --- | --- |
-| Upload page is 404 or access is denied | Confirm `PHOTO_UPLOAD_ENABLED=True`; log in as a superuser or add the user to `Photographer`. |
+| Upload page is 404 or access is denied | Log in as a superuser or grant `ingestion.upload_photos` through the `Photographer` group; verify event and batch ownership. |
 | Browser upload fails before confirmation | `PRIVATE_MEDIA_ALLOWED_ORIGINS` and the bucket CORS rule must be exactly `http://localhost:8000`; confirm real private bucket credentials and retry the page flow. |
-| Worker logs `worker_unauthorized` | Confirm `PHOTO_PROCESSING_ENABLED=True` and a nonempty random `PHOTO_PROCESSING_WORKER_TOKEN` in the same root `.env`; recreate `web`, `worker-bulk`, and `worker-selfie` with `docker compose --profile worker up -d --force-recreate web worker-bulk worker-selfie`. Never print either token. |
+| Worker logs `worker_unauthorized` | Confirm a nonempty random `PHOTO_PROCESSING_WORKER_TOKEN` is projected consistently to web and the worker; recreate `web`, `worker-bulk`, and `worker-selfie` with `docker compose --profile worker up -d --force-recreate web worker-bulk worker-selfie`. Never print the token. |
 | Worker logs `storage_unavailable` | The object was already confirmed, so first inspect web logs and the private bucket credentials/end point. Django, not worker, signs the GET; verify the final object still exists and that the service account can sign a GET for it. |
 | `Invalid HTTP_HOST header` | Include `localhost,127.0.0.1,web` in `ALLOWED_HOSTS`, then recreate `web`. |
 | A worker stops during a real job | After its 120-second lease expires, start a worker again. Its next `claim` recovers the expired attempt; the state becomes `retry_wait` for the configured 30–35 second backoff and is then claimed again, up to three total attempts. Query the state/attempt commands above rather than inferring recovery from logs. |

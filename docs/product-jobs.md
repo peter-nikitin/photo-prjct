@@ -42,7 +42,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-010 | Customer | Purchase selected photos | In progress | 2026-08-22 |
 | PJ-011 | Customer | Download purchased photos | In progress | 2026-08-22 |
 | PJ-012 | Visitor | Jump to a known gallery page | Delivered | 2026-08-21 |
-| PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
+| PJ-013 | Customer | Report selfie-search quality | In progress | 2026-09-25 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
 | PJ-015 | Customer | Filter an event gallery by capture time | Delivered | 2026-08-21 |
 | PJ-016 | Customer | Select paid event photos | In progress | 2026-08-22 |
@@ -201,12 +201,13 @@ search within that event, so I can review probable matches.
   counts and matched results instead of one candidate row per eligible face; legacy frozen-candidate
   searches remain readable. Task 8 adds the accepted ADR 0025 path: immutable event-scoped face
   cluster corpora, strict-anchor direct-first expansion, immutable source provenance, and
-  source-separated aggregate reporting. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains
-  the repository default; no corpus, canonical-deployment, or customer activation and no measured recall or
-  precision outcome is claimed. The complete release gate is still pending independent whole-branch
-  review.
+  source-separated aggregate reporting. The `selfie-search-cluster-expansion` database flag is
+  created `off` by `sync_feature_flags`; `staff` also leaves searches direct-only. No corpus,
+  canonical-deployment, or customer activation and no measured recall or precision outcome is
+  claimed. The release gate still needs independent whole-branch review.
   This is dated former-topology evidence for the existing selfie-upload path only; the current
-  activation boundary is the canonical deployment and its feature gate.
+  release still needs canonical deployment and customer-path verification. The separate cluster
+  expansion control remains disabled by default.
 
   The [pgvector migration plan](plans/2026-09-27-pgvector-exact-face-search.md) adds native exact
   SQL ranking behind a separate `off` / `staff` / `on` reader gate for both query sources.
@@ -315,13 +316,16 @@ future feedback prompts in my browser.
   [selfie-search quality feedback specification](superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md),
   [implementation plan](plans/2026-08-04-selfie-search-quality-feedback.md), and
   [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md) define the accepted boundary.
-  `SELFIE_FEEDBACK_ENABLED=False` remains the default; no canonical-deployment activation or
-  real customer-outcome evidence is claimed. The face-cluster increment also provides the
+  Terminal eligible results now expose feedback without an availability switch; consent, label
+  membership, dedicated private storage, and audited staff access remain in force. The approved
+  browser-wide opt-out is not implemented, and personal-data-policy reconciliation remains open.
+  This pending implementation has no new canonical-deployment or real customer-outcome evidence.
+  The face-cluster increment also provides the
   aggregate-only `report_face_cluster_expansion` command, which derives direct-primary,
   cluster-primary, dual-evidence, and labelled-sample feedback metrics from immutable server-side
   provenance without accepting a customer-supplied source field. This is implementation evidence,
   not evidence that customers have used the expanded path.
-- Last updated: 2026-08-05
+- Last updated: 2026-09-25
 
 ### PJ-014 — Customer — Return to saved selfie-search results
 

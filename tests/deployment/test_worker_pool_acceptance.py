@@ -264,8 +264,6 @@ def terminal(claim, result):
 
 def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_proxy, settings):
     settings.ALLOWED_HOSTS = ["findme-photo.ru", "localhost", "testserver"]
-    settings.PHOTO_PROCESSING_ENABLED = True
-    settings.PHOTO_PROCESSING_FACE_ENABLED = True
     settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "fixture-local-only"
     settings.PHOTO_PROCESSING_FLEET_TOKEN = "fixture-fleet-only"

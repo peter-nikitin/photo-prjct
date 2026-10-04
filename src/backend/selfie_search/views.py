@@ -11,7 +11,6 @@ from commerce.views import (
 )
 from config.views import _paid_watermarked_previews_enabled, _public_media_resolver
 from django import forms
-from django.conf import settings
 from django.core.paginator import InvalidPage
 from django.http import (
     HttpResponse,
@@ -23,8 +22,6 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET, require_POST
-from feature_flags import services as feature_flag_services
-from feature_flags.registry import BULK_PHOTO_DOWNLOAD
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError, StorageUnavailable
 from picflow.access import mark_event_staff_preview
 from picflow.archive import (
@@ -113,10 +110,8 @@ def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id): 
 def submit(request, event_slug: str):
     started_at = monotonic()
     event = get_object_or_404(Event.objects.site_visible_to(request.user), slug=event_slug)
-    feedback_correlation = (
-        _validated_feedback_correlation(request.POST.get("feedback_correlation", ""))
-        if settings.SELFIE_FEEDBACK_ENABLED
-        else ""
+    feedback_correlation = _validated_feedback_correlation(
+        request.POST.get("feedback_correlation", "")
     )
     form = SelfieSearchUploadForm(files=request.FILES)
     if not form.is_valid():
@@ -265,16 +260,10 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     )
     feedback_context = None
     feedback_submitted = False
-    feedback_correlation = (
-        _validated_feedback_correlation(request.GET.get("feedback_correlation", ""))
-        if settings.SELFIE_FEEDBACK_ENABLED
-        else ""
+    feedback_correlation = _validated_feedback_correlation(
+        request.GET.get("feedback_correlation", "")
     )
-    if (
-        settings.SELFIE_FEEDBACK_ENABLED
-        and not is_gallery_origin
-        and search.status in _TERMINAL_SEARCH_STATUSES
-    ):
+    if not is_gallery_origin and search.status in _TERMINAL_SEARCH_STATUSES:
         feedback_submitted = SelfieSearchFeedback.objects.filter(search=search).exists()
         if not feedback_submitted:
             try:
@@ -293,7 +282,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
                         kwargs={"event_slug": search.event.slug, "public_token": public_token},
                     ),
                 }
-    archive_action = _result_archive_action(request=request, search=search, page=selfie_search_page)
+    archive_action = _result_archive_action(search=search, page=selfie_search_page)
     response = render(
         request,
         "selfie_search/result.html",
@@ -314,9 +303,6 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "gallery_result_items": gallery_result_items,
             "feedback": feedback_context,
             "feedback_submitted": feedback_submitted,
-            "selfie_feedback_enabled": bool(
-                settings.SELFIE_FEEDBACK_ENABLED and not is_gallery_origin
-            ),
             "is_gallery_origin": is_gallery_origin,
             "selfie_feedback_correlation": feedback_correlation,
             "selfie_search_page": selfie_search_page,
@@ -369,8 +355,6 @@ def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # 
 
 @require_POST
 def feedback(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
-    if not settings.SELFIE_FEEDBACK_ENABLED:
-        return _not_found_response()
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None or search.configuration.get("processor") == "gallery_photo_query":
         return _not_found_response()
@@ -448,8 +432,6 @@ def result_download(request, event_slug: str, public_token: str, photo_id: str) 
 
 @require_GET
 def result_archive(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
-    if not feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user):
-        return _not_found_response()
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None or search.event.access_type != Event.AccessType.FREE:
         return _not_found_response()
@@ -492,12 +474,8 @@ def _event_page(request, event_slug: str, form: SelfieSearchUploadForm, *, statu
     return response
 
 
-def _result_archive_action(*, request, search: SelfieSearch, page):
-    if (
-        page is None
-        or search.event.access_type != Event.AccessType.FREE
-        or not feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user)
-    ):
+def _result_archive_action(*, search: SelfieSearch, page):
+    if page is None or search.event.access_type != Event.AccessType.FREE:
         return None
     return archive_page_action(
         item_count=len(page.object_list),

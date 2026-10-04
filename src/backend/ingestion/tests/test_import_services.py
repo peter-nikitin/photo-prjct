@@ -3,9 +3,6 @@ from datetime import date, timedelta
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.test import TestCase
-from feature_flags.registry import YANDEX_DISK_IMPORT
-from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
-from feature_flags.testing import override_feature_flags
 from ingestion.models import ImportAttempt, ImportBatch, ImportItem
 from ingestion.services.imports import (
     ImportConflict,
@@ -36,18 +33,16 @@ class ImportServiceTests(TestCase):
             city="Moscow",
         )
         self.folder = EventFolder.objects.create(event=self.event, name="Start")
-        self.flags = {YANDEX_DISK_IMPORT: FEATURE_FLAG_ON}
 
     def create_and_claim_manifest(self, *, submission_key: str = "submission"):
-        with override_feature_flags(self.flags):
-            created = create_import(
-                actor=self.owner,
-                event=self.event,
-                folder=self.folder,
-                submitted_source_key="submitted-public-key",
-                submission_key=submission_key,
-            )
-            claimed = claim_import_work(lease_seconds=60)
+        created = create_import(
+            actor=self.owner,
+            event=self.event,
+            folder=self.folder,
+            submitted_source_key="submitted-public-key",
+            submission_key=submission_key,
+        )
+        claimed = claim_import_work(lease_seconds=60)
         self.assertEqual(claimed.kind, "manifest")
         assert claimed.attempt_id is not None
         assert claimed.lease_expires_at is not None
@@ -55,40 +50,41 @@ class ImportServiceTests(TestCase):
 
     def finish_with_entries(self, entries: tuple[ManifestEntry, ...]):
         created, claimed = self.create_and_claim_manifest()
-        with override_feature_flags(self.flags):
-            record_manifest_page(
-                batch_id=created.id,
-                attempt_id=claimed.attempt_id,
-                page_number=0,
-                page_fingerprint="page-zero",
-                entries=entries,
-            )
-            result = finish_manifest(
-                batch_id=created.id,
-                attempt_id=claimed.attempt_id,
-                canonical_source_key="canonical-public-folder",
-            )
+        record_manifest_page(
+            batch_id=created.id,
+            attempt_id=claimed.attempt_id,
+            page_number=0,
+            page_fingerprint="page-zero",
+            entries=entries,
+        )
+        result = finish_manifest(
+            batch_id=created.id,
+            attempt_id=claimed.attempt_id,
+            canonical_source_key="canonical-public-folder",
+        )
         return created, result
 
-    def test_create_is_idempotent_and_gate_and_permission_are_current(self) -> None:
-        with override_feature_flags(self.flags):
-            first = create_import(
-                actor=self.owner,
-                event=self.event,
-                folder=self.folder,
-                submitted_source_key="submitted-public-key",
-                submission_key="stable-request",
-            )
-            second = create_import(
-                actor=self.owner,
-                event=self.event,
-                folder=self.folder,
-                submitted_source_key="submitted-public-key",
-                submission_key="stable-request",
-            )
+    def test_create_is_idempotent_and_permission_is_current(self) -> None:
+        first = create_import(
+            actor=self.owner,
+            event=self.event,
+            folder=self.folder,
+            submitted_source_key="submitted-public-key",
+            submission_key="stable-request",
+        )
+        second = create_import(
+            actor=self.owner,
+            event=self.event,
+            folder=self.folder,
+            submitted_source_key="submitted-public-key",
+            submission_key="stable-request",
+        )
         self.assertEqual(first.id, second.id)
-        self.flags[YANDEX_DISK_IMPORT] = FEATURE_FLAG_OFF
-        with override_feature_flags(self.flags), self.assertRaises(ImportConflict) as raised:
+        permission = Permission.objects.get(
+            content_type__app_label="ingestion", codename="upload_photos"
+        )
+        self.owner.user_permissions.remove(permission)
+        with self.assertRaises(ImportConflict) as raised:
             create_import(
                 actor=self.owner,
                 event=self.event,
@@ -96,7 +92,7 @@ class ImportServiceTests(TestCase):
                 submitted_source_key="other",
                 submission_key="blocked-request",
             )
-        self.assertEqual(raised.exception.code, "feature_paused")
+        self.assertEqual(raised.exception.code, "permission_denied")
 
     def test_manifest_pages_are_replay_safe_and_finish_before_file_claims(self) -> None:
         created, claimed = self.create_and_claim_manifest()
@@ -113,32 +109,31 @@ class ImportServiceTests(TestCase):
             ManifestEntry(path="/subfolder", name="subfolder", kind="directory"),
             ManifestEntry(path="/notes.txt", name="notes.txt", kind="unsupported", size=12),
         )
-        with override_feature_flags(self.flags):
-            first = record_manifest_page(
-                batch_id=created.id,
-                attempt_id=claimed.attempt_id,
-                page_number=0,
-                page_fingerprint="same-page",
-                entries=entries,
-            )
-            replay = record_manifest_page(
-                batch_id=created.id,
-                attempt_id=claimed.attempt_id,
-                page_number=0,
-                page_fingerprint="same-page",
-                entries=entries,
-            )
-            completed = finish_manifest(
-                batch_id=created.id,
-                attempt_id=claimed.attempt_id,
-                canonical_source_key="canonical-public-folder",
-            )
-            completed_replay = finish_manifest(
-                batch_id=created.id,
-                attempt_id=claimed.attempt_id,
-                canonical_source_key="canonical-public-folder",
-            )
-            file_claim = claim_import_work(lease_seconds=60)
+        first = record_manifest_page(
+            batch_id=created.id,
+            attempt_id=claimed.attempt_id,
+            page_number=0,
+            page_fingerprint="same-page",
+            entries=entries,
+        )
+        replay = record_manifest_page(
+            batch_id=created.id,
+            attempt_id=claimed.attempt_id,
+            page_number=0,
+            page_fingerprint="same-page",
+            entries=entries,
+        )
+        completed = finish_manifest(
+            batch_id=created.id,
+            attempt_id=claimed.attempt_id,
+            canonical_source_key="canonical-public-folder",
+        )
+        completed_replay = finish_manifest(
+            batch_id=created.id,
+            attempt_id=claimed.attempt_id,
+            canonical_source_key="canonical-public-folder",
+        )
+        file_claim = claim_import_work(lease_seconds=60)
 
         self.assertFalse(first.replayed)
         self.assertTrue(replay.replayed)
@@ -152,22 +147,21 @@ class ImportServiceTests(TestCase):
 
     def test_manifest_replay_rejects_changed_entries_even_with_same_page_identity(self) -> None:
         created, claimed = self.create_and_claim_manifest()
-        with override_feature_flags(self.flags):
+        record_manifest_page(
+            batch_id=created.id,
+            attempt_id=claimed.attempt_id,
+            page_number=0,
+            page_fingerprint="stable-source-page",
+            entries=(ManifestEntry(path="/one.jpg", name="one.jpg", kind="jpeg", size=10),),
+        )
+        with self.assertRaises(ImportConflict) as raised:
             record_manifest_page(
                 batch_id=created.id,
                 attempt_id=claimed.attempt_id,
                 page_number=0,
                 page_fingerprint="stable-source-page",
-                entries=(ManifestEntry(path="/one.jpg", name="one.jpg", kind="jpeg", size=10),),
+                entries=(ManifestEntry(path="/two.jpg", name="two.jpg", kind="jpeg", size=10),),
             )
-            with self.assertRaises(ImportConflict) as raised:
-                record_manifest_page(
-                    batch_id=created.id,
-                    attempt_id=claimed.attempt_id,
-                    page_number=0,
-                    page_fingerprint="stable-source-page",
-                    entries=(ManifestEntry(path="/two.jpg", name="two.jpg", kind="jpeg", size=10),),
-                )
         self.assertEqual(raised.exception.code, "manifest_changed")
 
     def test_empty_manifest_completes_without_a_photo(self) -> None:
@@ -199,33 +193,30 @@ class ImportServiceTests(TestCase):
         self.assertIsNotNone(oversized.completed_at)
         self.assertEqual(result.jpeg_count, 2)
         self.assertEqual(result.error_count, 1)
-        with override_feature_flags(self.flags):
-            claimed = claim_import_work()
+        claimed = claim_import_work()
         self.assertEqual(claimed.item_id, ImportItem.objects.get(source_path="/valid.jpg").id)
 
     def test_expired_lease_is_reclaimed_and_stale_attempt_cannot_mutate(self) -> None:
         created, claimed = self.create_and_claim_manifest()
-        with override_feature_flags(self.flags):
-            record_manifest_page(
-                batch_id=created.id,
-                attempt_id=claimed.attempt_id,
-                page_number=0,
-                page_fingerprint="abandoned-page",
-                entries=(
-                    ManifestEntry(
-                        path="/abandoned.jpg",
-                        name="abandoned.jpg",
-                        kind="jpeg",
-                        size=10,
-                    ),
+        record_manifest_page(
+            batch_id=created.id,
+            attempt_id=claimed.attempt_id,
+            page_number=0,
+            page_fingerprint="abandoned-page",
+            entries=(
+                ManifestEntry(
+                    path="/abandoned.jpg",
+                    name="abandoned.jpg",
+                    kind="jpeg",
+                    size=10,
                 ),
-            )
+            ),
+        )
         after_expiry = claimed.lease_expires_at + timedelta(seconds=1)
-        with override_feature_flags(self.flags):
-            replacement = claim_import_work(lease_seconds=60, now=after_expiry)
+        replacement = claim_import_work(lease_seconds=60, now=after_expiry)
         self.assertNotEqual(replacement.attempt_id, claimed.attempt_id)
         self.assertFalse(ImportItem.objects.filter(batch_id=created.id).exists())
-        with override_feature_flags(self.flags), self.assertRaises(ImportConflict) as raised:
+        with self.assertRaises(ImportConflict) as raised:
             renew_import_lease(claimed.attempt_id, lease_seconds=60, now=after_expiry)
         self.assertEqual(raised.exception.code, "stale_attempt")
         self.assertEqual(
@@ -233,31 +224,28 @@ class ImportServiceTests(TestCase):
             ImportAttempt.Status.EXPIRED,
         )
 
-    def test_gate_pause_and_fresh_permission_resume_without_retry_penalty(self) -> None:
+    def test_fresh_permission_pause_and_resume_without_retry_penalty(self) -> None:
         created, claimed = self.create_and_claim_manifest()
         now = claimed.lease_expires_at + timedelta(seconds=1)
-        self.flags[YANDEX_DISK_IMPORT] = FEATURE_FLAG_OFF
-        with override_feature_flags(self.flags):
-            self.assertEqual(claim_import_work(now=now).kind, "empty")
+        permission = Permission.objects.get(
+            content_type__app_label="ingestion", codename="upload_photos"
+        )
+        self.owner.user_permissions.remove(permission)
+        self.assertEqual(claim_import_work(now=now).kind, "empty")
         created_batch = ImportBatch.objects.get(pk=created.id)
         self.assertEqual(created_batch.status, ImportBatch.Status.PAUSED)
         self.assertEqual(created_batch.manifest_attempts, 1)
 
-        self.flags[YANDEX_DISK_IMPORT] = FEATURE_FLAG_ON
-        with override_feature_flags(self.flags):
-            resumed = claim_import_work(now=now + timedelta(seconds=1))
+        self.owner.user_permissions.add(permission)
+        resumed = claim_import_work(now=now + timedelta(seconds=1))
         self.assertEqual(resumed.kind, "manifest")
         assert resumed.lease_expires_at is not None
         created_batch.refresh_from_db()
         self.assertEqual(created_batch.manifest_attempts, 2)
 
-        permission = Permission.objects.get(
-            content_type__app_label="ingestion", codename="upload_photos"
-        )
         self.owner.user_permissions.remove(permission)
         revoked_at = resumed.lease_expires_at + timedelta(seconds=1)
-        with override_feature_flags(self.flags):
-            self.assertEqual(claim_import_work(now=revoked_at).kind, "empty")
+        self.assertEqual(claim_import_work(now=revoked_at).kind, "empty")
         created_batch.refresh_from_db()
         self.assertEqual(created_batch.status, ImportBatch.Status.PAUSED)
         self.assertEqual(created_batch.manifest_attempts, 2)
@@ -265,28 +253,26 @@ class ImportServiceTests(TestCase):
     def test_each_source_operation_is_bounded_to_four_attempts(self) -> None:
         created, claimed = self.create_and_claim_manifest()
         current = claimed
-        with override_feature_flags(self.flags):
-            for attempt_number in range(1, 5):
-                result = record_import_failure(
-                    attempt_id=current.attempt_id,
-                    operation="manifest",
-                    code="source_unavailable",
-                    retryable=True,
-                )
-                self.assertEqual(result.manifest_attempts, attempt_number)
-                replay = record_import_failure(
-                    attempt_id=current.attempt_id,
-                    operation="manifest",
-                    code="source_unavailable",
-                    retryable=True,
-                )
-                self.assertEqual(replay, result)
-                if attempt_number < 4:
-                    current = claim_import_work(lease_seconds=60)
+        for attempt_number in range(1, 5):
+            result = record_import_failure(
+                attempt_id=current.attempt_id,
+                operation="manifest",
+                code="source_unavailable",
+                retryable=True,
+            )
+            self.assertEqual(result.manifest_attempts, attempt_number)
+            replay = record_import_failure(
+                attempt_id=current.attempt_id,
+                operation="manifest",
+                code="source_unavailable",
+                retryable=True,
+            )
+            self.assertEqual(replay, result)
+            if attempt_number < 4:
+                current = claim_import_work(lease_seconds=60)
         batch = ImportBatch.objects.get(pk=created.id)
         self.assertEqual(batch.status, ImportBatch.Status.FAILED)
-        with override_feature_flags(self.flags):
-            self.assertEqual(claim_import_work().kind, "empty")
+        self.assertEqual(claim_import_work().kind, "empty")
 
     def test_retry_errors_only_resets_failed_manifest_or_items(self) -> None:
         created, result = self.finish_with_entries(
@@ -305,8 +291,7 @@ class ImportServiceTests(TestCase):
         second.save(update_fields=["status", "download_attempts", "error_code"])
         ImportBatch.objects.filter(pk=created.id).update(status=ImportBatch.Status.PARTIAL)
 
-        with override_feature_flags(self.flags):
-            retried = retry_import_errors(actor=self.owner, batch_id=created.id)
+        retried = retry_import_errors(actor=self.owner, batch_id=created.id)
 
         first.refresh_from_db()
         second.refresh_from_db()

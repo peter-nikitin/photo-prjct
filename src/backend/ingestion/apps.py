@@ -47,15 +47,9 @@ def check_photo_upload_settings(
     del app_configs, kwargs
     errors = []
 
-    if settings.PHOTO_UPLOAD_ENABLED:
-        for setting_name, error_id in _REQUIRED_PRIVATE_SETTINGS:
-            if _is_empty(getattr(settings, setting_name)):
-                errors.append(
-                    Error(
-                        f"{setting_name} must be non-empty when PHOTO_UPLOAD_ENABLED is True.",
-                        id=error_id,
-                    )
-                )
+    for setting_name, error_id in _REQUIRED_PRIVATE_SETTINGS:
+        if _is_empty(getattr(settings, setting_name)):
+            errors.append(Error(f"{setting_name} must be non-empty.", id=error_id))
 
     for setting_name, minimum, maximum, error_id in _BOUNDED_UPLOAD_SETTINGS:
         value = getattr(settings, setting_name)

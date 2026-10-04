@@ -45,7 +45,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 | EJ-012 | Maintainer | Gate temporary selfie storage activation | Validated | 2026-07-31 |
 | EJ-013 | Contributor | Start isolated repository work reliably | Validated | 2026-08-21 |
-| EJ-014 | Maintainer | Gate consented feedback storage activation | Validated | 2026-08-04 |
+| EJ-014 | Maintainer | Verify consented feedback storage | Validated | 2026-09-25 |
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
 | EJ-017 | Developer | Read canonical secret projections consistently | Delivered | 2026-08-20 |
@@ -325,22 +325,24 @@ validated the integrated workflow.
   current acceptance evidence for the repaired bootstrap and literal worker selector.
 - Last updated: 2026-08-21
 
-### EJ-014 — Maintainer — Gate consented feedback storage activation
+### EJ-014 — Maintainer — Verify consented feedback storage
 
-When I prepare the canonical deployment for consented selfie-search feedback, I want the dedicated bucket,
-KMS, lifecycle, anonymous-denial, and web-only credential contract checked fail-closed, so I can
-keep feedback disabled until its private storage boundary is ready.
+When I operate consented selfie-search feedback, I want the dedicated bucket, KMS, lifecycle,
+anonymous-denial, and web-only credential contract checked fail-closed, so I can keep the permanent
+feedback path within its private storage boundary.
 
 The repository provides a guarded 30-day lifecycle mutation with exact bucket/KMS digest,
 unversioned and unlocked checks, readback, and recovery. Its explicit real-storage preflight checks
 default KMS encryption, private ACLs, anonymous object and list denial, lifecycle, and one opaque
-put/head/range/grant/delete scratch cycle. Deployment tests verify disabled-by-default wiring,
-preflight confirmation before enablement, and that feedback credentials reach only the web service;
-no Yandex bucket or canonical-deployment activation is claimed.
+put/head/range/grant/delete scratch cycle. Web configuration checks require a separate bucket,
+credentials, KMS key, approved endpoint/region, and bounded limits; deployment requires real-storage
+preflight confirmation and projects feedback credentials only to web. A failed candidate uses the
+prior-image rollback path, preserving feedback rows and objects. Repository tests alone do not prove
+the current canonical bucket/KMS state or customer outcome.
 
 - Status: Validated
 - Evidence: [`src/backend/selfie_search/feedback_lifecycle.py`](../src/backend/selfie_search/feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py`](../src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py`](../src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py), [`src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py`](../src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py), [`src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py`](../src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py), [`src/backend/selfie_search/tests/test_feedback_storage_contract_command.py`](../src/backend/selfie_search/tests/test_feedback_storage_contract_command.py), and [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py)
-- Last updated: 2026-08-04
+- Last updated: 2026-09-25
 
 ### EJ-016 — Maintainer — Build and guard event face-cluster expansion
 
@@ -350,9 +352,8 @@ an explicit guarded activation, so I can keep direct-only search available until
 gates are approved.
 
 - Status: Delivered
-- Boundary: Release-gate completion, canonical-deployment activation, and customer-outcome validation
-  remain pending.
-- Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), and [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance and privacy-bounded v2 events. The retired experiment evaluator is historical evidence only. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or canonical-deployment activation change is included.
+- Boundary: Canonical-deployment activation and customer-outcome validation remain pending.
+- Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), and [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance and privacy-bounded v2 events. The retired experiment evaluator is historical evidence only. `sync_feature_flags` creates `selfie-search-cluster-expansion` in `off`; only `on` expands new searches. No worker credential/configuration, Compose, cloud, or canonical-deployment activation change is included.
 - Last updated: 2026-08-05
 
 ### EJ-020 — Operator — Cache a frozen private event-original corpus

@@ -7,7 +7,6 @@ from processing.auth import has_worker_token, require_worker_token
 
 
 @override_settings(
-    PHOTO_PROCESSING_ENABLED=True,
     PHOTO_PROCESSING_WORKER_TOKEN="local-secret",
     PHOTO_PROCESSING_FLEET_TOKEN="fleet-secret",
 )
@@ -92,7 +91,7 @@ class WorkerTokenAuthenticationTests(SimpleTestCase):
     def setUp(self) -> None:
         self.factory = RequestFactory()
 
-    @override_settings(PHOTO_PROCESSING_ENABLED=True, PHOTO_PROCESSING_WORKER_TOKEN="worker-secret")
+    @override_settings(PHOTO_PROCESSING_WORKER_TOKEN="worker-secret")
     def test_missing_malformed_and_incorrect_credentials_have_one_sanitized_denial(self) -> None:
         @require_worker_token
         def protected(_request):
@@ -109,7 +108,7 @@ class WorkerTokenAuthenticationTests(SimpleTestCase):
             [{"error": {"code": "worker_unauthorized", "message": "Unauthorized."}}] * 4,
         )
 
-    @override_settings(PHOTO_PROCESSING_ENABLED=True, PHOTO_PROCESSING_WORKER_TOKEN="worker-secret")
+    @override_settings(PHOTO_PROCESSING_WORKER_TOKEN="worker-secret")
     def test_exact_bearer_credential_is_authorized(self) -> None:
         @require_worker_token
         def protected(_request):
@@ -119,10 +118,8 @@ class WorkerTokenAuthenticationTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 204)
 
-    @override_settings(
-        PHOTO_PROCESSING_ENABLED=False, PHOTO_PROCESSING_WORKER_TOKEN="worker-secret"
-    )
-    def test_disabled_feature_fails_closed_with_the_same_sanitized_denial(self) -> None:
+    @override_settings(PHOTO_PROCESSING_WORKER_TOKEN="")
+    def test_absent_configured_token_fails_closed_with_the_same_sanitized_denial(self) -> None:
         @require_worker_token
         def protected(_request):
             return HttpResponse(status=204)

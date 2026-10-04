@@ -83,6 +83,14 @@ def test_creates_test_ready_worktree_without_copying_root_secrets(tmp_path: Path
         "DB_PASSWORD=app\n"
         "DB_HOST=localhost\n"
         "DB_PORT=5432\n"
+        "PRIVATE_MEDIA_S3_BUCKET=test-private-media\n"
+        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID=test-private-access\n"
+        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=test-private-secret\n"
+        "PRIVATE_MEDIA_ALLOWED_ORIGINS=https://photos.example.test\n"
+        "SELFIE_FEEDBACK_S3_BUCKET=test-feedback-media\n"
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=test-feedback-access\n"
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY=test-feedback-secret\n"
+        "SELFIE_FEEDBACK_KMS_KEY_ID=test-feedback-kms\n"
     )
     assert "root-secret-must-not-leak" not in (worktree / ".env").read_text(encoding="utf-8")
     assert _run("git", "status", "--short", cwd=worktree).stdout == ""

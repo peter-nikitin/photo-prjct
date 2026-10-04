@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.db import DatabaseError, transaction
 from django.db.models import F, QuerySet
 from django.utils import timezone
+from feature_flags import services as feature_flag_services
+from feature_flags.registry import SELFIE_SEARCH_CLUSTER_EXPANSION
 from picflow.gallery import GalleryFaceCrop, gallery_face_crop, gallery_photo_queryset
 from picflow.models import Event, Photo
 from processing.models import (
@@ -497,7 +499,7 @@ def _is_usable_gallery_query(*, search: SelfieSearch, vector: object) -> bool:
 def _expand_gallery_ranking(
     *, search: SelfieSearch, ranked: tuple, query: object
 ) -> RankedPhotoExpansion:
-    if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
+    if not feature_flag_services.is_enabled(SELFIE_SEARCH_CLUSTER_EXPANSION, AnonymousUser()):
         return direct_only_ranked_photos(ranked, outcome="disabled")
     activation = (
         EventFaceClusterActivation.objects.select_related("corpus")

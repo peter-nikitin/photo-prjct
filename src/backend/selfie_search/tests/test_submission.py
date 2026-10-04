@@ -19,6 +19,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
+from feature_flags.models import FeatureFlag
 from feature_flags.registry import PAID_EVENTS
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
@@ -612,7 +613,6 @@ class SubmissionTests(TestCase):
             response["Location"], rf"^/events/{self.event.slug}/selfie-search/[A-Za-z0-9_-]{{43}}/$"
         )
 
-    @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_simultaneous_tabs_keep_independent_browser_correlations_without_session_state(
         self,
     ) -> None:
@@ -707,6 +707,39 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.user = get_user_model().objects.create_user(username="gallery-search-owner")
         self.event = self.make_event("gallery", "free")
         self.other_event = self.make_event("other-gallery", "free")
+
+    def test_gallery_processing_expansion_gate_uses_only_global_on_state(self) -> None:
+        source = self.make_eligible_embedding(
+            event=self.event, photo_id="global-gate-source", vector=[1.0] + [0.0] * 511
+        )
+        for state, expected in (
+            (None, "disabled"),
+            (FeatureFlag.State.OFF, "disabled"),
+            (FeatureFlag.State.STAFF, "disabled"),
+            (FeatureFlag.State.ON, "corpus_unavailable"),
+        ):
+            with self.subTest(state=state):
+                FeatureFlag.objects.filter(key="selfie-search-cluster-expansion").delete()
+                if state is not None:
+                    FeatureFlag.objects.create(
+                        key="selfie-search-cluster-expansion",
+                        description="Expand selfie results through face clusters",
+                        state=state,
+                    )
+                created = submit_gallery_photo_search(
+                    event=self.event,
+                    photo=source.detection.attempt.photo,
+                    detection_id=source.detection_id,
+                    user=self.user,
+                )
+                processed = process_gallery_photo_search(search=created.search)
+                self.assertEqual(processed.status, SelfieSearch.Status.READY)
+                self.assertEqual(processed.cluster_expansion_outcome, expected)
+                self.assertEqual(processed.cluster_expanded_photo_count, 0)
+                self.assertEqual(
+                    list(processed.results.values_list("photo_id", flat=True)),
+                    [source.detection.attempt.photo_id],
+                )
 
     def test_gallery_submission_locks_event_before_freezing_generation(self) -> None:
         embedding = self.make_eligible_embedding(

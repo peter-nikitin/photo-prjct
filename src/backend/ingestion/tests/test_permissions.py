@@ -14,7 +14,6 @@ from picflow.models import Event
 
 
 @override_settings(
-    PHOTO_UPLOAD_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class UploadPermissionTests(TestCase):
@@ -150,16 +149,6 @@ class UploadPermissionTests(TestCase):
             )
             self.assertEqual(response.status_code, 404)
             self.assertEqual(response.json()["error"]["code"], "not_found")
-
-    @override_settings(PHOTO_UPLOAD_ENABLED=False)
-    def test_disabled_feature_hides_upload_routes_but_not_auth_routes(self) -> None:
-        self.client.force_login(self.photographer)
-        for method, url in self.endpoints():
-            response = self.call(self.client, method, url)
-            self.assertEqual(response.status_code, 403 if url == reverse("upload_page") else 404)
-
-        self.assertNotEqual(self.client.get(reverse("photographer_login")).status_code, 404)
-        self.assertNotEqual(self.client.post(reverse("photographer_logout")).status_code, 404)
 
     def test_admin_is_read_only_and_does_not_expose_object_keys(self) -> None:
         batch_admin = admin.site._registry[UploadBatch]

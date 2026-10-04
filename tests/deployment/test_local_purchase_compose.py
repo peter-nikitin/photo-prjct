@@ -2,10 +2,111 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
 import yaml
 
 from tests.deployment.test_deployment_scripts import ROOT
+
+
+def _render_services(*compose_files: str, environment: dict[str, str] | None = None) -> dict:
+    command = ["docker", "compose", "--env-file", ".env.example"]
+    for path in compose_files:
+        command.extend(("-f", path))
+    command.extend(("--profile", "commerce", "config"))
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env={**os.environ, **(environment or {})},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return yaml.safe_load(result.stdout)["services"]
+
+
+def _isolated_service_checks(environment: dict[str, str], *, models_only: bool = False):
+    script = """
+import json
+from unittest.mock import patch
+from django.core.checks import Tags, run_checks
+with patch('environ.Env.read_env'):
+    import django
+    django.setup()
+errors = run_checks(tags=[Tags.models] if __import__('sys').argv[1] == 'models' else None)
+print(json.dumps([error.id for error in errors]))
+"""
+    return subprocess.run(
+        [sys.executable, "-c", script, "models" if models_only else "full"],
+        cwd=ROOT,
+        env={
+            **{name: str(value) for name, value in environment.items()},
+            "DJANGO_SETTINGS_MODULE": "config.settings",
+            "PYTHONPATH": str(ROOT / "src/backend"),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_canonical_commerce_starts_with_narrow_environment_and_web_checks_feedback() -> None:
+    services = _render_services(
+        "docker-compose.deployment.yml",
+        "docker-compose.https.yml",
+        environment={
+            "PRIVATE_MEDIA_S3_BUCKET": "test-private",
+            "SELFIE_FEEDBACK_S3_BUCKET": "test-feedback",
+            "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "test-feedback-access",
+            "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "test-feedback-secret",
+            "SELFIE_FEEDBACK_KMS_KEY_ID": "test-feedback-kms",
+        },
+    )
+    commerce = services["commerce-worker"]["environment"]
+    web = services["web"]["environment"]
+    assert not any(name.startswith("SELFIE_FEEDBACK_") for name in commerce)
+    commerce_startup = _isolated_service_checks(commerce, models_only=True)
+    assert commerce_startup.returncode == 0, commerce_startup.stderr
+
+    web_startup = _isolated_service_checks(web)
+    assert web_startup.returncode == 0, web_startup.stderr
+    assert "selfie_search.E008" not in web_startup.stdout
+    assert "selfie_search.E009" not in web_startup.stdout
+
+    missing_feedback = {
+        name: value for name, value in web.items() if not name.startswith("SELFIE_FEEDBACK_")
+    }
+    web_rejected = _isolated_service_checks(missing_feedback)
+    assert web_rejected.returncode == 0, web_rejected.stderr
+    assert "selfie_search.E009" in web_rejected.stdout
+
+
+def test_disposable_web_stacks_supply_separate_feedback_storage() -> None:
+    for compose_file, interpolation in (
+        (
+            "docker-compose.bib-local.yml",
+            {
+                "BIB_EVENT_SLUG": "disposable",
+                "BIB_SOURCE_ROOT": "/tmp",
+                "BIB_BASELINE": "/tmp/baseline.json",
+            },
+        ),
+        ("tests/deployment/import_acceptance/compose.yml", {}),
+    ):
+        services = _render_services(compose_file, environment=interpolation)
+        web = services["web"]["environment"]
+        assert web["SELFIE_FEEDBACK_S3_BUCKET"] != web["PRIVATE_MEDIA_S3_BUCKET"]
+        for name in (
+            "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
+            "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
+            "SELFIE_FEEDBACK_KMS_KEY_ID",
+        ):
+            assert web[name]
+        startup = _isolated_service_checks(web)
+        assert startup.returncode == 0, startup.stderr
+        assert "selfie_search.E008" not in startup.stdout
+        assert "selfie_search.E009" not in startup.stdout
 
 
 def test_deployment_commerce_worker_bypasses_the_web_entrypoint() -> None:
@@ -104,8 +205,17 @@ def test_local_purchase_compose_exposes_only_review_ports_and_all_workers() -> N
         "python manage.py collectstatic --noinput",
         "exec python manage.py runserver 0.0.0.0:8000",
     ]
-    assert web["environment"]["PHOTO_UPLOAD_ENABLED"] == "True"
-    assert web["environment"]["PHOTO_PROCESSING_PREVIEW_ENABLED"] == "True"
+    assert web["environment"]["PRIVATE_MEDIA_S3_BUCKET"] == "local-private"
+    assert web["environment"]["SELFIE_FEEDBACK_S3_BUCKET"] == "disposable-purchase-feedback"
+    assert (
+        web["environment"]["SELFIE_FEEDBACK_S3_BUCKET"]
+        != web["environment"]["PRIVATE_MEDIA_S3_BUCKET"]
+    )
+    startup = _isolated_service_checks(web["environment"])
+    assert startup.returncode == 0, startup.stderr
+    assert "selfie_search.E008" not in startup.stdout
+    assert "selfie_search.E009" not in startup.stdout
+    assert web["environment"]["PHOTO_PROCESSING_WORKER_TOKEN"] == "local-photo-worker-token"
     assert web["environment"]["MEDIA_S3_ENDPOINT_URL"] == "http://minio.localhost:19000"
     assert web["extra_hosts"] == ["minio.localhost=host-gateway"]
     assert "127.0.0.1:8000/health/" in " ".join(web["healthcheck"]["test"])

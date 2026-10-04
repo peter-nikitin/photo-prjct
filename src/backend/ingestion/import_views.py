@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from functools import wraps
 from typing import Any
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
@@ -35,16 +34,6 @@ _MAX_SIGNED_BIGINT = (1 << 63) - 1
 _MAX_POSITIVE_INTEGER = (1 << 31) - 1
 
 
-def _import_mutation(view):  # noqa: ANN001, ANN201
-    @wraps(view)
-    def wrapped(request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
-        if not settings.PHOTO_IMPORT_ENABLED:
-            return _not_found()
-        return view(request, *args, **kwargs)
-
-    return wrapped
-
-
 @require_http_methods(["GET", "POST"])
 @_upload_access(json_errors=True)
 def import_collection(request: HttpRequest) -> HttpResponse:
@@ -63,8 +52,6 @@ def import_collection(request: HttpRequest) -> HttpResponse:
                 return _not_found()
             queryset = queryset.filter(event_id=event_id, owner_id=request.user.pk)
         return _batch_page(queryset, page_number=page_number, page_size=page_size)
-    if not settings.PHOTO_IMPORT_ENABLED:
-        return _not_found()
     data, error = _json_object(
         request,
         required={
@@ -155,7 +142,6 @@ def import_items(request: HttpRequest, batch: UUID) -> HttpResponse:
 
 @require_http_methods(["POST"])
 @_upload_access(json_errors=True)
-@_import_mutation
 def import_retry(request: HttpRequest, batch: UUID) -> HttpResponse:
     owner_batch = _visible_batches(request).filter(pk=batch).first()
     if owner_batch is None:
@@ -357,8 +343,6 @@ def _bounded_decimal(value: str, *, maximum: int) -> bool:
 
 
 def _service_error(exc: ImportConflict) -> HttpResponse:
-    if exc.code == "feature_paused":
-        return _error("feature_paused", "Yandex Disk import is paused.", status=409)
     if exc.code == "permission_denied":
         return _error("permission_denied", "Photo upload permission is required.", status=403)
     safe_codes = {

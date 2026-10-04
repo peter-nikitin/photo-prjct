@@ -26,14 +26,14 @@ services:
       DB_USER: app
       DB_PASSWORD: app
       PRIVATE_MEDIA_ALLOWED_ORIGINS: http://proxy:8080
-      PHOTO_UPLOAD_ENABLED: 'True'
-      PHOTO_IMPORT_ENABLED: 'True'
       PHOTO_IMPORT_WORKER_TOKEN: fixture-token
-      PHOTO_PROCESSING_ENABLED: 'True'
-      PHOTO_PROCESSING_FACE_ENABLED: 'True'
       PRIVATE_MEDIA_S3_BUCKET: local-private
       PRIVATE_MEDIA_S3_ACCESS_KEY_ID: local-minio
       PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: local-minio-password
+      SELFIE_FEEDBACK_S3_BUCKET: disposable-import-feedback
+      SELFIE_FEEDBACK_S3_ACCESS_KEY_ID: disposable-import-feedback-access
+      SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY: disposable-import-feedback-secret
+      SELFIE_FEEDBACK_KMS_KEY_ID: disposable-import-feedback-kms
       MEDIA_S3_ENDPOINT_URL: http://minio:9000
       MEDIA_S3_REGION: us-east-1
       PYTHONPATH: /app/src/backend

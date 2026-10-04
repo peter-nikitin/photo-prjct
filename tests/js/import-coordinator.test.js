@@ -306,8 +306,6 @@ test('fixed event and chosen folder survive pasted link without an event selecto
   const root = new FakeNode({
     dataset: {
       eventId: '7',
-      importHistoryEnabled: 'true',
-      importEnabled: 'true',
       importCollectionUrl: '/imports/',
       importDetailUrlTemplate: '/imports/{batch}/',
       importItemsUrlTemplate: '/imports/{batch}/items/',
@@ -329,7 +327,7 @@ test('fixed event and chosen folder survive pasted link without an event selecto
   const previousDocument = global.document;
   global.document = { querySelector: () => eventSelect };
   try {
-    bindImportPage(root, {
+    const coordinator = bindImportPage(root, {
       fetch: async (_url, options = {}) => {
         if (options.method === 'POST') {
           bodies.push(JSON.parse(options.body));
@@ -346,6 +344,9 @@ test('fixed event and chosen folder survive pasted link without an event selecto
       setTimeout() {},
       clearTimeout() {},
     });
+    await flushPromises();
+    assert.ok(coordinator);
+    assert.equal(importPanel.hidden, false);
 
     start.selected = true;
     source.value = 'https://disk.yandex.ru/d/key';
@@ -382,7 +383,7 @@ test('progress update preserves an expanded item page and focused action control
   }
 });
 
-test('cancelled departure preserves import polling; gate-off errors recover and pagehide stops it', async () => {
+test('history failure leaves import available; permission errors recover and pagehide stops polling', async () => {
   const card = fakeCard();
   const actionStatus = card.querySelector('[data-import-action-status]');
   const list = new FakeNode();
@@ -398,8 +399,6 @@ test('cancelled departure preserves import polling; gate-off errors recover and 
   const root = new FakeNode({
     dataset: {
       eventId: '7',
-      importHistoryEnabled: 'true',
-      importEnabled: 'false',
       importCollectionUrl: '/imports/',
       importDetailUrlTemplate: '/imports/{batch}/',
       importItemsUrlTemplate: '/imports/{batch}/items/',
@@ -425,7 +424,7 @@ test('cancelled departure preserves import polling; gate-off errors recover and 
     fetch: async (url, options = {}) => {
       if (url.includes('/retry/')) {
         if (retrySucceeds) return response(200, { contract_version: 1, batch: batch() });
-        return response(503, { contract_version: 1, error: { code: 'feature_paused' } });
+        return response(403, { contract_version: 1, error: { code: 'permission_denied' } });
       }
       if (url.includes('/items/')) {
         if (!itemsSucceed) throw new TypeError('private file service detail');
@@ -439,13 +438,7 @@ test('cancelled departure preserves import polling; gate-off errors recover and 
         if (!detailSucceeds) throw new TypeError('private poll detail');
         return response(200, batch('completed'));
       }
-      if (!options.method) {
-        return response(200, {
-          contract_version: 1,
-          imports: [],
-          pagination: { page: 1, page_size: 20, total: 0, pages: 0 },
-        });
-      }
+      if (!options.method) throw new TypeError('private history service');
       throw new Error('unexpected request');
     },
     crypto: { randomUUID: () => 'submission-1' },
@@ -461,14 +454,15 @@ test('cancelled departure preserves import polling; gate-off errors recover and 
     await flushPromises();
 
     assert.equal(root.hidden, false);
-    assert.equal(importPanel.hidden, true);
+    assert.equal(importPanel.hidden, false);
+    assert.equal(listStatus.textContent, 'Не удалось загрузить сохранённый прогресс. Обновите страницу.');
 
     const retryTarget = { closest: (selector) => (
       selector === '[data-import-card]' ? card : selector === '[data-import-retry]' ? retryTarget : null
     ) };
     await root.dispatch('click', { target: retryTarget });
     await flushPromises();
-    assert.equal(actionStatus.textContent, 'Импорт временно приостановлен.');
+    assert.equal(actionStatus.textContent, 'Право загрузки отозвано. Обратитесь к администратору.');
     assert.equal(actionStatus.hidden, false);
 
     const nextTarget = { closest: (selector) => (

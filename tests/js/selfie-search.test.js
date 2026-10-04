@@ -402,19 +402,20 @@ test('preserves the exact selected bytes with bounded canonical metadata and a t
   assert.equal(sessionStorage.values.size, 1);
 });
 
-test('disabled feedback clears stale local records and submits search without preserving new bytes', async () => {
+test('search entry preserves the selected selfie without a feedback feature marker', async () => {
   let submitListener;
   let nativeSubmitCount = 0;
   let preserved = 0;
   let cleared = 0;
   const form = {
-    dataset: { selfieFeedbackEnabled: 'false' },
+    dataset: {},
     addEventListener(type, listener) {
       if (type === 'submit') submitListener = listener;
     },
     querySelector(selector) {
       if (selector === 'button[type="submit"]') return { disabled: false, textContent: '' };
       if (selector === 'input[type="file"]') return { files: [makeFile()] };
+      if (selector === '[name="feedback_correlation"]') return { value: 'e'.repeat(32) };
       return null;
     },
     submit() { nativeSubmitCount += 1; },
@@ -434,8 +435,8 @@ test('disabled feedback clears stale local records and submits search without pr
   await Promise.resolve();
   await submitListener({ preventDefault() {} });
 
-  assert.equal(cleared, 1);
-  assert.equal(preserved, 0);
+  assert.equal(cleared, 0);
+  assert.equal(preserved, 1);
   assert.equal(nativeSubmitCount, 1);
 });
 
@@ -443,7 +444,6 @@ test('gallery-origin result keeps unrelated retained selfie feedback storage int
   let cleared = 0;
   const result = {
     dataset: {
-      selfieFeedbackEnabled: 'false',
       galleryOrigin: 'true',
     },
   };
@@ -469,7 +469,7 @@ test('simultaneous search tabs generate and preserve independent browser correla
     let nativeSubmitCount = 0;
     const hidden = { value: '' };
     const form = {
-      dataset: { selfieFeedbackEnabled: 'true' },
+      dataset: {},
       addEventListener(type, listener) {
         if (type === 'submit') submitListener = listener;
       },
@@ -681,7 +681,7 @@ test('search submission continues after every storage error before the native PO
   let prevented = false;
   const button = { disabled: false, textContent: 'Найти мои фото' };
   const form = {
-    dataset: { selfieFeedbackEnabled: 'true' },
+    dataset: {},
     querySelector(selector) {
       if (selector === 'button[type="submit"]') return button;
       if (selector === 'input[type="file"]') return { files: [makeFile()] };
@@ -715,7 +715,7 @@ test('a repeated submit is prevented while preservation is pending and produces 
   let resolvePreservation;
   const button = { disabled: false, textContent: 'Найти мои фото' };
   const form = {
-    dataset: { selfieFeedbackEnabled: 'true' },
+    dataset: {},
     querySelector(selector) {
       if (selector === 'button[type="submit"]') return button;
       if (selector === 'input[type="file"]') return { files: [makeFile()] };
@@ -1003,7 +1003,6 @@ function makeSubmittedStartupFixture({ storage }) {
   cleanupRoot.queries.set('[data-feedback-cleanup-success]', success);
   const result = new FakeElement({
     dataset: {
-      selfieFeedbackEnabled: 'true',
       resultDigest,
     },
   });

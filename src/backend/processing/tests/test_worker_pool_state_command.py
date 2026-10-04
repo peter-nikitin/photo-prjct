@@ -26,7 +26,7 @@ from processing.models import (
 )
 
 
-@override_settings(PHOTO_PROCESSING_ENABLED=True, PHOTO_PROCESSING_FLEET_TOKEN="private-token")
+@override_settings(PHOTO_PROCESSING_FLEET_TOKEN="private-token")
 class WorkerPoolStateCommandTests(TestCase):
     def setUp(self):
         self.now = timezone.now()
@@ -259,8 +259,8 @@ class WorkerPoolStateCommandTests(TestCase):
         ):
             self.assertNotIn(secret, rendered)
 
-    @override_settings(PHOTO_PROCESSING_ENABLED=False)
-    def test_disabled_endpoint_is_separate_from_durable_claimable_backlog(self):
+    @override_settings(PHOTO_PROCESSING_FLEET_TOKEN="")
+    def test_unconfigured_endpoint_is_separate_from_durable_claimable_backlog(self):
         self.bulk_job()
         self.selfie_job()
         report = self.report()
@@ -268,13 +268,6 @@ class WorkerPoolStateCommandTests(TestCase):
         self.assertEqual(report["pools"]["bulk"]["claimable"], 1)
         self.assertEqual(report["pools"]["selfie"]["claimable"], 1)
         self.assertEqual(report["pools"]["bulk"]["jobs"]["queued"], 1)
-
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=False, PHOTO_PROCESSING_PREVIEW_ENABLED=False)
-    def test_disabled_enrollment_does_not_hide_existing_claimable_jobs(self):
-        self.bulk_job(identity=(2, "face_embedding", 3))
-        report = self.report()
-        self.assertEqual(report["pools"]["bulk"]["claimable"], 1)
-        self.assertFalse(report["enrollment_flags"]["face_enabled"])
 
     def test_pool_configuration_rejects_unknown_duplicate_and_cross_pool_identities(self):
         for options in (

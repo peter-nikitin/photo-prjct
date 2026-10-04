@@ -33,9 +33,15 @@ services:
       PYTHONPATH: .:src/backend
       NODE_PATH: /opt/visual-test-deps/node_modules
       DJANGO_SETTINGS_MODULE: tests.visual.settings
-      PHOTO_PROCESSING_ENABLED: "True"
-      PHOTO_PROCESSING_FACE_ENABLED: "True"
       CI: ${CI:-false}
+      PRIVATE_MEDIA_S3_BUCKET: visual-private-media
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: visual-private-access
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: visual-private-secret
+      PRIVATE_MEDIA_ALLOWED_ORIGINS: https://photos.example.test
+      SELFIE_FEEDBACK_S3_BUCKET: visual-feedback-media
+      SELFIE_FEEDBACK_S3_ACCESS_KEY_ID: visual-feedback-access
+      SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY: visual-feedback-secret
+      SELFIE_FEEDBACK_KMS_KEY_ID: visual-feedback-kms
     volumes:
       - ./src:/workspace/src:ro
       - ./tests:/workspace/tests:ro

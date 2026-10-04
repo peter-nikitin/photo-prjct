@@ -50,7 +50,6 @@ TEMPLATES = [
 @override_settings(
     ROOT_URLCONF="picflow.tests.event_management_urlconf",
     TEMPLATES=TEMPLATES,
-    PHOTO_UPLOAD_ENABLED=True,
 )
 class EventManagementViewTests(TestCase):
     def setUp(self):
@@ -59,23 +58,21 @@ class EventManagementViewTests(TestCase):
         self.uploader = user_with_permissions("uploader", permissions=("ingestion.upload_photos",))
         self.url = reverse("event_management", args=[self.event.pk])
 
-    def test_admin_inspection_is_independent_of_upload_permission_and_switch(self):
+    def test_admin_inspection_is_independent_of_upload_permission(self):
         hidden = private_photo(self.event, self.uploader, is_hidden=True)
         self.client.force_login(self.admin)
-        for enabled in (True, False):
-            with self.subTest(enabled=enabled), self.settings(PHOTO_UPLOAD_ENABLED=enabled):
-                response = self.client.get(self.url)
-                self.assertEqual(response.status_code, 200)
-                self.assertTrue(response.context_data["can_inspect"])
-                self.assertFalse(response.context_data["can_upload"])
-                self.assertNotIn("batch_page", response.context_data)
-                self.assertNotIn("processing_summary", response.context_data)
-                self.assertEqual(response.context_data["photo_page"][0].id, hidden.pk)
-                self.assertIsNone(response.context_data["photo_page"][0].thumbnail_url)
-                self.assertContains(response, hidden.pk)
-                self.assertNotContains(response, hidden.original_key)
-                self.assertIn("private", response["Cache-Control"])
-                self.assertIn("no-store", response["Cache-Control"])
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context_data["can_inspect"])
+        self.assertFalse(response.context_data["can_upload"])
+        self.assertNotIn("batch_page", response.context_data)
+        self.assertNotIn("processing_summary", response.context_data)
+        self.assertEqual(response.context_data["photo_page"][0].id, hidden.pk)
+        self.assertIsNone(response.context_data["photo_page"][0].thumbnail_url)
+        self.assertContains(response, hidden.pk)
+        self.assertNotContains(response, hidden.original_key)
+        self.assertIn("private", response["Cache-Control"])
+        self.assertIn("no-store", response["Cache-Control"])
 
     def test_uploader_only_gets_own_event_batches_and_empty_folder_targets(self):
         own = UploadBatch.objects.create(
@@ -101,8 +98,6 @@ class EventManagementViewTests(TestCase):
         self.assertContains(response, "Empty target")
         for secret in (str(foreign.pk), str(other_event.pk), hidden.pk, hidden.original_key):
             self.assertNotContains(response, secret)
-        with self.settings(PHOTO_UPLOAD_ENABLED=False):
-            self.assertEqual(self.client.get(self.url).status_code, 403)
 
     def test_partial_permissions_staff_only_and_nonstaff_admin_are_denied(self):
         roles = [
@@ -279,7 +274,6 @@ class EventManagementViewTests(TestCase):
 
 @override_settings(
     ROOT_URLCONF="config.urls",
-    PHOTO_UPLOAD_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class WorkspaceIntegrationTests(TestCase):
@@ -327,8 +321,11 @@ class WorkspaceIntegrationTests(TestCase):
         self.assertNotContains(response, 'id="upload-event"')
         self.assertNotContains(response, "data-photo-status-id=")
         self.assertNotContains(response, "data-event-photo-summary-total")
-        self.assertContains(response, 'data-import-history-enabled="true"')
-        self.assertContains(response, 'data-import-enabled="false"')
+        self.assertContains(response, "data-import-form")
+        self.assertContains(response, "data-import-list")
+        self.assertContains(response, "data-import-collection-url=")
+        self.assertNotContains(response, "data-import-enabled=")
+        self.assertNotContains(response, "data-import-history-enabled=")
         self.assertContains(response, "data-status-url=")
 
     def test_workspace_mounts_status_first_and_keeps_resume_input_outside_history_fragment(self):
@@ -385,13 +382,12 @@ class WorkspaceIntegrationTests(TestCase):
         self.assertEqual(self.client.get(url, {"batch_id": foreign.pk}).status_code, 404)
         self.assertEqual(self.client.get(url, {"batch_id": "invalid"}).status_code, 400)
 
-    def test_admin_without_upload_can_use_chooser_and_inspect_private_cards_when_gate_off(self):
+    def test_admin_without_upload_can_use_chooser_and_inspect_private_cards(self):
         admin = user_with_permissions("workspace-admin", staff=True, permissions=ADMIN_PERMISSIONS)
         hidden = private_photo(self.event, self.user, is_hidden=True)
         self.client.force_login(admin)
-        with self.settings(PHOTO_UPLOAD_ENABLED=False):
-            chooser = self.client.get(reverse("upload_page"))
-            response = self.client.get(f"/manage/events/{self.event.pk}/photos/")
+        chooser = self.client.get(reverse("upload_page"))
+        response = self.client.get(f"/manage/events/{self.event.pk}/photos/")
         self.assertEqual(chooser.status_code, 200)
         self.assertContains(response, hidden.pk)
         self.assertContains(response, "data-photo-status-id=")
@@ -430,7 +426,6 @@ class WorkspaceIntegrationTests(TestCase):
 
 @override_settings(
     ROOT_URLCONF="config.urls",
-    PHOTO_UPLOAD_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class EventManagementMutationViewTests(TestCase):

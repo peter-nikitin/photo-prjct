@@ -21,4 +21,4 @@ def has_import_worker_token(request: HttpRequest) -> bool:
     configured_bytes = (configured or "!import-worker-token-unconfigured!").encode()
     supplied_bytes = supplied.encode(errors="replace")
     compared = compare_digest(configured_bytes, supplied_bytes)
-    return bool(settings.PHOTO_IMPORT_ENABLED and configured and valid_shape and compared)
+    return bool(configured and valid_shape and compared)

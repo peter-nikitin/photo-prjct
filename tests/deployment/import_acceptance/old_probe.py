@@ -26,7 +26,7 @@ def probe():
     from processing.services.jobs import claim_job
 
     assert not hasattr(ingestion.models, "ImportBatch"), "Must run actual previous application"
-    assert FeatureFlag.objects.get(key="yandex-disk-import").state == "off"
+    assert not FeatureFlag.objects.filter(key="yandex-disk-import").exists()
     with connection.cursor() as cursor:
         cursor.execute("SELECT id, status FROM ingestion_importattempt ORDER BY id")
         before = cursor.fetchall()

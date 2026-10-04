@@ -6,7 +6,6 @@ from commerce.views import (
     cart_state_for_photos,
     private_cart_response,
 )
-from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.core.paginator import InvalidPage
 from django.http import HttpResponse, JsonResponse
@@ -101,7 +100,6 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     mark_event_staff_preview(request, (event,))
     if selfie_search_form is None:
         selfie_search_form = SelfieSearchUploadForm()
-    selfie_feedback_enabled = bool(settings.SELFIE_FEEDBACK_ENABLED)
     gallery_photos: tuple[GalleryPhoto, ...] = ()
     gallery_page_data = None
     bib_search_form = None
@@ -256,7 +254,6 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             "gallery_pagination_query_pairs": gallery_pagination_query_pairs,
             "gallery_filters_active": gallery_filters_active,
             "selfie_search_form": selfie_search_form,
-            "selfie_feedback_enabled": selfie_feedback_enabled,
         },
     )
     if cart_state is not None:

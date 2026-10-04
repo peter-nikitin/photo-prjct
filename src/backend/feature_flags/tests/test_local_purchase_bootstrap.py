@@ -6,7 +6,7 @@ from feature_flags.registry import (
     EVENT_COVER_CDN_IMAGES,
     FEATURE_DEFINITIONS,
     GALLERY_CDN_IMAGES,
-    YANDEX_DISK_IMPORT,
+    SELFIE_SEARCH_CLUSTER_EXPANSION,
 )
 
 
@@ -27,7 +27,7 @@ class LocalPurchaseBootstrapTests(TestCase):
                     in {
                         GALLERY_CDN_IMAGES,
                         EVENT_COVER_CDN_IMAGES,
-                        YANDEX_DISK_IMPORT,
+                        SELFIE_SEARCH_CLUSTER_EXPANSION,
                     }
                     else FeatureFlag.State.ON,
                 )

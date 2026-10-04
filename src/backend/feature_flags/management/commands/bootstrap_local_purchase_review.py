@@ -3,7 +3,6 @@ from django.core.management.base import BaseCommand, CommandError
 
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import (
-    BULK_PHOTO_DOWNLOAD,
     PAID_EVENTS,
     PAID_PHOTO_CART,
     PAID_PHOTO_PAYMENT_SIMULATOR,
@@ -17,7 +16,6 @@ _LOCAL_PURCHASE_REVIEW_DEFINITIONS = (
     PAID_PHOTO_CART,
     PAID_PHOTO_PURCHASE,
     PAID_PHOTO_PAYMENT_SIMULATOR,
-    BULK_PHOTO_DOWNLOAD,
 )
 
 

@@ -265,14 +265,13 @@ class WorkerPoolMetricsTests(WorkerPoolStateCommandTests):
             self.assertEqual(values["worker_pool_capacity_fresh"], 0)
             self.assertNotIn("worker_pool_running_instances", values)
 
-    @override_settings(PHOTO_PROCESSING_ENABLED=False)
+    @override_settings(PHOTO_PROCESSING_FLEET_TOKEN="")
     def test_endpoint_fault_is_not_queue_zero(self):
         self.bulk_job()
         with self.assertRaises(CommandError):
             self.metrics()
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=False)
-    def test_disabled_enrollment_still_counts_durable_jobs(self):
+    def test_enrollment_counts_durable_jobs(self):
         self.bulk_job(identity=(2, "face_embedding", 3))
         metrics = self.metrics()["metrics"]
         self.assertEqual(

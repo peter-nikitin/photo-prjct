@@ -123,9 +123,6 @@ class _SigningStorage:
 
 
 @override_settings(
-    PHOTO_PROCESSING_PREVIEW_ENABLED=True,
-    PHOTO_PROCESSING_FACE_ENABLED=True,
-    SELFIE_FEEDBACK_ENABLED=False,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 @modify_settings(MIDDLEWARE={"remove": "whitenoise.middleware.WhiteNoiseMiddleware"})

@@ -10,7 +10,7 @@ from uuid import UUID
 
 from django.contrib.auth import get_user_model
 from django.db import OperationalError, close_old_connections, transaction
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from picflow.gallery import gallery_photo_queryset
 from picflow.gallery_media_projection import publish_gallery_media
@@ -205,7 +205,6 @@ class _PreviewPublicationFixture:
 
 
 class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_prelock_uses_the_exact_scrfd_generation_hash(self) -> None:
         photo, claimed = self._claim("preview-prelock-scrfd")
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
@@ -548,7 +547,6 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
             ).exists()
         )
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_watermark_failure_and_retry_do_not_change_or_reenqueue_the_face_sibling(self) -> None:
         photo, _, claimed = self._claim_watermark("watermark-face-independent")
         face = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
@@ -581,7 +579,6 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         )
         self.assertEqual(retry.job.id, claimed.job.id)
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_failure_does_not_invalidate_an_accepted_watermark_derivative(self) -> None:
         photo, _, watermark_claim = self._claim_watermark("watermark-survives-face")
         content = b"watermark-survives-face"
@@ -623,7 +620,6 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         self.assertEqual(watermark.status, PhotoProcessingState.Status.SUCCEEDED)
         self.assertEqual(watermark.accepted_attempt_id, derivative.accepted_attempt_id)
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_accepted_preview_publication_queues_the_preview_backed_face_job_once(self) -> None:
         photo, claimed = self._claim("preview-enroll-face")
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
@@ -699,7 +695,6 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
             ProcessingJob.objects.filter(photo=photo, processor_type="face_embedding").count(), 1
         )
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_watermarked_clean_acceptance_queues_independent_face_and_watermark_siblings(
         self,
     ) -> None:
@@ -742,7 +737,6 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
                 assert state.current_job is not None
                 self.assertEqual(state.current_job.input_fingerprint, expected_fingerprint)
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_enqueue_failure_rolls_back_preview_acceptance_and_allows_retry(self) -> None:
         """Catch a committed preview whose duplicate receipt cannot retry face enrollment."""
         photo, claimed = self._claim("preview-face-atomic")

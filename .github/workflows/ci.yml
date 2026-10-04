@@ -63,8 +63,14 @@ jobs:
       DB_HOST: localhost
       DB_PORT: "5432"
       TEST_DB_NAME: findme_test_${{ github.run_id }}_${{ github.run_attempt }}
-      PHOTO_PROCESSING_ENABLED: "True"
-      PHOTO_PROCESSING_FACE_ENABLED: "True"
+      PRIVATE_MEDIA_S3_BUCKET: ci-private-media
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ci-private-access
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: ci-private-secret
+      PRIVATE_MEDIA_ALLOWED_ORIGINS: https://photos.example.test
+      SELFIE_FEEDBACK_S3_BUCKET: ci-feedback-media
+      SELFIE_FEEDBACK_S3_ACCESS_KEY_ID: ci-feedback-access
+      SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY: ci-feedback-secret
+      SELFIE_FEEDBACK_KMS_KEY_ID: ci-feedback-kms
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -108,8 +114,14 @@ jobs:
       DB_HOST: localhost
       DB_PORT: "5432"
       TEST_DB_NAME: findme_test_${{ github.run_id }}_${{ github.run_attempt }}
-      PHOTO_PROCESSING_ENABLED: "True"
-      PHOTO_PROCESSING_FACE_ENABLED: "True"
+      PRIVATE_MEDIA_S3_BUCKET: ci-private-media
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ci-private-access
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: ci-private-secret
+      PRIVATE_MEDIA_ALLOWED_ORIGINS: https://photos.example.test
+      SELFIE_FEEDBACK_S3_BUCKET: ci-feedback-media
+      SELFIE_FEEDBACK_S3_ACCESS_KEY_ID: ci-feedback-access
+      SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY: ci-feedback-secret
+      SELFIE_FEEDBACK_KMS_KEY_ID: ci-feedback-kms
     steps:
       - name: Selector reason
         env:
@@ -163,8 +175,14 @@ jobs:
       DB_HOST: localhost
       DB_PORT: "5432"
       TEST_DB_NAME: findme_test_${{ github.run_id }}_${{ github.run_attempt }}
-      PHOTO_PROCESSING_ENABLED: "True"
-      PHOTO_PROCESSING_FACE_ENABLED: "True"
+      PRIVATE_MEDIA_S3_BUCKET: ci-private-media
+      PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ci-private-access
+      PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: ci-private-secret
+      PRIVATE_MEDIA_ALLOWED_ORIGINS: https://photos.example.test
+      SELFIE_FEEDBACK_S3_BUCKET: ci-feedback-media
+      SELFIE_FEEDBACK_S3_ACCESS_KEY_ID: ci-feedback-access
+      SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY: ci-feedback-secret
+      SELFIE_FEEDBACK_KMS_KEY_ID: ci-feedback-kms
     steps:
       - name: Selector reason
         env:

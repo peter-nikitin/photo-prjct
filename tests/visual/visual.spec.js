@@ -2393,7 +2393,7 @@ test('browser coordinator preserves success when another upload fails', async ({
   await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
   await expect(page.locator('[data-uploaded-count]')).toHaveText('1');
   await expect(page.locator('[data-failed-count]')).toHaveText('1');
-  await expect(page.getByRole('button', { name: 'Повторить' })).toHaveCount(1);
+  await expect(page.locator('[data-upload-root]').getByRole('button', { name: 'Повторить' })).toHaveCount(1);
   expect(stubs.pageErrors).toEqual([]);
 });
 
@@ -2494,7 +2494,7 @@ test('failed file can be retried from the keyboard without losing its row', asyn
     buffer: Buffer.from('keyboard'),
   });
   await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
-  const retry = page.getByRole('button', { name: 'Повторить' });
+  const retry = page.locator('[data-upload-root]').getByRole('button', { name: 'Повторить' });
   await retry.focus();
   await page.keyboard.press('Enter');
 
@@ -2523,13 +2523,13 @@ test('manual retry 503 remains retryable without leaking an unhandled page error
   });
   await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
 
-  await page.getByRole('button', { name: 'Повторить' }).click();
+  await page.locator('[data-upload-root]').getByRole('button', { name: 'Повторить' }).click();
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
   await expect(page.locator('[data-file-error]')).toHaveText(
     'Не удалось повторить загрузку. Повторите попытку.',
   );
-  await expect(page.getByRole('button', { name: 'Повторить' })).toBeVisible();
+  await expect(page.locator('[data-upload-root]').getByRole('button', { name: 'Повторить' })).toBeVisible();
   expect(await page.evaluate(() => window.document.querySelector('[data-upload-root]').uploadCoordinator.active)).toBe(false);
   expect(stubs.pageErrors).toEqual([]);
 });
@@ -2549,7 +2549,7 @@ test('manual retry confirm failure is contained without an unhandled page error'
   });
   await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
 
-  await page.getByRole('button', { name: 'Повторить' }).click();
+  await page.locator('[data-upload-root]').getByRole('button', { name: 'Повторить' }).click();
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
   await expect(page.locator('[data-file-error]')).toHaveText(

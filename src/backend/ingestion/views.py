@@ -6,12 +6,11 @@ from functools import wraps
 from typing import Any
 from uuid import UUID
 
-from django.conf import settings
 from django.contrib.auth import REDIRECT_FIELD_NAME
 from django.contrib.auth.views import LoginView, LogoutView, redirect_to_login
 from django.core.exceptions import PermissionDenied
 from django.forms import Form
-from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -77,10 +76,6 @@ def _upload_access(*, json_errors: bool = False) -> Callable[[UploadView], Uploa
     def decorate(view: UploadView) -> UploadView:
         @wraps(view)
         def wrapped(request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
-            if not settings.PHOTO_UPLOAD_ENABLED:
-                if json_errors:
-                    return _not_found()
-                raise Http404
             if not request.user.is_authenticated:
                 return redirect_to_login(
                     request.get_full_path(),

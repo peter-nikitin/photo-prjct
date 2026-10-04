@@ -745,8 +745,7 @@
 
   function bindSelfieSearchForm(form, { storage = null } = {}) {
     if (!form || typeof form.addEventListener !== 'function') return;
-    const feedbackEnabled = form.dataset?.selfieFeedbackEnabled === 'true';
-    const storageAdapter = feedbackEnabled ? (storage || new BrowserStorageAdapter()) : null;
+    const storageAdapter = storage || new BrowserStorageAdapter();
     let submissionStarted = false;
     form.addEventListener('submit', async (event) => {
       if (event && typeof event.preventDefault === 'function') event.preventDefault();
@@ -916,19 +915,15 @@
       window.fetch?.bind(window),
       window.setTimeout?.bind(window),
     );
-    const feedbackEnabled = (form || result)?.dataset?.selfieFeedbackEnabled === 'true';
     const galleryOrigin = result?.dataset?.galleryOrigin === 'true';
     bindSelfieSearchForm(form, { storage });
-    if (!feedbackEnabled && !galleryOrigin) {
-      Promise.resolve(storage.clearAll?.()).catch(() => {});
-    }
-    if (!feedbackEnabled && (!result || !result.dataset.statusUrl)) return null;
-    const storageReady = feedbackEnabled
-      ? initializeBrowserStorage({ storage, result, window }).catch(() => ({
+    if (!form && !result) return null;
+    const storageReady = galleryOrigin
+      ? Promise.resolve({ available: false })
+      : initializeBrowserStorage({ storage, result, window }).catch(() => ({
           available: false,
-        }))
-      : Promise.resolve({ available: false });
-    if (feedbackEnabled) storageReady.then((state) => {
+        }));
+    if (!galleryOrigin) storageReady.then((state) => {
       initializeFeedbackCleanupUi({ document, window, storage, result }).catch(() => {});
       if (state.available) {
         initializeFeedbackUi({ document, window, storage, result }).catch(() => {});

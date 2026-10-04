@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, close_old_connections, transaction
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from picflow.models import Event, Photo
@@ -621,7 +621,6 @@ class ProcessingJobServiceTests(TestCase):
             self.assertIsNone(state.current_job.claimed_at)
             self.assertEqual(state.current_job.run.status, EventProcessingRun.Status.COLLECTING)
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_claim_only_selects_an_exactly_compatible_processor(self) -> None:
         photo = self.private_photo("face-compatible")
         self.publish_preview(photo)
@@ -681,7 +680,6 @@ class ProcessingJobServiceTests(TestCase):
         claimed.attempt.refresh_from_db()
         self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_preview_face_detection_persists_derivative_coordinate_space_and_scale(self) -> None:
         photo = self.private_photo("preview-face-geometry")
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
@@ -1158,7 +1156,6 @@ class ProcessingJobServiceTests(TestCase):
         self.assertIsNone(photo.capture_time)
         self.assertIsNone(photo.capture_time_source_attempt_id)
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_wrong_processor_success_has_no_capture_time_projection(self) -> None:
         """Catch face evidence becoming a capture-time projection source."""
         photo = self.private_photo("face-not-capture")

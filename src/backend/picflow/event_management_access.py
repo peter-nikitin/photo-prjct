@@ -1,6 +1,5 @@
 """Independent inspection and upload permissions for the private event workspace."""
 
-from django.conf import settings
 from django.contrib.auth import REDIRECT_FIELD_NAME
 from django.contrib.auth.models import AbstractUser, AnonymousUser
 from django.contrib.auth.views import redirect_to_login
@@ -19,10 +18,7 @@ def can_inspect_event_photos(user: AbstractUser | AnonymousUser) -> bool:
 
 def can_upload_event_photos(user: AbstractUser | AnonymousUser) -> bool:
     return bool(
-        settings.PHOTO_UPLOAD_ENABLED
-        and user.is_authenticated
-        and user.is_active
-        and user.has_perm("ingestion.upload_photos")
+        user.is_authenticated and user.is_active and user.has_perm("ingestion.upload_photos")
     )
 
 

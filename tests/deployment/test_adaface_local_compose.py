@@ -98,8 +98,17 @@ def test_local_adaface_compose_isolated_runtime_contract() -> None:
         )
         check_environment = {**app_environment}
         if service == "web":
-            # This experiment independently requires DEBUG=True; isolate feedback checks.
-            check_environment["DEBUG"] = "True"
+            # Web gets database settings from its optional .env at runtime. The isolated
+            # feedback check runs without that file, including on clean CI machines.
+            check_environment.update(
+                DB_NAME="fixture",
+                DB_USER="fixture",
+                DB_PASSWORD="fixture",
+                DB_HOST="db",
+                DB_PORT="5432",
+                SECRET_KEY="fixture",
+                DEBUG="True",
+            )
         startup = _isolated_service_checks(check_environment)
         assert startup.returncode == 0, startup.stderr
         assert "selfie_search.E008" not in startup.stdout

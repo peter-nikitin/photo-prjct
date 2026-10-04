@@ -718,7 +718,7 @@ def install_updater(config, *, cloud):
         if (
             str(policy.get("maxSize")) != "1"
             or str(policy.get("minZoneSize")) != ("0" if pool == "bulk" else "1")
-            or str(deploy.get("maxExpansion")) != "0"
+            or str(deploy.get("maxExpansion", "0")) != "0"
         ):
             raise ValueError("one-time install requires cap one without expansion")
         if (
@@ -795,7 +795,7 @@ def replace_selfie(config, managed_id, *, cloud):
     group = cloud.get(f"instanceGroups/{group_id}", view="FULL")
     if (
         str(group.get("scalePolicy", {}).get("autoScale", {}).get("maxSize")) != "1"
-        or str(group.get("deployPolicy", {}).get("maxExpansion")) != "0"
+        or str(group.get("deployPolicy", {}).get("maxExpansion", "0")) != "0"
     ):
         raise ValueError("one-time recreate requires cap one without expansion")
     if group["instanceTemplate"]["metadata"].get("user-data") != cloud_init(config, "selfie"):

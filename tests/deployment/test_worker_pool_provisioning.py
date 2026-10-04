@@ -323,7 +323,7 @@ def test_checksum_mismatch_cannot_make_cloud_calls():
     cloud.assert_not_called()
 
 
-def updater_install_fixture():
+def updater_install_fixture(*, omit_max_expansion=False):
     provision = module("provision")
     conf = config(1)
     cloud = FakeCloud(provision, conf)
@@ -332,6 +332,8 @@ def updater_install_fixture():
         for pool, body in provision.prepare(conf)["groups"].items()
     ]
     for group in cloud.groups:
+        if omit_max_expansion:
+            group["deployPolicy"].pop("maxExpansion")
         group["instanceTemplate"]["metadata"]["ssh-keys"] = "preserved-nonsecret-key"
     readback = provision.status(conf, cloud)
     conf["groups"] = {
@@ -357,6 +359,13 @@ def test_one_time_updater_install_only_patches_userdata_and_keeps_bulk_zero():
     assert cloud.groups[0]["scalePolicy"]["autoScale"]["minZoneSize"] == "0"
 
 
+def test_one_time_updater_install_accepts_omitted_max_expansion():
+    provision, conf, cloud = updater_install_fixture(omit_max_expansion=True)
+    result = provision.install_updater(conf, cloud=cloud)
+    assert set(result) == {"bulk", "selfie"}
+    assert len(cloud.calls) == 2
+
+
 def test_one_time_updater_install_rejects_non_cap_one_before_mutation():
     provision, conf, cloud = updater_install_fixture()
     cloud.groups[1]["scalePolicy"]["autoScale"]["maxSize"] = "2"
@@ -366,8 +375,20 @@ def test_one_time_updater_install_rejects_non_cap_one_before_mutation():
     assert cloud.calls == []
 
 
-def test_one_time_recreate_uses_exact_managed_id_and_never_starts_empty_bulk(monkeypatch):
+def test_one_time_updater_install_rejects_nonzero_expansion_before_mutation():
     provision, conf, cloud = updater_install_fixture()
+    cloud.groups[1]["deployPolicy"]["maxExpansion"] = "1"
+    conf["groups"]["selfie"]["baseline"] = provision.managed_baseline(cloud.groups[1])
+    with pytest.raises(ValueError, match="cap one"):
+        provision.install_updater(conf, cloud=cloud)
+    assert cloud.calls == []
+
+
+@pytest.mark.parametrize("omit_max_expansion", [False, True])
+def test_one_time_recreate_uses_exact_managed_id_and_never_starts_empty_bulk(
+    monkeypatch, omit_max_expansion
+):
+    provision, conf, cloud = updater_install_fixture(omit_max_expansion=omit_max_expansion)
     monkeypatch.setattr(
         cloud,
         "pages",
@@ -403,6 +424,15 @@ def test_one_time_recreate_uses_exact_managed_id_and_never_starts_empty_bulk(mon
     with pytest.raises(ValueError):
         provision.replace_selfie(conf, "compute-vm-1", cloud=cloud)
     assert len(calls) == 1
+
+
+def test_one_time_recreate_rejects_nonzero_expansion_before_mutation():
+    provision, conf, cloud = updater_install_fixture()
+    cloud.groups[1]["deployPolicy"]["maxExpansion"] = "1"
+    conf["groups"]["selfie"]["baseline"] = provision.managed_baseline(cloud.groups[1])
+    with pytest.raises(ValueError, match="cap one"):
+        provision.replace_selfie(conf, "managed-selfie-1", cloud=cloud)
+    assert cloud.calls == []
 
 
 def test_one_time_recreate_does_not_retry_uncertain_submission(monkeypatch):

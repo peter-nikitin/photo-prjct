@@ -200,6 +200,7 @@ def test_worker_pool_alerts_are_git_enabled_with_reviewed_cap_one_rules() -> Non
     assert [group["name"] for group in disabled["groups"]] == [
         "findme-photo",
         "findme-image-origin",
+        "findme-postgres",
     ]
 
     saturation = next(rule for rule in worker["rules"] if rule["alert"] == "WorkerPoolSaturated")

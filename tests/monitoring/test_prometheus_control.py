@@ -65,9 +65,10 @@ def test_dashboard_groups_keep_chart_identity_and_nested_query_validation(
         "CDN",
         "Image origin + VM",
         "imgproxy",
+        "PostgreSQL",
     ]
     charts = dashboard_charts(dashboard)
-    assert len(charts) == 48
+    assert len(charts) == 68
     assert len({chart["multiSourceChart"]["id"] for chart in charts}) == len(charts)
     assert all(chart.get("id") and chart.get("position") for chart in charts)
     assert all(
@@ -181,7 +182,7 @@ def test_offline_render_has_missing_observations_separate(control):
     assert outage["for"] == "10m"
     assert "absent_over_time" in package["rules.yml"]
     assert "increase(findme_http_requests_total" in package["rules.yml"]
-    assert len(dashboard_charts(json.loads(package["dashboard.json"]))) == 48
+    assert len(dashboard_charts(json.loads(package["dashboard.json"]))) == 68
 
 
 def test_worker_profile_is_git_enabled_and_explicit_disabled_profile_omits_workers(control):
@@ -192,6 +193,7 @@ def test_worker_profile_is_git_enabled_and_explicit_disabled_profile_omits_worke
         "findme-photo",
         "findme-workers",
         "findme-image-origin",
+        "findme-postgres",
     ]
     assert [rule["alert"] for rule in enabled["groups"][1]["rules"]] == [
         "WorkerReadyWorkOverdue",
@@ -207,6 +209,7 @@ def test_worker_profile_is_git_enabled_and_explicit_disabled_profile_omits_worke
     assert [group["name"] for group in disabled["groups"]] == [
         "findme-photo",
         "findme-image-origin",
+        "findme-postgres",
     ]
 
     enabled_cfg = {**cfg, "worker_alerts_enabled": 1}
@@ -230,7 +233,7 @@ def test_image_origin_rules_and_charts_are_scoped_and_can_be_withheld(control):
     assert 'job="findme-imgproxy"' in package["rules.yml"]
     assert 'job="findme-image-linux"' in package["rules.yml"]
     dashboard = json.loads(package["dashboard.json"])
-    assert len(dashboard_charts(dashboard)) == 48
+    assert len(dashboard_charts(dashboard)) == 68
     queries = [
         target["monitoringTarget"]["query"]
         for widget in dashboard_charts(dashboard)
@@ -280,8 +283,8 @@ def test_validate_package_checks_disabled_and_enabled_worker_profiles(
         if path.name != "dashboard-query-rules.yml"
     ]
     assert {tuple(group["name"] for group in item["groups"]) for item in rendered} == {
-        ("findme-photo", "findme-image-origin"),
-        ("findme-photo", "findme-workers", "findme-image-origin"),
+        ("findme-photo", "findme-image-origin", "findme-postgres"),
+        ("findme-photo", "findme-workers", "findme-image-origin", "findme-postgres"),
     }
     tested = [Path(command[-1]) for command in calls if command[1:3] == ["test", "rules"]]
     assert len(tested) == 3
@@ -357,6 +360,10 @@ def test_only_measured_sustained_service_impact_routes_to_operator(control):
         "ImageOrigin5xxDegradation",
         "ImageOriginRateLimited",
         "ImageOriginDiskSpaceCritical",
+        "DatabaseUnavailableToDjango",
+        "DatabaseConnectionExhaustion",
+        "DatabaseLockDegradation",
+        "DatabaseFreezeDanger",
     }
     assert {
         name for name, rule in by_name.items() if rule["labels"].get("notification") == "actionable"
@@ -1029,8 +1036,12 @@ def test_fixed_now_rejects_nonfinite_stale_and_future_observations(control, obse
 def test_public_freshness_bounds_match_two_probe_intervals(control):
     metrics = control.load_config()["metrics"]
     public = {"public_success", "public_duration", "tls_days"}
+    postgres = {key for key in metrics if key.startswith("db_") or key.startswith("postgres_")}
     assert {metric["max_age"] for key, metric in metrics.items() if key in public} == {600}
-    assert {metric["max_age"] for key, metric in metrics.items() if key not in public} == {120}
+    assert {metric["max_age"] for key, metric in metrics.items() if key in postgres} == {150}
+    assert {
+        metric["max_age"] for key, metric in metrics.items() if key not in public | postgres
+    } == {120}
 
 
 @pytest.mark.parametrize("days", ["10", "30"])
@@ -1290,7 +1301,7 @@ def test_render_resolves_histogram_quantile_placeholders_with_numeric_names(cont
 
 def test_worker_dashboard_keeps_baseline_and_gates_fresh_pool_and_runtime_sources(control):
     dashboard = json.loads(control.render(config(control))["dashboard.json"])
-    assert len(dashboard_charts(dashboard)) == 48
+    assert len(dashboard_charts(dashboard)) == 68
     worker = {
         widget["multiSourceChart"]["title"]: widget["multiSourceChart"]
         for widget in dashboard_charts(dashboard)

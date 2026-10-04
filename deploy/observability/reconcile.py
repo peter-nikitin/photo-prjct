@@ -33,6 +33,8 @@ COMMON = (
     "scripts/monitor_commerce.py",
 )
 CANONICAL = (
+    "docker-compose.deployment.yml",
+    "deploy/postgres-monitoring/install.py",
     "deploy/configure-monitoring-agent.sh",
     "deploy/monitoring/unified-agent.yml.template",
     "deploy/monitoring/merge_native_agent.py",
@@ -399,11 +401,22 @@ def reconcile_transaction(
     except Exception as error:
         report_stage("snapshot", error, files)
         raise
+    postgres = None
+    exporter_existed = False
+    if config["role"] == "canonical":
+        postgres = module(source / "deploy/postgres-monitoring/install.py")
+        exporter_existed = postgres.snapshot(backup)
     try:
         apply(source, config, revision)
+        if postgres is not None:
+            postgres.install(source)
     except Exception as error:
         report_stage("apply", error)
-        restore(state, backup)
+        try:
+            if postgres is not None:
+                postgres.restore(source, backup, exporter_existed)
+        finally:
+            restore(state, backup)
         raise
     receipt.write_text(json.dumps({"sha": revision, "manifest": manifest, "backup": str(backup)}))
     print(f"OBSERVABILITY_HOST_SHA={revision} status=green backup={backup}")

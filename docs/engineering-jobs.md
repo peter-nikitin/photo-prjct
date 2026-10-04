@@ -731,3 +731,9 @@ This log is append-only.
 | 2026-09-27 | EJ-009 | Planned | Validated | Baseline VM/public-probe ingestion is live; the operator verified the console dashboard and baseline alert settings and received Alarm/OK emails from the [isolated failure/recovery drill](runbooks/minimal-monitoring.md#activation-evidence-2026-09-27). Commerce worker metric collection remains a separate extension. |
 | 2026-09-27 | EJ-030 | Not recorded | In progress | Accepted ADRs 0040/0041 and scoped local schema, reconciliation, SQL-reader and feature-routing evidence; final-package and production rollout gates remain open. |
 | 2026-09-28 | EJ-031 | Not recorded | In progress | Approved worker-isolation repository implementation has reviewed private transport, lifecycle, metrics and provisioning code; canonical release integration and final verification remain in progress. No paid provisioning or live relocation is claimed. |
+
+PostgreSQL observability repository support adds a private exporter and a bounded Django database
+probe. The exporter belongs to independent observability reconciliation; monitoring failure does
+not block product Deploy or rollback. Cloud apply requires same-SHA producer release success.
+Live credential/role provisioning, measured series cost, freshness and notification delivery remain
+pending. See [PostgreSQL activation and rollback](../deploy/postgres-monitoring/README.md).

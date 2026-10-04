@@ -2795,6 +2795,1074 @@
           }
         ]
       }
+    },
+    {
+      "position": {
+        "y": "64",
+        "w": "24",
+        "h": "80"
+      },
+      "group": {
+        "id": "30121c03-41ed-5d0d-bbe3-50790831aaae",
+        "title": "PostgreSQL",
+        "widgets": [
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "0"
+            },
+            "multiSourceChart": {
+              "id": "86ba9d9f-f0e1-5fd3-afb9-112768570d3e",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "294cf290-816e-52c8-bd8d-c6d76486e807",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_usable and on() ((time() - findme_db_check_timestamp_seconds) < 150)",
+                    "textMode": true,
+                    "name": "AppSql"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "294cf290-816e-52c8-bd8d-c6d76486e807",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "pg_up{job=\"findme-postgres\"} and on() ((time() - timestamp(pg_up{job=\"findme-postgres\"})) < 150)",
+                    "textMode": true,
+                    "name": "Collector"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "294cf290-816e-52c8-bd8d-c6d76486e807",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Usability — 1 = healthy"
+            },
+            "id": "86ba9d9f-f0e1-5fd3-afb9-112768570d3e"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "0"
+            },
+            "multiSourceChart": {
+              "id": "5d577b65-51da-5adf-a96f-056166486956",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "195d6ee0-282f-5057-84d6-0a6f70ee309e",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "absent_over_time(findme_db_usable[4m])",
+                    "textMode": true,
+                    "name": "AppSqlMissing"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "195d6ee0-282f-5057-84d6-0a6f70ee309e",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "absent_over_time(pg_up{job=\"findme-postgres\"}[4m])",
+                    "textMode": true,
+                    "name": "CollectorMissing"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "195d6ee0-282f-5057-84d6-0a6f70ee309e",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Unknown observations — 1 = missing"
+            },
+            "id": "5d577b65-51da-5adf-a96f-056166486956"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "8"
+            },
+            "multiSourceChart": {
+              "id": "199afeae-7106-5d64-820e-fd24d166a912",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "4c81bebc-d5ec-56b0-a340-2d31eae797d4",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_sessions{state=\"active\"}",
+                    "textMode": true,
+                    "name": "Active"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "4c81bebc-d5ec-56b0-a340-2d31eae797d4",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_sessions{state=\"idle\"}",
+                    "textMode": true,
+                    "name": "Idle"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "4c81bebc-d5ec-56b0-a340-2d31eae797d4",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_sessions{state=\"idle_in_transaction\"}",
+                    "textMode": true,
+                    "name": "IdleTransaction"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "4c81bebc-d5ec-56b0-a340-2d31eae797d4",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_usable_connections",
+                    "textMode": true,
+                    "name": "UsableCeiling"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "4c81bebc-d5ec-56b0-a340-2d31eae797d4",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Connections — sessions and usable ceiling"
+            },
+            "id": "199afeae-7106-5d64-820e-fd24d166a912"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "8"
+            },
+            "multiSourceChart": {
+              "id": "cd390994-d106-574c-b32a-e04e014d0e5d",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "5f43aecb-0bdf-56d4-9204-69d42df5299e",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_oldest_transaction_seconds{state=\"active\"}",
+                    "textMode": true,
+                    "name": "ActiveTransaction"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "5f43aecb-0bdf-56d4-9204-69d42df5299e",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_oldest_transaction_seconds{state=\"idle_in_transaction\"}",
+                    "textMode": true,
+                    "name": "IdleTransaction"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "5f43aecb-0bdf-56d4-9204-69d42df5299e",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_lock_wait_oldest_seconds",
+                    "textMode": true,
+                    "name": "LockWait"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "5f43aecb-0bdf-56d4-9204-69d42df5299e",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Oldest transactions and lock wait — seconds"
+            },
+            "id": "cd390994-d106-574c-b32a-e04e014d0e5d"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "16"
+            },
+            "multiSourceChart": {
+              "id": "adc98a80-1b90-59c4-a271-877287b197c2",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "5c317b78-65ed-5198-8566-57d2f740140f",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_blocked_sessions",
+                    "textMode": true,
+                    "name": "Blocked"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "5c317b78-65ed-5198-8566-57d2f740140f",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": false,
+              "title": "PostgreSQL — Blocked sessions — count"
+            },
+            "id": "adc98a80-1b90-59c4-a271-877287b197c2"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "16"
+            },
+            "multiSourceChart": {
+              "id": "12a6362e-5543-5904-abf0-4dd67ce5c999",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "8db5789b-6a5e-55da-a43b-99aadc3b0372",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(pg_stat_database_xact_commit{job=\"findme-postgres\",datname=\"app\"}[5m])",
+                    "textMode": true,
+                    "name": "Commit"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "8db5789b-6a5e-55da-a43b-99aadc3b0372",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(pg_stat_database_xact_rollback{job=\"findme-postgres\",datname=\"app\"}[5m])",
+                    "textMode": true,
+                    "name": "Rollback"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "8db5789b-6a5e-55da-a43b-99aadc3b0372",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Transaction outcomes — per second"
+            },
+            "id": "12a6362e-5543-5904-abf0-4dd67ce5c999"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "24"
+            },
+            "multiSourceChart": {
+              "id": "af223742-e2bd-50b6-bc52-8f4790f64373",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "f80ee89f-1a32-576a-a3d7-d2f8e3bb5e06",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * rate(pg_stat_database_xact_rollback{job=\"findme-postgres\",datname=\"app\"}[5m]) / (rate(pg_stat_database_xact_commit{job=\"findme-postgres\",datname=\"app\"}[5m]) + rate(pg_stat_database_xact_rollback{job=\"findme-postgres\",datname=\"app\"}[5m])) and on() ((rate(pg_stat_database_xact_commit{job=\"findme-postgres\",datname=\"app\"}[5m]) + rate(pg_stat_database_xact_rollback{job=\"findme-postgres\",datname=\"app\"}[5m])) >= 1)",
+                    "textMode": true,
+                    "name": "RollbackShare"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "f80ee89f-1a32-576a-a3d7-d2f8e3bb5e06",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": false,
+              "title": "PostgreSQL — Rollback share — percent above 1 transaction/s"
+            },
+            "id": "af223742-e2bd-50b6-bc52-8f4790f64373"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "24"
+            },
+            "multiSourceChart": {
+              "id": "facd1c2a-c520-54f5-bda3-49454a0bcd73",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "2bf20355-a105-5452-aace-84cee82b6845",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "increase(pg_stat_database_deadlocks{job=\"findme-postgres\",datname=\"app\"}[5m])",
+                    "textMode": true,
+                    "name": "Deadlocks"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "2bf20355-a105-5452-aace-84cee82b6845",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": false,
+              "title": "PostgreSQL — Deadlocks — increase in 5 minutes"
+            },
+            "id": "facd1c2a-c520-54f5-bda3-49454a0bcd73"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "32"
+            },
+            "multiSourceChart": {
+              "id": "0e887341-7242-518a-b9b9-e74b8550a792",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "a0ce4134-9ff4-5cf7-b507-ff2e648630ad",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(pg_stat_database_blks_read{job=\"findme-postgres\",datname=\"app\"}[5m])",
+                    "textMode": true,
+                    "name": "Read"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "a0ce4134-9ff4-5cf7-b507-ff2e648630ad",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(pg_stat_database_blks_hit{job=\"findme-postgres\",datname=\"app\"}[5m])",
+                    "textMode": true,
+                    "name": "Hit"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "a0ce4134-9ff4-5cf7-b507-ff2e648630ad",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Database blocks — reads and hits per second"
+            },
+            "id": "0e887341-7242-518a-b9b9-e74b8550a792"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "32"
+            },
+            "multiSourceChart": {
+              "id": "4a3e7ad0-0069-51ed-8e50-3ab0962f9045",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "2393d2d0-e124-59f8-aa3b-3db0c046f6a7",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * rate(pg_stat_database_blks_hit{job=\"findme-postgres\",datname=\"app\"}[5m]) / (rate(pg_stat_database_blks_hit{job=\"findme-postgres\",datname=\"app\"}[5m]) + rate(pg_stat_database_blks_read{job=\"findme-postgres\",datname=\"app\"}[5m]))",
+                    "textMode": true,
+                    "name": "CacheHit"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "2393d2d0-e124-59f8-aa3b-3db0c046f6a7",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": false,
+              "title": "PostgreSQL — PostgreSQL cache hit — percent with traffic"
+            },
+            "id": "4a3e7ad0-0069-51ed-8e50-3ab0962f9045"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "40"
+            },
+            "multiSourceChart": {
+              "id": "95683c3f-5909-540b-b2b2-133cca768512",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "7f5e0a52-5ef1-5ddb-9f2b-661aabd34739",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(pg_stat_database_temp_bytes{job=\"findme-postgres\",datname=\"app\"}[5m])",
+                    "textMode": true,
+                    "name": "TemporaryBytes"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "7f5e0a52-5ef1-5ddb-9f2b-661aabd34739",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": false,
+              "title": "PostgreSQL — Temporary files — bytes per second"
+            },
+            "id": "95683c3f-5909-540b-b2b2-133cca768512"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "40"
+            },
+            "multiSourceChart": {
+              "id": "441f363b-5044-5f39-8be6-dad2d870231c",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "7229e5c2-dc59-5610-9b03-5a0201f501dc",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(sys_io_Disks_ReadBytes{instance=\"dev-photo-prjct\",disk=\"vda\"}[5m])",
+                    "textMode": true,
+                    "name": "VmRead"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "7229e5c2-dc59-5610-9b03-5a0201f501dc",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(sys_io_Disks_WriteBytes{instance=\"dev-photo-prjct\",disk=\"vda\"}[5m])",
+                    "textMode": true,
+                    "name": "VmWrite"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "7229e5c2-dc59-5610-9b03-5a0201f501dc",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Shared VM disk I/O — bytes per second"
+            },
+            "id": "441f363b-5044-5f39-8be6-dad2d870231c"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "48"
+            },
+            "multiSourceChart": {
+              "id": "25665a30-6e17-5365-ac38-0d01bc090044",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "b52e38ec-c703-5246-b926-c65d9e923dd6",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(findme_db_wal_bytes_total[5m])",
+                    "textMode": true,
+                    "name": "WalGenerated"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "b52e38ec-c703-5246-b926-c65d9e923dd6",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": false,
+              "title": "PostgreSQL — WAL generated — bytes per second"
+            },
+            "id": "25665a30-6e17-5365-ac38-0d01bc090044"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "48"
+            },
+            "multiSourceChart": {
+              "id": "40b15c68-3f43-5dbd-a2f4-ace0b798ac83",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "1232fe72-2e59-5472-b14b-876ea8321285",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "increase(pg_stat_bgwriter_checkpoints_timed_total{job=\"findme-postgres\"}[5m])",
+                    "textMode": true,
+                    "name": "Timed"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "1232fe72-2e59-5472-b14b-876ea8321285",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "increase(pg_stat_bgwriter_checkpoints_req_total{job=\"findme-postgres\"}[5m])",
+                    "textMode": true,
+                    "name": "Requested"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "1232fe72-2e59-5472-b14b-876ea8321285",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Checkpoints — events per 5 minutes"
+            },
+            "id": "40b15c68-3f43-5dbd-a2f4-ace0b798ac83"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "56"
+            },
+            "multiSourceChart": {
+              "id": "63ac3347-5799-5d07-916e-c7aff77f3dba",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "7dba80cf-a015-5922-870d-6f618013ebbc",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(pg_stat_bgwriter_checkpoint_write_time_total{job=\"findme-postgres\"}[5m]) / 1000",
+                    "textMode": true,
+                    "name": "Write"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "7dba80cf-a015-5922-870d-6f618013ebbc",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(pg_stat_bgwriter_checkpoint_sync_time_total{job=\"findme-postgres\"}[5m]) / 1000",
+                    "textMode": true,
+                    "name": "Sync"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "7dba80cf-a015-5922-870d-6f618013ebbc",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Checkpoint write and sync — seconds per second"
+            },
+            "id": "63ac3347-5799-5d07-916e-c7aff77f3dba"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "56"
+            },
+            "multiSourceChart": {
+              "id": "e012041d-90e0-5840-8510-46acaf602bef",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "b5636736-39f6-5f5d-8de9-039811aa9374",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "pg_database_size_bytes{job=\"findme-postgres\",datname=\"app\"} / 1073741824",
+                    "textMode": true,
+                    "name": "SizeGib"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "b5636736-39f6-5f5d-8de9-039811aa9374",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "deriv(pg_database_size_bytes{job=\"findme-postgres\",datname=\"app\"}[1h]) * 86400 / 1073741824",
+                    "textMode": true,
+                    "name": "GrowthGibDay"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "b5636736-39f6-5f5d-8de9-039811aa9374",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Database size — GiB and growth GiB/day"
+            },
+            "id": "e012041d-90e0-5840-8510-46acaf602bef"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "64"
+            },
+            "multiSourceChart": {
+              "id": "5fffaa05-5bac-569c-a7a4-7d0a791fe13d",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "e1666341-a708-5fc6-8d90-5882f029e23a",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sys_filesystem_FreeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"} / 1073741824",
+                    "textMode": true,
+                    "name": "FreeGib"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "e1666341-a708-5fc6-8d90-5882f029e23a",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * sys_filesystem_FreeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"} / sys_filesystem_SizeB{instance=\"dev-photo-prjct\",mountpoint=\"/\"}",
+                    "textMode": true,
+                    "name": "FreePercent"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "e1666341-a708-5fc6-8d90-5882f029e23a",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Shared VM root free — GiB and percent"
+            },
+            "id": "5fffaa05-5bac-569c-a7a4-7d0a791fe13d"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "64"
+            },
+            "multiSourceChart": {
+              "id": "31205346-37b8-5891-b0ec-0e5d81fa567b",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "1263ac2c-d4c1-5cf4-8649-482b27d9d8b9",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_dead_tuples",
+                    "textMode": true,
+                    "name": "Dead"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "1263ac2c-d4c1-5cf4-8649-482b27d9d8b9",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_live_tuples",
+                    "textMode": true,
+                    "name": "Live"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "1263ac2c-d4c1-5cf4-8649-482b27d9d8b9",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": true,
+              "title": "PostgreSQL — Vacuum — dead and live tuples"
+            },
+            "id": "31205346-37b8-5891-b0ec-0e5d81fa567b"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "0",
+              "y": "72"
+            },
+            "multiSourceChart": {
+              "id": "75f8bee5-4c0a-51e2-92af-9afb9c4bf0c9",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "76390427-2d73-56c1-a067-43e84aafeaed",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_db_oldest_vacuum_seconds",
+                    "textMode": true,
+                    "name": "VacuumAge"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "76390427-2d73-56c1-a067-43e84aafeaed",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": false,
+              "title": "PostgreSQL — Oldest vacuum — seconds"
+            },
+            "id": "75f8bee5-4c0a-51e2-92af-9afb9c4bf0c9"
+          },
+          {
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "72"
+            },
+            "multiSourceChart": {
+              "id": "750dfe38-929f-5866-850a-dc15d71baebb",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "5bd3cfc2-fcd6-5c97-b00b-156c14d075b4",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * findme_db_max_relation_xid_age / findme_db_autovacuum_freeze_max_age",
+                    "textMode": true,
+                    "name": "RelationXidAgeFreezeLimit"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "5bd3cfc2-fcd6-5c97-b00b-156c14d075b4",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "displayLegend": false,
+              "title": "PostgreSQL — Freeze horizon — percent"
+            },
+            "id": "750dfe38-929f-5866-850a-dc15d71baebb"
+          }
+        ]
+      }
     }
   ]
 }

@@ -826,6 +826,385 @@
           "exp_alerts": []
         }
       ]
+    },
+    {
+      "name": "database app SQL outage requires fresh sustained failures and recovers",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_db_usable",
+          "values": "1 0+0x7 1+0x5"
+        },
+        {
+          "series": "findme_db_check_timestamp_seconds",
+          "values": "0+60x13"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "4m",
+          "alertname": "DatabaseUnavailableToDjango",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "6m",
+          "alertname": "DatabaseUnavailableToDjango",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "notification": "actionable",
+                "incident": "database"
+              },
+              "exp_annotations": {
+                "summary": "Application SQL checks cannot use PostgreSQL for three minutes."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "9m",
+          "alertname": "DatabaseUnavailableToDjango",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "database exporter failure is diagnostic with healthy application SQL",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_db_usable",
+          "values": "1+0x10"
+        },
+        {
+          "series": "findme_db_check_timestamp_seconds",
+          "values": "0+60x10"
+        },
+        {
+          "series": "pg_up{job=\"findme-postgres\"}",
+          "values": "0+0x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "8m",
+          "alertname": "DatabaseUnavailableToDjango",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "8m",
+          "alertname": "DatabaseCollectorFailure",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "warning",
+                "job": "findme-postgres"
+              },
+              "exp_annotations": {
+                "summary": "PostgreSQL exporter cannot connect; application database state is independent."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "database missing samples are unknown and never page",
+      "interval": "1m",
+      "input_series": [],
+      "alert_rule_test": [
+        {
+          "eval_time": "10m",
+          "alertname": "DatabaseUnavailableToDjango",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "10m",
+          "alertname": "DatabaseTelemetryMissing",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "PostgreSQL observations are missing; database health is unknown."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "database saturation needs service impact",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_db_sessions{state=\"active\"}",
+          "values": "92+0x15"
+        },
+        {
+          "series": "findme_db_usable_connections",
+          "values": "100+0x15"
+        },
+        {
+          "series": "findme_db_usable",
+          "values": "1+0x15"
+        },
+        {
+          "series": "findme_db_check_timestamp_seconds",
+          "values": "0+60x15"
+        },
+        {
+          "series": "findme_db_sessions{state=\"idle\"}",
+          "values": "0+0x15"
+        },
+        {
+          "series": "findme_db_sessions{state=\"idle_in_transaction\"}",
+          "values": "0+0x15"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "12m",
+          "alertname": "DatabaseConnectionExhaustion",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "database freeze danger is sustained and recovers",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_db_max_relation_xid_age",
+          "values": "170000000+0x35 10000000+0x4"
+        },
+        {
+          "series": "findme_db_autovacuum_freeze_max_age",
+          "values": "200000000+0x40"
+        },
+        {
+          "series": "findme_db_check_timestamp_seconds",
+          "values": "0+60x40"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "29m",
+          "alertname": "DatabaseFreezeDanger",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "31m",
+          "alertname": "DatabaseFreezeDanger",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "notification": "actionable",
+                "incident": "database"
+              },
+              "exp_annotations": {
+                "summary": "Oldest relation XID age exceeds eighty percent of the freeze limit."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "37m",
+          "alertname": "DatabaseFreezeDanger",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "database saturation with customer errors fires and clears",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_db_sessions{state=\"active\"}",
+          "values": "92+0x15 10+0x5"
+        },
+        {
+          "series": "findme_db_usable_connections",
+          "values": "100+0x21"
+        },
+        {
+          "series": "findme_db_usable",
+          "values": "1+0x21"
+        },
+        {
+          "series": "findme_db_check_timestamp_seconds",
+          "values": "0+60x21"
+        },
+        {
+          "series": "findme_http_requests_total{status_class=\"5xx\",route=\"gallery\"}",
+          "values": "0+2x21"
+        },
+        {
+          "series": "findme_db_sessions{state=\"idle\"}",
+          "values": "0+0x21"
+        },
+        {
+          "series": "findme_db_sessions{state=\"idle_in_transaction\"}",
+          "values": "0+0x21"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "8m",
+          "alertname": "DatabaseConnectionExhaustion",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "14m",
+          "alertname": "DatabaseConnectionExhaustion",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "notification": "actionable",
+                "incident": "database"
+              },
+              "exp_annotations": {
+                "summary": "Database connections are exhausted with measured service impact."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "17m",
+          "alertname": "DatabaseConnectionExhaustion",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "database lock waits with customer errors fire and clear",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_db_blocked_sessions",
+          "values": "1+0x10 0+0x4"
+        },
+        {
+          "series": "findme_db_lock_wait_oldest_seconds",
+          "values": "360+0x10 0+0x4"
+        },
+        {
+          "series": "findme_db_check_timestamp_seconds",
+          "values": "0+60x15"
+        },
+        {
+          "series": "findme_http_requests_total{status_class=\"5xx\",route=\"gallery\"}",
+          "values": "0+2x15"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "DatabaseLockDegradation",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "9m",
+          "alertname": "DatabaseLockDegradation",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "notification": "actionable",
+                "incident": "database"
+              },
+              "exp_annotations": {
+                "summary": "Sustained database locks or idle transactions coincide with service impact."
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "12m",
+          "alertname": "DatabaseLockDegradation",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "stale failed SQL sample does not become database outage",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_db_usable",
+          "values": "0 _ _ _ _ _ _ _ _ _"
+        },
+        {
+          "series": "findme_db_check_timestamp_seconds",
+          "values": "0 _ _ _ _ _ _ _ _ _"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "8m",
+          "alertname": "DatabaseUnavailableToDjango",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "database lock waits with overdue fresh worker work fire",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "findme_db_blocked_sessions",
+          "values": "1+0x11"
+        },
+        {
+          "series": "findme_db_lock_wait_oldest_seconds",
+          "values": "360+0x11"
+        },
+        {
+          "series": "findme_db_check_timestamp_seconds",
+          "values": "0+60x11"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}",
+          "values": "600+0x11"
+        },
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"selfie\"}",
+          "values": "1+0x11"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+60x11"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "6m",
+          "alertname": "DatabaseLockDegradation",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "project": "findme-photo",
+                "severity": "critical",
+                "notification": "actionable",
+                "incident": "database"
+              },
+              "exp_annotations": {
+                "summary": "Sustained database locks or idle transactions coincide with service impact."
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

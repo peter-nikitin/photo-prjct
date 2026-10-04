@@ -15,6 +15,7 @@ from typing import Any
 
 REPOSITORY = "peter-nikitin/photo-prjct"
 HOST_JOBS = {
+    "application_changed": ("deploy.yml", "Deploy"),
     "canonical_changed": ("deploy.yml", "Reconcile canonical observability"),
     "public_changed": ("deploy-public-probe.yml", "Reconcile public observability"),
     "probe_changed": ("deploy-public-probe.yml", "Deploy public health probe"),

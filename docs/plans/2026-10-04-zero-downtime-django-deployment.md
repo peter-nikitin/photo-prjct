@@ -35,7 +35,7 @@ Not applicable: this plan changes neither the photo-worker claim/result contract
 
 ### Task 2: Route all Django traffic to one selected slot, retaining static assets
 
-**Files:** `deploy/nginx/https.conf.template`, `deploy/nginx/private-worker.conf.template`, `deploy/nginx/reload-nginx.sh`, `docker-compose.deployment.yml`, `deploy/web-slot.py` (new), `tests/deployment/test_deployment_scripts.py`, `tests/deployment/test_import_deployment.py`, `tests/deployment/validate-nginx.sh`.
+**Files:** `deploy/nginx/https.conf.template`, `deploy/nginx/private-worker.conf.template`, `deploy/nginx/reload-nginx.sh`, `docker-compose.deployment.yml`, `deploy/web-slot.py` (new), `tests/deployment/test_deployment_scripts.py`, `tests/deployment/test_import_deployment.py`, `tests/deployment/test_worker_pool_transport.py`, `tests/processing/test_import_worker_container_contract.py`, `tests/deployment/validate-nginx.sh`.
 
 - **Specification:** [Selected design](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#selected-design), including public/private/import routes and static files; [Failure and recovery semantics](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#failure-and-recovery-semantics).
 - **Depends on:** Task 1 provides the two slot names.
@@ -43,7 +43,7 @@ Not applicable: this plan changes neither the photo-worker claim/result contract
 
 - [ ] Add failing Nginx/config tests for selection of each slot, private worker and import routing, public denial of import endpoints, unchanged bearer/privacy headers, invalid upstream rejection, and old/new hashed static URLs across a switch.
 - [ ] Run `sh scripts/run-in-test-env.sh .venv/bin/pytest -q -m operational tests/deployment/test_deployment_scripts.py tests/deployment/test_import_deployment.py` and `sh tests/deployment/validate-nginx.sh`; record the focused failures.
-- [ ] Implement a small host-owned slot selector and Nginx template change. Store only the selected upstream in the already bind-mounted Nginx directory so the first migration does not recreate Nginx to add a mount. Seed existing static assets into the additive volume before the first switch, then add candidate assets without deleting predecessor files.
+- [ ] Implement a small host-owned slot selector and Nginx template change. Store only the selected upstream in the already bind-mounted Nginx directory so the first migration does not recreate Nginx to add a mount. Provide a tested static-asset seeding interface; Task 3 invokes it before the first switch, then adds candidate assets without deleting predecessor files.
 - [ ] Re-run focused tests and Nginx validation GREEN. Verify that an invalid candidate config leaves the old selected upstream in place.
 
 ### Task 3: Replace stop/start deploy with warm handoff and bounded recovery

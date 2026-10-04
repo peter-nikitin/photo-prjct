@@ -13,6 +13,295 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize(
+    "persisted,installed,inspection_ok,healthy,expected",
+    [
+        ("web", "web-next", True, "web", 2),
+        ("web-next", "web", True, "web-next", 2),
+        (None, "web-next", False, "web", 2),
+        ("web-next", "web-next", True, "web-next", 0),
+        (None, None, True, "web", 0),
+        ("web", "web", True, None, 2),
+    ],
+    ids=[
+        "mismatch-web",
+        "mismatch-next",
+        "inspection-failed",
+        "persisted-restart",
+        "fresh-start",
+        "unhealthy-persisted",
+    ],
+)
+def test_nginx_startup_preflight_preserves_selection(
+    tmp_path, fake_bin, persisted, installed, inspection_ok, healthy, expected
+):
+    marker = tmp_path / "selected-slot"
+    if persisted is not None:
+        marker.write_text(persisted + "\n")
+    configuration = tmp_path / "installed.conf"
+    configuration.write_text(
+        f"upstream django_upstream {{\n    server {installed}:8000;\n}}\n"
+        if installed is not None
+        else "server { listen 80; }\n"
+    )
+    _write_executable(
+        fake_bin / "nginx",
+        """
+[ "$*" = "-T" ] || exit 3
+[ "$INSPECTION_OK" = 1 ] || exit 1
+cat "$INSTALLED_CONFIGURATION"
+""",
+    )
+    _write_executable(
+        fake_bin / "wget",
+        """
+for argument do :; done
+[ "$argument" = "http://$HEALTHY_SLOT:8000/health/" ]
+""",
+    )
+    # Run the actual startup selection prefix; substitute only the host-owned
+    # marker path and external processes. Rendering/startup are covered in real
+    # Nginx validation separately, so this focused check cannot start a daemon.
+    source = (ROOT / "deploy/nginx/reload-nginx.sh").read_text()
+    preflight = source.split('if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then', 1)[0]
+    preflight = preflight.replace("/opt/nginx/selected-slot", '"${STARTUP_MARKER}"')
+    result = subprocess.run(
+        ["/bin/sh"],
+        input=preflight + '\nprintf "ACCEPTED %s\\n" "$DJANGO_SLOT"\n',
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PUBLIC_DOMAIN": "findme-photo.ru",
+            "STARTUP_MARKER": str(marker),
+            "INSTALLED_CONFIGURATION": str(configuration),
+            "INSPECTION_OK": str(int(inspection_ok)),
+            "HEALTHY_SLOT": healthy or "none",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == expected, result.stdout + result.stderr
+    if expected == 0:
+        assert result.stdout == f"ACCEPTED {persisted or 'web'}\n"
+    else:
+        assert "ACCEPTED" not in result.stdout
+    assert marker.exists() == (persisted is not None)
+    if persisted is not None:
+        assert marker.read_text() == persisted + "\n"
+
+
+def _slot_command(root: Path, *arguments: str, env=None):
+    return subprocess.run(
+        [sys.executable, ROOT / "deploy/web-slot.py", "--root", root, *arguments],
+        env={**os.environ, **(env or {})},
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("slot", ["web", "web-next"])
+def test_web_slot_switch_is_durable_and_uses_validated_reload(tmp_path, fake_bin, slot):
+    configuration = tmp_path / "deploy/nginx"
+    configuration.mkdir(parents=True)
+    (configuration / "selected-slot").write_text("web\n")
+    log = tmp_path / "commands"
+    installed = tmp_path / "installed-slot"
+    installed.write_text("web")
+    _write_executable(
+        fake_bin / "docker",
+        """
+printf '%s\\n' "$*" >> "$COMMAND_LOG"
+case "$*" in
+  *"nginx -T")
+    printf 'upstream django_upstream { server %s:8000; }\\n' "$(cat "$INSTALLED_SLOT")" ;;
+  *"--apply --slot "*) for slot do :; done; printf '%s' "$slot" > "$INSTALLED_SLOT" ;;
+  *"ps -q "*) printf 'target-id\\n' ;;
+  "inspect "*) printf 'healthy\\n' ;;
+  *) exit 2 ;;
+esac
+""",
+    )
+    env = {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "COMMAND_LOG": str(log),
+        "INSTALLED_SLOT": str(installed),
+    }
+    result = _slot_command(tmp_path, "switch", slot, env=env)
+    assert result.returncode == 0, result.stderr
+    assert _slot_command(tmp_path, "selected", env=env).stdout == f"{slot}\n"
+    assert (
+        f"exec -T nginx /bin/sh /opt/nginx/reload-nginx.sh --apply --slot {slot}" in log.read_text()
+    )
+    assert "--project-name photo-prjct" in log.read_text()
+    assert "stop" not in log.read_text() and "up -d" not in log.read_text()
+
+
+def test_web_slot_failed_validation_keeps_selected_predecessor(tmp_path, fake_bin):
+    configuration = tmp_path / "deploy/nginx"
+    configuration.mkdir(parents=True)
+    (configuration / "selected-slot").write_text("web\n")
+    _write_executable(
+        fake_bin / "docker",
+        """
+case "$*" in
+  *"nginx -T") printf 'upstream django_upstream { server web:8000; }\\n' ;;
+  *"ps -q "*) printf 'target-id\\n' ;;
+  "inspect "*) printf 'healthy\\n' ;;
+  *) exit 1 ;;
+esac
+""",
+    )
+    env = {"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    result = _slot_command(tmp_path, "switch", "web-next", env=env)
+    assert result.returncode != 0
+    assert _slot_command(tmp_path, "selected", env=env).stdout == "web\n"
+
+
+def test_web_slot_mismatch_requires_explicit_reconciliation(tmp_path, fake_bin):
+    configuration = tmp_path / "deploy/nginx"
+    configuration.mkdir(parents=True)
+    (configuration / "selected-slot").write_text("web\n")
+    _write_executable(
+        fake_bin / "docker",
+        """
+case "$*" in
+  *"nginx -T") printf 'upstream django_upstream { server web-next:8000; }\\n' ;;
+  *"--apply --slot web") exit 0 ;;
+  *"ps -q "*) printf 'target-id\\n' ;;
+  "inspect "*) printf 'healthy\\n' ;;
+  *) exit 2 ;;
+esac
+""",
+    )
+    env = {"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    result = _slot_command(tmp_path, "selected", env=env)
+    assert result.returncode == 1 and result.stdout == ""
+    assert "installed=web-next persisted=web" in result.stderr
+    assert _slot_command(tmp_path, "switch", "web", env=env).returncode == 0
+
+
+@pytest.mark.parametrize("health", ["healthy", "unhealthy"])
+def test_explicit_switch_recovers_first_interruption_only_to_a_healthy_slot(
+    tmp_path, fake_bin, health
+):
+    configuration = tmp_path / "deploy/nginx"
+    configuration.mkdir(parents=True)
+    log = tmp_path / "commands"
+    _write_executable(
+        fake_bin / "docker",
+        """
+printf '%s\\n' "$*" >> "$COMMAND_LOG"
+case "$*" in
+  *"nginx -T") printf 'upstream django_upstream { server web-next:8000; }\\n' ;;
+  *"ps -q web") printf 'old-id\\n' ;;
+  "inspect "*) printf '%s\\n' "$HEALTH" ;;
+  *"--apply --slot web") exit 0 ;;
+  *) exit 2 ;;
+esac
+""",
+    )
+    result = _slot_command(
+        tmp_path,
+        "switch",
+        "web",
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "COMMAND_LOG": str(log),
+            "HEALTH": health,
+        },
+    )
+    if health == "healthy":
+        assert result.returncode == 0, result.stderr
+        assert (configuration / "selected-slot").read_text() == "web\n"
+    else:
+        assert result.returncode == 1
+        assert "not healthy" in result.stderr
+        assert "--apply" not in log.read_text()
+        assert not (configuration / "selected-slot").exists()
+
+
+def test_web_slot_rejects_invalid_selection_before_edge_mutation(tmp_path, fake_bin):
+    result = _slot_command(tmp_path, "switch", "web; injected", env={"PATH": str(fake_bin)})
+    assert result.returncode != 0
+    assert not (tmp_path / "deploy/nginx/selected-slot").exists()
+
+
+def test_web_slot_static_seed_preserves_predecessor_assets(tmp_path, fake_bin):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "site.abcdef123456.css").write_text("old")
+    (source / "staticfiles.json").write_text("old manifest")
+    destination = tmp_path / "static"
+    destination.mkdir()
+    (destination / "site.123456abcdef.css").write_text("new")
+    (destination / "staticfiles.json").write_text("candidate manifest")
+    _write_python_executable(
+        fake_bin / "docker",
+        """
+import os, subprocess, sys
+arguments = sys.argv[1:]
+if arguments[-3:] == ['ps', '-q', 'web']:
+    print('active-web-id')
+elif arguments == ['cp', 'active-web-id:/app/src/backend/staticfiles/.', '-']:
+    subprocess.run(['tar', '-cf', '-', '-C', os.environ['SOURCE_STATIC'], '.'], check=True)
+elif '--entrypoint' in arguments and arguments[arguments.index('--entrypoint') + 1] == 'python':
+    script = arguments[-1].replace('/app/src/backend/staticfiles', os.environ['DESTINATION_STATIC'])
+    subprocess.run([sys.executable, '-c', script], check=True)
+else:
+    sys.exit(2)
+""",
+    )
+    result = _slot_command(
+        tmp_path,
+        "seed-static",
+        "web",
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SOURCE_STATIC": str(source),
+            "DESTINATION_STATIC": str(destination),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert (destination / "site.abcdef123456.css").read_text() == "old"
+    assert (destination / "site.123456abcdef.css").read_text() == "new"
+    assert (destination / "staticfiles.json").read_text() == "candidate manifest"
+
+
+@pytest.mark.parametrize(
+    "configuration,health,expected",
+    [
+        ("upstream django_upstream { server web:8000; }", "healthy", 0),
+        ("upstream django_upstream { server web-next:8000; }", "healthy", 1),
+        ("upstream django_upstream { server web:8000; }", "unhealthy", 1),
+    ],
+)
+def test_missing_slot_selection_requires_live_single_slot_proof(
+    tmp_path, fake_bin, configuration, health, expected
+):
+    _write_executable(
+        fake_bin / "docker",
+        """
+case "$*" in
+  *"nginx -T") printf '%s\\n' "$CONFIGURATION" ;;
+  *"ps -q web") printf 'active-id\\n' ;;
+  "inspect "*) printf '%s\\n' "$HEALTH" ;;
+  *) exit 2 ;;
+esac
+""",
+    )
+    result = _slot_command(
+        tmp_path,
+        "selected",
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CONFIGURATION": configuration,
+            "HEALTH": health,
+        },
+    )
+    assert result.returncode == expected, result.stderr
+    assert result.stdout == ("web\n" if expected == 0 else "")
+
+
 @pytest.mark.parametrize("previous_placement", ["local", "remote"])
 @pytest.mark.parametrize("requested_commerce", ["True", "False"])
 @pytest.mark.parametrize("previous_commerce", ["True", "False"])

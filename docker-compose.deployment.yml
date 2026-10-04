@@ -130,6 +130,8 @@ services:
       COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS: ${COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS:-300}
     expose:
       - "8000"
+    volumes:
+      - staticfiles:/app/src/backend/staticfiles
     depends_on:
       db:
         condition: service_healthy
@@ -163,11 +165,9 @@ services:
     profiles:
       - import
     environment:
-      PHOTO_IMPORT_API_URL: http://web:8000/internal/photo-import/v1/
+      PHOTO_IMPORT_API_URL: http://nginx:8080/internal/photo-import/v1/
       PHOTO_IMPORT_WORKER_TOKEN: ${PHOTO_IMPORT_WORKER_TOKEN:-}
       PHOTO_IMPORT_BUILD: ${PHOTO_IMPORT_BUILD:-local}
-    depends_on:
-      - web
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -231,6 +231,7 @@ services:
 
 volumes:
   pgdata:
+  staticfiles:
 
 secrets:
   postgres_exporter_password:

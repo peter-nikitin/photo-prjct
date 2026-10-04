@@ -964,3 +964,9 @@ Each item needs evidence and an ADR before implementation commits the architectu
   versioned selector chooses operational, migration, and visual layers from changed paths. The
   final unchanged-package run belongs to the root controller; CI repeats it after push. See
   [Testing](testing.md) and [ADR 0033](adr/0033-keep-durable-knowledge-test-executable-contracts.md).
+
+PostgreSQL observability repository support adds a private exporter and a bounded Django database
+probe. The exporter belongs to independent observability reconciliation; monitoring failure does
+not block product Deploy or rollback. Cloud apply requires same-SHA producer release success.
+Live credential/role provisioning, measured series cost, freshness and notification delivery remain
+pending. See [PostgreSQL activation and rollback](../deploy/postgres-monitoring/README.md).

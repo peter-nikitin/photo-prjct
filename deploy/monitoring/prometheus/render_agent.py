@@ -92,6 +92,16 @@ def merge_agent(
                     "prometheus_config": {"job_name": "findme-http"},
                 },
             },
+            {
+                "plugin": "metrics_pull",
+                "config": {
+                    "url": "http://127.0.0.1:9187/metrics",
+                    "format": {"prometheus": {}},
+                    "poll_period": "60s",
+                    "timeout": "10s",
+                    "prometheus_config": {"job_name": "findme-postgres"},
+                },
+            },
         ]
     else:
         inputs += [

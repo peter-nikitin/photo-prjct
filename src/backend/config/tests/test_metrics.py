@@ -120,6 +120,119 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
 
 
 class MultiprocessMetricsTests(SimpleTestCase):
+    @patch("config.metrics.psycopg.connect")
+    def test_database_check_uses_app_credentials_and_exports_fresh_success(self, connect) -> None:
+        from config.metrics import generate_metrics
+
+        connection = connect.return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.side_effect = [
+            (1,),
+            (2, 3, 1, 1, 12.5, 8.25, 5.0, 97),
+            (123, 456, 7200.0, 42_000_000, 200_000_000),
+            (1024,),
+        ]
+        with (
+            tempfile.TemporaryDirectory() as metrics_directory,
+            patch.dict(os.environ, {"PROMETHEUS_MULTIPROC_DIR": metrics_directory}),
+            override_settings(
+                DATABASES={
+                    "default": {
+                        "NAME": "app",
+                        "USER": "app_user",
+                        "PASSWORD": "private-value",
+                        "HOST": "db",
+                        "PORT": "5432",
+                    }
+                }
+            ),
+        ):
+            output = generate_metrics().decode()
+
+        self.assertIn("findme_db_usable 1", output)
+        self.assertIn("findme_db_check_timestamp_seconds", output)
+        self.assertIn('findme_db_sessions{state="active"} 2', output)
+        self.assertIn('findme_db_sessions{state="idle"} 3', output)
+        self.assertIn('findme_db_sessions{state="idle_in_transaction"} 1', output)
+        self.assertIn("findme_db_blocked_sessions 1", output)
+        self.assertIn("findme_db_lock_wait_oldest_seconds 5.0", output)
+        self.assertIn("findme_db_usable_connections 97", output)
+        self.assertIn("findme_db_dead_tuples 123", output)
+        self.assertIn("findme_db_live_tuples 456", output)
+        self.assertIn("findme_db_oldest_vacuum_seconds 7200.0", output)
+        self.assertIn("findme_db_max_relation_xid_age 42000000", output)
+        self.assertIn("findme_db_autovacuum_freeze_max_age 200000000", output)
+        self.assertIn("# TYPE findme_db_wal_bytes_total counter", output)
+        self.assertIn("findme_db_wal_bytes_total 1024", output)
+        self.assertNotIn("private-value", output)
+        self.assertNotIn("app_user", output)
+        self.assertNotIn("SELECT 1", output)
+        self.assertEqual(connect.call_args.kwargs["connect_timeout"], 2)
+        self.assertIn("statement_timeout=2000", connect.call_args.kwargs["options"])
+        self.assertEqual(connection.execute.call_args_list[0].args, ("SELECT 1",))
+
+    @patch("config.metrics.psycopg.connect")
+    def test_optional_activity_query_failure_does_not_turn_successful_sql_check_to_zero(
+        self, connect
+    ) -> None:
+        import psycopg
+
+        from config.metrics import generate_metrics
+
+        connection = connect.return_value.__enter__.return_value
+        connection.execute.side_effect = [
+            SimpleNamespace(fetchone=lambda: (1,)),
+            psycopg.OperationalError("sensitive activity detail"),
+        ]
+        with (
+            tempfile.TemporaryDirectory() as metrics_directory,
+            patch.dict(os.environ, {"PROMETHEUS_MULTIPROC_DIR": metrics_directory}),
+        ):
+            output = generate_metrics().decode()
+
+        self.assertIn("findme_db_usable 1", output)
+        self.assertNotIn("findme_db_sessions", output)
+        self.assertNotIn("sensitive activity detail", output)
+
+    @patch("config.metrics.psycopg.connect")
+    def test_wal_counter_failure_is_missing_without_failing_sql_check(self, connect) -> None:
+        import psycopg
+
+        from config.metrics import generate_metrics
+
+        connection = connect.return_value.__enter__.return_value
+        connection.execute.side_effect = [
+            SimpleNamespace(fetchone=lambda: (1,)),
+            SimpleNamespace(fetchone=lambda: (0, 0, 0, 0, 0, 0, 0, 97)),
+            SimpleNamespace(fetchone=lambda: (0, 0, None, 0, 200_000_000)),
+            psycopg.OperationalError("private WAL detail"),
+        ]
+        with (
+            tempfile.TemporaryDirectory() as metrics_directory,
+            patch.dict(os.environ, {"PROMETHEUS_MULTIPROC_DIR": metrics_directory}),
+        ):
+            output = generate_metrics().decode()
+
+        self.assertIn("findme_db_usable 1", output)
+        self.assertNotIn("findme_db_wal_bytes_total", output)
+        self.assertNotIn("private WAL detail", output)
+
+    @patch("config.metrics.psycopg.connect")
+    def test_database_connection_failure_exports_zero_without_error_text(self, connect) -> None:
+        import psycopg
+
+        from config.metrics import generate_metrics
+
+        connect.side_effect = psycopg.OperationalError("secret database detail")
+        with (
+            tempfile.TemporaryDirectory() as metrics_directory,
+            patch.dict(os.environ, {"PROMETHEUS_MULTIPROC_DIR": metrics_directory}),
+        ):
+            output = generate_metrics().decode()
+
+        self.assertIn("findme_db_usable 0", output)
+        self.assertIn("findme_db_check_timestamp_seconds", output)
+        self.assertNotIn("secret database detail", output)
+
     def test_aggregates_metrics_recorded_by_multiple_gunicorn_processes(self) -> None:
         """A scrape must include observations from every Gunicorn worker process."""
         worker = """

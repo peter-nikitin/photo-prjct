@@ -117,7 +117,11 @@ def test_agent_addition_keeps_native_routes_and_uses_separate_buffer():
     new = result["channels"][-1]
     assert new["channel"]["output"]["config"]["iam"] == {"cloud_meta": {}}
     assert new["channel"]["pipe"][0]["storage_ref"]["name"] != "native"
-    assert len(result["routes"]) == 4
+    assert len(result["routes"]) == 5
+    postgres = result["routes"][-1]["input"]["config"]
+    assert postgres["url"] == "http://127.0.0.1:9187/metrics"
+    assert postgres["poll_period"] == "60s"
+    assert postgres["prometheus_config"]["job_name"] == "findme-postgres"
 
 
 def test_agent_reconciliation_is_idempotent():

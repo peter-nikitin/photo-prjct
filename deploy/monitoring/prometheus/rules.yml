@@ -243,3 +243,70 @@ groups:
       severity: warning
     annotations:
       summary: imgproxy five-minute p95 has exceeded 1.5 seconds with enough requests.
+- name: findme-postgres
+  interval: 1m
+  rules:
+  - alert: DatabaseUnavailableToDjango
+    expr: (max_over_time(findme_db_usable[2m]) == 0) and on() ((time() - findme_db_check_timestamp_seconds) >= 0 and (time() - findme_db_check_timestamp_seconds) < 150)
+    for: 3m
+    labels:
+      project: findme-photo
+      severity: critical
+      notification: actionable
+      incident: database
+    annotations:
+      summary: Application SQL checks cannot use PostgreSQL for three minutes.
+  - alert: DatabaseConnectionExhaustion
+    expr: (sum(findme_db_sessions) / findme_db_usable_connections >= 0.9) and on() ((time() - findme_db_check_timestamp_seconds) < 150) and on() (((findme_db_usable == 0) or ((sum(increase(findme_http_requests_total{status_class="5xx",route!~"processing_.*"}[5m])) >= 5) and on() (count((time() - timestamp(findme_http_requests_total{status_class="5xx",route!~"processing_.*"})) < 150) > 0))) or ((findme_db_blocked_sessions >= 3) and (findme_db_lock_wait_oldest_seconds >= 300))) and on() ((time() - timestamp(findme_db_usable_connections)) < 150) and on() (count((time() - timestamp(findme_db_sessions)) < 150) == 3)
+    for: 10m
+    labels:
+      project: findme-photo
+      severity: critical
+      notification: actionable
+      incident: database
+    annotations:
+      summary: Database connections are exhausted with measured service impact.
+  - alert: DatabaseLockDegradation
+    expr: (((findme_db_blocked_sessions > 0) and (findme_db_lock_wait_oldest_seconds >= 300)) or (findme_db_oldest_transaction_seconds{state="idle_in_transaction"} >= 300)) and on() ((time() - findme_db_check_timestamp_seconds) < 150) and on() (((sum(increase(findme_http_requests_total{status_class="5xx",route!~"processing_.*"}[5m])) >= 5) and on() (count((time() - timestamp(findme_http_requests_total{status_class="5xx",route!~"processing_.*"})) < 150) > 0)) or ((commerce_oldest_ready_age_seconds{check="canonical-commerce"} > 300) and on() ((time() - timestamp(commerce_oldest_ready_age_seconds{check="canonical-commerce"})) < 150)) or (sum((worker_pool_oldest_claimable_age_seconds > 300) and on(pool) (worker_pool_queue_observation_available == 1) and on(pool) ((time() - worker_pool_queue_observation_timestamp_seconds) >= 0) and on(pool) ((time() - worker_pool_queue_observation_timestamp_seconds) < 90) and on(pool) ((time() - timestamp(worker_pool_oldest_claimable_age_seconds)) < 90)) > 0)) and on() ((time() - timestamp(findme_db_blocked_sessions)) < 150)
+    for: 5m
+    labels:
+      project: findme-photo
+      severity: critical
+      notification: actionable
+      incident: database
+    annotations:
+      summary: Sustained database locks or idle transactions coincide with service impact.
+  - alert: DatabaseTransactionFailures
+    expr: (rate(pg_stat_database_xact_rollback{job="findme-postgres",datname="app"}[5m]) / (rate(pg_stat_database_xact_commit{job="findme-postgres",datname="app"}[5m]) + rate(pg_stat_database_xact_rollback{job="findme-postgres",datname="app"}[5m])) > 0.2) and (rate(pg_stat_database_xact_commit{job="findme-postgres",datname="app"}[5m]) + rate(pg_stat_database_xact_rollback{job="findme-postgres",datname="app"}[5m]) >= 1) and on() ((time() - timestamp(pg_stat_database_xact_commit{job="findme-postgres",datname="app"})) < 150) and on() ((time() - timestamp(pg_stat_database_xact_rollback{job="findme-postgres",datname="app"})) < 150)
+    for: 10m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: Database rollback share is elevated; compare with customer and worker errors.
+  - alert: DatabaseFreezeDanger
+    expr: (findme_db_max_relation_xid_age / findme_db_autovacuum_freeze_max_age >= 0.8) and on() ((time() - findme_db_check_timestamp_seconds) < 150) and on() ((time() - timestamp(findme_db_max_relation_xid_age)) < 150)
+    for: 30m
+    labels:
+      project: findme-photo
+      severity: critical
+      notification: actionable
+      incident: database
+    annotations:
+      summary: Oldest relation XID age exceeds eighty percent of the freeze limit.
+  - alert: DatabaseCollectorFailure
+    expr: (pg_up{job="findme-postgres"} == 0) and on() ((time() - timestamp(pg_up{job="findme-postgres"})) < 150)
+    for: 5m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: PostgreSQL exporter cannot connect; application database state is independent.
+  - alert: DatabaseTelemetryMissing
+    expr: sum(absent_over_time(pg_up{job="findme-postgres"}[4m])) or sum(absent_over_time(findme_db_usable[4m])) or sum(absent_over_time(findme_db_wal_bytes_total[4m]))
+    for: 5m
+    labels:
+      project: findme-photo
+      severity: warning
+    annotations:
+      summary: PostgreSQL observations are missing; database health is unknown.

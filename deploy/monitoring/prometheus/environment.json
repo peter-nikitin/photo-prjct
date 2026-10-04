@@ -198,7 +198,68 @@
       },
       "type": "counter",
       "max_age": 120
+    },
+    "db_usable": {
+      "name": "findme_db_usable",
+      "labels": {},
+      "type": "gauge",
+      "max_age": 150
+    },
+    "db_check_timestamp": {
+      "name": "findme_db_check_timestamp_seconds",
+      "labels": {},
+      "type": "gauge",
+      "max_age": 150
+    },
+    "db_wal_bytes": {
+      "name": "findme_db_wal_bytes_total",
+      "labels": {},
+      "type": "counter",
+      "max_age": 150
+    },
+    "postgres_up": {
+      "name": "pg_up",
+      "labels": {
+        "job": "findme-postgres"
+      },
+      "type": "gauge",
+      "max_age": 150
+    },
+    "postgres_transactions": {
+      "name": "pg_stat_database_xact_commit",
+      "labels": {
+        "job": "findme-postgres",
+        "datname": "app"
+      },
+      "type": "counter",
+      "max_age": 150
+    },
+    "postgres_blocks": {
+      "name": "pg_stat_database_blks_read",
+      "labels": {
+        "job": "findme-postgres",
+        "datname": "app"
+      },
+      "type": "counter",
+      "max_age": 150
+    },
+    "postgres_size": {
+      "name": "pg_database_size_bytes",
+      "labels": {
+        "job": "findme-postgres",
+        "datname": "app"
+      },
+      "type": "gauge",
+      "max_age": 150
+    },
+    "postgres_checkpoints": {
+      "name": "pg_stat_bgwriter_checkpoints_timed_total",
+      "labels": {
+        "job": "findme-postgres"
+      },
+      "type": "counter",
+      "max_age": 150
     }
   },
-  "type_contract_evidence": "2026-09-28 Unified Agent 26.09.10/21106904 isolated SPACK capture: CPU COUNTER; UpTimeRaw milliseconds; resources DGAUGE. See README; workspace freshness/mapping remains mandatory. Dashboard diagnostics live queries 2026-09-28: swap bytes and root inode gauges, cumulative vda disk bytes and eth0 network bytes; native ua.backlog DGAUGE remains in Monitoring."
+  "type_contract_evidence": "2026-09-28 Unified Agent 26.09.10/21106904 isolated SPACK capture: CPU COUNTER; UpTimeRaw milliseconds; resources DGAUGE. See README; workspace freshness/mapping remains mandatory. Dashboard diagnostics live queries 2026-09-28: swap bytes and root inode gauges, cumulative vda disk bytes and eth0 network bytes; native ua.backlog DGAUGE remains in Monitoring. PostgreSQL exporter v0.20.1 collector source verified for pg_up/stat_database/database/bgwriter names, types, and bounded datname label; SQL app metrics verified in config.metrics."
 }

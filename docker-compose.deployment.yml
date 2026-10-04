@@ -15,6 +15,43 @@ services:
       timeout: 5s
       retries: 5
 
+  postgres-exporter:
+    profiles: [observability]
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+    environment:
+      DATA_SOURCE_URI: db:5432/app?sslmode=disable&connect_timeout=2
+      DATA_SOURCE_USER: findme_monitor
+      DATA_SOURCE_PASS_FILE: /run/secrets/postgres_exporter_password
+    secrets:
+      - postgres_exporter_password
+    command:
+      - --no-collector.stat_activity
+      - --no-collector.stat_user_tables
+      - --no-collector.statio_user_tables
+      - --no-collector.statio_user_indexes
+      - --no-collector.stat_statements
+      - --no-collector.replication
+      - --no-collector.replication_slots
+      - --no-collector.stat_replication
+      - --no-collector.stat_archiver
+      - --no-collector.stat_progress_vacuum
+      - --no-collector.settings
+      - --no-collector.roles
+      - --no-collector.database_wraparound
+      - --collector.long_running_transactions
+    ports:
+      - "127.0.0.1:9187:9187"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "0.2"
+    mem_limit: 128m
+    pids_limit: 32
+
   web:
     image: ${APP_IMAGE:?APP_IMAGE must be set}
     environment:
@@ -187,3 +224,7 @@ services:
 
 volumes:
   pgdata:
+
+secrets:
+  postgres_exporter_password:
+    file: /opt/photo-prjct/secrets/postgres-exporter-password

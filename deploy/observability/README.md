@@ -25,7 +25,9 @@ main push through the existing pinned bastion/target SSH transport and existing 
 The runner streams `bootstrap.py` from the exact checked-out Git commit, requires main push/ref/SHA,
 and binds the helper's SHA256. Root independently fetches the fixed public repository main, validates
 commit ancestry and regular helper blob, compares its checksum, checks metadata VM identity, validates
-sudoers and atomically installs three root-owned files. A failed partial install removes newly installed
+sudoers and atomically installs three root-owned files. On the existing public VM, the bootstrap first
+installs only missing `git` and `python3-yaml` Ubuntu packages so the exact Git verification and agent
+renderer can run; new image-origin VMs receive these packages in cloud-init. A failed partial file install removes newly installed
 files. Existing partial foundations fail for operator inspection. Subsequent runs invoke the installed
 helper directly and use its authenticated Git self-update; they do not run the bootstrap interpreter.
 No OS Login, IAM, SSH keys, VM metadata or product containers change.
@@ -45,7 +47,8 @@ an established foundation. The following manual installation checklist documents
    `folder_id` (`b1g2qttgfhb4gdunvlge`) and `workspace_id` (`mon0c97qv2s5uju1ark8`).
    Review these identities against the existing host and approved cloud resources.
 3. Confirm `/usr/bin/python3`, Git, PyYAML, Unified Agent and all currently installed collector
-   files/units are available. This reconciler provisions no missing package. The fixed repository is public; root fetches HTTPS without a deployment credential.
+   files/units are available. The first public bootstrap installs missing Git/PyYAML packages; the
+   reconciler itself provisions no packages. The fixed repository is public; root fetches HTTPS without a deployment credential.
    Test noninteractive fixed-repository `git ls-remote` as root.
 4. Validate a root-owned sudoers fragment with `visudo -cf` before installing it mode `0440`:
    `deploy ALL=(root) NOPASSWD: /usr/local/sbin/findme-observability-reconcile *`

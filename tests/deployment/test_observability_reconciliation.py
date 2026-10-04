@@ -606,8 +606,34 @@ def bootstrap_module():
     return loaded
 
 
+def test_public_bootstrap_provisions_missing_host_dependencies_before_git(tmp_path, monkeypatch):
+    module = bootstrap_module()
+    calls = []
+    monkeypatch.setattr(module, "verify_identity", lambda *args: None)
+    monkeypatch.setattr(module, "safe", lambda *args: None)
+    monkeypatch.setattr(module, "validate_sudoers", lambda *args: None)
+    monkeypatch.setattr(module, "command", lambda *args: calls.append(args) or b"")
+    monkeypatch.setattr(
+        module, "host_dependencies", lambda: ["git", "python3-yaml"] if not calls else []
+    )
+    monkeypatch.setattr(
+        module, "authenticate", lambda *args: calls.append(("authenticate",)) or b"reviewed"
+    )
+    import hashlib
+
+    assert (
+        module.bootstrap("a" * 40, hashlib.sha256(b"reviewed").hexdigest(), tmp_path) == "installed"
+    )
+    assert ("apt-get", "update", "--error-on=any") in calls
+    assert ("apt-get", "install", "-y", "git", "python3-yaml") in calls
+    assert calls.index(("apt-get", "install", "-y", "git", "python3-yaml")) < calls.index(
+        ("authenticate",)
+    )
+
+
 def test_public_bootstrap_installs_fixed_foundation_and_preserves_existing(tmp_path, monkeypatch):
     module = bootstrap_module()
+    monkeypatch.setattr(module, "ensure_host_dependencies", lambda: None)
     helper = b"#!/usr/bin/python3\nreviewed helper\n"
     import hashlib
 
@@ -628,6 +654,7 @@ def test_public_bootstrap_installs_fixed_foundation_and_preserves_existing(tmp_p
 
 def test_public_bootstrap_rejects_partial_foundation_and_bad_source(tmp_path, monkeypatch):
     module = bootstrap_module()
+    monkeypatch.setattr(module, "ensure_host_dependencies", lambda: None)
     monkeypatch.setattr(module, "verify_identity", lambda *args: None)
     monkeypatch.setattr(module, "safe", lambda *args: None)
     monkeypatch.setattr(module, "authenticate", lambda *args: b"bad source")
@@ -644,6 +671,7 @@ def test_public_bootstrap_rejects_partial_foundation_and_bad_source(tmp_path, mo
 
 def test_public_bootstrap_rolls_back_write_failure(tmp_path, monkeypatch):
     module = bootstrap_module()
+    monkeypatch.setattr(module, "ensure_host_dependencies", lambda: None)
     helper = b"reviewed"
     import hashlib
 
@@ -707,6 +735,7 @@ def test_canonical_bootstrap_uses_fixed_identity_and_deploy_user(tmp_path, monke
     import hashlib
 
     module = bootstrap_module()
+    monkeypatch.setattr(module, "ensure_host_dependencies", lambda: None)
     roles = []
     monkeypatch.setattr(module, "verify_identity", roles.append)
     monkeypatch.setattr(module, "authenticate", lambda *args: b"reviewed")

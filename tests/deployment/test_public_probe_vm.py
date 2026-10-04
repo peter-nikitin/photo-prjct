@@ -334,3 +334,18 @@ def test_public_reconcile_bootstraps_only_exact_main_push_with_pinned_transport(
     assert denied.returncode == 2
     assert "bootstrap_requires_main_push" in denied.stderr
     assert not (tmp_path / "commands").exists()
+
+    ssh.write_text(
+        "#!/bin/sh\n"
+        'printf "OBSERVABILITY_FOUNDATION=failed reason=host_command_failed\\n" >&2\n'
+        'printf "sensitive remote output must remain hidden\\n" >&2\n'
+        "exit 1\n"
+    )
+    env["GITHUB_REF"] = "refs/heads/main"
+    failed = subprocess.run(
+        ["sh", str(PACKAGE / "run-remote.sh")], env=env, text=True, capture_output=True
+    )
+    assert failed.returncode == 2
+    assert "OBSERVABILITY_FOUNDATION=failed reason=host_command_failed" in failed.stderr
+    assert "PUBLIC_PROBE_DEPLOY=error code=action_failed" in failed.stderr
+    assert "sensitive remote output" not in failed.stderr

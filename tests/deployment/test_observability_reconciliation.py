@@ -595,3 +595,124 @@ def test_documented_workflow_run_path_accepts_only_main_suffix(suffix, success):
                 clock=lambda: elapsed[0],
                 sleep=sleep,
             )
+
+
+def bootstrap_module():
+    spec = importlib.util.spec_from_file_location(
+        "public_bootstrap", ROOT / "deploy/observability/bootstrap.py"
+    )
+    loaded = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loaded)
+    return loaded
+
+
+def test_public_bootstrap_installs_fixed_foundation_and_preserves_existing(tmp_path, monkeypatch):
+    module = bootstrap_module()
+    helper = b"#!/usr/bin/python3\nreviewed helper\n"
+    import hashlib
+
+    digest = hashlib.sha256(helper).hexdigest()
+    monkeypatch.setattr(module, "authenticate", lambda *args: helper)
+    monkeypatch.setattr(module, "verify_identity", lambda *args: None)
+    monkeypatch.setattr(module, "safe", lambda *args: None)
+    monkeypatch.setattr(module, "validate_sudoers", lambda *args: None)
+    assert module.bootstrap("a" * 40, digest, tmp_path) == "installed"
+    config = tmp_path / "etc/findme-observability-reconcile.json"
+    assert __import__("json").loads(config.read_text()) == module.CONFIGURATION
+    assert (tmp_path / "usr/local/sbin/findme-observability-reconcile").read_bytes() == helper
+    assert module.bootstrap("a" * 40, digest, tmp_path) == "existing"
+    config.write_text("{}")
+    with pytest.raises(ValueError, match="foundation mismatch"):
+        module.bootstrap("a" * 40, digest, tmp_path)
+
+
+def test_public_bootstrap_rejects_partial_foundation_and_bad_source(tmp_path, monkeypatch):
+    module = bootstrap_module()
+    monkeypatch.setattr(module, "verify_identity", lambda *args: None)
+    monkeypatch.setattr(module, "safe", lambda *args: None)
+    monkeypatch.setattr(module, "authenticate", lambda *args: b"bad source")
+    with pytest.raises(ValueError, match="source checksum"):
+        module.bootstrap("a" * 40, "0" * 64, tmp_path)
+    target = tmp_path / "etc/findme-observability-reconcile.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}")
+    import hashlib
+
+    with pytest.raises(ValueError, match="partial foundation"):
+        module.bootstrap("a" * 40, hashlib.sha256(b"bad source").hexdigest(), tmp_path)
+
+
+def test_public_bootstrap_rolls_back_write_failure(tmp_path, monkeypatch):
+    module = bootstrap_module()
+    helper = b"reviewed"
+    import hashlib
+
+    monkeypatch.setattr(module, "authenticate", lambda *args: helper)
+    monkeypatch.setattr(module, "verify_identity", lambda *args: None)
+    monkeypatch.setattr(module, "safe", lambda *args: None)
+    monkeypatch.setattr(module, "validate_sudoers", lambda *args: None)
+    original = module.install
+    calls = []
+
+    def failing(target, content, mode):
+        calls.append(target)
+        if len(calls) == 3:
+            raise OSError("write failed")
+        original(target, content, mode)
+
+    monkeypatch.setattr(module, "install", failing)
+    with pytest.raises(OSError, match="write failed"):
+        module.bootstrap("a" * 40, hashlib.sha256(helper).hexdigest(), tmp_path)
+    for name in module.TARGETS:
+        assert not (tmp_path / name).exists()
+
+
+def test_bootstrap_authenticates_fixed_git_source_and_existing_helper(tmp_path, monkeypatch):
+    module = bootstrap_module()
+    calls = []
+    revision = "a" * 40
+
+    def command(*args):
+        calls.append(args)
+        if "ls-tree" in args:
+            return f"100644 blob {'b' * 40}\t{module.HELPER}\n".encode()
+        if "show" in args:
+            return b"reviewed"
+        if "rev-list" in args:
+            return (revision + "\n").encode()
+        return b""
+
+    monkeypatch.setattr(module, "command", command)
+    assert module.authenticate(revision, tmp_path, b"reviewed") == b"reviewed"
+    assert any(module.REPOSITORY in call and "fetch" in call for call in calls)
+    assert any("--is-ancestor" in call for call in calls)
+    with pytest.raises(ValueError, match="authenticated main source"):
+        module.authenticate(revision, tmp_path, b"modified")
+
+
+def test_bootstrap_rejects_symlink_or_unsafe_root_file(tmp_path):
+    module = bootstrap_module()
+    path = tmp_path / "file"
+    path.write_text("source")
+    path.chmod(0o666)
+    with pytest.raises(ValueError, match="unsafe foundation"):
+        module.safe(path, 0o755)
+    link = tmp_path / "link"
+    link.symlink_to(path)
+    with pytest.raises(ValueError, match="unsafe foundation"):
+        module.safe(link, 0o755)
+
+
+def test_canonical_bootstrap_uses_fixed_identity_and_deploy_user(tmp_path, monkeypatch):
+    import hashlib
+
+    module = bootstrap_module()
+    roles = []
+    monkeypatch.setattr(module, "verify_identity", roles.append)
+    monkeypatch.setattr(module, "authenticate", lambda *args: b"reviewed")
+    monkeypatch.setattr(module, "safe", lambda *args: None)
+    monkeypatch.setattr(module, "validate_sudoers", lambda *args: None)
+    module.bootstrap("a" * 40, hashlib.sha256(b"reviewed").hexdigest(), tmp_path, "canonical")
+    assert roles == ["canonical"]
+    assert __import__("json").loads((tmp_path / module.TARGETS[1]).read_text()) == module.CANONICAL
+    assert (tmp_path / module.TARGETS[2]).read_text().startswith("deploy ALL=(root)")

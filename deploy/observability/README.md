@@ -9,7 +9,7 @@ only the existing Deploy, Deploy public health probe and Deploy isolated image o
 identities and SSH transports. Image-origin automatic runs set `monitoring_only=true` and never
 restart its application containers. Documentation and test changes contact no host/cloud resource.
 
-`reconcile.py` is an operator-installed root-owned entrypoint. Its only argument is a lowercase
+`reconcile.py` is a root-owned entrypoint installed once through the existing approved SSH/sudo transport. Its only argument is a lowercase
 40-character main commit SHA. It fetches `refs/heads/main` from the fixed project GitHub HTTPS URL
 into a private root-owned bare repository, checks commit ancestry and reads only the allowlisted
 regular Git blobs. It executes no script from `/opt/photo-prjct`, runner archive, or mutable staging
@@ -20,8 +20,23 @@ The applied collectors still observe the existing canonical deployment tree.
 
 ## One-time operator steps before merge activation
 
-These steps change privileged host authorization and are deliberately not executed by the PR.
-On each existing canonical/public VM, using an operator account with sudo:
+The public role on the existing image-origin VM bootstraps automatically during its first selected
+main push through the existing pinned bastion/target SSH transport and existing `yc-user` sudo.
+The runner streams `bootstrap.py` from the exact checked-out Git commit, requires main push/ref/SHA,
+and binds the helper's SHA256. Root independently fetches the fixed public repository main, validates
+commit ancestry and regular helper blob, compares its checksum, checks metadata VM identity, validates
+sudoers and atomically installs three root-owned files. A failed partial install removes newly installed
+files. Existing partial foundations fail for operator inspection. Subsequent runs invoke the installed
+helper directly and use its authenticated Git self-update; they do not run the bootstrap interpreter.
+No OS Login, IAM, SSH keys, VM metadata or product containers change.
+
+For the canonical role, use the same reviewed bootstrap once through the existing operator SSH:
+`sudo python3 bootstrap.py canonical <reviewed-main-SHA> <reconcile.py-SHA256>`.
+It fixes VM `epdr5g3p24tdns9890nr` and sudo user `deploy`; public fixes VM
+`epdf6696opq3ock91pih` and sudo user `yc-user`. Both fix folder `b1g2qttgfhb4gdunvlge`
+and workspace `mon0c97qv2s5uju1ark8`. An operator rerun checks complete existing ownership,
+configuration, exact sudoers and helper content against authenticated main history, without replacing
+an established foundation. The following manual installation checklist documents the resulting state:
 
 1. Review the exact merged helper revision and install it root-owned, mode `0755`, as
    `/usr/local/sbin/findme-observability-reconcile`.
@@ -30,10 +45,8 @@ On each existing canonical/public VM, using an operator account with sudo:
    `folder_id` (`b1g2qttgfhb4gdunvlge`) and `workspace_id` (`mon0c97qv2s5uju1ark8`).
    Review these identities against the existing host and approved cloud resources.
 3. Confirm `/usr/bin/python3`, Git, PyYAML, Unified Agent and all currently installed collector
-   files/units are available. This reconciler provisions no missing package. For a private GitHub
-   repository, provision root-only **read-only** Git authentication for the fixed HTTPS repository
-   using the team's existing approved credential mechanism. Git credentials never come from deploy
-   input or workflow environment. Test noninteractive fixed-repository `git ls-remote` as root.
+   files/units are available. This reconciler provisions no missing package. The fixed repository is public; root fetches HTTPS without a deployment credential.
+   Test noninteractive fixed-repository `git ls-remote` as root.
 4. Validate a root-owned sudoers fragment with `visudo -cf` before installing it mode `0440`:
    `deploy ALL=(root) NOPASSWD: /usr/local/sbin/findme-observability-reconcile *`
    Substitute the existing controlled SSH user if different. Grant no shell, interpreter,

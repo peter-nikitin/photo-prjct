@@ -79,3 +79,13 @@ Cloud recovery reapplies the last known reviewed Git revision and retained backu
 ## Open questions
 
 None for implementation. Live acceptance depends on one-time GitHub environment policy change and delivery proof.
+
+### Existing-host foundation activation
+
+The public/image-origin host installs its fixed root reconciler foundation on the first selected
+main push through the existing pinned GitHub Actions SSH/sudo transport. The exact Git-object
+bootstrap independently authenticates the helper against public GitHub main, verifies VM metadata,
+fixes the public config and `yc-user` sudoers, and rolls back partial foundation writes. Future pushes
+invoke the installed Git-authenticated helper directly. Canonical uses the same reviewed bootstrap
+with fixed canonical VM identity and `deploy` user through the existing operator SSH once. No OS Login
+or IAM modification is required. Existing partial or mismatched foundation fails closed.

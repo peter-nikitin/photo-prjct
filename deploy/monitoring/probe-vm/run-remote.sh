@@ -50,7 +50,7 @@ output="$scratch/output"
 cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
-    rm -f "$archive" "$known_hosts" "$ssh_config" "$output"
+    rm -f "$archive" "$known_hosts" "$ssh_config" "$output" "$scratch/bootstrap.py"
     rmdir "$scratch"
     exit "$status"
 }
@@ -117,7 +117,23 @@ Host probe-target
     ProxyJump probe-bastion
 EOF
 if [ "$action" = reconcile-prometheus ]; then
-    ssh -F "$ssh_config" probe-target sudo -n /usr/local/sbin/findme-observability-reconcile "$release" >"$output" 2>&1 || fail action_failed
+    # Only the exact checked-out main push may bootstrap this fixed existing host.
+    [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_REF:-}" = refs/heads/main ] && \
+        [ "${GITHUB_SHA:-}" = "$release" ] || fail bootstrap_requires_main_push
+    [ "$IMAGE_ORIGIN_VM_USER" = yc-user ] || fail bootstrap_requires_fixed_user
+    for source in deploy/observability/reconcile.py deploy/observability/bootstrap.py; do
+        git -C "$repository_root" ls-tree "$release" -- "$source" | \
+            LC_ALL=C grep -Eq "^100(644|755) blob [0-9a-f]{40}[[:space:]]$source$" || fail invalid_bootstrap_source
+    done
+    helper_hash=$(git -C "$repository_root" show "$release:deploy/observability/reconcile.py" | sha256sum | cut -d ' ' -f 1)
+    git -C "$repository_root" show "$release:deploy/observability/bootstrap.py" >"$scratch/bootstrap.py" || fail bootstrap_source_missing
+    ssh -F "$ssh_config" probe-target "release=$release helper_hash=$helper_hash"'
+set -eu
+helper=/usr/local/sbin/findme-observability-reconcile
+if [ ! -e "$helper" ] && [ ! -L "$helper" ]; then
+    sudo -n python3 - public "$release" "$helper_hash"
+fi
+sudo -n "$helper" "$release"' <"$scratch/bootstrap.py" >"$output" 2>&1 || fail action_failed
     LC_ALL=C grep -E '^OBSERVABILITY_HOST_SHA=[0-9a-f]{40} status=(green|unchanged)' "$output"
     exit 0
 fi

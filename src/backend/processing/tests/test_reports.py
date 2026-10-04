@@ -242,12 +242,12 @@ class ProcessingRunReportTests(TestCase):
         request_processor(
             photo,
             processor_type="face_embedding",
-            contract_version=1,
-            processor_version=1,
+            contract_version=3,
+            processor_version=5,
             configuration=FACE_EMBEDDING_CONFIGURATION,
         )
         claimed = claim_job(
-            contract_version=1, processor_type="face_embedding", processor_version=1
+            contract_version=3, processor_type="face_embedding", processor_version=5
         )
         assert isinstance(claimed, ClaimedJob)
         now = timezone.now()
@@ -302,8 +302,8 @@ class ProcessingRunReportTests(TestCase):
         )
         FaceEmbeddingVector.objects.create(
             detection=kept,
-            model_version="sface",
-            vector=[1.0] + [0.0] * 127,
+            model_version="adaface-ir18-webface4m",
+            vector=[1.0] + [0.0] * 511,
             metadata={"source": "unit"},
         )
 

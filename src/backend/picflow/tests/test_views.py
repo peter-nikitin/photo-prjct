@@ -54,11 +54,9 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.enrollment import (
-    CONTRACT_VERSION as FACE_EMBEDDING_CONTRACT_VERSION,
-)
-from processing.services.enrollment import (
     FACE_EMBEDDING_CONFIGURATION,
-    FACE_EMBEDDING_PROCESSOR_VERSION,
+    QUALITY_FACE_CONTRACT_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSION,
 )
 from processing.services.face_quality import publish_face_embedding_projection
 from selfie_search.models import SelfieSearch
@@ -237,7 +235,6 @@ class PageTests(TestCase):
             "end_date": date.today(),
             "city": "Moscow",
             "publication_status": Event.PublicationStatus.PUBLISHED,
-            "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
         }
         values.update(overrides)
         if values.get("access_type", Event.AccessType.FREE) == Event.AccessType.PAID:
@@ -566,7 +563,6 @@ class GalleryPageTests(TestCase):
             "end_date": date.today(),
             "city": "Moscow",
             "publication_status": Event.PublicationStatus.PUBLISHED,
-            "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
         }
         values.update(overrides)
         if values.get("access_type", Event.AccessType.FREE) == Event.AccessType.PAID:
@@ -852,9 +848,9 @@ class GalleryPageTests(TestCase):
         ).hexdigest()
         run = EventProcessingRun.objects.create(
             event=photo.event,
-            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type=FACE_EMBEDDING_PROCESSOR,
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             configuration_hash=configuration_hash,
         )
@@ -862,9 +858,9 @@ class GalleryPageTests(TestCase):
             event=photo.event,
             run=run,
             photo=photo,
-            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type=FACE_EMBEDDING_PROCESSOR,
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             configuration_hash=configuration_hash,
             input_fingerprint={},
@@ -874,9 +870,9 @@ class GalleryPageTests(TestCase):
             run=run,
             job=job,
             photo=photo,
-            contract_version=FACE_EMBEDDING_CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type=FACE_EMBEDDING_PROCESSOR,
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             input_fingerprint={},
             status=ProcessingAttempt.Status.SUCCEEDED,
@@ -909,8 +905,8 @@ class GalleryPageTests(TestCase):
             )
             FaceEmbeddingVector.objects.create(
                 detection=detection,
-                model_version="sface",
-                vector=[1.0] + [0.0] * 127,
+                model_version="adaface-ir18-webface4m",
+                vector=[1.0] + [0.0] * 511,
             )
         publish_face_embedding_projection(attempt)
 

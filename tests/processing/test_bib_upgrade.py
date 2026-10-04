@@ -138,7 +138,7 @@ class BibSearchUpgradeTests(TransactionTestCase):
                 model._meta.label: tuple(
                     field.attname
                     for field in model._meta.concrete_fields
-                    if field.attname != "worker_build"
+                    if field.attname not in {"worker_build", "face_search_generation"}
                 )
                 for model in tracked_models
             }
@@ -163,6 +163,9 @@ class BibSearchUpgradeTests(TransactionTestCase):
                 )
 
             MigratedEvent = migrated_apps.get_model("picflow", "Event")
+            self.assertNotIn(
+                "face_search_generation", {field.name for field in MigratedEvent._meta.fields}
+            )
             MigratedPhoto = migrated_apps.get_model("picflow", "Photo")
             MigratedRun = migrated_apps.get_model("processing", "EventProcessingRun")
             MigratedJob = migrated_apps.get_model("processing", "ProcessingJob")

@@ -138,9 +138,8 @@ If the result is `recovered`, rerun the override after admitted journal reconcil
 active image, readiness, serving generation and lease behavior. Keep the timer stopped while
 latest differs from the intended recovery image; restarting it follows latest. Web recovery follows
 the [schema compatibility boundary](deployment.md#migration-preflight-or-deployment-failure): an
-old web SHA is not safe after `processing.0016` drops `ProcessingAttempt.worker_build`. Active native AdaFace requires selected images
-to carry `ru.findme-photo.historical-adaface-contract=vector-only-v1`; the web guard checks DB and
-candidate web without fetching workers. Protocol-breaking rollback needs explicit pause/drain and
+old web SHA is not safe after `processing.0016` drops `ProcessingAttempt.worker_build`. After legacy-vector contraction, only an AdaFace-only compatible worker image can be selected;
+read back its build and readiness. Protocol-breaking rollback needs explicit pause/drain and
 compatible sequencing. Never rewrite durable work or restore queue-side build checks.
 
 ## Fixed boundaries

@@ -174,7 +174,6 @@ class PipelineEndToEndTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Etc/UTC",
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.jpeg = self._jpeg_with_capture_time()
         self._face_download_bytes: bytes | None = None
@@ -182,7 +181,7 @@ class PipelineEndToEndTests(TestCase):
         self._preview_storage: _PreviewStorage | None = None
         self._preview_staging_key: str | None = None
 
-    def test_confirmed_preview_first_jpeg_is_published_for_gallery_before_face_v3_is_queued(
+    def test_confirmed_preview_first_jpeg_is_published_for_gallery_before_current_face_is_queued(
         self,
     ) -> None:
         """Catch any bypass of confirmation → preview → publication → preview-backed ML."""
@@ -218,7 +217,7 @@ class PipelineEndToEndTests(TestCase):
         )
         self.assertEqual(face.status, PhotoProcessingState.Status.QUEUED)
         self.assertEqual(
-            (face.current_job.contract_version, face.current_job.processor_version), (2, 3)
+            (face.current_job.contract_version, face.current_job.processor_version), (3, 5)
         )
         self.assertEqual(face.current_job.input_fingerprint["media_kind"], "preview-small-v1")
         self.assertEqual(face.current_job.input_fingerprint["object_key"], derivative.final_key)
@@ -306,7 +305,7 @@ class PipelineEndToEndTests(TestCase):
                     WorkerConfig(
                         worker_build="pipeline-face-failure-e2e",
                         lease_seconds=120,
-                        processor_identities=("2/face_embedding/3",),
+                        processor_identities=("3/face_embedding/5",),
                     ),
                 )
                 if failure_phase == "download":

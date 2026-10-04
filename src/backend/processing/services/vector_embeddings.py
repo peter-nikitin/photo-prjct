@@ -14,7 +14,7 @@ from processing.models import (
     ProcessingAttempt,
 )
 
-MODEL_DIMENSIONS = {"sface": 128, "adaface-ir18-webface4m": 512}
+MODEL_DIMENSIONS = {"adaface-ir18-webface4m": 512}
 
 
 def generation_uses_vector_only_storage(generation: Mapping[str, object]) -> bool:
@@ -22,9 +22,9 @@ def generation_uses_vector_only_storage(generation: Mapping[str, object]) -> boo
     configuration = generation.get("configuration")
     if not isinstance(configuration, dict) or "embedding_storage" not in configuration:
         return False
-    from processing.services.enrollment import LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION
+    from processing.services.enrollment import FACE_EMBEDDING_CONFIGURATION
 
-    expected = {**LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION, "embedding_storage": "vector_only"}
+    expected = {**FACE_EMBEDDING_CONFIGURATION, "embedding_storage": "vector_only"}
     configuration_hash = hashlib.sha256(
         json.dumps(expected, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

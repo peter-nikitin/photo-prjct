@@ -43,9 +43,9 @@ class ClusterExpansionTests(TestCase):
             public_token_digest="a" * 64,
             temporary_object_key="selfie-search/temporary",
             configuration={
-                "embedding_model": "sface",
-                "embedding_dimensions": 128,
-                "cosine_distance_threshold": 0.363,
+                "embedding_model": "adaface-ir18-webface4m",
+                "embedding_dimensions": 512,
+                "cosine_distance_threshold": 0.42,
                 "gallery_face_embedding_generations": [{"generation": "v1"}],
             },
         )
@@ -59,8 +59,8 @@ class ClusterExpansionTests(TestCase):
             contract_version=1,
             processor_type="face_embedding",
             processor_version=1,
-            model_version="sface",
-            embedding_dimensions=128,
+            model_version="adaface-ir18-webface4m",
+            embedding_dimensions=512,
             edge_threshold=0.2,
             representative_threshold=0.2,
             distance_block_size=1,
@@ -74,11 +74,11 @@ class ClusterExpansionTests(TestCase):
             configuration={
                 "policy_id": POLICY_ID,
                 "corpus_configuration_hash": self.corpus.configuration_hash,
-                "direct_threshold": 0.363,
+                "direct_threshold": 0.42,
                 "anchor_threshold": 0.2,
             },
             configuration_hash=cluster_expansion_policy_hash(
-                self.corpus.configuration_hash, 0.363, 0.2
+                self.corpus.configuration_hash, 0.42, 0.2
             ),
             approved_evaluation_report_hash="d" * 64,
         )

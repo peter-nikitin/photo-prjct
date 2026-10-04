@@ -68,7 +68,7 @@ def _remote_session(client, settings, pool):
 @pytest.mark.django_db
 @pytest.mark.parametrize(
     "dimensions,remote,vector_only",
-    [(128, False, False), (512, False, False), (512, True, False), (512, True, True)],
+    [(512, False, False), (512, True, False), (512, True, True)],
 )
 def test_maximum_gallery_callback_publication(client, settings, dimensions, remote, vector_only):
     from photo_worker.client import HttpClient
@@ -76,10 +76,10 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
     from photo_worker.runner import _success_payload
 
     from processing.models import FaceEmbeddingVector, ProcessingAttempt
-    from processing.services.enrollment import (
-        FACE_EMBEDDING_QUALITY_CONFIGURATION,
-        LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
-        request_processor,
+    from processing.services.enrollment import request_processor
+    from processing.services.face_quality import (
+        active_face_embedding_generations,
+        current_face_embedding_generation,
     )
     from processing.tests import test_views
 
@@ -96,14 +96,13 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
         envelope, h.headers = _remote_session(client, settings, "bulk")
     photo = h.photo()
     derivative = h.publish_preview(photo)
-    version = 5 if dimensions == 512 else 4
-    configuration = deepcopy(
-        LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION
-        if dimensions == 512
-        else FACE_EMBEDDING_QUALITY_CONFIGURATION
+    version = 5
+    generation = (
+        active_face_embedding_generations(photo.event)[1]
+        if vector_only
+        else current_face_embedding_generation()
     )
-    if vector_only:
-        configuration["embedding_storage"] = "vector_only"
+    configuration = deepcopy(cast(dict[str, object], generation["configuration"]))
     request_processor(
         photo,
         processor_type="face_embedding",
@@ -141,7 +140,7 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
     }
     result = {
         "face_count": 32,
-        "model": "adaface-ir18-webface4m" if dimensions == 512 else "sface",
+        "model": "adaface-ir18-webface4m",
         "faces": [face | {"index": i} for i in range(32)],
         "has_single_query_face_usable": False,
         "warnings": [],
@@ -246,7 +245,6 @@ def test_remote_selfie_callback_uses_native_reader_with_gate_off_and_keeps_resul
 
 @pytest.mark.django_db
 def test_maximum_selfie_callback_cleanup_and_wire(client, settings):
-    from picflow.models import Event
     from selfie_search.models import SelfieSearchAttempt
     from selfie_search.services.submission import _configuration
 
@@ -259,8 +257,6 @@ def test_maximum_selfie_callback_cleanup_and_wire(client, settings):
     h = test_views.SelfieWorkerApiTests()
     h.client = client
     h.setUp()
-    h.event.face_search_generation = Event.FaceSearchGeneration.ADAFACE_V5
-    h.event.save()
     h.search.configuration = _configuration(
         event=h.event, content_type="image/jpeg", content_size=1024
     )

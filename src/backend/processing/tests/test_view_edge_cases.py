@@ -49,7 +49,9 @@ class WorkerApiEdgeCases(WorkerApiTests):
 
     def _claim_face_one(self, grant) -> dict[str, object]:
         self._grant(grant)
-        request_face_embedding_enqueue(self.photo())
+        photo = self.photo()
+        self.publish_preview(photo)
+        request_face_embedding_enqueue(photo)
         response = self.post("/internal/photo-processing/v1/claim", self.face_claim_body())
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["empty"])
@@ -154,7 +156,7 @@ class WorkerApiEdgeCases(WorkerApiTests):
         self.assertEqual(attempt.status, ProcessingAttempt.Status.STALE)
         self.assertEqual(ProcessingLateReceipt.objects.count(), 0)
 
-    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
+    @patch("processing.views.ExactPreviewStorage.create_download_grant")
     def test_stale_face_completion_returns_stale_and_replay_is_idempotent(self, grant) -> None:
         job = self._claim_face_one(grant)
         attempt_id = job["attempt_id"]
@@ -162,7 +164,7 @@ class WorkerApiEdgeCases(WorkerApiTests):
         body = self.terminal_body(
             job,
             processor_type="face_embedding",
-            result=self.face_result_body(),
+            result=self.quality_result_body([self.quality_face("kept")]),
         )
 
         first = self.post(f"/internal/photo-processing/v1/attempts/{attempt_id}/complete", body)

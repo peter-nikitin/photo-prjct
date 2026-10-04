@@ -118,11 +118,9 @@ def build_face_cluster_corpus(
     Publishing is the final write in the same transaction as all corpus rows, so readers can only
     select a complete corpus.
     """
-    if generations is None:
-        generations = _default_generations(event)
-    from processing.services.face_quality import validate_face_embedding_generations
-
-    normalized_generations = validate_face_embedding_generations(generations)
+    normalized_generations = _default_generations(event)
+    if generations is not None and tuple(generations) != normalized_generations:
+        raise ValueError("unsupported face-embedding generation set")
     if dimensions is None:
         from selfie_search.services.submission import _search_parameters
 

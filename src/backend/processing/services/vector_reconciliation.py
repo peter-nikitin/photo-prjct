@@ -120,9 +120,8 @@ def verify_scalar_embeddings(event: Event, *, include_hidden: bool = False) -> d
     )
     invalid = (
         wrong_model
-        | (Q(embedding_vector__model_version="sface") & ~Q(dimensions=128))
         | (Q(embedding_vector__model_version="adaface-ir18-webface4m") & ~Q(dimensions=512))
-        | ~Q(embedding_vector__model_version__in=("sface", "adaface-ir18-webface4m"))
+        | ~Q(embedding_vector__model_version="adaface-ir18-webface4m")
         | Q(norm__lt=0.999999)
         | Q(norm__gt=1.000001)
         | ~Q(attempt__configuration=F("attempt__job__configuration"))

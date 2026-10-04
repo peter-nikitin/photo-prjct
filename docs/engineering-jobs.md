@@ -352,7 +352,7 @@ gates are approved.
 - Status: Delivered
 - Boundary: Release-gate completion, canonical-deployment activation, and customer-outcome validation
   remain pending.
-- Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py), and [`experiments/face_recognition_spike/face_spike/cli.py`](../experiments/face_recognition_spike/face_spike/cli.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance, source-separated reports, privacy-bounded v2 events, and the closed held-out evaluator. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or canonical-deployment activation change is included.
+- Evidence: [`src/backend/processing/services/face_clustering.py`](../src/backend/processing/services/face_clustering.py), [`src/backend/processing/services/face_cluster_corpora.py`](../src/backend/processing/services/face_cluster_corpora.py), [`src/backend/processing/management/commands/build_face_cluster_corpus.py`](../src/backend/processing/management/commands/build_face_cluster_corpus.py), [`src/backend/processing/management/commands/activate_face_cluster_corpus.py`](../src/backend/processing/management/commands/activate_face_cluster_corpus.py), [`src/backend/selfie_search/services/cluster_expansion.py`](../src/backend/selfie_search/services/cluster_expansion.py), and [`src/backend/selfie_search/services/cluster_reporting.py`](../src/backend/selfie_search/services/cluster_reporting.py). Focused tests cover deterministic clustering, immutable publication and activation guards, direct-first provenance and privacy-bounded v2 events. The retired experiment evaluator is historical evidence only. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` remains the default; no worker credential/configuration, Compose, cloud, or canonical-deployment activation change is included.
 - Last updated: 2026-08-05
 
 ### EJ-020 — Operator — Cache a frozen private event-original corpus
@@ -414,8 +414,9 @@ other events, ranking, or historical biometric evidence.
   and customer-facing verification are separate pending evidence states; none is claimed here.
 - Evidence: Commit `e29e65a` implements the exact `3/face_embedding/4` approval, accepted
   `preview-small-v1` cohort validation, dry-run-by-default
-  [`reprocess_event_face_embeddings`](../src/backend/processing/management/commands/reprocess_event_face_embeddings.py)
-  command, idempotent replay, privacy-safe status aggregates, and append-only activation gate in
+  historical reprocessing command (retired under ADR 0054), idempotent replay,
+  privacy-safe status aggregates, and append-only activation gate recorded in the
+  [reviewed rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md) and implemented at the time in
   [`enrollment.py`](../src/backend/processing/services/enrollment.py) and
   [`face_quality.py`](../src/backend/processing/services/face_quality.py). Its focused activation,
   replay, enrollment, and adjacent corpus tests passed (60 tests). Commit `333f5b8` accepts the

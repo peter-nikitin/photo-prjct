@@ -439,8 +439,6 @@ def _gallery_configuration(
 
 
 def _search_parameters(model: str) -> tuple[int, float]:
-    if model == "sface":
-        return 128, 0.363
     if model == "adaface-ir18-webface4m":
         return 512, 0.42
     raise ValueError("invalid face-embedding generation")

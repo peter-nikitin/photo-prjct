@@ -159,7 +159,6 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
             "timezone_name": "Europe/Moscow",
             "access_type": access_type,
             "publication_status": Event.PublicationStatus.PUBLISHED,
-            "face_search_generation": Event.FaceSearchGeneration.SFACE_V3,
         }
         if access_type == Event.AccessType.PAID:
             values["price_per_photo_kopecks"] = 30000
@@ -280,18 +279,37 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
         complete_attempt(
             claimed.attempt.id,
             result={
-                "model": "sface",
+                "model": "adaface-ir18-webface4m",
                 "face_count": 1,
                 "faces": [
                     {
                         "index": 0,
-                        "bbox": [8, 6, 20, 20],
+                        "bbox": [8, 6, 40, 40],
                         "confidence": 0.95,
                         "landmarks": [[10, 10], [20, 10], [15, 15], [11, 22], [19, 22]],
-                        "embedding": [0.6, 0.8] + [0.0] * 126,
+                        "embedding": [0.6, 0.8] + [0.0] * 510,
+                        "status": "kept",
+                        "quality": {
+                            "algorithm_version": "normalized-laplacian-v1",
+                            "crop_size": 112,
+                            "confidence": 0.95,
+                            "minimum_side_px": 40.0,
+                            "relative_area": 0.1,
+                            "sharpness": 60.0,
+                            "decision": "accepted",
+                            "reasons": [],
+                        },
                     }
                 ],
                 "warnings": [],
+                "has_single_query_face_usable": True,
+                "timings": {
+                    "decode_ms": 1,
+                    "model_load_ms": 2,
+                    "detect_ms": 3,
+                    "embed_ms": 4,
+                    "total_ms": 10,
+                },
                 "input_geometry": {
                     "coordinate_space": "preview-small-v1",
                     "pixel_width": clean.width,

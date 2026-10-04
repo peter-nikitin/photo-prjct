@@ -38,13 +38,11 @@ from processing.models import (
     ProcessingJob,
 )
 from processing.services.enrollment import (
-    CONTRACT_VERSION,
     FACE_EMBEDDING_CONFIGURATION,
-    FACE_EMBEDDING_PROCESSOR_VERSION,
     GENERATE_PREVIEW_PROCESSOR_VERSION,
     PREVIEW_CONTRACT_VERSION,
-    PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-    SCRFD_FACE_EMBEDDING_CONFIGURATION,
+    QUALITY_FACE_CONTRACT_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSION,
     request_generate_preview,
 )
 from processing.services.jobs import claim_job, complete_attempt
@@ -52,8 +50,6 @@ from processing.services.previews import complete_preview_attempt
 from processing.storage import ObjectConflict, PreviewObject
 from selfie_search.models import SelfieSearch, SelfieSearchAttempt, SelfieSearchResult
 from selfie_search.storage import DownloadGrant, StoredTemporarySelfie
-
-pytestmark = pytest.mark.face_models
 
 _OBJECT_URL = "https://object.test/selfie.jpg?one-time-grant"
 _MAX_INPUT_BYTES = 20 * 1024 * 1024
@@ -147,7 +143,7 @@ def _required_file(name: str) -> Path:
         if path.is_file():
             return path
     pytest.skip(
-        "requires local PHOTO_WORKER_SCRFD_MODEL_PATH, PHOTO_WORKER_SFACE_MODEL_PATH, "
+        "requires local PHOTO_WORKER_SCRFD_MODEL_PATH, PHOTO_WORKER_ADAFACE_MODEL_PATH, "
         "and SELFIE_SEARCH_E2E_JPEG_PATH files"
     )
 
@@ -185,7 +181,7 @@ class SelfieSearchEndToEndTests(TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.scrfd_model = _required_file("PHOTO_WORKER_SCRFD_MODEL_PATH")
-        cls.sface_model = _required_file("PHOTO_WORKER_SFACE_MODEL_PATH")
+        cls.adaface_model = _required_file("PHOTO_WORKER_ADAFACE_MODEL_PATH")
         cls.jpeg_path = _required_file("SELFIE_SEARCH_E2E_JPEG_PATH")
         super().setUpClass()
 
@@ -206,7 +202,7 @@ class SelfieSearchEndToEndTests(TestCase):
             content_type="image/jpeg",
             detection_threshold=0.5,
             scrfd_model_path=self.scrfd_model,
-            sface_model_path=self.sface_model,
+            adaface_model_path=self.adaface_model,
         )
         first_photo = self.add_accepted_photo(
             event=self.event,
@@ -245,8 +241,7 @@ class SelfieSearchEndToEndTests(TestCase):
                 for generation in search.configuration["gallery_face_embedding_generations"]
             ],
             [
-                (CONTRACT_VERSION, FACE_EMBEDDING_PROCESSOR_VERSION),
-                (PREVIEW_CONTRACT_VERSION, PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION),
+                (QUALITY_FACE_CONTRACT_VERSION, QUALITY_FACE_PROCESSOR_VERSION),
             ],
         )
         self.assertIn(search.temporary_object_key, self.storage.objects)
@@ -400,9 +395,9 @@ class SelfieSearchEndToEndTests(TestCase):
         )
         run = EventProcessingRun.objects.create(
             event=event,
-            contract_version=CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             configuration_hash=configuration_hash,
         )
@@ -410,9 +405,9 @@ class SelfieSearchEndToEndTests(TestCase):
             event=event,
             run=run,
             photo=photo,
-            contract_version=CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             configuration_hash=configuration_hash,
             input_fingerprint=input_fingerprint,
@@ -422,9 +417,9 @@ class SelfieSearchEndToEndTests(TestCase):
             run=run,
             job=job,
             photo=photo,
-            contract_version=CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             input_fingerprint=input_fingerprint,
             status=ProcessingAttempt.Status.SUCCEEDED,
@@ -452,14 +447,14 @@ class SelfieSearchEndToEndTests(TestCase):
             )
             FaceEmbeddingVector.objects.create(
                 detection=detection,
-                model_version="sface",
+                model_version="adaface-ir18-webface4m",
                 vector=vector,
                 metadata={},
             )
         PhotoFaceEmbeddingProjection.objects.create(
             photo=photo,
-            contract_version=CONTRACT_VERSION,
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration_hash=configuration_hash,
             accepted_attempt=attempt,
         )
@@ -468,7 +463,7 @@ class SelfieSearchEndToEndTests(TestCase):
     def add_accepted_preview_photo(
         self, *, event: Event, photo_id: str, vectors: list[list[float]]
     ) -> Photo:
-        """Publish a real accepted preview, then complete its production-enrolled 2/3 face job."""
+        """Publish an accepted preview, then complete its current face job."""
         photo = Photo.objects.create(
             id=photo_id,
             event=event,
@@ -528,9 +523,9 @@ class SelfieSearchEndToEndTests(TestCase):
         assert face_job is not None
         self.assertEqual(
             (face_job.contract_version, face_job.processor_version),
-            (PREVIEW_CONTRACT_VERSION, PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION),
+            (QUALITY_FACE_CONTRACT_VERSION, QUALITY_FACE_PROCESSOR_VERSION),
         )
-        self.assertEqual(face_job.configuration, SCRFD_FACE_EMBEDDING_CONFIGURATION)
+        self.assertEqual(face_job.configuration, FACE_EMBEDDING_CONFIGURATION)
         self.assertEqual(
             face_job.input_fingerprint,
             {
@@ -544,15 +539,15 @@ class SelfieSearchEndToEndTests(TestCase):
             },
         )
         face_claim = claim_job(
-            contract_version=PREVIEW_CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
         )
         self.assertEqual(face_claim.job.id, face_job.id)
         completion = complete_attempt(
             face_claim.attempt.id,
             result={
-                "model": "sface",
+                "model": "adaface-ir18-webface4m",
                 "face_count": len(vectors),
                 "faces": [
                     {

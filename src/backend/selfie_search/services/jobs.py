@@ -41,6 +41,7 @@ from selfie_search.services.direct_ranking import DirectRankingOutcome
 from selfie_search.services.ranking import (
     QueryVectorError,
     RankingError,
+    _configuration,
     validate_query_vector,
 )
 from selfie_search.services.read_selection import rank_selected_direct
@@ -553,17 +554,9 @@ def recover_expired_search_attempts(
 
 def selfie_worker_configuration(search: SelfieSearch) -> dict[str, object]:
     """Build the strict worker union configuration from the search's frozen contract snapshot."""
-    configuration = search.configuration
-    if not isinstance(configuration, dict):
-        raise ValueError("search configuration is invalid")
-    model = configuration.get("embedding_model")
-    dimensions = configuration.get("embedding_dimensions")
-    if model == "sface" and dimensions == 128:
-        terminal_result_max_bytes = 8_192
-    elif model == "adaface-ir18-webface4m" and dimensions == 512:
-        terminal_result_max_bytes = 16_384
-    else:
-        raise ValueError("search configuration is incompatible with selfie_query v2")
+    contract = _configuration(search)
+    model = contract.model
+    dimensions = contract.dimensions
     worker_configuration: dict[str, object] = {
         "retry_policy": dict(_RETRY_POLICY),
         "max_cohort_size": 1,
@@ -583,26 +576,25 @@ def selfie_worker_configuration(search: SelfieSearch) -> dict[str, object]:
             "max_input_bytes": 20 * 1024 * 1024,
             "max_pixels": 25_000_000,
             "poll_min_delay_seconds": 5,
-            "terminal_result_max_bytes": terminal_result_max_bytes,
+            "terminal_result_max_bytes": 16_384,
         },
     }
-    if model == "adaface-ir18-webface4m":
-        worker_configuration["scrfd"] = {
-            "input_size": [640, 640],
-            "model": "scrfd-10g-kps",
-            "model_artifact_sha256": (
-                "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
-            ),
-            "nms_threshold": 0.4,
-        }
-        worker_configuration["adaface"] = {
-            "alignment": "scrfd-five-landmark-112x112",
-            "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
-            "model_artifact_sha256": (
-                "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b"
-            ),
-            "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
-        }
+    worker_configuration["scrfd"] = {
+        "input_size": [640, 640],
+        "model": "scrfd-10g-kps",
+        "model_artifact_sha256": (
+            "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+        ),
+        "nms_threshold": 0.4,
+    }
+    worker_configuration["adaface"] = {
+        "alignment": "scrfd-five-landmark-112x112",
+        "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
+        "model_artifact_sha256": (
+            "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b"
+        ),
+        "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
+    }
     return worker_configuration
 
 

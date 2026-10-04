@@ -261,7 +261,6 @@ def test_manifest_pins_the_reviewed_deployment_identity(manifest: dict[str, Any]
         "allowed_workflows": [
             "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
-            "peter-nikitin/photo-prjct/.github/workflows/face-embedding-benchmark.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main",
         ],

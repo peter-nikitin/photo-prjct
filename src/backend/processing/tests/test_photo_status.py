@@ -61,7 +61,6 @@ class PhotoProcessingStatusTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Europe/Moscow",
-            face_search_generation=Event.FaceSearchGeneration.ADAFACE_V5,
         )
         self._identity_counter = count(1)
 
@@ -121,8 +120,6 @@ class PhotoProcessingStatusTests(TestCase):
             GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
         }:
             return (2, 1)
-        if photo.processing_generation == GENERATION_LEGACY:
-            return (1, 1)
         return (3, 5)
 
     def set_stage(

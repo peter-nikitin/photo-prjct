@@ -4,21 +4,20 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import NoReturn, TypedDict, cast
+from typing import TypedDict, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import Q
 from django.utils import timezone
 from picflow.models import Event, Photo
 
-from processing.contracts import BIB_RECOGNITION_CONTRACT
+from processing.contracts import BIB_RECOGNITION_CONTRACT, FACE_EMBEDDING_CONTRACT
 from processing.models import (
     BIB_RECOGNITION_PROCESSOR,
     CAPTURE_METADATA_PROCESSOR,
-    FACE_EMBEDDING_BENCHMARK_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -33,20 +32,11 @@ from processing.services.jobs import transition_capture_time_projection
 
 CONTRACT_VERSION = 1
 CAPTURE_METADATA_PROCESSOR_VERSION = 2
-FACE_EMBEDDING_PROCESSOR_VERSION = 1
 PREVIEW_CONTRACT_VERSION = 2
 GENERATE_PREVIEW_PROCESSOR_VERSION = 1
 GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION = 1
-PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION = 3
-QUALITY_FACE_CONTRACT_VERSION = 3
-HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION = 3
-QUALITY_FACE_PROCESSOR_VERSION = 4
-LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION = 5
-FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION = 3
-FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION = 1
-FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
-LOCAL_ADAFACE_EVENT_SLUG = "cyclingrace-vechernee-sadovoe"
-LOCAL_ADAFACE_MANIFEST_SHA256 = "62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879"
+QUALITY_FACE_CONTRACT_VERSION = FACE_EMBEDDING_CONTRACT.contract_version
+QUALITY_FACE_PROCESSOR_VERSION = FACE_EMBEDDING_CONTRACT.processor_version
 
 _CAPTURE_METADATA_CONFIGURATION_BASE: dict[str, object] = {
     "retry_policy": {
@@ -98,51 +88,13 @@ FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
         "lease_max_seconds": 300,
     },
     "max_cohort_size": 16,
-    "report_max_bytes": REPORT_JSON_MAX_BYTES,
+    "report_max_bytes": 262144,
     "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
     "face_embedding": {
-        "model": "sface",
-        "min_face_px": 32,
-        "max_faces_per_photo": 32,
-        "normalize_embeddings": True,
-    },
-    "worker": {
-        "api_response_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
-        "concurrency": 1,
-        "heartbeat_interval_seconds": 30,
-        "lease_duration_seconds": 120,
-        "max_input_bytes": 50 * 1024 * 1024,
-        "max_pixels": 100_000_000,
-        "poll_min_delay_seconds": 5,
-        "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
-    },
-}
-
-SCRFD_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
-    **FACE_EMBEDDING_CONFIGURATION,
-    "face_embedding": {
-        **cast(dict[str, object], FACE_EMBEDDING_CONFIGURATION["face_embedding"]),
-        "detection_threshold": 0.5,
-    },
-}
-
-# Provisional calibration points for private benchmark execution only.  Task 6 must replace these
-# values and record a matching approval before this generation can be activated for customer search.
-FACE_EMBEDDING_QUALITY_CONFIGURATION: dict[str, object] = {
-    "retry_policy": {
-        "max_attempts": 3,
-        "base_backoff_seconds": 30,
-        "max_backoff_seconds": 300,
-        "jitter_seconds": 5,
-        "lease_max_seconds": 300,
-    },
-    "max_cohort_size": 16,
-    "report_max_bytes": REPORT_JSON_MAX_BYTES,
-    "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
-    "face_embedding": {
-        "model": "sface",
+        "model": "adaface-ir18-webface4m",
+        "embedding_dimensions": 512,
         "max_faces": 32,
-        "detection_threshold": 0.75,
+        "detection_threshold": 0.5,
         "normalize_embeddings": True,
         "quality": {
             "algorithm_version": "normalized-laplacian-v1",
@@ -155,33 +107,14 @@ FACE_EMBEDDING_QUALITY_CONFIGURATION: dict[str, object] = {
         },
     },
     "worker": {
-        "api_response_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
+        "api_response_max_bytes": 393216,
         "concurrency": 1,
         "heartbeat_interval_seconds": 30,
         "lease_duration_seconds": 120,
-        "max_input_bytes": 50 * 1024 * 1024,
-        "max_pixels": 100_000_000,
+        "max_input_bytes": 52428800,
+        "max_pixels": 100000000,
         "poll_min_delay_seconds": 5,
-        "terminal_result_max_bytes": FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
-    },
-}
-
-LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
-    **deepcopy(FACE_EMBEDDING_QUALITY_CONFIGURATION),
-    "face_embedding": {
-        "model": "adaface-ir18-webface4m",
-        "embedding_dimensions": 512,
-        "max_faces": 32,
-        "detection_threshold": 0.5,
-        "normalize_embeddings": True,
-        "quality": deepcopy(
-            cast(
-                dict[str, object],
-                cast(dict[str, object], FACE_EMBEDDING_QUALITY_CONFIGURATION["face_embedding"])[
-                    "quality"
-                ],
-            )
-        ),
+        "terminal_result_max_bytes": 393216,
     },
     "scrfd": {
         "input_size": [640, 640],
@@ -198,22 +131,6 @@ LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
             "3a416518b11ece107b43385fc3678aad1d4f2405fde9f58f0be7f530230e368b"
         ),
         "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
-    },
-}
-LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["worker"] = {
-    **deepcopy(cast(dict[str, object], FACE_EMBEDDING_QUALITY_CONFIGURATION["worker"])),
-    "api_response_max_bytes": 384 * 1024,
-    "terminal_result_max_bytes": 384 * 1024,
-}
-
-FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
-    **FACE_EMBEDDING_CONFIGURATION,
-    "max_cohort_size": 500,
-    "benchmark": {
-        "label": "baseline",
-        "source_mode": "event",
-        "source_run_id": None,
-        "requested_count": 1,
     },
 }
 
@@ -295,7 +212,6 @@ GENERATE_WATERMARKED_PREVIEW_CONFIGURATION: dict[str, object] = {
 
 DEFAULT_RECONCILIATION_LIMIT = 100
 MAX_RECONCILIATION_LIMIT = 1_000
-LOCAL_ADAFACE_CANARY_MAX_LIMIT = 100
 
 
 class _ReconciliationProcessorConfig(TypedDict):
@@ -314,250 +230,12 @@ class CaptureTimeReprocessingEnrollment:
 
 
 @dataclass(frozen=True)
-class FaceEmbeddingCandidateEnrollment:
-    photo_count: int
-    created_job_count: int
-    existing_job_count: int
-    run_count: int
-
-
-@dataclass(frozen=True)
 class CaptureTimeReprocessingTarget:
     event_id: int
     event_name: str
     timezone_name: str
     photo_count: int
     configuration: dict[str, object]
-
-
-@dataclass(frozen=True)
-class FaceEmbeddingGenerationApproval:
-    """Bounded non-biometric evidence authorizing one event's reviewed candidate identity."""
-
-    event_slug: str
-    photo_count: int
-    configuration_hash: str
-    preview_manifest_hash: str
-    local_preview_projection_hash: str
-    accepted_preview_cohort_hash: str
-    accepted_preview_crosswalk_hash: str
-    accepted_preview_crosswalk_entry_count: int
-    accepted_preview_crosswalk_sha_mismatch_count: int
-    comparison_manifest_hash: str
-    yunet_model_hash: str
-    sface_model_hash: str
-    job_count: int
-    attempt_count: int
-    projection_count: int
-    technical_failure_count: int
-    kept_face_count: int
-    quality_rejected_face_count: int
-    approved: bool
-
-
-# The explicit maintainer review covers these exact, content-addressed local artifacts.  It does
-# not claim a person-labelled benchmark or fabricate unobserved loss categories.
-FACE_EMBEDDING_QUALITY_APPROVAL = FaceEmbeddingGenerationApproval(
-    event_slug="cyclingrace-vechernee-sadovoe",
-    photo_count=17_043,
-    configuration_hash="dfe32ba0c5914db5a5720046ac5220659155a370a3d9abab766410c41873919a",
-    preview_manifest_hash="62f071941cd8281745256ed6906f37cbfdac29996f20fd6a992c7f486783d879",
-    local_preview_projection_hash=(
-        "a98b5d13152683419c722a115045037fdf883a1f5cdcc3e47a2bddf5291b7d63"
-    ),
-    accepted_preview_cohort_hash=(
-        "6701b7436e1b00b64e701791983a0c9c1d26bcddd56f93a36dd0923aa6bc1034"
-    ),
-    accepted_preview_crosswalk_hash=(
-        "055d7c72614deb3b87b607f467c16365ee6e125be005e9e8f5cf2e910ec56d51"
-    ),
-    accepted_preview_crosswalk_entry_count=17_043,
-    accepted_preview_crosswalk_sha_mismatch_count=17_043,
-    comparison_manifest_hash="043ce5c02cd6df901f16096c2637c3a26b3b96171a9e9538b439cee12abca0a6",
-    yunet_model_hash="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
-    sface_model_hash="0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
-    job_count=17_043,
-    attempt_count=17_043,
-    projection_count=17_043,
-    technical_failure_count=0,
-    kept_face_count=37_573,
-    quality_rejected_face_count=18_610,
-    approved=True,
-)
-
-
-ACCEPTED_PREVIEW_PROJECTION_FIELDS = (
-    "byte_size",
-    "height",
-    "oriented_source_height",
-    "oriented_source_width",
-    "photo_id",
-    "sha256",
-    "width",
-)
-
-
-def accepted_preview_projection(event: Event) -> tuple[dict[str, object], ...]:
-    """Project the exact accepted derivatives into the reviewed non-biometric v1 hash format."""
-    return tuple(
-        PhotoDerivative.objects.filter(
-            photo__event=event,
-            variant="preview-small-v1",
-            photo__processing_states__processor_type=GENERATE_PREVIEW_PROCESSOR,
-            photo__processing_states__status=PhotoProcessingState.Status.SUCCEEDED,
-            photo__processing_states__accepted_attempt_id=F("accepted_attempt_id"),
-        )
-        .order_by("photo_id")
-        .values(*ACCEPTED_PREVIEW_PROJECTION_FIELDS)
-    )
-
-
-def accepted_preview_cohort_hash(event: Event) -> str:
-    """Hash the canonical ordered accepted-PhotoDerivative projection for one event."""
-    encoded = json.dumps(
-        accepted_preview_projection(event), separators=(",", ":"), sort_keys=True
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def candidate_face_embedding_cohort(event: Event) -> list[Photo]:
-    """Return the event's current, accepted preview-backed candidate cohort without writes."""
-    photo_ids = [row["photo_id"] for row in accepted_preview_projection(event)]
-    return list(Photo.objects.filter(pk__in=photo_ids).order_by("pk"))
-
-
-def validate_face_embedding_candidate_enrollment(
-    event: Event,
-    *,
-    approval: FaceEmbeddingGenerationApproval | None = None,
-) -> list[Photo]:
-    """Fail closed unless the current event cohort matches its exact reviewed approval."""
-    selected_approval = approval or FACE_EMBEDDING_QUALITY_APPROVAL
-    candidate_configuration_hash = _configuration_hash(FACE_EMBEDDING_QUALITY_CONFIGURATION)
-    if (
-        selected_approval is None
-        or selected_approval.approved is not True
-        or selected_approval.event_slug != event.slug
-        or selected_approval.configuration_hash != candidate_configuration_hash
-        or any(
-            not _is_sha256(value)
-            for value in (
-                selected_approval.configuration_hash,
-                selected_approval.preview_manifest_hash,
-                selected_approval.local_preview_projection_hash,
-                selected_approval.accepted_preview_cohort_hash,
-                selected_approval.accepted_preview_crosswalk_hash,
-                selected_approval.comparison_manifest_hash,
-                selected_approval.yunet_model_hash,
-                selected_approval.sface_model_hash,
-            )
-        )
-        or any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 0
-            for value in (
-                selected_approval.photo_count,
-                selected_approval.job_count,
-                selected_approval.attempt_count,
-                selected_approval.projection_count,
-                selected_approval.accepted_preview_crosswalk_entry_count,
-                selected_approval.accepted_preview_crosswalk_sha_mismatch_count,
-                selected_approval.technical_failure_count,
-                selected_approval.kept_face_count,
-                selected_approval.quality_rejected_face_count,
-            )
-        )
-        or len(
-            {
-                selected_approval.photo_count,
-                selected_approval.job_count,
-                selected_approval.attempt_count,
-                selected_approval.projection_count,
-            }
-        )
-        != 1
-        or selected_approval.technical_failure_count != 0
-        or selected_approval.accepted_preview_crosswalk_entry_count != selected_approval.photo_count
-        or selected_approval.accepted_preview_crosswalk_sha_mismatch_count
-        != selected_approval.photo_count
-    ):
-        raise ValueError("candidate approval identity is invalid")
-    cohort = candidate_face_embedding_cohort(event)
-    if len(cohort) != selected_approval.photo_count:
-        raise ValueError("candidate approval does not match the accepted preview cohort")
-    if accepted_preview_cohort_hash(event) != selected_approval.accepted_preview_cohort_hash:
-        raise ValueError("candidate approval does not match the accepted preview cohort hash")
-    return cohort
-
-
-def validate_local_adaface_enrollment(event: Event, *, manifest_sha256: str) -> list[Photo]:
-    """Validate the one explicitly identified local AdaFace backfill cohort without writes."""
-    _require_local_adaface_experiment()
-    if event.slug != LOCAL_ADAFACE_EVENT_SLUG:
-        raise ValueError("event does not match the local AdaFace target")
-    if manifest_sha256 != LOCAL_ADAFACE_MANIFEST_SHA256:
-        raise ValueError("manifest does not match the approved local AdaFace corpus")
-    if not _is_sha256(manifest_sha256):
-        raise ValueError("manifest identity is invalid")
-    return candidate_face_embedding_cohort(event)
-
-
-def enroll_local_adaface_reprocessing(
-    event: Event, *, manifest_sha256: str, limit: int | None = None
-) -> FaceEmbeddingCandidateEnrollment:
-    """Enroll the exact local AdaFace cohort, or its canonical bounded canary slice."""
-    with transaction.atomic():
-        locked_event = Event.objects.select_for_update().get(pk=event.pk)
-        cohort = validate_local_adaface_enrollment(locked_event, manifest_sha256=manifest_sha256)
-        if limit is not None:
-            if (
-                not isinstance(limit, int)
-                or isinstance(limit, bool)
-                or not 1 <= limit <= LOCAL_ADAFACE_CANARY_MAX_LIMIT
-            ):
-                raise ValueError(f"limit must be between 1 and {LOCAL_ADAFACE_CANARY_MAX_LIMIT}")
-            cohort = cohort[:limit]
-        configuration_hash = _configuration_hash(LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION)
-        created_job_count = 0
-        existing_job_count = 0
-        run_ids: set[object] = set()
-        for photo in cohort:
-            preview = _accepted_preview(photo)
-            if preview is None:
-                raise ValueError("AdaFace enrollment lost its accepted preview")
-            expected_fingerprint = _derivative_fingerprint(preview)
-            existing_jobs = list(
-                ProcessingJob.objects.select_for_update()
-                .select_related("run")
-                .filter(
-                    event=locked_event,
-                    photo=photo,
-                    contract_version=QUALITY_FACE_CONTRACT_VERSION,
-                    processor_type=FACE_EMBEDDING_PROCESSOR,
-                    processor_version=LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
-                    configuration_hash=configuration_hash,
-                )
-                .order_by("created_at", "id")
-            )
-            if len(existing_jobs) > 1:
-                raise ValueError("AdaFace enrollment has ambiguous existing job identity")
-            if existing_jobs and existing_jobs[0].input_fingerprint != expected_fingerprint:
-                raise ValueError("AdaFace job input no longer matches the accepted preview")
-            if existing_jobs:
-                existing_job_count += 1
-                run_ids.add(existing_jobs[0].run_id)
-                continue
-            state = request_local_adaface_enqueue(photo)
-            job = state.current_job
-            if job is None:  # pragma: no cover - validated accepted previews make this unreachable.
-                raise ValueError("AdaFace enrollment lost its accepted preview")
-            created_job_count += 1
-            run_ids.add(job.run_id)
-        return FaceEmbeddingCandidateEnrollment(
-            photo_count=len(cohort),
-            created_job_count=created_job_count,
-            existing_job_count=existing_job_count,
-            run_count=len(run_ids),
-        )
 
 
 def validate_capture_time_reprocessing_enrollment(
@@ -844,67 +522,18 @@ def request_face_embedding_enqueue(
     """Queue a face-embedding job if the feature flag is enabled."""
     photo.event = Event.objects.select_for_update().get(pk=photo.event_id)
     preview = _accepted_preview(photo)
-    if photo.processing_generation in {
-        Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
-        Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
-    }:
-        if photo.event.face_search_generation == Event.FaceSearchGeneration.ADAFACE_V5:
-            from processing.services.face_quality import active_face_embedding_generations
+    from processing.services.face_quality import current_face_embedding_generation
 
-            configuration = cast(
-                dict[str, object],
-                active_face_embedding_generations(photo.event)[0]["configuration"],
-            )
-            return request_processor(
-                photo=photo,
-                processor_type=FACE_EMBEDDING_PROCESSOR,
-                contract_version=QUALITY_FACE_CONTRACT_VERSION,
-                processor_version=LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
-                configuration=configuration,
-                input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
-                enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
-                and preview is not None,
-            )
-        return request_processor(
-            photo=photo,
-            processor_type=FACE_EMBEDDING_PROCESSOR,
-            contract_version=PREVIEW_CONTRACT_VERSION,
-            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
-            input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
-            enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
-            and preview is not None,
-        )
+    generation = current_face_embedding_generation()
     return request_processor(
         photo=photo,
         processor_type=FACE_EMBEDDING_PROCESSOR,
-        contract_version=CONTRACT_VERSION,
-        processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
-        configuration=FACE_EMBEDDING_CONFIGURATION,
-        verified_source_etag=verified_source_etag,
-        enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)),
-    )
-
-
-def request_face_embedding_candidate_enqueue(photo: Photo) -> NoReturn:
-    """Reject YuNet-calibrated quality work until SCRFD has a new immutable generation."""
-    del photo
-    raise ValueError("SCRFD quality generation is not approved")
-
-
-def request_local_adaface_enqueue(photo: Photo) -> PhotoProcessingState:
-    """Explicitly queue local AdaFace v5 work without altering production SFace jobs."""
-    _require_local_adaface_experiment()
-    preview = _accepted_preview(photo)
-    return request_processor(
-        photo=photo,
-        processor_type=FACE_EMBEDDING_PROCESSOR,
-        contract_version=QUALITY_FACE_CONTRACT_VERSION,
-        processor_version=LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
-        configuration=LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+        contract_version=cast(int, generation["contract_version"]),
+        processor_version=cast(int, generation["processor_version"]),
+        configuration=cast(dict[str, object], generation["configuration"]),
         input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
-        enabled=preview is not None,
-        replace_terminal_generation=True,
+        enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
+        and preview is not None,
     )
 
 
@@ -973,84 +602,6 @@ def request_generate_watermarked_preview(
     )
 
 
-def create_face_embedding_benchmark_run(
-    *,
-    event: Event,
-    photos: list[Photo],
-    label: str,
-    source_run_id: str | None,
-) -> EventProcessingRun:
-    """Create one isolated benchmark cohort without using generic reconciliation."""
-    if not photos or len(photos) > 500:
-        raise ValueError("benchmark cohort must contain between 1 and 500 photos")
-    if any(photo.event_id != event.id or not _is_eligible(photo) for photo in photos):
-        raise ValueError("benchmark cohort contains an ineligible photo")
-    if len({photo.pk for photo in photos}) != len(photos):
-        raise ValueError("benchmark cohort contains duplicate photos")
-    configuration = {
-        **FACE_EMBEDDING_BENCHMARK_CONFIGURATION,
-        "benchmark": {
-            "label": label,
-            "source_mode": "replay" if source_run_id else "event",
-            "source_run_id": source_run_id,
-            "requested_count": len(photos),
-        },
-    }
-    configuration_hash = _configuration_hash(configuration)
-    with transaction.atomic():
-        locked_event = Event.objects.select_for_update().get(pk=event.pk)
-        run = EventProcessingRun.objects.create(
-            event=locked_event,
-            contract_version=FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION,
-            processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
-            processor_version=FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION,
-            configuration=configuration,
-            configuration_hash=configuration_hash,
-        )
-        now = timezone.now()
-        for photo in photos:
-            state, _ = PhotoProcessingState.objects.select_for_update().get_or_create(
-                photo=photo,
-                processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
-                defaults={"status": PhotoProcessingState.Status.NOT_REQUESTED},
-            )
-            if state.status in {
-                PhotoProcessingState.Status.QUEUED,
-                PhotoProcessingState.Status.PROCESSING,
-                PhotoProcessingState.Status.RETRY_WAIT,
-            }:
-                raise ValueError("benchmark photo already has active benchmark work")
-            job = ProcessingJob.objects.create(
-                event=locked_event,
-                run=run,
-                photo=photo,
-                contract_version=FACE_EMBEDDING_BENCHMARK_CONTRACT_VERSION,
-                processor_type=FACE_EMBEDDING_BENCHMARK_PROCESSOR,
-                processor_version=FACE_EMBEDDING_BENCHMARK_PROCESSOR_VERSION,
-                configuration=configuration,
-                configuration_hash=configuration_hash,
-                input_fingerprint=_input_fingerprint(photo, verified_source_etag=None),
-            )
-            state.status = PhotoProcessingState.Status.QUEUED
-            state.current_run = run
-            state.current_job = job
-            state.current_attempt = None
-            state.accepted_attempt = None
-            state.queued_at = now
-            state.save(
-                update_fields=[
-                    "status",
-                    "current_run",
-                    "current_job",
-                    "current_attempt",
-                    "accepted_attempt",
-                    "queued_at",
-                    "updated_at",
-                ]
-            )
-    return run
-
-
 def request_processor(
     photo: Photo,
     *,
@@ -1063,7 +614,6 @@ def request_processor(
     enabled: bool = True,
     event: Event | None = None,
     replace_terminal_generation: bool = False,
-    historical_adaface_receipt: dict[str, object] | None = None,
 ) -> PhotoProcessingState:
     """Queue the first compatible job exactly once for an eligible photo."""
     with transaction.atomic():
@@ -1085,7 +635,6 @@ def request_processor(
             contract_version=contract_version,
             processor_type=processor_type,
             processor_version=processor_version,
-            historical_adaface_receipt=historical_adaface_receipt,
         )
         existing_job = (
             ProcessingJob.objects.select_for_update()
@@ -1326,10 +875,13 @@ def _reconcilable_photo_ids(*, processor_type: str, limit: int) -> list[str]:
 
 def _reconcile_config(processor_type: str) -> _ReconciliationProcessorConfig:
     if processor_type == FACE_EMBEDDING_PROCESSOR:
+        from processing.services.face_quality import current_face_embedding_generation
+
+        generation = current_face_embedding_generation()
         return {
-            "contract_version": CONTRACT_VERSION,
-            "processor_version": FACE_EMBEDDING_PROCESSOR_VERSION,
-            "configuration": FACE_EMBEDDING_CONFIGURATION,
+            "contract_version": cast(int, generation["contract_version"]),
+            "processor_version": cast(int, generation["processor_version"]),
+            "configuration": cast(dict[str, object], generation["configuration"]),
             "verified_source_etag": None,
         }
     raise ValueError(f"unsupported processor_type: {processor_type}")
@@ -1431,22 +983,6 @@ def _configuration_hash(configuration: dict[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _require_local_adaface_experiment() -> None:
-    if (
-        getattr(settings, "ADAFACE_LOCAL_EXPERIMENT_ENABLED", False) is not True
-        or getattr(settings, "DEBUG", False) is not True
-    ):
-        raise ValueError("local AdaFace experiment is not enabled")
-
-
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
 def _locked_collecting_run(
     *,
     event,
@@ -1455,7 +991,6 @@ def _locked_collecting_run(
     contract_version: int,
     processor_type: str,
     processor_version: int,
-    historical_adaface_receipt: dict[str, object] | None = None,
 ):
     """Return a collecting run under lock so a concurrent claim seals an exact cohort."""
     query = EventProcessingRun.objects.select_for_update().filter(
@@ -1466,13 +1001,6 @@ def _locked_collecting_run(
         configuration_hash=configuration_hash,
         status=EventProcessingRun.Status.COLLECTING,
     )
-    if historical_adaface_receipt is None:
-        query = query.filter(report__historical_adaface_backfill__isnull=True)
-    else:
-        from processing.services.historical_adaface import validate_backfill_receipt
-
-        validate_backfill_receipt(historical_adaface_receipt)
-        query = query.filter(report__historical_adaface_backfill=historical_adaface_receipt)
     configured_maximum = configuration["max_cohort_size"]
     if not isinstance(configured_maximum, int):
         raise ValueError("max_cohort_size must be an integer")
@@ -1489,9 +1017,5 @@ def _locked_collecting_run(
         configuration=configuration,
         configuration_hash=configuration_hash,
         status=EventProcessingRun.Status.COLLECTING,
-        report=(
-            {"historical_adaface_backfill": historical_adaface_receipt}
-            if historical_adaface_receipt
-            else {}
-        ),
+        report={},
     )

@@ -1,11 +1,9 @@
 import importlib.util
-import json
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -198,52 +196,3 @@ def test_native_collector_helper_installs_verified_owned_source_and_can_remove(t
     result = subprocess.run(["sh", helper, "remove"], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / "runtime/metrics.py").exists()
-
-
-@pytest.mark.parametrize("label", [None, "vector-only-v1"])
-def test_native_web_guard_uses_only_candidate_web_image(tmp_path, label):
-    (tmp_path / ".env").touch()
-    run = Mock(
-        side_effect=[
-            subprocess.CompletedProcess([], 0, "true\n"),
-            subprocess.CompletedProcess([], 0),
-            subprocess.CompletedProcess(
-                [],
-                0,
-                json.dumps(
-                    [
-                        {
-                            "Config": {
-                                "Labels": {
-                                    "ru.findme-photo.historical-adaface-contract": label,
-                                }
-                            }
-                        }
-                    ]
-                ),
-            ),
-        ]
-    )
-    guard = module("verify-native-release")
-    if label:
-        guard.verify(tmp_path, "web:candidate", run=run)
-    else:
-        with pytest.raises(ValueError, match="incompatible"):
-            guard.verify(tmp_path, "web:candidate", run=run)
-    image_calls = [
-        call.args[0]
-        for call in run.call_args_list
-        if call.args[0][:2] in (["docker", "pull"], ["docker", "image"])
-    ]
-    assert image_calls == [
-        ["docker", "pull", "web:candidate"],
-        ["docker", "image", "inspect", "web:candidate"],
-    ]
-
-
-def test_native_database_failure_stops_before_image_mutation(tmp_path):
-    (tmp_path / ".env").touch()
-    run = Mock(side_effect=subprocess.CalledProcessError(1, "psql"))
-    with pytest.raises(subprocess.CalledProcessError):
-        module("verify-native-release").verify(tmp_path, "web:candidate", run=run)
-    assert run.call_count == 1

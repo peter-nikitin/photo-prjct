@@ -215,7 +215,7 @@ def test_terminal_size_uses_the_same_utf8_bytes_as_http_client():
     assert captured == [expected]
 
 
-def test_image_smoke_exercises_current_adaface_and_sface_consumers(tmp_path, monkeypatch):
+def test_image_smoke_exercises_current_adaface_consumers(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from photo_worker import model_smoke
@@ -226,12 +226,12 @@ def test_image_smoke_exercises_current_adaface_and_sface_consumers(tmp_path, mon
     calls = []
 
     def photo(path, **kwargs):
-        model = kwargs.get("model", "sface")
+        model = kwargs.get("model")
         calls.append(("photo", model))
         return SimpleNamespace(model=model, faces=(), warnings=("no_faces_detected",))
 
     def selfie(path, **kwargs):
-        calls.append(("selfie", kwargs.get("model", "sface")))
+        calls.append(("selfie", kwargs.get("model")))
         raise FaceEmbeddingError("no_face_detected")
 
     monkeypatch.setattr(model_smoke, "extract_face_embeddings", photo)
@@ -239,9 +239,7 @@ def test_image_smoke_exercises_current_adaface_and_sface_consumers(tmp_path, mon
     model_smoke._assert_photo_embedding_no_face(path)
     model_smoke._assert_selfie_query_no_face(path)
     assert set(calls) == {
-        (kind, model)
-        for kind in ("photo", "selfie")
-        for model in ("sface", "adaface-ir18-webface4m")
+        (kind, model) for kind in ("photo", "selfie") for model in ("adaface-ir18-webface4m",)
     }
 
 

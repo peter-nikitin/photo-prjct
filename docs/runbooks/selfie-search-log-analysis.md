@@ -61,38 +61,9 @@ compose exec -T web python manage.py build_face_cluster_corpus "$EVENT_REF" \
 The command's UUID is a database reference, not a photo/face/cluster identity for tickets. A failed
 or incomplete build is not selectable. Do not infer quality thresholds from this output.
 
-### 2. Run the private held-out benchmark
+### 2. Historical private benchmark
 
-Run the existing experiment CLI against one immutable person-split benchmark, reconciled index, and
-cluster run. Keep every input and the aggregate output in the private directory configured by the
-maintainer. The report is evaluation evidence only and never enables Django:
-
-```bash
-set -eu
-: "${BENCHMARK_DIR:?set the private final benchmark directory}"
-: "${INDEX_DIR:?set the private reconciled index directory}"
-: "${CLUSTER_RUN_DIR:?set the private immutable cluster run directory}"
-: "${REPORT_FILE:?set the private aggregate report path}"
-: "${DIRECT_THRESHOLD:?set the reviewed direct threshold}"
-: "${ANCHOR_THRESHOLD:?set the separately reviewed strong-anchor threshold}"
-: "${CONFIGURATION_HASH:?set the lowercase corpus configuration SHA-256}"
-: "${GENERATIONS_JSON:?set the private normalized face-embedding generations JSON}"
-PYTHONPATH=experiments/face_recognition_spike:experiments/face_recognition_spike/tests:src/backend \
-  .venv/bin/python -m face_spike evaluate-cluster-expansion \
-  --benchmark "$BENCHMARK_DIR" \
-  --index "$INDEX_DIR" \
-  --cluster-run "$CLUSTER_RUN_DIR" \
-  --output "$REPORT_FILE" \
-  --direct-threshold "$DIRECT_THRESHOLD" \
-  --anchor-threshold "$ANCHOR_THRESHOLD" \
-  --configuration-hash "$CONFIGURATION_HASH" \
-  --generations-json "$GENERATIONS_JSON"
-```
-
-Review direct/final recall, source-separated precision, incremental correct/incorrect photos,
-helped/harmed searches, false merges, fragmentation/singletons, build/search resources, and
-latency. Activation remains blocked until numeric gates and every observed false merge receive
-explicit approval. Never commit the benchmark inputs or generated report.
+The `face_spike` executable evaluator was retired with the SFace experiment. Existing private benchmark receipts remain historical evidence. Do not run the removed command; use the current corpus build and Django aggregate report interfaces when reviewing a new activation.
 
 ### 3. Produce the durable aggregate report
 

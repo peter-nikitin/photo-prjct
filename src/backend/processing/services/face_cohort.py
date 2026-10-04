@@ -162,7 +162,15 @@ def eligible_face_detections(
     if generations is not None:
         if not generations:
             raise ValueError("face-embedding generations are required")
-        projections = projections.filter(_projection_generation_predicate(generations))
+        projections = projections.filter(
+            _projection_generation_predicate(generations),
+            photo__processing_states__processor_type="face_embedding",
+            photo__processing_states__status="succeeded",
+            photo__processing_states__accepted_attempt=F("accepted_attempt"),
+            photo__processing_states__current_attempt=F("accepted_attempt"),
+            photo__processing_states__current_job=F("accepted_attempt__job"),
+            photo__processing_states__current_run=F("accepted_attempt__run"),
+        )
     else:
         projections = projections.filter(
             accepted_attempt__processor_type="face_embedding",

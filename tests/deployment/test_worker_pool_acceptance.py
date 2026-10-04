@@ -31,7 +31,7 @@ from processing.models import (
 )
 from processing.services import worker_pool_lifecycle as lifecycle
 from processing.services.enrollment import (
-    LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+    FACE_EMBEDDING_CONFIGURATION,
     request_processor,
 )
 from processing.services.worker_pool_metrics import observe_metrics
@@ -271,8 +271,6 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
     settings.PHOTO_PROCESSING_FLEET_TOKEN = "fixture-fleet-only"
     fixture = api_fixtures.WorkerApiTests()
     fixture.setUp()
-    fixture.event.face_search_generation = "adaface_v5"
-    fixture.event.save(update_fields=["face_search_generation"])
     photo = fixture.photo("functional-tls-photo")
     preview = fixture.publish_preview(photo)
     before_preview = (preview.pk, preview.final_key, preview.accepted_attempt_id)
@@ -281,7 +279,7 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
         processor_type="face_embedding",
         contract_version=3,
         processor_version=5,
-        configuration=LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
+        configuration=FACE_EMBEDDING_CONFIGURATION,
         input_fingerprint={
             "object_key": preview.final_key,
             "object_size": preview.byte_size,

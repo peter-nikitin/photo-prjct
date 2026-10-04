@@ -20,7 +20,8 @@ def test_production_deploy_has_no_local_placement_or_restore_path():
     assert "worker-bulk" not in source
     assert "worker-selfie" not in source
     assert "fleet_phase" not in source
-    assert "verify-native-release.py" in source
+    assert "verify-native-release.py" not in source
+    assert not (ROOT / "deploy/verify-native-release.py").exists()
     workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
     assert "PHOTO_WORKER_REPLICAS:" not in workflow
     assert "PHOTO_WORKER_CPUS:" not in workflow

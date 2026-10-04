@@ -34,10 +34,10 @@ from processing.models import (
 from processing.services import jobs
 from processing.services.bibs import bib_configuration
 from processing.services.enrollment import (
+    FACE_EMBEDDING_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
-    PREVIEW_CONTRACT_VERSION,
-    PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-    SCRFD_FACE_EMBEDDING_CONFIGURATION,
+    QUALITY_FACE_CONTRACT_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSION,
     _configuration_hash,
     reconcile_bib_recognition,
     request_processor,
@@ -100,7 +100,6 @@ class _PreviewPublicationFixture:
             start_date=date.today(),
             end_date=date.today(),
             city="Moscow",
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def _claim(
@@ -219,7 +218,7 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         ) as configuration_hash:
             _prelock_preview_face_enrollment(claimed.attempt.id)
 
-        configuration_hash.assert_called_once_with(SCRFD_FACE_EMBEDDING_CONFIGURATION)
+        configuration_hash.assert_called_once_with(FACE_EMBEDDING_CONFIGURATION)
 
     def test_current_attempt_verifies_promotes_and_atomically_publishes_an_immutable_derivative(
         self,
@@ -601,9 +600,9 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
             storage=FakePreviewStorage(object),
         )
         face_claim = claim_job(
-            contract_version=2,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=3,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
         )
         assert isinstance(face_claim, ClaimedJob)
 
@@ -633,9 +632,9 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         face_state = request_processor(
             photo,
             processor_type="face_embedding",
-            contract_version=PREVIEW_CONTRACT_VERSION,
-            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
             input_fingerprint=None,
             enabled=False,
         )
@@ -643,22 +642,22 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         assert existing_run is None
         existing_run = EventProcessingRun.objects.create(
             event=self.event,
-            contract_version=PREVIEW_CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
-            configuration_hash=_configuration_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION),
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=_configuration_hash(FACE_EMBEDDING_CONFIGURATION),
         )
         object = self._stored_object()
         existing_job = ProcessingJob.objects.create(
             event=self.event,
             run=existing_run,
             photo=photo,
-            contract_version=PREVIEW_CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-            configuration=SCRFD_FACE_EMBEDDING_CONFIGURATION,
-            configuration_hash=_configuration_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION),
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
+            configuration=FACE_EMBEDDING_CONFIGURATION,
+            configuration_hash=_configuration_hash(FACE_EMBEDDING_CONFIGURATION),
             input_fingerprint={
                 "object_key": preview_final_key(
                     photo_id=photo.id,
@@ -684,14 +683,14 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         face = PhotoProcessingState.objects.get(photo=photo, processor_type="face_embedding")
         self.assertEqual(face.status, PhotoProcessingState.Status.QUEUED)
         self.assertEqual(
-            (face.current_job.contract_version, face.current_job.processor_version), (2, 3)
+            (face.current_job.contract_version, face.current_job.processor_version), (3, 5)
         )
         self.assertEqual(
             face.current_job.configuration["face_embedding"]["detection_threshold"], 0.5
         )
         self.assertEqual(
             face.current_job.configuration_hash,
-            _configuration_hash(SCRFD_FACE_EMBEDDING_CONFIGURATION),
+            _configuration_hash(FACE_EMBEDDING_CONFIGURATION),
         )
         self.assertEqual(face.current_job.run_id, existing_run.id)
         self.assertEqual(face.current_job_id, existing_job.id)

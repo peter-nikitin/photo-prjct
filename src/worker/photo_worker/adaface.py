@@ -62,7 +62,7 @@ def align_face(
     image: Any,
     landmarks: tuple[tuple[float, float], ...],
 ) -> Any:
-    """Align YuNet's five landmarks to the canonical AdaFace crop."""
+    """Align SCRFD's five landmarks to the canonical AdaFace crop."""
     try:
         source = np.asarray(landmarks, dtype=np.float32)
         target = np.asarray(_ADAFACE_REFERENCE_LANDMARKS, dtype=np.float32)

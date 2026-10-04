@@ -51,7 +51,6 @@ def _resolver_step(
 def test_generic_workflows_use_only_the_canonical_secret_consumers() -> None:
     deploy = _workflow("deploy.yml")
     monitor = _workflow("monitor-public-health.yml")
-    benchmark = _workflow("face-embedding-benchmark.yml")
 
     assert set(deploy[True]) == {"push", "workflow_dispatch"}
     assert deploy[True]["push"] == {"branches": ["main"]}
@@ -73,9 +72,6 @@ def test_generic_workflows_use_only_the_canonical_secret_consumers() -> None:
     ]
     assert probe_environment["MONITOR_TARGET"] == "${{ inputs.target }}"
     assert probe_environment["MONITOR_CHECK"] == "validation-health"
-    _resolver_step(
-        benchmark["jobs"]["benchmark"], "Run bounded benchmark operation", "remote-check"
-    )
 
 
 def test_supported_gunicorn_profiles_disable_request_count_recycling() -> None:
@@ -190,7 +186,7 @@ def _deployment_values() -> dict[str, str]:
         "PHOTO_WORKER_LEASE_SECONDS": "120",
         "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES": (
             "1/capture_metadata/2,2/generate_preview/1,"
-            "2/generate_watermarked_preview/1,2/face_embedding/3,"
+            "2/generate_watermarked_preview/1,"
             "3/face_embedding/5,1/bib_recognition/1"
         ),
         "PHOTO_WORKER_BULK_PROCESSOR_TYPES": (
@@ -207,9 +203,6 @@ def _deployment_values() -> dict[str, str]:
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES": "20971520",
         "SELFIE_SEARCH_MAX_PIXELS": "25000000",
         "SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS": "120",
-        "SELFIE_SEARCH_EMBEDDING_MODEL": "sface",
-        "SELFIE_SEARCH_EMBEDDING_DIMENSIONS": "128",
-        "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD": "0.363",
         "SELFIE_SEARCH_TEMPORARY_PREFIX": "selfie-search/",
         "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS": "24",
         "SELFIE_FEEDBACK_ENABLED": "False",
@@ -411,7 +404,7 @@ def _remote_environment(tmp_path: Path, remote_boundary: Path) -> tuple[dict[str
     (remote_deploy_root / ".env").write_text(
         "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES="
         "1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,"
-        "2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1\n"
+        "3/face_embedding/5,1/bib_recognition/1\n"
         "PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=1/selfie_query/2\n",
         encoding="utf-8",
     )
@@ -548,7 +541,6 @@ def _initial_deployment_helper(tmp_path: Path, *, apply_status: int) -> tuple[Pa
     helper = deploy_dir / "run-remote.sh"
     shutil.copy2(HELPER, helper)
     (deploy_dir / "worker-pools").mkdir()
-    (deploy_dir / "verify-native-release.py").write_text("# fixture native guard\n")
     shutil.copy2(ROOT / "deploy/package-deployment.sh", deploy_dir / "package-deployment.sh")
     for name in ("__init__.py", "services/__init__.py", "services/worker_pool_cloud.py"):
         target = project_root / "src/backend/processing" / name
@@ -591,9 +583,8 @@ def test_installer_accepts_web_release_without_legacy_fleet_marker(
     assert (remote_root / "deploy").exists()
 
 
-@pytest.mark.parametrize("compatible", [True, False])
-def test_first_remote_only_upgrade_runs_candidate_guard_with_legacy_installed_helper(
-    tmp_path: Path, remote_boundary: Path, compatible: bool
+def test_first_remote_only_upgrade_installs_candidate_with_legacy_helper(
+    tmp_path: Path, remote_boundary: Path
 ) -> None:
     helper, apply_log, candidate_compose = _initial_deployment_helper(tmp_path, apply_status=0)
     environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
@@ -606,30 +597,10 @@ def test_first_remote_only_upgrade_runs_candidate_guard_with_legacy_installed_he
     (remote_root / "docker-compose.https.yml").write_text("previous-overlay\n")
     (remote_root / "worker-pools-current.json").write_text("{}")
     (remote_root / "worker-pools-release.json").write_text('{"phase":"committed"}')
-    guard_log = tmp_path / "candidate-guard.log"
-    (helper.parent / "verify-native-release.py").write_text(
-        "import argparse\n"
-        "from pathlib import Path\n"
-        "parser = argparse.ArgumentParser()\n"
-        "parser.add_argument('--root', type=Path)\n"
-        "parser.add_argument('--app-image')\n"
-        "root = parser.parse_args().root\n"
-        "assert (root / 'deploy/package-version').read_text() == 'previous\\n'\n"
-        "assert (root / 'deploy/worker-pools/release.py').read_text() "
-        "== 'LEGACY_RELEASE = True\\n'\n"
-        f"Path({str(guard_log)!r}).write_text('candidate-guard\\n')\n"
-        + ("raise ValueError('incompatible native release')\n" if not compatible else "")
-    )
     result = _run_helper(["deploy"], environment, helper=helper)
-    assert guard_log.exists(), result.stderr
-    assert guard_log.read_text() == "candidate-guard\n"
-    assert result.returncode == (0 if compatible else 2), result.stderr
-    assert apply_log.exists() is compatible
-    assert (remote_root / "docker-compose.deployment.yml").read_bytes() == (
-        candidate_compose if compatible else b"previous-compose\n"
-    )
-    if not compatible:
-        assert (remote_root / "deploy/package-version").read_text() == "previous\n"
+    assert result.returncode == 0, result.stderr
+    assert apply_log.exists()
+    assert (remote_root / "docker-compose.deployment.yml").read_bytes() == (candidate_compose)
     assert not list(remote_root.glob(".deployment-*"))
 
 
@@ -1040,31 +1011,6 @@ def test_paused_observability_verification_reports_ssh_failure_without_disclosur
     assert result.stderr == "[remote] stage=remote status=error code=remote_failed\n"
     assert sentinel not in result.stdout + result.stderr
     assert not list(tmp_path.glob("findme-remote.*"))
-
-
-def test_benchmark_operation_preserves_inputs_inside_the_remote_environment(
-    tmp_path: Path, remote_boundary: Path
-) -> None:
-    environment, sentinel = _remote_environment(tmp_path, remote_boundary)
-    environment.update(
-        BENCHMARK_OPERATION="baseline",
-        BENCHMARK_EVENT_SLUG="summer-event",
-        BENCHMARK_SOURCE_RUN_UUID="",
-        SSH_STDOUT="BENCHMARK_RUN_ID=00000000-0000-0000-0000-000000000000",
-    )
-
-    result = _run_helper(["face-embedding-benchmark"], environment)
-
-    assert result.returncode == 0, result.stderr
-    remote_environment = Path(environment["SSH_STDIN"]).read_text(encoding="utf-8")
-    assert 'BENCHMARK_OPERATION="baseline"' in remote_environment
-    assert 'BENCHMARK_EVENT_SLUG="summer-event"' in remote_environment
-    assert 'BENCHMARK_SOURCE_RUN_UUID=""' in remote_environment
-    assert result.stdout == (
-        "BENCHMARK_RUN_ID=00000000-0000-0000-0000-000000000000\n"
-        "[remote] stage=face-embedding-benchmark status=ok\n"
-    )
-    assert sentinel not in result.stdout + result.stderr
 
 
 def test_remote_failure_is_sanitized_and_cleans_private_files(

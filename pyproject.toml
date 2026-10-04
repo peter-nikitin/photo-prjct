@@ -30,7 +30,6 @@ markers = [
   "product_flow: end-to-end product flow test layer",
   "operational: deployment and operational test layer",
   "migration: migration identity and rehearsal test layer",
-  "face_models: requires locally supplied YuNet and SFace model files",
   "clone_deployed_slow: exhaustive staging database clone coverage",
 ]
 

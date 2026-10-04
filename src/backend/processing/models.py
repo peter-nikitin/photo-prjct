@@ -692,7 +692,7 @@ class FaceEmbeddingVector(models.Model):  # noqa: DJ008
         PhotoFaceDetection, on_delete=models.PROTECT, related_name="embedding_vector"
     )
     model_version = models.CharField(max_length=64)
-    vector = VectorField()
+    vector = VectorField(dimensions=512)
     metadata = models.JSONField(default=dict, validators=[validate_bounded_json])
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -700,15 +700,6 @@ class FaceEmbeddingVector(models.Model):  # noqa: DJ008
         constraints = [
             models.CheckConstraint(
                 condition=(
-                    models.Q(model_version="sface")
-                    & Exact(
-                        models.Func(
-                            "vector", function="vector_dims", output_field=models.IntegerField()
-                        ),
-                        models.Value(128),
-                    )
-                )
-                | (
                     models.Q(model_version="adaface-ir18-webface4m")
                     & Exact(
                         models.Func(

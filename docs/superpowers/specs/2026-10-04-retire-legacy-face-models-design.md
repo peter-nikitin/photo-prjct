@@ -1,6 +1,6 @@
 # Retire legacy face-recognition models
 
-- **Status:** Draft for maintainer review
+- **Status:** Approved for implementation by the maintainer on 2026-10-04
 - **Date:** 2026-10-04
 - **Owner:** FindMe Photo
 - **Related architecture:** [Photo ingestion and indexing](../../architecture.md#photo-ingestion-and-indexing),
@@ -12,11 +12,13 @@
   [0040](../../adr/0040-use-pgvector-for-exact-face-search.md),
   [0041](../../adr/0041-accept-pgvector-numerical-boundaries.md),
   [0049](../../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md),
-  [0051](../../adr/0051-release-photo-worker-images-independently.md)
+  [0051](../../adr/0051-release-photo-worker-images-independently.md),
+  [0052](../../adr/0052-retire-sface-and-fix-adaface-vector-dimension.md)
 - **Related work:** [Historical AdaFace backfill](2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md),
   [pgvector reader retirement](../../plans/2026-10-04-complete-pgvector-face-read-cutover.md)
-- **ADR impact:** Requires new ADR for the durable AdaFace-only recognition and legacy-vector
-  retirement boundary. Conforms to ADRs 0017, 0019, 0024, 0025, 0040, 0041, 0049 and 0051.
+- **ADR impact:** Recorded by accepted ADR 0052 for the durable AdaFace-only recognition and
+  legacy-vector retirement boundary. Conforms to ADRs 0017, 0019, 0024, 0025, 0040, 0041, 0049
+  and 0051.
   ADR 0040 required SFace and AdaFace to coexist **during the storage transition** and explicitly
   deferred recognition-model retirement. This design completes that later phase without changing
   exact pgvector search, the AdaFace threshold, worker authority, or saved-result semantics. No
@@ -77,7 +79,10 @@ membership and current media authorization without rerunning recognition.
 - Remove the event-level model selector once every published event has an accepted AdaFace
   disposition and old work is terminal. Ordinary event creation, enrollment, search submission,
   ranking, gallery-face selection, reporting and offline cluster construction use the same current
-  AdaFace contract. Retain generic processor version, configuration hash and immutable attempt
+  AdaFace contract. The cohort may include already accepted AdaFace v5 attempts from both the
+  original and vector-only backfill configurations: they produce the same 512D model, and their
+  distinct configuration hashes remain immutable provenance. New work uses one pinned current
+  configuration. Retain generic processor version, configuration hash and immutable attempt
   identity where they record processing provenance; they do not select an old model at runtime.
 - Eliminate old SFace generation builders, approval/activation branches, SFace dimensions and
   thresholds, local AdaFace experiment mode, temporary backfill interfaces and completed

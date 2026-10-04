@@ -71,6 +71,7 @@ place, and add the new record to this index.
 | 0049 | [Retire local photo-worker recovery after remote acceptance](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md) | Accepted |
 | 0050 | [Decouple processing jobs and attempts from worker builds](0050-decouple-processing-queue-from-worker-builds.md) | Accepted |
 | 0051 | [Release photo-worker images independently](0051-release-photo-worker-images-independently.md) | Accepted |
+| 0052 | [Retire SFace and fix the AdaFace vector dimension](0052-retire-sface-and-fix-adaface-vector-dimension.md) | Accepted |
 
 ## Public selfie-search outcome
 

@@ -9,6 +9,10 @@ on:
       - deploy/monitoring/merge_native_agent.py
       - deploy/monitoring/unified-agent.yml.template
       - deploy/observability/**
+      - deploy/postgres-monitoring/**
+      - docker-compose.deployment.yml
+      - src/backend/config/metrics.py
+      - src/backend/config/views.py
       - deploy/image-origin/monitoring/**
       - deploy/selfie-observability/**
       - deploy/worker-pools/metrics*
@@ -55,6 +59,7 @@ jobs:
   classify:
     runs-on: ubuntu-latest
     outputs:
+      application_changed: ${{ steps.select.outputs.application_changed }}
       cloud_changed: ${{ steps.select.outputs.cloud_changed }}
       canonical_changed: ${{ steps.select.outputs.canonical_changed }}
       public_changed: ${{ steps.select.outputs.public_changed }}
@@ -132,6 +137,7 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          APPLICATION_CHANGED: ${{ needs.classify.outputs.application_changed }}
           CANONICAL_CHANGED: ${{ needs.classify.outputs.canonical_changed }}
           PUBLIC_CHANGED: ${{ needs.classify.outputs.public_changed }}
           PROBE_CHANGED: ${{ needs.classify.outputs.probe_changed }}
@@ -139,7 +145,7 @@ jobs:
         run: |
           python deploy/observability/wait-host-releases.py hosts \
             --revision "$MONITORING_REVISION" --repository "$GITHUB_REPOSITORY" \
-            --canonical-changed "$CANONICAL_CHANGED" --public-changed "$PUBLIC_CHANGED" \
+            --application-changed "$APPLICATION_CHANGED" --canonical-changed "$CANONICAL_CHANGED" --public-changed "$PUBLIC_CHANGED" \
             --probe-changed "$PROBE_CHANGED" --image-monitoring-changed "$IMAGE_MONITORING_CHANGED"
       - name: Bind prior drill to a trusted source Monitoring run
         id: source
@@ -179,7 +185,7 @@ jobs:
           Path('/tmp/monitoring-oidc.json').write_text(json.dumps(identity))
           PY
       - name: Wait for fresh samples after host reconciliation
-        if: ${{ github.event_name == 'push' && (needs.classify.outputs.canonical_changed == 'true' || needs.classify.outputs.public_changed == 'true' || needs.classify.outputs.probe_changed == 'true' || needs.classify.outputs.image_monitoring_changed == 'true') }}
+        if: ${{ github.event_name == 'push' && (needs.classify.outputs.application_changed == 'true' || needs.classify.outputs.canonical_changed == 'true' || needs.classify.outputs.public_changed == 'true' || needs.classify.outputs.probe_changed == 'true' || needs.classify.outputs.image_monitoring_changed == 'true') }}
         run: |
           /tmp/monitoring-tools/bin/python deploy/observability/wait-host-releases.py samples \
             --config /tmp/monitoring-environment.json --oidc-config /tmp/monitoring-oidc.json

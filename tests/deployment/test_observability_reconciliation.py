@@ -794,3 +794,113 @@ def test_canonical_bootstrap_uses_fixed_identity_and_deploy_user(tmp_path, monke
     assert roles == ["canonical"]
     assert __import__("json").loads((tmp_path / module.TARGETS[1]).read_text()) == module.CANONICAL
     assert (tmp_path / module.TARGETS[2]).read_text().startswith("deploy ALL=(root)")
+
+
+def test_postgres_sources_and_application_metrics_select_exact_release_barriers():
+    module = classifier()
+    assert module.classify_observability(["deploy/postgres-monitoring/install.py"])[
+        "canonical_changed"
+    ]
+    for path in ("src/backend/config/metrics.py", "src/backend/config/views.py"):
+        assert module.classify_observability([path])["application_changed"]
+        assert module.classify([path])["web_changed"]
+
+
+def test_application_failure_blocks_cloud_apply_when_application_metrics_changed():
+    module = wait_module()
+
+    def api(path):
+        if "/workflows/" in path:
+            return {"workflow_runs": [trusted_run("deploy.yml")]}
+        return {"jobs": [{"name": "Deploy", "status": "completed", "conclusion": "failure"}]}
+
+    with pytest.raises(module.HostReleaseError, match="failure"):
+        module.wait_for_hosts("a" * 40, {"application_changed": True}, api=api)
+
+
+def test_product_deploy_runs_after_failed_monitoring_reconcile():
+    deploy = workflow("deploy.yml")["jobs"]["deploy"]
+    assert "always()" in deploy["if"]
+    assert "needs.build.result" in deploy["if"]
+    assert "needs.reconcile-observability-host.result" not in deploy["if"]
+    compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())
+    assert compose["services"]["postgres-exporter"]["profiles"] == ["observability"]
+    assert "postgres-exporter" not in compose["services"]["web"]["depends_on"]
+
+
+def postgres_module():
+    spec = importlib.util.spec_from_file_location(
+        "postgres_install", ROOT / "deploy/postgres-monitoring/install.py"
+    )
+    loaded = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loaded)
+    return loaded
+
+
+def test_exporter_failure_restores_only_observability_and_never_commits_receipt(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import Mock
+
+    module = host_module()
+    postgres = SimpleNamespace(
+        snapshot=Mock(return_value=False),
+        install=Mock(side_effect=RuntimeError("exporter failed")),
+        restore=Mock(),
+    )
+    monkeypatch.setattr(module, "STATE", tmp_path)
+    monkeypatch.setattr(module, "fetch_source", lambda *args: {})
+    monkeypatch.setattr(module, "snapshot", lambda *args: {})
+    monkeypatch.setattr(module, "module", lambda *args: postgres)
+    monkeypatch.setattr(module, "apply", Mock())
+    restore = Mock()
+    monkeypatch.setattr(module, "restore", restore)
+    with pytest.raises(RuntimeError, match="exporter failed"):
+        module.reconcile_transaction("a" * 40, {"role": "canonical"}, tmp_path, tmp_path)
+    postgres.restore.assert_called_once()
+    restore.assert_called_once()
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_exporter_missing_secret_never_invokes_product_compose(tmp_path, monkeypatch):
+    module = postgres_module()
+    from unittest.mock import Mock
+
+    command = Mock()
+    monkeypatch.setattr(module, "compose", command)
+    monkeypatch.setattr(module.Path, "lstat", Mock(side_effect=FileNotFoundError))
+    with pytest.raises(FileNotFoundError):
+        module.install(tmp_path)
+    command.assert_not_called()
+
+
+def test_exporter_rollback_removes_only_exporter_for_first_activation(tmp_path, monkeypatch):
+    module = postgres_module()
+    from unittest.mock import Mock
+
+    command = Mock()
+    monkeypatch.setattr(module, "compose", command)
+    monkeypatch.setattr(module, "CONFIG", tmp_path / "current.yml")
+    module.restore(tmp_path, tmp_path, False)
+    command.assert_called_once_with(
+        tmp_path / "docker-compose.deployment.yml", "rm", "-sf", "postgres-exporter"
+    )
+
+
+def test_exporter_rollback_restores_prior_configuration_only(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    module = postgres_module()
+    monkeypatch.setattr(module, "CONFIG", tmp_path / "current.yml")
+    module.CONFIG.write_text("previous exporter config")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    assert module.snapshot(backup)
+    module.CONFIG.write_text("failed candidate")
+    command = Mock()
+    monkeypatch.setattr(module, "compose", command)
+    module.restore(tmp_path, backup, True)
+    assert module.CONFIG.read_text() == "previous exporter config"
+    command.assert_called_once_with(
+        backup / "postgres-compose.yml", "up", "-d", "--no-deps", "postgres-exporter"
+    )

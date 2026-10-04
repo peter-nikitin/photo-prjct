@@ -344,3 +344,9 @@ a dedicated workspace. Retire duplicate native UI alerts only after controlled a
 and recovery reach both email and Telegram, rule/dashboard parity is read back, and measured costs
 are acceptable. Diagnostic missing-observation rules remain visible without operator paging. The
 approved migration excludes native worker-pool control metrics.
+
+PostgreSQL observability repository support adds a private exporter and a bounded Django database
+probe. The exporter belongs to independent observability reconciliation; monitoring failure does
+not block product Deploy or rollback. Cloud apply requires same-SHA producer release success.
+Live credential/role provisioning, measured series cost, freshness and notification delivery remain
+pending. See [PostgreSQL activation and rollback](../../postgres-monitoring/README.md).

@@ -270,7 +270,7 @@ def test_deployment_has_only_remote_photo_workers_and_preserves_shared_services(
     """Production Compose cannot grant local photo claims, but keeps shared services."""
     compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
     services = compose["services"]
-    assert set(services) == {"db", "web", "import-worker", "commerce-worker"}
+    assert set(services) == {"db", "web", "import-worker", "commerce-worker", "postgres-exporter"}
     assert services["import-worker"]["profiles"] == ["import"]
     assert services["commerce-worker"]["profiles"] == ["commerce"]
     assert services["web"]["environment"]["PHOTO_PROCESSING_FLEET_TOKEN"] == (

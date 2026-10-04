@@ -12,6 +12,7 @@ HOST_SHARED = {
     "deploy/classify-release.py",
 }
 CANONICAL = {
+    "docker-compose.deployment.yml",
     "deploy/bootstrap-selfie-observability.sh",
     "deploy/configure-monitoring-agent.sh",
     "deploy/run-commerce-worker-health.sh",
@@ -27,6 +28,7 @@ def classify_observability(paths):
             "public_changed",
             "probe_changed",
             "image_monitoring_changed",
+            "application_changed",
         ),
         False,
     )
@@ -42,7 +44,13 @@ def classify_observability(paths):
             selected["canonical_changed"] = selected["public_changed"] = True
         if (
             path in CANONICAL
-            or path.startswith(("deploy/selfie-observability/", "deploy/monitoring/commerce-vm/"))
+            or path.startswith(
+                (
+                    "deploy/selfie-observability/",
+                    "deploy/monitoring/commerce-vm/",
+                    "deploy/postgres-monitoring/",
+                )
+            )
             or path
             in {
                 "deploy/monitoring/merge_native_agent.py",
@@ -85,6 +93,8 @@ def classify_observability(paths):
             "deploy/observability/wait-host-releases.py",
         }:
             selected["cloud_changed"] = True
+        if path in {"src/backend/config/metrics.py", "src/backend/config/views.py"}:
+            selected["application_changed"] = True
     # Cloud apply also retries after a host-only merge. A previous cloud run may have stopped at
     # the same-SHA host barrier, so unchanged rules/dashboard still need reconciliation.
     selected["cloud_changed"] |= any(
@@ -94,6 +104,7 @@ def classify_observability(paths):
             "public_changed",
             "probe_changed",
             "image_monitoring_changed",
+            "application_changed",
         )
     )
     return selected
@@ -106,7 +117,15 @@ def classify(paths):
             ".md"
         ):
             continue
-        if any(classify_observability([path]).values()):
+        if any(
+            value
+            for key, value in classify_observability([path]).items()
+            if key != "application_changed"
+        ) and path not in {
+            "src/backend/config/metrics.py",
+            "src/backend/config/views.py",
+            "docker-compose.deployment.yml",
+        }:
             continue
         if path in {".github/workflows/deploy.yml", "deploy/run-remote.sh"}:
             # Orchestration is consumed by the next selected release; it is not an image input.

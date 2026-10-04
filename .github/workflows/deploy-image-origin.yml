@@ -1,6 +1,12 @@
 name: Deploy isolated image origin
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - deploy/image-origin/monitoring/**
+      - .github/workflows/deploy-image-origin.yml
+      - "!**/*.md"
   workflow_dispatch:
     inputs:
       deployment_sha:
@@ -16,6 +22,7 @@ on:
 jobs:
   deploy-image-origin:
     name: Deploy isolated image origin
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -23,16 +30,17 @@ jobs:
     concurrency:
       group: deploy-image-origin
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Check out reviewed commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.deployment_sha }}
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Bind checkout to exact commit
         env:
-          IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
+          IMAGE_ORIGIN_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
         run: |
           set -eu
           case "$IMAGE_ORIGIN_RELEASE" in
@@ -42,8 +50,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$IMAGE_ORIGIN_RELEASE"
       - name: Deploy isolated image origin
         env:
-          IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
-          IMAGE_ORIGIN_MONITORING_ONLY: ${{ inputs.monitoring_only }}
+          IMAGE_ORIGIN_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
+          IMAGE_ORIGIN_MONITORING_ONLY: ${{ github.event_name == 'push' && 'true' || inputs.monitoring_only }}
           VM_HOST: ${{ vars.VM_HOST }}
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
@@ -60,14 +68,14 @@ jobs:
             --identity github-oidc \
             -- deploy/image-origin/run-remote.sh
       - name: Record deployed commit
-        if: ${{ !inputs.monitoring_only }}
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.monitoring_only }}
         env:
-          IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
+          IMAGE_ORIGIN_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
         run: |
           printf 'Deployed image-origin repository SHA: `%s`\n' "$IMAGE_ORIGIN_RELEASE" >> "$GITHUB_STEP_SUMMARY"
       - name: Record monitoring repair
-        if: ${{ inputs.monitoring_only }}
+        if: ${{ github.event_name == 'push' || inputs.monitoring_only }}
         env:
-          IMAGE_ORIGIN_RELEASE: ${{ inputs.deployment_sha }}
+          IMAGE_ORIGIN_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
         run: |
           printf 'Restored image-origin monitoring from repository SHA: `%s`\n' "$IMAGE_ORIGIN_RELEASE" >> "$GITHUB_STEP_SUMMARY"

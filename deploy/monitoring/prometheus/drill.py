@@ -24,11 +24,11 @@ DRILL_PATH = "/extensions/v1/rules/" + DRILL_RULES
 RUN_LABEL = "worker-activation"
 HEALTHY_END = 4 * 60
 SATURATED_END = 13 * 60
-MISSING_END = 17 * 60
-STALE_END = 21 * 60
-RECOVERED_END = 25 * 60
-RUN_END = 29 * 60
-EXPIRY_SECONDS = 32 * 60
+MISSING_END = 20 * 60
+STALE_END = 28 * 60
+RECOVERED_END = 33 * 60
+RUN_END = 37 * 60
+EXPIRY_SECONDS = 40 * 60
 EVALUATION_DELAY_SECONDS = 120  # Documented global Managed Prometheus rule evaluation delay.
 EVALUATION_MAX_AGE = 300  # Includes the provider's two-minute evaluation delay.
 POLL_SECONDS = 30
@@ -49,16 +49,14 @@ EXPECTED_ALERTS = (
     "WorkerCloudObservationMissing",
     "WorkerNativePublisherMissing",
     "WorkerHostDiagnosticsMissing",
-    "WorkerRuntimeDiagnosticsMissing",
 )
 EXPECTED_PREDICATE_HASHES = (
-    "46b820497b26180035e803fb34b88392d83fc3e39704a5088424d873c4bfd752",
+    "edada371145acd6612831326bf7e62f407ababb6e99892d8ce3058fa948fe22b",
     "e016b11b030d1deef4eeedb758f0c842cfeca0070246a6f9307b87f42984741c",
     "ecf4608e18014ac2a56efcf251553d166a4331eb3552902628da1721d77e2d40",
     "738a330830cad7b867e70cf3da18bda8517cc2ea172d0cf00af55902bee20ca1",
     "2e79521287c18a0fb02ba8d8f09c7a4d4250589dc710e8f3788a9755c1ed5078",
     "64fffa1fa6505945e37f8580cb1a778fd8e3f0ce0142a21dae3a567da7d6b1a1",
-    "411eecf16994eaafc5b61df165fb4515cab7f370f1767b2013d9ba386c8f6b3a",
 )
 POOL_METRICS = {
     "worker_pool_queue_observation_available",
@@ -210,6 +208,7 @@ def render_rules(control_module: Any, config: dict[str, Any], run_id: str, start
         rule["expr"] = f"({synthetic}) and on() (vector(time()) < {start + EXPIRY_SECONDS})"
         rule["labels"] = {
             **original["labels"],
+            "notification": "diagnostic",
             "drill": RUN_LABEL,
             "drill_run": run_id,
             "drill_case": (
@@ -576,13 +575,13 @@ def audit_observation(start: int, observation: dict[str, Any], seen: set[str]) -
     firing = {(alert, pool, "firing") for alert in EXPECTED_ALERTS[:2] for pool in pools}
     if HEALTHY_END + 6 * 60 <= elapsed < SATURATED_END and states == firing:
         seen.add("saturation-firing")
-    if SATURATED_END + 2 * 60 <= elapsed < MISSING_END:
+    if SATURATED_END + 6 * 60 <= elapsed < MISSING_END:
         expected = {(alert, "bulk", "firing") for alert in EXPECTED_ALERTS[2:5]} | {
             (alert, "selfie", "firing") for alert in EXPECTED_ALERTS[5:]
         }
         if states == expected:
             seen.add("source-missing")
-    if MISSING_END + 2 * 60 <= elapsed < STALE_END:
+    if MISSING_END + 6 * 60 <= elapsed < STALE_END:
         expected = {(alert, "selfie", "firing") for alert in EXPECTED_ALERTS[2:5]} | {
             (alert, "bulk", "firing") for alert in EXPECTED_ALERTS[5:]
         }

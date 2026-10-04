@@ -1,5 +1,13 @@
 name: Monitoring
 on:
+  push:
+    branches: [main]
+    paths:
+      - deploy/monitoring/prometheus/**
+      - .github/workflows/monitoring.yml
+      - deploy/classify-release.py
+      - deploy/observability/wait-host-releases.py
+      - "!**/*.md"
   pull_request:
     paths:
       - deploy/monitoring/prometheus/**
@@ -23,7 +31,27 @@ on:
         type: string
 permissions:
   contents: read
+concurrency:
+  group: findme-monitoring-production
+  cancel-in-progress: false
+  queue: max
 jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      cloud_changed: ${{ steps.select.outputs.cloud_changed }}
+      canonical_changed: ${{ steps.select.outputs.canonical_changed }}
+      public_changed: ${{ steps.select.outputs.public_changed }}
+      probe_changed: ${{ steps.select.outputs.probe_changed }}
+      image_monitoring_changed: ${{ steps.select.outputs.image_monitoring_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: select
+        if: github.event_name == 'push'
+        run: python deploy/classify-release.py --observability --base "${{ github.event.before }}" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
   validate:
     runs-on: ubuntu-latest
     steps:
@@ -48,32 +76,34 @@ jobs:
           /tmp/promtool check rules "$PWD/.monitoring-drill-render/findme-worker-activation-drill.yml"
           /tmp/promtool test rules "$PWD/.monitoring-drill-render/drill-rule-tests.yml"
   reconcile:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
-    needs: validate
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || needs.classify.outputs.cloud_changed == 'true') }}
+    needs: [validate, classify]
     runs-on: ubuntu-latest
     environment: monitoring
     timeout-minutes: 45
-    concurrency:
-      group: findme-monitoring-production
-      cancel-in-progress: false
     permissions:
       contents: read
       actions: read
       id-token: write
     env:
-      MONITORING_REVISION: ${{ inputs.revision }}
-      MONITORING_ACTION: ${{ inputs.action }}
+      MONITORING_REVISION: ${{ github.event_name == 'push' && github.sha || inputs.revision }}
+      MONITORING_ACTION: ${{ github.event_name == 'push' && 'apply' || inputs.action }}
       DRILL_SOURCE_RUN_ID: ${{ inputs.drill_run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.MONITORING_REVISION }}
           fetch-depth: 0
           persist-credentials: false
       - name: Bind to exact main revision
         run: |
           set -eu
           printf '%s' "$MONITORING_REVISION" | grep -Eq '^[0-9a-f]{40}$'
-          test "$MONITORING_REVISION" = "$GITHUB_SHA"
+          if [ "${{ github.event_name }}" = push ]; then
+            test "$MONITORING_REVISION" = "$GITHUB_SHA"
+          else
+            git merge-base --is-ancestor "$MONITORING_REVISION" "$GITHUB_SHA"
+          fi
           test "$(git rev-parse HEAD)" = "$MONITORING_REVISION"
           case "$MONITORING_ACTION" in
             check|apply|drill-run) test -z "$DRILL_SOURCE_RUN_ID" ;;
@@ -82,6 +112,19 @@ jobs:
               ;;
             *) exit 2 ;;
           esac
+      - name: Wait for same-SHA host reconciliation
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANONICAL_CHANGED: ${{ needs.classify.outputs.canonical_changed }}
+          PUBLIC_CHANGED: ${{ needs.classify.outputs.public_changed }}
+          PROBE_CHANGED: ${{ needs.classify.outputs.probe_changed }}
+          IMAGE_MONITORING_CHANGED: ${{ needs.classify.outputs.image_monitoring_changed }}
+        run: |
+          python deploy/observability/wait-host-releases.py hosts \
+            --revision "$MONITORING_REVISION" --repository "$GITHUB_REPOSITORY" \
+            --canonical-changed "$CANONICAL_CHANGED" --public-changed "$PUBLIC_CHANGED" \
+            --probe-changed "$PROBE_CHANGED" --image-monitoring-changed "$IMAGE_MONITORING_CHANGED"
       - name: Bind prior drill to a trusted source Monitoring run
         id: source
         if: ${{ inputs.action == 'drill-status' || inputs.action == 'drill-cleanup' }}
@@ -119,6 +162,11 @@ jobs:
           identity = json.loads((source / 'oidc.json').read_text())
           Path('/tmp/monitoring-oidc.json').write_text(json.dumps(identity))
           PY
+      - name: Wait for fresh samples after host reconciliation
+        if: ${{ github.event_name == 'push' && (needs.classify.outputs.canonical_changed == 'true' || needs.classify.outputs.public_changed == 'true' || needs.classify.outputs.probe_changed == 'true' || needs.classify.outputs.image_monitoring_changed == 'true') }}
+        run: |
+          /tmp/monitoring-tools/bin/python deploy/observability/wait-host-releases.py samples \
+            --config /tmp/monitoring-environment.json --oidc-config /tmp/monitoring-oidc.json
       - uses: actions/download-artifact@v4
         if: ${{ inputs.action == 'drill-status' || inputs.action == 'drill-cleanup' }}
         with:
@@ -166,10 +214,10 @@ jobs:
               ;;
           esac
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && inputs.action == 'apply' }}
+        if: ${{ always() && env.MONITORING_ACTION == 'apply' }}
         with:
-          name: monitoring-backup-${{ inputs.revision }}
-          path: monitoring-backup-${{ inputs.revision }}
+          name: monitoring-backup-${{ env.MONITORING_REVISION }}
+          path: monitoring-backup-${{ env.MONITORING_REVISION }}
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: ${{ always() && inputs.action == 'drill-run' }}

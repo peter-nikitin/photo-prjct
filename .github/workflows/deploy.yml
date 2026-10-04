@@ -73,6 +73,7 @@ jobs:
       requires_observability_bootstrap: ${{ steps.classify.outputs.requires_observability_bootstrap }}
       observability_source_manifest_sha256: ${{ steps.classify.outputs.observability_source_manifest_sha256 }}
       release_sha: ${{ steps.classify.outputs.release_sha }}
+      canonical_changed: ${{ steps.classify.outputs.canonical_changed }}
       web_changed: ${{ steps.classify.outputs.web_changed }}
       worker_changed: ${{ steps.classify.outputs.worker_changed }}
       worker_base_changed: ${{ steps.classify.outputs.worker_base_changed }}
@@ -127,14 +128,8 @@ jobs:
               python deploy/classify-release.py --base "${release_sha}^" --head "$release_sha" >> "$GITHUB_OUTPUT"
             fi
           elif [ "${{ github.event_name }}" = push ]; then
-            if [ "${{ github.event.before }}" = 0000000000000000000000000000000000000000 ]; then
-              requires_observability_bootstrap=true
-              pause_reason="Privileged package change status is unknown because the push base is unavailable."
-            elif ! git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- deploy/bootstrap-selfie-observability.sh 'deploy/selfie-observability/**'; then
-              requires_observability_bootstrap=true
-              pause_reason="Commit ${GITHUB_SHA} changes the privileged selfie-observability package."
-            fi
             python deploy/classify-release.py --base "${{ github.event.before }}" --head "$release_sha" >> "$GITHUB_OUTPUT"
+            python deploy/classify-release.py --observability --base "${{ github.event.before }}" --head "$release_sha" >> "$GITHUB_OUTPUT"
           fi
 
           if [ "$requires_observability_bootstrap" = true ] || \
@@ -321,9 +316,9 @@ jobs:
 
   deploy:
     name: Deploy
-    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && needs.classify-release.outputs.web_changed == 'true' }}
+    if: ${{ always() && needs.build.result == 'success' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && needs.classify-release.outputs.web_changed == 'true' }}
     runs-on: ubuntu-latest
-    needs: [classify-release, build]
+    needs: [classify-release, build, reconcile-observability-host]
     permissions:
       contents: read
       id-token: write
@@ -636,3 +631,27 @@ jobs:
           python scripts/run-with-environment-secrets.py \
             --consumer remote-check --identity github-oidc \
             -- deploy/run-remote.sh remote-preflight
+
+  reconcile-observability-host:
+    name: Reconcile canonical observability
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.classify-release.outputs.canonical_changed == 'true' }}
+    needs: [classify-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reconcile exact canonical host package
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          python scripts/run-with-environment-secrets.py --consumer remote-check --identity github-oidc -- deploy/run-remote.sh reconcile-observability

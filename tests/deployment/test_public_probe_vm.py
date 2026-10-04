@@ -124,7 +124,10 @@ def test_service_and_workflow_contract():
     assert "type: choice" in workflow
     for action in ("install", "disable", "rollback"):
         assert f"- {action}" in workflow
-    assert "PUBLIC_PROBE_ACTION: ${{ inputs.action }}" in workflow
+    assert (
+        "PUBLIC_PROBE_ACTION: ${{ github.event_name == 'push' && 'install' || inputs.action }}"
+        in workflow
+    )
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "--consumer public-probe-deploy" in workflow
     manifest = json.loads((ROOT / "deploy/environment-secrets.json").read_text())

@@ -112,6 +112,16 @@ def selectors(config: dict[str, Any]) -> dict[str, str]:
     }
     requests = config["metrics"]["http_requests"]
     result["http_5xx"] = selector(requests["name"], {**requests["labels"], "status_class": "5xx"})
+    # All processing_* routes are private worker-control endpoints.
+    for key, selected in (
+        ("http_customer", result["http_requests"]),
+        ("http_customer_5xx", result["http_5xx"]),
+    ):
+        result[key] = (
+            selected[:-1] + ',route!~"processing_.*"}'
+            if selected.endswith("}")
+            else selected + '{route!~"processing_.*"}'
+        )
     return result
 
 
@@ -134,9 +144,10 @@ def expressions(config: dict[str, Any]) -> dict[str, str]:
             f"100 * rate({s['cpu_useful']}[5m]) / "
             f"(rate({s['cpu_useful']}[5m]) + rate({s['cpu_idle']}[5m]))"
         ),
-        "http_total": f"sum(increase({s['http_requests']}[5m]))",
+        "http_total": f"sum(increase({s['http_customer']}[5m]))",
         "http_errors": (
-            f"(sum(increase({s['http_5xx']}[5m])) or (0 * sum(increase({s['http_requests']}[5m]))))"
+            f"(sum(increase({s['http_customer_5xx']}[5m])) or "
+            f"(0 * sum(increase({s['http_customer']}[5m]))))"
         ),
         "commerce": f"max_over_time({s['commerce_alive']}[5m])",
         "commerce_window_age": f"max_over_time({s['commerce_age']}[5m])",
@@ -225,10 +236,19 @@ def render(config: dict[str, Any]) -> dict[str, str]:
         "image_cdn_resource": config["image_cdn_resource"],
         "disk_gib": f"{s['disk_free']} / 1073741824",
         "uptime_seconds": f"{s['uptime']} / 1000",
-        "http_rate": f"sum(rate({s['http_requests']}[5m]))",
-        "http_error_rate": f"sum(rate({s['http_5xx']}[5m]))",
-        "http_p50": f"histogram_quantile(0.50, sum by (le) (rate({histogram}[5m])))",
-        "http_p95": f"histogram_quantile(0.95, sum by (le) (rate({histogram}[5m])))",
+        "http_rate": f"sum(rate({s['http_customer']}[5m]))",
+        "http_error_rate": f"sum(rate({s['http_customer_5xx']}[5m]))",
+        "http_internal_error_rate": (
+            'sum(rate(findme_http_requests_total{status_class="5xx",route=~"processing_.*"}[5m]))'
+        ),
+        "http_p50": (
+            "histogram_quantile(0.50, sum by (le) "
+            f'(rate({histogram}{{route!~"processing_.*"}}[5m])))'
+        ),
+        "http_p95": (
+            "histogram_quantile(0.95, sum by (le) "
+            f'(rate({histogram}{{route!~"processing_.*"}}[5m])))'
+        ),
         "worker_pool_universe": (
             'label_replace(vector(1), "pool", "bulk", "", "") or '
             'label_replace(vector(1), "pool", "selfie", "", "")'
@@ -849,10 +869,31 @@ def identity(mode: str, oidc_path: Path | None = None) -> str:
         ) from None
 
 
+def _dashboard_charts(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
+    charts = []
+    group_ids = set()
+    chart_ids = set()
+    for widget in dashboard["widgets"]:
+        group = widget.get("group")
+        if not group or not group.get("id") or not group.get("title"):
+            raise ControlError("dashboard group invalid")
+        if group["id"] in group_ids:
+            raise ControlError("dashboard group identity duplicated")
+        group_ids.add(group["id"])
+        for child in group.get("widgets", []):
+            chart = child.get("multiSourceChart")
+            if not child.get("id") or not child.get("position") or not chart:
+                raise ControlError("dashboard child chart invalid")
+            if child["id"] in chart_ids or child["id"] != chart.get("id"):
+                raise ControlError("dashboard chart identity invalid")
+            chart_ids.add(child["id"])
+            charts.append(chart)
+    return charts
+
+
 def _validate_dashboard(package: dict[str, str], config: dict[str, Any]) -> None:
     dashboard = json.loads(package["dashboard.json"])
-    for widget in dashboard["widgets"]:
-        chart = widget["multiSourceChart"]
+    for chart in _dashboard_charts(dashboard):
         sources = {}
         for item in chart["dataSources"]:
             kinds = [kind for kind in ("prometheus", "monitoring") if kind + "DataSource" in item]
@@ -891,8 +932,8 @@ def validate_dashboard_queries(package: dict[str, str], output: Path, promtool: 
 
     dashboard = json.loads(package["dashboard.json"])
     queries: list[tuple[str, str]] = []
-    for widget in dashboard["widgets"]:
-        for item in widget["multiSourceChart"]["targets"]:
+    for chart in _dashboard_charts(dashboard):
+        for item in chart["targets"]:
             if "prometheusTarget" in item:
                 target = item["prometheusTarget"]
                 queries.append((target["name"], target["query"]))

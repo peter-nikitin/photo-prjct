@@ -17,7 +17,7 @@ PY
 }
 
 action=${PUBLIC_PROBE_ACTION:-install}
-case "$action" in install|disable|rollback) ;; *) fail invalid_action ;; esac
+case "$action" in install|disable|rollback|reconcile-prometheus) ;; *) fail invalid_action ;; esac
 
 release=${PUBLIC_PROBE_RELEASE:-}
 case "$release" in
@@ -116,6 +116,11 @@ Host probe-target
     ConnectTimeout 15
     ProxyJump probe-bastion
 EOF
+if [ "$action" = reconcile-prometheus ]; then
+    ssh -F "$ssh_config" probe-target sudo -n /usr/local/sbin/findme-observability-reconcile "$release" >"$output" 2>&1 || fail action_failed
+    LC_ALL=C grep -E '^OBSERVABILITY_HOST_SHA=[0-9a-f]{40} status=(green|unchanged)' "$output"
+    exit 0
+fi
 python3 "$repository_root/deploy/monitoring/probe-vm/package.py" "$release" "$archive" >"$output" 2>&1 || fail package_failed
 # Stream to an unpredictable private remote directory; no credentials leave the runner.
 ssh -F "$ssh_config" probe-target "action=$action"'

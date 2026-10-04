@@ -12,13 +12,10 @@ duplicates remain separate gates. Existing native alerts, routes and timers rema
 - `rules.yml`: one owned `findme-photo.yml` file; alert thresholds/windows are editable here.
 - `alertmanager.yml`: full routing configuration for a **dedicated FindMe workspace**. The CLI
   rejects any foreign rule file before replacing routing. It never deletes foreign rules.
-- `dashboard.json`: title and all 41 graph widgets. The original 19 cover duration, TLS, uptime,
-  load, HTTP rates/latency, Commerce, swap, root filesystem inodes, disk/network I/O and native
-  Unified Agent backlog. Eight additional widgets cover worker queue/capacity, terminal operation
-  throughput, p50/p95, non-overlapping duration intervals and accepted clean-preview throughput.
-  Fourteen image-delivery widgets show the image-origin VM, CDN and origin traffic, imgproxy
-  concurrency, latency quantiles and non-overlapping latency intervals from existing native metrics.
-  Other dashboard fields come from a fresh Get and are preserved.
+- `dashboard.json`: one dashboard with eight collapsible system groups and 48 charts. Customer
+  HTTP errors are separate from internal worker-control errors. Existing worker and imgproxy
+  duration histograms remain; freshness diagnostics do not synthesize a healthy zero. Other
+  dashboard fields come from a fresh Get and are preserved.
 - `oidc.json`: protected `monitoring` environment identity; service account
   `aje3t70qka1dtc09k5ic` (`findme-monitoring-ci`).
 
@@ -27,23 +24,28 @@ series from the existing image-origin VM before `check` or `apply` can succeed. 
 queries were checked against actual Monitoring data on 2026-09-30; a dashboard render does not
 prove their later freshness. See the [image alert contract](../../image-origin/monitoring/alerts.md).
 
-## Image-origin activation order
+## Automatic reconciliation and acceptance
 
-1. Merge the reviewed package. This only changes Git; no VM or Monitoring resource changes yet.
-2. After the explicit cloud-cost and agent-restart approval, run `deploy-image-origin.yml` on the
-   exact main SHA with `monitoring_only=true`. This installs the reviewed image-origin agent
-   template and restarts only Unified Agent, preserving the native `sys`, `origin`, `imgproxy` and
-   agent-health routes while adding separate Prometheus routes for host, Nginx and imgproxy.
-   The runtime saves the preceding agent configuration as `config.yml.pre-image-origin` and
-   restores it if the agent cannot start. Application containers are not restarted.
-3. Read back fresh Prometheus samples for `sys_memory_MemAvailable{job="findme-image-linux"}`,
-   `origin_image_origin_responses_total{job="findme-image-origin"}`, and
-   `imgproxy_requests_total{job="findme-imgproxy"}`. Confirm exact names, labels, counter
-   behavior, timestamps, and observed write volume before enabling alert evaluation. If any
-   contract differs, restore the agent backup and leave the rules unapplied.
-4. Dispatch `monitoring.yml` with `action=apply` and the exact main SHA. Its fresh-sample
-   preflight must pass before it updates the owned rules and dashboard. Read back rule snapshots
-   and all 41 dashboard widgets, then drill firing and recovery to email and Telegram.
+Pull requests run offline validation. A `main` push with changed cloud inputs automatically runs
+`monitoring.yml` `apply` at `github.sha` under the existing OIDC identity. Canonical host, public
+exporter/probe and image-origin monitoring packages have separate selected paths; image-origin
+monitoring uses `monitoring_only=true` and does not restart application containers. A failed
+preflight or apply fails its observability job and retains backup evidence. Documentation-only
+changes do not contact the cloud or VMs. The [host foundation](../../observability/README.md) must
+be installed once, and the existing GitHub `monitoring` reviewer requirement must be removed while
+retaining main-only branch and exact-workflow OIDC restrictions. Until then, automatic jobs fail
+or wait; a merged Git revision alone is not live acceptance.
+
+When one merge changes host collection and cloud rules/dashboard together, the cloud job waits for
+the selected host jobs at the same push SHA and then for fresh samples from their new routes. A
+missing, skipped or failed required host job, or a source that remains stale, fails the cloud job
+within a bounded interval; it does not apply against the preceding host configuration.
+
+After activation, read back fresh Prometheus samples for `sys_memory_MemAvailable{job="findme-image-linux"}`,
+`origin_image_origin_responses_total{job="findme-image-origin"}`, and
+`imgproxy_requests_total{job="findme-imgproxy"}`; check rule snapshots and all eight dashboard
+groups. A controlled firing and recovery must reach both email and Telegram before retiring any
+duplicate native UI alert. Existing manual workflow actions are recovery tools only.
 
 The additional Remote Write volume is a potential charge. At the 2026-09-30 native inventory,
 the host exposed about 340 series including agent-health and interface series; the three new
@@ -56,7 +58,7 @@ remains in place.
 The operator supplied channel names are `findme-photo-operator-email` (ID
 `cloud__b1gmcsmr51o5kvp86l55_findme-photo-operator-email`) and
 `findme-photo-operator-telegram` (ID
-`cloud__b1gmcsmr51o5kvp86l55_findme-photo-operator-telegram`). Workspace ID is
+`folder__b1g2qttgfhb4gdunvlge_findme-photo-operator-telegram`). Workspace ID is
 `mon0c97qv2s5uju1ark8`, supplied by the operator.
 The workflow never retargets configuration from CI variables. The approved foundation was created
 on 2026-09-28: GitHub environment `monitoring`, reviewer `peter-nikitin`, main-only deployment policy,
@@ -105,7 +107,8 @@ sender-outage and idle-zero fixtures. No credential or network call to Yandex is
 needed; Docker may pull the pinned tool image. Yandex's receiver extension is checked structurally
 by the renderer and accepted by the service on explicit PUT; upstream Alertmanager does not
 understand `yandex_monitoring_configs`. Email delivery needs a separate live drill.
-The project receiver sends to both operator channels with `send_resolved: true`.
+Only rules labelled `notification=actionable` use the project receiver, which sends to both
+operator channels with `send_resolved: true`. Diagnostic rules have no notification route.
 The operator confirmed receipt of firing and recovery email. Telegram delivery needs a separate
 live drill after routing is applied. No receiver default is assumed.
 
@@ -140,7 +143,7 @@ percent. Disk read/write and network Rx/Tx are cumulative byte counters, so char
 Raw diagnostic observations retain 120s freshness, and their derived expressions must produce
 finite nonempty vectors before check/apply.
 
-The nineteenth chart queries native Monitoring `ua.backlog` for `host=dev-photo-prjct`,
+The Canonical VM group queries native Monitoring `ua.backlog` for `host=dev-photo-prjct`,
 `service=custom`, `scope=health` in the explicit configured folder. The dashboard query puts
 `folderId` in its selector; the native data-read API takes that folder in the request URI instead.
 It is managed by the same
@@ -310,9 +313,10 @@ then reads back owned fields. Failed or stale snapshots are failures, never heal
 are sanitized; credentials and response bodies are not printed. Apply is not atomic across services;
 a failure after rules PUT leaves the recorded backup for explicit restore.
 
-The GitHub workflow validates PRs. Live check/apply is `workflow_dispatch` only, main-only,
-serialized under a protected environment and bound to the exact dispatch SHA. No push activates
-monitoring. Retained backups are uploaded even on failed apply.
+The GitHub workflow validates PRs. A selected `main` push applies the exact push SHA automatically;
+manual `workflow_dispatch` check/apply remains a reviewed recovery entrypoint. Both paths serialize
+under the `monitoring` environment and retain backups even on failed apply. The environment must
+retain its main-only branch policy and exact-workflow OIDC subject, without a routine reviewer gate.
 
 ## Rollback and cutover
 
@@ -334,6 +338,7 @@ and restores only owned fields/rules. A first-activation absence removes only `f
 Restore does not require healthy metric queries. Routing has no server-side backup: render a known
 previous Git revision's routing and add `--routing-file /tmp/previous-alertmanager.yml` to restore it.
 Never invent GET/DELETE Alertmanager or delete a workspace. Full routing replacement still requires
-a dedicated workspace. Retire old native observation alerts/routes/timers only after a separate
-validation alert has proved firing, missing observations and recovery email, plus dashboard parity
-and acceptable measured costs. The approved migration excludes native worker-pool control metrics.
+a dedicated workspace. Retire duplicate native UI alerts only after controlled actionable firing
+and recovery reach both email and Telegram, rule/dashboard parity is read back, and measured costs
+are acceptable. Diagnostic missing-observation rules remain visible without operator paging. The
+approved migration excludes native worker-pool control metrics.

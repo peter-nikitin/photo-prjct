@@ -14,7 +14,7 @@ from picflow.models import Event, Photo
 
 from processing.models import (
     EventProcessingRun,
-    FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
     PhotoProcessingState,
@@ -100,7 +100,7 @@ class FaceClusterCommandTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        FaceEmbedding.objects.create(
+        FaceEmbeddingVector.objects.create(
             detection=detection,
             model_version="sface",
             vector=[1.0] + [0.0] * 127,

@@ -13,7 +13,6 @@ from picflow.models import Event, Photo
 
 from processing.models import (
     EventProcessingRun,
-    FaceEmbedding,
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
@@ -69,7 +68,7 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
         *,
         vector: list[float],
         vector_only: bool = False,
-    ) -> FaceEmbedding | FaceEmbeddingVector:
+    ) -> FaceEmbeddingVector:
         run = EventProcessingRun.objects.create(
             event=self.event,
             contract_version=generation["contract_version"],
@@ -111,11 +110,11 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        store = FaceEmbeddingVector if vector_only else FaceEmbedding
+        store = FaceEmbeddingVector
         embedding = store.objects.create(
             detection=detection,
             model_version=generation["model"],
-            vector=vector,
+            vector=vector + [0.0] * (128 - len(vector)),
             metadata={},
         )
         PhotoFaceEmbeddingProjection.objects.create(
@@ -137,7 +136,7 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
         self.assertEqual(
             list(detections.values_list("embedding_vector__id", flat=True)), [native.pk]
         )
-        self.assertFalse(FaceEmbedding.objects.exists())
+        self.assertEqual(FaceEmbeddingVector.objects.count(), 1)
         self.assertFalse(
             face_cohort.eligible_face_detections(self.event, (self.generation("other"),)).exists()
         )
@@ -162,32 +161,32 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
         baseline_rows = load_compatible_face_embeddings(
             self.event,
             (baseline_generation,),
-            2,
+            128,
         )
         candidate_rows = load_compatible_face_embeddings(
             self.event,
             (candidate_generation,),
-            2,
+            128,
         )
 
         self.assertEqual([row.detection_id for row in baseline_rows], [baseline.detection_id])
-        self.assertEqual([row.vector for row in baseline_rows], [(1.0, 0.0)])
+        self.assertEqual([row.vector for row in baseline_rows], [(1.0, 0.0) + (0.0,) * 126])
         self.assertEqual([row.detection_id for row in candidate_rows], [candidate.detection_id])
-        self.assertEqual([row.vector for row in candidate_rows], [(0.0, 1.0)])
+        self.assertEqual([row.vector for row in candidate_rows], [(0.0, 1.0) + (0.0,) * 126])
 
         mismatched_generation = {
             **candidate_generation,
             "contract_version": 9,
-            "configuration": {"face_embedding": {"model": "other"}},
+            "configuration": {"face_embedding": {"model": "sface"}},
             "configuration_hash": "0" * 64,
-            "model": "other",
+            "model": "sface",
         }
-        mismatched = self.make_projected_embedding(mismatched_generation, vector=[0.5, 0.5])
+        mismatched = self.make_projected_embedding(mismatched_generation, vector=[1.0, 0.0])
 
         rows = load_compatible_face_embeddings(
             self.event,
             (baseline_generation, candidate_generation),
-            2,
+            128,
         )
 
         self.assertEqual(
@@ -204,12 +203,12 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
         embedding = self.make_projected_embedding(generation, vector=[1.0, 0.0])
 
         with CaptureQueriesContext(connection) as queries:
-            rows = load_compatible_face_embeddings(self.event, (generation,), 2)
+            rows = load_compatible_face_embeddings(self.event, (generation,), 128)
 
         cohort_sql = next(
             query["sql"]
             for query in queries
-            if 'FROM "processing_photofaceembeddingprojection"' in query["sql"]
+            if 'FROM "processing_photofacedetection"' in query["sql"]
         )
         self.assertEqual([row.detection_id for row in rows], [embedding.detection_id])
         self.assertNotIn('"processing_processingattempt"."configuration"', cohort_sql)
@@ -217,54 +216,14 @@ class FaceEmbeddingProjectionCohortTests(TestCase):
         self.assertNotIn('"processing_eventprocessingrun"."configuration"', cohort_sql)
         self.assertNotIn("ORDER BY", cohort_sql.upper())
 
-    def test_identity_projection_is_ordered_and_never_reads_vectors(self) -> None:
-        generation = self.generation("identity")
-        embedding = self.make_projected_embedding(generation, vector=[1.0, 0.0])
-        with CaptureQueriesContext(connection) as queries:
-            identities = face_cohort.load_compatible_face_identities(self.event, (generation,))
-        self.assertEqual(len(identities), 1)
-        self.assertEqual(identities[0].detection_id, embedding.detection_id)
-        self.assertEqual(identities[0].embedding_id, embedding.id)
-        self.assertEqual(identities[0].attempt_photo_id, self.photo.id)
-        for query in queries:
-            self.assertNotIn('"vector"', query["sql"])
-            self.assertNotIn('"configuration"', query["sql"])
-        full_rows = tuple(face_cohort.iter_compatible_face_cohort(self.event, (generation,)))
-        self.assertEqual(tuple(identity for identity, _vector in full_rows), identities)
-        self.assertEqual(full_rows[0][1], [1.0, 0.0])
-
-    def test_identity_changes_for_visibility_and_same_count_embedding_replacement(self) -> None:
-        generation = self.generation("identity-change")
-        self.make_projected_embedding(generation, vector=[1.0, 0.0])
-        before = face_cohort.load_compatible_face_identities(self.event, (generation,))
-        self.photo.is_hidden = True
-        self.photo.save(update_fields=["is_hidden"])
-        self.assertEqual(face_cohort.load_compatible_face_identities(self.event, (generation,)), ())
-        self.photo.pk = "replacement-photo"
-        self.photo.original_key = "originals/replacement-photo.jpg"
-        self.photo.is_hidden = False
-        self.photo.save(force_insert=True)
-        replacement = self.make_projected_embedding(generation, vector=[0.0, 1.0])
-        after = face_cohort.load_compatible_face_identities(self.event, (generation,))
-        self.assertEqual(len(before), len(after))
-        self.assertNotEqual(before, after)
-        self.assertEqual(after[0].embedding_id, replacement.id)
-
-    def test_warm_cache_validates_current_membership_without_vector_query(self) -> None:
-        from selfie_search.services.cohort_cache import CohortCache
-
-        generation = self.generation("warm-cache")
-        self.make_projected_embedding(generation, vector=[1.0, 0.0])
-        cache = CohortCache()
-        cold = cache.get(event=self.event, generations=(generation,), model="sface", dimensions=2)
-        with CaptureQueriesContext(connection) as queries:
-            warm = cache.get(
-                event=self.event, generations=(generation,), model="sface", dimensions=2
-            )
-        self.assertTrue(warm.cache_hit)
-        self.assertIs(cold.entry, warm.entry)
-        self.assertEqual(warm.entry.faces[0].photo_id, self.photo.pk)
-        self.assertTrue(
-            any("processing_photofaceembeddingprojection" in query["sql"] for query in queries)
+    def test_loader_rejects_missing_native_evidence_in_current_generation(self) -> None:
+        generation = self.generation("missing-native")
+        native = self.make_projected_embedding(generation, vector=[1.0] + [0.0] * 127)
+        PhotoFaceDetection.objects.create(
+            attempt=native.detection.attempt,
+            artifact=native.detection.artifact,
+            face_index=1,
+            status="kept",
         )
-        self.assertTrue(all('"vector"' not in query["sql"] for query in queries))
+        with self.assertRaises(ValueError):
+            load_compatible_face_embeddings(self.event, (generation,), 128)

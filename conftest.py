@@ -56,3 +56,32 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         )
         if not explicit_layers:
             item.add_marker(expected_layer)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def flush_retained_retirement_table():
+    """Test DB flush must include the physical table retained until deployment commit.
+
+    Migration tests recreate historical states, so inspect at flush time rather than
+    dropping production-retained schema from test migrations or fixture setup.
+    """
+    from django.db.backends.postgresql.operations import DatabaseOperations
+
+    original = DatabaseOperations.sql_flush
+
+    def sql_flush(self, style, tables, *, reset_sequences=False, allow_cascade=False):
+        retained = "processing_faceembedding"
+        if (
+            tables
+            and retained not in tables
+            and retained in self.connection.introspection.table_names()
+        ):
+            tables = [*tables, retained]
+        return original(
+            self, style, tables, reset_sequences=reset_sequences, allow_cascade=allow_cascade
+        )
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr(DatabaseOperations, "sql_flush", sql_flush)
+    yield
+    patch.undo()

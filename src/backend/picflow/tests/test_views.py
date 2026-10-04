@@ -45,7 +45,7 @@ from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     BibReading,
     EventProcessingRun,
-    FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
@@ -907,11 +907,10 @@ class GalleryPageTests(TestCase):
                     "bbox": [10 + face_index, 20, 20, 20],
                 },
             )
-            FaceEmbedding.objects.create(
+            FaceEmbeddingVector.objects.create(
                 detection=detection,
                 model_version="sface",
                 vector=[1.0] + [0.0] * 127,
-                metadata={},
             )
         publish_face_embedding_projection(attempt)
 

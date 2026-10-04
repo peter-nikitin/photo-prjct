@@ -28,7 +28,7 @@ from picflow.gallery import ResolvedPublicMedia
 from picflow.models import Event, Photo
 from processing.models import (
     EventProcessingRun,
-    FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
@@ -450,7 +450,7 @@ class SelfieSearchEndToEndTests(TestCase):
                 face_index=index,
                 status=PhotoFaceDetection.Status.KEPT,
             )
-            FaceEmbedding.objects.create(
+            FaceEmbeddingVector.objects.create(
                 detection=detection,
                 model_version="sface",
                 vector=vector,

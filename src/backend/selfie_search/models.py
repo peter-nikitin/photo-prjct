@@ -69,8 +69,6 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     temporary_object_etag = models.CharField(max_length=128, blank=True, default="")
     configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
     configuration_hash = models.CharField(max_length=64, blank=True, default="")
-    reader_staff_eligible = models.BooleanField(default=False, editable=False)
-    reader_comparison_requested = models.BooleanField(default=False, editable=False)
     eligible_photo_count = models.PositiveIntegerField(default=0)
     eligible_face_count = models.PositiveIntegerField(default=0)
     matched_photo_count = models.PositiveIntegerField(default=0)
@@ -158,19 +156,6 @@ class SelfieSearch(models.Model):  # noqa: DJ008
             ),
         ]
         indexes = [models.Index(fields=["event", "status"], name="selfie_search_event_status_idx")]
-
-    def save(self, *args, **kwargs) -> None:
-        context_fields = {"reader_staff_eligible", "reader_comparison_requested"}
-        update_fields = kwargs.get("update_fields")
-        if not self._state.adding and (
-            update_fields is None or context_fields.intersection(update_fields)
-        ):
-            original = type(self).objects.filter(pk=self.pk).values(*context_fields).first()
-            if original is not None and any(
-                getattr(self, field) != original[field] for field in context_fields
-            ):
-                raise ValidationError("Search reader review context is immutable.")
-        super().save(*args, **kwargs)
 
     def clean(self) -> None:
         super().clean()

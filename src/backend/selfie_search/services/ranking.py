@@ -1,19 +1,12 @@
-"""Deterministic exact ranking over a search's frozen event-scoped cohort."""
+"""Shared query validation and scalar native ranking results."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 from uuid import UUID
 
-import numpy as np
-
 from selfie_search.models import SelfieSearch
-
-if TYPE_CHECKING:
-    from selfie_search.services.cohort_cache import CohortCacheEntry
 
 _NORMALIZATION_TOLERANCE = 1e-6
 _SELFIE_QUERY_MODEL = "sface"
@@ -47,91 +40,6 @@ class CandidateEmbedding:
     photo_event_id: object
     attempt_event_id: object
     attempt_photo_id: object
-
-
-@dataclass(frozen=True)
-class CachedRanking:
-    photos: tuple[RankedPhoto, ...]
-    shortlist_count: int
-
-
-def rank_cached_embeddings(
-    search: SelfieSearch, query_vector: object, entry: CohortCacheEntry
-) -> CachedRanking:
-    """Shortlist conservatively; only the existing Python arithmetic supplies evidence."""
-    configuration = _configuration(search)
-    query = validate_query_vector(search, query_vector)
-    try:
-        distances = 1.0 - np.dot(entry.matrix, np.asarray(query, dtype=np.float64))
-        np.clip(distances, 0.0, 2.0, out=distances)
-        indices = np.flatnonzero(distances <= configuration.threshold + 1e-10)
-        candidates = (
-            CandidateEmbedding(
-                # tolist returns Python floats: NumPy scalar multiplication must never
-                # replace the exact baseline's float multiplication and math.fsum.
-                vector=entry.matrix[index].tolist(),
-                model_version=configuration.model,
-                detection_id=entry.faces[index].detection_id,
-                photo_id=entry.faces[index].photo_id,
-                photo_event_id=search.event_id,
-                attempt_event_id=search.event_id,
-                attempt_photo_id=entry.faces[index].photo_id,
-            )
-            for index in indices
-        )
-        return CachedRanking(rank_embeddings(search, query, candidates), len(indices))
-    except (MemoryError, ValueError) as error:
-        raise RankingError("cached ranking failed") from error
-
-
-def rank_embeddings(
-    search: SelfieSearch,
-    query_vector: object,
-    candidates: Iterable[CandidateEmbedding],
-) -> tuple[RankedPhoto, ...]:
-    """Rank an in-memory compatible cohort without persisting intermediate candidate rows."""
-    configuration = _configuration(search)
-    query = _normalized_vector(
-        query_vector,
-        dimensions=configuration.dimensions,
-        error_type=QueryVectorError,
-    )
-    best_by_photo: dict[str, RankedPhoto] = {}
-    for candidate in candidates:
-        if (
-            candidate.photo_event_id != search.event_id
-            or candidate.attempt_event_id != search.event_id
-            or str(candidate.attempt_photo_id) != candidate.photo_id
-        ):
-            raise RankingError("candidate identity is outside the frozen search event")
-        if candidate.model_version != configuration.model:
-            raise RankingError("candidate embedding model is incompatible")
-        gallery = _normalized_vector(
-            candidate.vector,
-            dimensions=configuration.dimensions,
-            error_type=RankingError,
-        )
-        distance = 1.0 - math.fsum(left * right for left, right in zip(query, gallery, strict=True))
-        distance = min(2.0, max(0.0, distance))
-        if distance > configuration.threshold:
-            continue
-        ranked = RankedPhoto(
-            photo_id=candidate.photo_id,
-            detection_id=candidate.detection_id,
-            cosine_distance=distance,
-        )
-        previous = best_by_photo.get(ranked.photo_id)
-        if previous is None or (
-            ranked.cosine_distance,
-            ranked.detection_id.int,
-        ) < (
-            previous.cosine_distance,
-            previous.detection_id.int,
-        ):
-            best_by_photo[ranked.photo_id] = ranked
-    return tuple(
-        sorted(best_by_photo.values(), key=lambda row: (row.cosine_distance, row.photo_id))
-    )
 
 
 @dataclass(frozen=True)

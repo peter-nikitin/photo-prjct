@@ -622,29 +622,25 @@ grow without becoming the customer request path.
 
 ### EJ-030 — Maintainer — Move exact face search into PostgreSQL with controlled reading
 
-When I migrate face-search storage and ranking, I want independent vector evidence and controlled
-reader selection, so I can populate and compare the new path before activating it publicly.
+When I migrate face-search storage and ranking, I want one exact native vector path so both query
+sources run without the old JSON embedding table.
 
 - Status: In progress
 - Evidence: [ADR 0040](adr/0040-use-pgvector-for-exact-face-search.md),
   [ADR 0041](adr/0041-accept-pgvector-numerical-boundaries.md), and the
-  [implementation plan](plans/2026-09-27-pgvector-exact-face-search.md) govern independent immutable
-  vector publication, bounded historical population and verification, SQL exact full scans, and
-  temporary `off` / `staff` / `on` routing for both selfie and gallery queries. Scoped reader/routing
-  reviews and local tests passed. Native ranking accepts classified numerical boundary changes;
-  eligibility, privacy, immutable results and missing-evidence failure remain strict.
-- Boundary: Explicit staff-only comparison and a bounded private review command are implemented
-  and independently reviewed. Their regular-reader timings are separate from diagnostic passes;
-  unexplained differences and incomplete evidence block acceptance. Restore/HTTP acceptance work
-  uses the existing local database snapshot and real serialized Django callback endpoints;
-  network/Nginx behavior is not inferred from an in-process API client. Native SQL uses a single
-  scored/window stream; base/deployment shared-memory ceiling is `256m` after a reproduced local
-  concurrent-search failure at `64m`. Final-package checks and PR/CI evidence belong to the
-  implementation handoff. Database-image deployment, production population, representative
-  production capacity evidence and public activation remain unrecorded.
-  Later worker extraction, SFace-to-AdaFace reprocessing
-  and coordinated retirement of old storage/readers are separate work.
-- Last updated: 2026-09-27
+  [retirement plan](plans/2026-10-04-complete-pgvector-face-read-cutover.md) govern exact native
+  search for both selfie and gallery sources, native-only publication for SFace and AdaFace, and
+  removal of the JSON embedding table, temporary reader gate and comparison path. The existing
+  local database snapshot was restored separately and its 202,899 embeddings populated into
+  pgvector; bounded native identity verification passed all 17 snapshot events. This is local
+  evidence, not a current-production completeness proof.
+- Boundary: The current implementation still needs final-package checks, PR/CI and a reviewed
+  deployment. Before physical table contraction, operations must prove native completeness on
+  current production data and replacement of old web processes. The canonical deploy migrates
+  before replacing web, so the physical table drop is guarded and post-commit. SFace inference and
+  its native vectors remain until a separate model-retirement release; unpublished events remain
+  in place. Shared saved-result and detection tables are preserved.
+- Last updated: 2026-10-04
 
 ### EJ-031 — Operator — Isolate and autoscale photo-worker capacity
 

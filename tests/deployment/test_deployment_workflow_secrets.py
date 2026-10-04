@@ -1222,3 +1222,47 @@ def test_remote_helper_rejects_non_private_ssh_key_before_any_remote_command(
     assert result.stderr == "[remote] stage=key status=error code=key_not_private\n"
     assert sentinel not in result.stdout
     assert sentinel not in result.stderr
+
+
+@pytest.mark.parametrize("retirement_result", ["success", "retained", "incomplete"])
+def test_remote_relay_preserves_retirement_receipt_and_rejects_injected_text(
+    tmp_path: Path, remote_boundary: Path, retirement_result: str
+) -> None:
+    environment, sentinel = _remote_environment(tmp_path, remote_boundary)
+    safe = (
+        "DEPLOY_PHASE=legacy-schema-retirement elapsed_seconds=45\n"
+        f"DEPLOY_JSON_RETIREMENT_RESULT={retirement_result}\n"
+        "DEPLOY_RESULT=failure phase=legacy-schema-retirement "
+        "rollback=not-needed elapsed_seconds=67\n"
+    )
+    environment.update(
+        SSH_FAIL_AFTER_OUTPUT="1",
+        SSH_STDOUT=(
+            safe
+            + f"DEPLOY_JSON_RETIREMENT_RESULT=incomplete secret={sentinel}\n"
+            + f"DEPLOY_JSON_RETIREMENT_RESULT={sentinel}\n"
+            + f"unsafe diagnostic {sentinel}\n"
+        ),
+    )
+    result = _run_helper(["deploy"], environment)
+    assert result.returncode == 2
+    assert result.stdout == safe
+    assert sentinel not in result.stdout + result.stderr
+
+
+def test_workflow_issue_parser_reports_physical_retirement_failure_phase():
+    job = _workflow("deploy.yml")["jobs"]["reconcile-deploy-issue"]
+    script = _step(job, "Reconcile issue state")["run"]
+    awk = script.split("| awk '", 1)[1].split("'\n", 1)[0]
+    result = subprocess.run(
+        ["awk", awk],
+        input=(
+            "runner DEPLOY_PHASE=commit elapsed_seconds=12\n"
+            "runner DEPLOY_PHASE=legacy-schema-retirement elapsed_seconds=13\n"
+            "runner DEPLOY_PHASE=legacy-schema-retirement elapsed_seconds=14 secret=injected\n"
+        ),
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout == "legacy-schema-retirement\n"

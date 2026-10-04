@@ -24,7 +24,7 @@ from selfie_search.storage import DownloadGrant, StoredTemporarySelfie
 from processing.contracts import AttemptCompletion
 from processing.models import (
     EventProcessingRun,
-    FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
@@ -1382,7 +1382,7 @@ class WorkerApiTests(TestCase):
             detection = PhotoFaceDetection.objects.get(attempt_id=job["attempt_id"])
             self.assertEqual(detection.status, status)
             self.assertEqual(
-                FaceEmbedding.objects.filter(detection=detection).exists(), status == "kept"
+                FaceEmbeddingVector.objects.filter(detection=detection).exists(), status == "kept"
             )
 
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")

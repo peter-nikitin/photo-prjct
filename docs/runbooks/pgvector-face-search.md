@@ -1,4 +1,4 @@
-> Historical pgvector reader-cutover runbook. Its SFace coexistence steps are superseded by [legacy face vector retirement](legacy-face-vector-retirement.md).
+> Historical pgvector reader-cutover runbook. Its coexistence steps are superseded by the [completed face vector retirement](legacy-face-vector-retirement.md). Do not run its retired commands.
 
 # Exact pgvector face search: release and recovery
 

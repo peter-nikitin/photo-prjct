@@ -1,4 +1,4 @@
-> Historical record: its SFace switches, temporary image labels and commands were retired by ADR 0054. Use [legacy face vector retirement](legacy-face-vector-retirement.md) for the current release.
+> Historical record: its switches, temporary image labels and commands were retired by ADR 0054. See the [completed face vector retirement](legacy-face-vector-retirement.md).
 
 # Historical AdaFace backfill (completed rollout record)
 

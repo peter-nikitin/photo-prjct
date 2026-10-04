@@ -626,21 +626,19 @@ grow without becoming the customer request path.
 When I migrate face-search storage and ranking, I want one exact native vector path so both query
 sources run without the old JSON embedding table.
 
-- Status: In progress
+- Status: Complete
 - Evidence: [ADR 0040](adr/0040-use-pgvector-for-exact-face-search.md),
   [ADR 0041](adr/0041-accept-pgvector-numerical-boundaries.md), and the
   [retirement plan](plans/2026-10-04-complete-pgvector-face-read-cutover.md) govern exact native
-  search for both selfie and gallery sources, native-only publication for SFace and AdaFace, and
-  removal of the JSON embedding table, temporary reader gate and comparison path. The existing
-  local database snapshot was restored separately and its 202,899 embeddings populated into
-  pgvector; bounded native identity verification passed all 17 snapshot events. This is local
-  evidence, not a current-production completeness proof.
-- Boundary: The current implementation still needs final-package checks, PR/CI and a reviewed
-  deployment. Before physical table contraction, operations must prove native completeness on
-  current production data and replacement of old web processes. The canonical deploy migrates
-  before replacing web, so the physical table drop is guarded and post-commit. SFace inference and
-  its native vectors remain until a separate model-retirement release; unpublished events remain
-  in place. Shared saved-result and detection tables are preserved.
+  search for both selfie and gallery sources. Production deploy `1801c097` completed on
+  2026-10-04. The post-deploy read-back found 147,774 current vectors, zero old vectors or raw
+  historical embedding arrays, a physical `vector(512)` column, no JSON embedding table and no
+  event generation column. A visible face in Cyclingrace Вечернее Садовое could start a search,
+  and its public gallery returned HTTP 200. The [completion record](runbooks/legacy-face-vector-retirement.md)
+  retains the recovery boundary.
+- Boundary: Historical processing records, detections and saved results remain. Production
+  recovery after vector contraction requires a compatible image or the verified pre-transition
+  backup; old model images cannot run against the contracted schema.
 - Last updated: 2026-10-04
 
 ### EJ-031 — Operator — Isolate and autoscale photo-worker capacity

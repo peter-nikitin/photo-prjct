@@ -1062,7 +1062,7 @@ fail() {
 
 phase() {
     case "$1" in
-        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit|legacy-schema-retirement)
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit)
             deployment_phase="$1"
             printf 'DEPLOY_PHASE=%s elapsed_seconds=%s\n' "$1" "$(elapsed_seconds)"
             ;;
@@ -1566,28 +1566,4 @@ if ! docker image prune -a -f >/dev/null; then
     printf 'DEPLOY_IMAGE_PRUNE_RESULT=failure\n'
 else
     printf 'DEPLOY_IMAGE_PRUNE_RESULT=success\n'
-fi
-
-# Physical contraction is deliberately after deployment commit. A failure keeps the
-# compatible candidate running and requires forward recovery, never old-image rollback.
-if [ "${RETIRE_JSON_FACE_EMBEDDINGS:-False}" = True ]; then
-    phase legacy-schema-retirement
-    if [ "${JSON_FACE_RETIREMENT_REVIEWED:-False}" != True ] || \
-        [ "${JSON_FACE_OLD_PROCESSES_DRAINED:-False}" != True ]; then
-        printf 'DEPLOY_JSON_RETIREMENT_RESULT=incomplete\n'
-        fail "Physical retirement requires reviewed release and old-process drain evidence"
-    fi
-    web_container="$(compose ps -q web)"
-    running_image="$(docker inspect --format '{{.Config.Image}}' "$web_container")"
-    [ "$running_image" = "$requested_image" ] || fail "Committed candidate web is not active"
-    candidate_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$requested_image")"
-    if ! run_private_candidate_command compose exec -T web python manage.py \
-        retire_json_face_embeddings --execute --reviewed-release --old-processes-drained \
-        --active-build "$candidate_revision"; then
-        printf 'DEPLOY_JSON_RETIREMENT_RESULT=incomplete\n'
-        fail "Committed physical retirement incomplete; keep candidate and recover forward"
-    fi
-    printf 'DEPLOY_JSON_RETIREMENT_RESULT=success\n'
-else
-    printf 'DEPLOY_JSON_RETIREMENT_RESULT=retained\n'
 fi

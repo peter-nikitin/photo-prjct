@@ -111,23 +111,39 @@ def test_incoming_foreign_key_stops_drop(monkeypatch):
 
 
 @pytest.mark.django_db
-def test_old_pool_build_blocks_physical_drop():
+@pytest.mark.parametrize("staged_build", [None, "d" * 40])
+def test_distinct_http_worker_builds_do_not_block_physical_drop(monkeypatch, staged_build):
+    from uuid import uuid4
+
     from django.core.management import call_command
-    from django.core.management.base import CommandError
     from django.db import connection
+    from django.utils import timezone
 
-    from processing.models import WorkerPool
+    from processing.models import WorkerPool, WorkerPoolMember
+    from processing.services import legacy_embedding_retirement as retirement
 
-    WorkerPool.objects.create(name="bulk", group_id="bulk-group", active_build="b" * 40)
-    with pytest.raises(CommandError, match="candidate build"):
-        call_command(
-            "retire_json_face_embeddings",
-            execute=True,
-            reviewed_release=True,
-            old_processes_drained=True,
-            active_build="a" * 40,
-        )
-    assert "processing_faceembedding" in connection.introspection.table_names()
+    monkeypatch.setattr(
+        retirement, "verify_all_retained_events", lambda **kwargs: {"events": 0, "eligible": 0}
+    )
+    pool = WorkerPool.objects.create(
+        name="bulk", group_id="bulk-group", active_build="b" * 40, staged_build=staged_build
+    )
+    WorkerPoolMember.objects.create(
+        pool=pool,
+        instance_id="ready-worker",
+        boot_id=uuid4(),
+        worker_build="c" * 40,
+        ready=True,
+        heartbeat_at=timezone.now(),
+    )
+    call_command(
+        "retire_json_face_embeddings",
+        execute=True,
+        reviewed_release=True,
+        old_processes_drained=True,
+        active_build="a" * 40,
+    )
+    assert "processing_faceembedding" not in connection.introspection.table_names()
 
 
 def test_reader_columns_are_retained_before_activation():

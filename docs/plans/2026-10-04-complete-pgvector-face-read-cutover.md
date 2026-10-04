@@ -89,7 +89,7 @@ Execute an approved version of this plan through `$execute-implementation-plan`.
 
 **Files:** `src/backend/processing/models.py`, a new `src/backend/processing/migrations/` migration, `src/backend/feature_flags/registry.py`, `src/backend/selfie_search/models.py` and a new `src/backend/selfie_search/migrations/` migration for unused reader-review fields, deployment checks and relevant tests.
 
-- **Depends on:** Stages A/B live evidence and no old web/worker process or command using JSON.
+- **Depends on:** Stages A/B live evidence and no old web process or command using JSON. Workers send callbacks through web and do not access the JSON table directly.
 - **Produces:** Final schema/code with no `FaceEmbedding`, JSON reader/writer or read gate (Stage C).
 
 - [ ] Rehearse schema contraction on the isolated snapshot and inspect the FK graph. Because `deploy/apply-deployment.sh` runs Django migrations before replacing the old web, use a state-only `DeleteModel` migration. Drop the physical table only through a guarded, idempotent post-commit command after old web processes have been replaced; verify deployment command ordering. Preserve all historical Django migrations and shared result/detection/projection tables.
@@ -113,4 +113,4 @@ Before Stage B, reverting the previous image is possible while both stores are c
 
 ## Open execution gate
 
-Full current-data native completeness and the canonical old-process drain/migration order must be recorded before Stage C. The prior production full verifier did not complete; an old worker writing during table contraction would fail. These are concrete release checks, not reasons to keep the JSON table indefinitely.
+Full current-data native completeness and the canonical old-web-process drain/migration order must be recorded before Stage C. The prior production full verifier did not complete; an old web process writing during table contraction would fail. Worker pool and member build IDs are separate from the web image revision and must not be compared to it as a table-retirement guard. These are concrete release checks, not reasons to keep the JSON table indefinitely.

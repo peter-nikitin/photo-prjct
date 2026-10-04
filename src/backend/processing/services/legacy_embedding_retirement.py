@@ -8,10 +8,8 @@ from django.apps import apps
 from django.core.management.base import CommandError
 from django.db import connection, transaction
 from django.db.migrations.recorder import MigrationRecorder
-from django.utils import timezone
 from picflow.models import Event
 
-from processing.models import WorkerPool, WorkerPoolMember
 from processing.services.vector_reconciliation import verify_scalar_embeddings
 
 LEGACY_TABLE = "processing_faceembedding"
@@ -70,20 +68,8 @@ def retire_physical_schema(*, active_build: str, timeout_seconds: int) -> dict[s
         }
         if not required <= set(MigrationRecorder(connection).applied_migrations()):
             raise CommandError("Reviewed retirement state migrations are not applied")
-        # Workers use the HTTP API; reject an old active cohort or live old session anyway.
-        if (
-            WorkerPool.objects.exclude(active_build=active_build).exists()
-            or WorkerPool.objects.filter(staged_build__isnull=False).exists()
-        ):
-            raise CommandError("Worker pools have not committed the candidate build")
-        if (
-            WorkerPoolMember.objects.filter(
-                heartbeat_at__gte=timezone.now() - timezone.timedelta(seconds=120)
-            )
-            .exclude(worker_build=active_build)
-            .exists()
-        ):
-            raise CommandError("Old worker sessions have not drained")
+        # HTTP workers do not access this schema. Their independently deployed builds
+        # and staged pool updates cannot prove or disprove old database consumers.
         receipt = verify_all_retained_events(timeout_seconds=timeout_seconds)
         with connection.cursor() as cursor:
             cursor.execute("SELECT to_regclass(%s)", [LEGACY_TABLE])

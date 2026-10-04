@@ -27,9 +27,11 @@ passed the bounded native identity check. Reconcile current production state bef
    published, unpublished and currently hidden photos that may later be shown. Any missing,
    divergent or invalid native evidence stops the
    release. A search result count or the September snapshot alone is not enough.
-3. Drain old worker claims and confirm the candidate worker/web builds. Keep the old JSON table
-   available until candidate web replacement succeeds. Review the post-commit contraction flags
-   only after the live cohort, old-process drain and recovery boundary are established.
+3. Drain old worker claims and confirm the candidate web build and worker callback compatibility.
+   Worker pool and member build IDs are distinct from the web image revision and need not match it;
+   workers reach the database through web callbacks. Keep the old JSON table available until
+   candidate web replacement succeeds. Review the post-commit contraction only after the live
+   cohort, old web process drain and recovery boundary are established.
 
 The canonical deployment runs a bounded all-event release gate after its state-only Django
 migrations and before it replaces old web. Each event query has a 15-second timeout and the
@@ -78,9 +80,10 @@ preceding section; the command cannot establish those operational facts by itsel
 apply script also supports a direct VM invocation with `RETIRE_JSON_FACE_EMBEDDINGS=True`,
 `JSON_FACE_RETIREMENT_REVIEWED=True` and `JSON_FACE_OLD_PROCESSES_DRAINED=True` after the same
 review. Those flags are deliberately absent from the routine remote workflow transport. The
-post-commit command checks the active build, applied migrations,
-worker-pool builds and recent sessions, native evidence for all retained events and incoming
-foreign keys. It drops exactly `processing_faceembedding` and the two retired search columns in
+post-commit command checks the active web build, applied migrations, native evidence for all
+retained events and incoming foreign keys. The operator's old-process drain attestation and
+active-image inspection cover the web replacement; worker build equality is not a schema guard.
+It drops exactly `processing_faceembedding` and the two retired search columns in
 one transaction, without `CASCADE`. Its SQL uses bounded statement and lock timeouts. It is
 idempotent. A refused or interrupted drop leaves the compatible candidate running and requires
 forward recovery; the deployment must never restore an old image after the schema is contracted.

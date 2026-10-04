@@ -707,11 +707,10 @@ membership and order in PostgreSQL without gallery-vector hydration. Missing or 
 evidence fails closed; saved results remain in the shared search-history tables. A scored/window
 stream avoids repeatedly scanning best-face reduction for every eligible detection. Base and
 deployed PostgreSQL use a `256m` Docker shared-memory ceiling for concurrent native searches; this
-is a ceiling, not a memory reservation or an accepted production concurrency target. The table
-contraction runs after deployment commit because the canonical deployment applies migrations
-before replacing the old web process. The guarded post-commit retirement removes old vectors
-and fixes the physical column at `vector(512)`; repository code alone does not prove that
-contraction has run in production.
+is a ceiling, not a memory reservation or an accepted production concurrency target. The
+production vector table contains only AdaFace rows with a physical `vector(512)` column. The
+former JSON embedding table and event generation column have been removed; historical processing
+records and saved search results remain available.
 
 1. The customer selects an event before searching.
 2. A bib query is a separate GET request using `?bib=<1-16 ASCII digits>` and matches current

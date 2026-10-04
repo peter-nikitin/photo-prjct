@@ -1170,21 +1170,21 @@ def test_remote_helper_rejects_non_private_ssh_key_before_any_remote_command(
     assert sentinel not in result.stderr
 
 
-@pytest.mark.parametrize("retirement_result", ["success", "retained", "incomplete"])
-def test_remote_relay_preserves_retirement_receipt_and_rejects_injected_text(
-    tmp_path: Path, remote_boundary: Path, retirement_result: str
+def test_remote_relay_rejects_retired_receipt_and_injected_text(
+    tmp_path: Path, remote_boundary: Path
 ) -> None:
     environment, sentinel = _remote_environment(tmp_path, remote_boundary)
     safe = (
-        "DEPLOY_PHASE=legacy-schema-retirement elapsed_seconds=45\n"
-        f"DEPLOY_JSON_RETIREMENT_RESULT={retirement_result}\n"
-        "DEPLOY_RESULT=failure phase=legacy-schema-retirement "
-        "rollback=not-needed elapsed_seconds=67\n"
+        "DEPLOY_PHASE=commit elapsed_seconds=45\n"
+        "DEPLOY_IMAGE_PRUNE_RESULT=success\n"
+        "DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=67\n"
     )
     environment.update(
         SSH_FAIL_AFTER_OUTPUT="1",
         SSH_STDOUT=(
             safe
+            + "DEPLOY_JSON_RETIREMENT_RESULT=retained\n"
+            + "DEPLOY_PHASE=legacy-schema-retirement elapsed_seconds=45\n"
             + f"DEPLOY_JSON_RETIREMENT_RESULT=incomplete secret={sentinel}\n"
             + f"DEPLOY_JSON_RETIREMENT_RESULT={sentinel}\n"
             + f"unsafe diagnostic {sentinel}\n"
@@ -1196,7 +1196,7 @@ def test_remote_relay_preserves_retirement_receipt_and_rejects_injected_text(
     assert sentinel not in result.stdout + result.stderr
 
 
-def test_workflow_issue_parser_reports_physical_retirement_failure_phase():
+def test_workflow_issue_parser_ignores_retired_phase():
     job = _workflow("deploy.yml")["jobs"]["reconcile-deploy-issue"]
     script = _step(job, "Reconcile issue state")["run"]
     awk = script.split("| awk '", 1)[1].split("'\n", 1)[0]
@@ -1211,4 +1211,4 @@ def test_workflow_issue_parser_reports_physical_retirement_failure_phase():
         capture_output=True,
     )
     assert result.returncode == 0
-    assert result.stdout == "legacy-schema-retirement\n"
+    assert result.stdout == "commit\n"

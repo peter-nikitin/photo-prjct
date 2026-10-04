@@ -1314,10 +1314,9 @@ def test_apply_markers_include_elapsed_seconds(tmp_path: Path, fake_bin: Path) -
     markers = [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_")]
     assert markers
     assert all(
-        re.fullmatch(r"DEPLOY_PHASE=[a-z-]+ elapsed_seconds=\d+", line) for line in markers[:-3]
+        re.fullmatch(r"DEPLOY_PHASE=[a-z-]+ elapsed_seconds=\d+", line) for line in markers[:-2]
     )
-    assert markers[-3] == "DEPLOY_IMAGE_PRUNE_RESULT=success"
-    assert markers[-2] == "DEPLOY_JSON_RETIREMENT_RESULT=retained"
+    assert markers[-2] == "DEPLOY_IMAGE_PRUNE_RESULT=success"
     assert re.fullmatch(
         r"DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=\d+",
         markers[-1],
@@ -2377,7 +2376,6 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
         "DEPLOY_IMAGE_PRUNE_RESULT=success",
-        "DEPLOY_JSON_RETIREMENT_RESULT=retained",
         "DEPLOY_RESULT=success phase=commit rollback=not-needed",
     ]
     assert result.stderr == "docker compose up exit status: 0\n"
@@ -2402,7 +2400,6 @@ def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
         "DEPLOY_IMAGE_PRUNE_RESULT=success",
-        "DEPLOY_JSON_RETIREMENT_RESULT=retained",
         "DEPLOY_RESULT=success phase=commit rollback=not-needed",
     ]
     commands = _apply_log(tmp_path)

@@ -111,7 +111,7 @@ def classify_observability(paths):
 
 
 def classify(paths):
-    web = worker = base = False
+    web = worker = base = importer = commerce = False
     for path in paths:
         if path.startswith(("docs/", "tests/", ".agents/", ".superpowers/")) or path.endswith(
             ".md"
@@ -131,7 +131,7 @@ def classify(paths):
             # Orchestration is consumed by the next selected release; it is not an image input.
             continue
         if path == ".dockerignore":
-            web = worker = base = True
+            web = worker = base = importer = commerce = True
         elif path == "Dockerfile.worker-base" or path in {
             "src/worker/requirements.txt",
             "src/worker/requirements.cpu.txt",
@@ -139,17 +139,38 @@ def classify(paths):
             worker = base = True
         elif path == "Dockerfile.worker" or path.startswith("src/worker/photo_worker/"):
             worker = True
+        elif path == "Dockerfile.import-worker" or path.startswith("src/import_worker/"):
+            importer = True
+        elif path.startswith("src/backend/") and ("/templates/" in path or "/static/" in path):
+            web = True
+        elif path.startswith("src/backend/commerce/"):
+            web = commerce = True
         elif (
-            path in {"Dockerfile", "Dockerfile.import-worker"}
-            or path.startswith(("src/backend/", "src/import_worker/", "deploy/"))
+            path == "Dockerfile"
+            or path.startswith(("src/backend/", "deploy/"))
             or path.startswith("docker-compose")
             or path == ".env.example"
         ):
             web = True
+            if (
+                path == "Dockerfile"
+                or path.startswith(("src/backend/config/", "src/backend/picflow/", "deploy/"))
+                or path in {"src/backend/requirements.txt", ".env.example"}
+                or path.startswith("docker-compose")
+            ):
+                commerce = True
+            if path.startswith(("deploy/", "docker-compose")) or path == ".env.example":
+                importer = True
         elif not path.startswith(("src/worker/tests/", ".github/")):
             # Unknown operational/configuration inputs must not silently look like documentation.
             web = True
-    return {"web_changed": web, "worker_changed": worker, "worker_base_changed": base}
+    return {
+        "web_changed": web,
+        "worker_changed": worker,
+        "worker_base_changed": base,
+        "import_changed": importer,
+        "commerce_changed": commerce,
+    }
 
 
 def main():

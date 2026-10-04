@@ -430,7 +430,11 @@ commands = {
     'reconcile-observability': 'exec sudo -n /usr/local/sbin/findme-observability-reconcile "$RELEASE_SHA"',
     'configure-monitoring': 'exec sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"',
     'verify-deployed-image': r'''set -eu
-test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"
+cd /opt/photo-prjct
+slot=$(python3 deploy/web-slot.py selected)
+container=$(docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml ps -q "$slot")
+test -n "$container"
+test "$(docker inspect --format '{{.Image}}' "$container")" = "$(docker image inspect --format '{{.Id}}' "$APP_IMAGE")"
 test "$(sed -n 's/^PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES"
 test "$(sed -n 's/^PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES"''',
     'verify-paused-observability-release': r'''set -eu
@@ -483,6 +487,9 @@ export RECOVER_FORWARD RELEASE_SHA
 
 REMOTE_DEPLOYMENT_VALUES='
 APP_IMAGE
+DEPLOY_WEB
+DEPLOY_IMPORT
+DEPLOY_COMMERCE
 RECOVER_FORWARD
 RELEASE_SHA
 WORKER_POOL_PRIVATE_API_IPV4
@@ -650,7 +657,7 @@ remote_target=$VM_USER@$VM_HOST
 cd "$REPOSITORY_ROOT"
 
 if [ "$mode" = remote-preflight ]; then
-    run_quietly remote remote_failed ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" "$remote_target" "test -d /opt/photo-prjct && test -r /opt/photo-prjct/deployed-image"
+    run_quietly remote remote_failed ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" "$remote_target" "test -d /opt/photo-prjct && test -r /opt/photo-prjct/.env && cd /opt/photo-prjct && python3 deploy/web-slot.py selected"
     printf '[remote] stage=%s status=ok\n' "$mode"
     exit 0
 fi

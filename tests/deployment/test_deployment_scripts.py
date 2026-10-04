@@ -1037,6 +1037,10 @@ if [ "${1-}" = image ] && [ "${2-}" = prune ]; then
   [ "$APPLY_SCENARIO" != image-prune-failure ]
   exit
 fi
+if [ "${1-}" = image ] && [ "${2-}" = inspect ] && [ "${4-}" = '{{.Id}}' ]; then
+  printf '%s\n' "${PULLED_IMAGE_ID:-${EXPECTED_REQUESTED_IMAGE:-new-image}}"
+  exit 0
+fi
 case " $* " in
   *"ingestion_importattempt"*)
     printf 'import-lease-probe\n' >> "$COMMAND_LOG"
@@ -1066,6 +1070,7 @@ if [ "${1-}" = volume ] && [ "${2-}" = inspect ]; then
   printf 'Error response from daemon: get %s: no such volume\n' "$volume_name" >&2
   exit 1
 fi
+docker_arguments="$*"
 compose_env_file=""
 previous_argument=""
 for argument do
@@ -1079,7 +1084,9 @@ validate_candidate_env() {
   candidate_secret_key="$(sed -n 's/^PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=//p' "$compose_env_file")"
   [ "$compose_env_file" != "$DEPLOY_ROOT/.env" ]
   [ "$APP_ENV_FILE" = "$compose_env_file" ]
-  [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = "${EXPECTED_REQUESTED_IMAGE:-new-image}" ]
+  expected_image="${EXPECTED_REQUESTED_IMAGE:-new-image}"
+  case " $docker_arguments " in *" pull web "*) expected_image="${APP_IMAGE:-new-image}" ;; esac
+  [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = "$expected_image" ]
   [ "$(sed -n 's/^SECRET_KEY=//p' "$compose_env_file")" = "$EXPECTED_REQUESTED_SECRET" ]
   [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
   [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
@@ -1344,8 +1351,10 @@ case " $* " in
     [ "$(sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$DEPLOY_ROOT/.env")" = True ] || exit 0
     printf 'commerce-worker-id\n'
     ;;
+  *" compose "*" ps -q import-worker "*) printf 'import-worker-id\n' ;;
   *" inspect "*" web-id "*) sed -n 's/^APP_IMAGE=//p' "$DEPLOY_ROOT/.env" ;;
   *" inspect "*" commerce-worker-id "*) printf 'true false false\n' ;;
+  *" inspect "*" import-worker-id "*) printf 'true false false\n' ;;
   *" inspect "*" worker-bulk-first "*|*" inspect "*" worker-selfie "*)
     if [ "$APPLY_SCENARIO" = worker-crash-loop ]; then
       case "$*" in
@@ -1468,6 +1477,9 @@ esac
         "DEPLOY_ROOT": str(tmp_path),
         "COMPOSE_PROJECT_NAME": "photo-prjct",
         "APP_IMAGE": "new-image",
+        "DEPLOY_WEB": "true",
+        "DEPLOY_IMPORT": "true",
+        "DEPLOY_COMMERCE": "true",
         "SECRET_KEY": "new-secret",
         "EXPECTED_REQUESTED_SECRET": "new-secret",
         "DEBUG": "False",
@@ -1500,6 +1512,127 @@ esac
 
 def _apply_log(tmp_path: Path) -> list[str]:
     return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
+
+
+def test_web_only_release_leaves_canonical_background_workers_untouched(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env.update(DEPLOY_WEB="true", DEPLOY_IMPORT="false", DEPLOY_COMMERCE="false")
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    commands = _apply_log(tmp_path)
+    assert not any(
+        "rm -sf commerce-worker" in c or "up -d --no-deps commerce-worker" in c for c in commands
+    )
+    assert not any(
+        "import-worker" in c and (" pull " in c or " stop " in c or " up " in c) for c in commands
+    )
+
+
+def test_selected_slot_is_authority_when_successful_image_marker_disagrees(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    (tmp_path / "deployed-image").write_text("stale-image\n")
+    env["EXPECTED_DEPLOYED_IMAGE"] = "stale-image"
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_import_only_release_preserves_selected_web_and_does_not_run_release_setup(
+    tmp_path, fake_bin
+):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env.update(DEPLOY_WEB="false", DEPLOY_IMPORT="true", DEPLOY_COMMERCE="false")
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "deploy/nginx/selected-slot").read_text() == "web\n"
+    commands = _apply_log(tmp_path)
+    assert not any(
+        "slot switch" in c or "candidate-migrate" in c or " pull web" in c for c in commands
+    )
+
+
+def test_candidate_activation_uses_the_pulled_image_identity(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env.update(PULLED_IMAGE_ID="pulled-image-id", EXPECTED_REQUESTED_IMAGE="pulled-image-id")
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "APP_IMAGE=pulled-image-id\n" in (tmp_path / ".env").read_text()
+
+
+@pytest.mark.parametrize("still_running", [False, True])
+def test_commerce_activation_waits_for_natural_exit_before_replacement(
+    tmp_path, fake_bin, still_running
+):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    env["COMMERCE_STILL_RUNNING"] = str(int(still_running))
+    _write_executable(
+        fake_bin / "date",
+        """
+if [ -f "$DEPLOY_ROOT/commerce-term" ] && [ "$COMMERCE_STILL_RUNNING" = 1 ]; then
+  clock_value=$(cat "$DEPLOY_ROOT/commerce-clock" 2>/dev/null || echo 0)
+  clock_value=$((clock_value + 2000))
+  echo "$clock_value" > "$DEPLOY_ROOT/commerce-clock"
+  echo "$clock_value"
+else exec /bin/date "$@"; fi
+""",
+    )
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            """set -eu
+case "$*" in
+  *"ps -aq"*"service=commerce-worker"*) echo old-commerce; exit 0 ;;
+  "inspect --format {{.State.Running}} old-commerce")
+    if [ -f "$DEPLOY_ROOT/commerce-term" ] && [ "$COMMERCE_STILL_RUNNING" = 0 ]; then
+      echo false
+      echo commerce-completed >> "$COMMAND_LOG"
+    else echo true; fi
+    exit 0 ;;
+  "kill --signal TERM old-commerce")
+    touch "$DEPLOY_ROOT/commerce-term"
+    echo commerce-term >> "$COMMAND_LOG"
+    exit 0 ;;
+esac""",
+            1,
+        )
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert (result.returncode != 0) is still_running, result.stdout + result.stderr
+    commands = _apply_log(tmp_path)
+    replacements = [i for i, c in enumerate(commands) if "rm -sf commerce-worker" in c]
+    if still_running:
+        assert not replacements
+        assert "left alive to finish" in result.stderr
+    else:
+        assert (
+            commands.index("commerce-term") < commands.index("commerce-completed") < replacements[0]
+        )
+    assert not any("KILL" in c for c in commands)
+
+
+def test_old_commerce_without_graceful_capability_is_preserved_before_release_setup(
+    tmp_path, fake_bin
+):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            """set -eu
+case "$*" in
+  *"ps -q"*"service=commerce-worker"*) echo old-commerce; exit 0 ;;
+  *"exec old-commerce"*"supports_graceful_stop"*) exit 1 ;;
+esac""",
+            1,
+        )
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    assert "Existing Commerce worker cannot drain accepted work" in result.stderr
+    commands = _apply_log(tmp_path)
+    assert "candidate-migrate" not in commands
+    assert not any("kill --signal TERM" in c or "rm -sf commerce-worker" in c for c in commands)
+    assert (tmp_path / "deploy/nginx/selected-slot").read_text() == "web\n"
 
 
 @pytest.mark.parametrize(
@@ -1543,14 +1676,13 @@ def test_warm_handoff_preserves_edge_database_and_truthful_marker(
         assert not any(c.endswith(" stop web") for c in commands)
 
 
-def test_uncommitted_selected_image_requires_forward_recovery_before_setup(tmp_path, fake_bin):
+def test_unavailable_selected_image_stops_release_before_setup(tmp_path, fake_bin):
     env = _apply_env(tmp_path, fake_bin, scenario="success")
     docker = fake_bin / "docker"
     docker.write_text(
         docker.read_text().replace(
             "set -eu",
-            'set -eu\ncase "$*" in "inspect --format {{.Config.Image}} web-id") '
-            "echo uncommitted-image; exit 0 ;; esac",
+            'set -eu\ncase "$*" in "inspect --format {{.Image}} web-id") exit 1 ;; esac',
             1,
         )
     )
@@ -3317,10 +3449,9 @@ def test_failed_candidate_migration_history_stops_before_any_deployment_mutation
     ("established_signal", "expected_content"),
     [
         (".env", PREVIOUS_ENV),
-        ("deployed-image", b"old-image\n"),
     ],
 )
-def test_each_durable_deployment_signal_alone_requires_migration_preflight(
+def test_established_environment_requires_migration_preflight(
     tmp_path: Path,
     fake_bin: Path,
     established_signal: str,
@@ -3460,11 +3591,26 @@ def test_schema_compatible_web_recovers_only_after_read_only_probe(
     assert not (tmp_path / ".deployment-recovery").exists()
 
 
-def _trapped_forward_recovery(tmp_path, fake_bin, *, timing, fix_sha):
+def _trapped_forward_recovery(tmp_path, fake_bin, *, timing, fix_sha, worker=None):
     original_sha = "a" * 40
     env = _apply_env(tmp_path, fake_bin, scenario=f"processing-schema-{timing}-failure")
     env["APP_IMAGE"] = f"ghcr.io/example/photo-prjct:{original_sha}"
     env["EXPECTED_REQUESTED_IMAGE"] = env["APP_IMAGE"]
+    if worker:
+        env.update(DEPLOY_IMPORT="false", DEPLOY_COMMERCE="false")
+        if worker == "commerce":
+            env.update(_real_commerce_worker_settings())
+            env.update(DEPLOY_COMMERCE="true", APPLY_SCENARIO="commerce-worker-health-failure")
+        else:
+            env.update(
+                DEPLOY_IMPORT="true",
+                PHOTO_IMPORT_ENABLED="True",
+                PHOTO_IMPORT_WORKER_TOKEN="retained-import-token",
+                PHOTO_IMPORT_BUILD="retained-import-build",
+                IMPORT_WORKER_IMAGE="ghcr.io/example/photo-prjct-import-worker:latest",
+                APPLY_SCENARIO="import-start-failure",
+            )
+        _install_forward_import_probe(fake_bin)
     predecessor = tmp_path / ".deployment-previous.original"
     (predecessor / "deploy").mkdir(parents=True)
     for name in ("docker-compose.deployment.yml", "docker-compose.https.yml"):
@@ -3473,6 +3619,8 @@ def _trapped_forward_recovery(tmp_path, fake_bin, *, timing, fix_sha):
     env["PREVIOUS_DEPLOYMENT_PACKAGE_ROOT"] = str(predecessor)
     initial = _run("deploy/apply-deployment.sh", env=env)
     assert initial.returncode != 0
+    if worker:
+        assert "DEPLOY_RESULT=failure phase=worker-health" in initial.stdout
     assert (tmp_path / ".deployment-recovery/candidate.env").is_file()
     (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
     (tmp_path / "apply.log").write_text("")
@@ -3570,7 +3718,7 @@ elif 'ps' in args and args[-1] in ('web', 'web-next'):
         print('repair-id')
     elif os.environ['FAILED_SLOT_STATE'] != 'exited' or '-a' in args:
         print('failed-id')
-elif args[:3] == ['inspect', '--format', '{{.Config.Image}}']:
+elif args[:2] == ['inspect', '--format'] and args[2] in ('{{.Image}}', '{{.Config.Image}}'):
     print(os.environ['ORIGINAL_IMAGE'] if args[-1] == 'failed-id' else os.environ['APP_IMAGE'])
 elif args[:3] == ['inspect', '--format', '{{.State.Health.Status}}']:
     if args[-1] == 'failed-id':
@@ -3652,6 +3800,82 @@ def test_forward_candidate_verification_does_not_reload_edge(tmp_path, fake_bin)
     assert "forward-candidate-probe" in commands
     assert "slot reconcile" not in commands
     assert not any(command.startswith("slot switch") for command in commands)
+
+
+@pytest.mark.parametrize(
+    ("worker", "failure"),
+    [
+        ("commerce", "commerce-worker-health-failure"),
+        ("import", "import-start-failure"),
+        ("import", "import-not-running"),
+        ("import", "import-not-ready"),
+    ],
+)
+def test_forward_recovery_completes_only_retained_worker_obligations(
+    tmp_path, fake_bin, worker, failure
+):
+    env, predecessor = _trapped_forward_recovery(
+        tmp_path, fake_bin, timing="health", fix_sha="b" * 40, worker=worker
+    )
+    snapshot = tmp_path / ".deployment-recovery/candidate.env"
+    retained = snapshot.read_bytes()
+    env.update(
+        APPLY_SCENARIO=failure,
+        DEPLOY_IMPORT="false",
+        DEPLOY_COMMERCE="false",
+        IMPORT_WORKER_IMAGE="wrong-current-pointer",
+    )
+    failed = _run_forward_installer(tmp_path, fake_bin, env)
+    assert failed.returncode != 0, failed.stdout + failed.stderr
+    assert "DEPLOY_RESULT=success" not in failed.stdout
+    assert snapshot.read_bytes() == retained
+    assert predecessor.exists()
+    assert "DEPLOY_RESULT=failure phase=worker-health" in failed.stdout
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    (tmp_path / "apply.log").write_text("")
+    env["APPLY_SCENARIO"] = "success"
+    recovered = _run_forward_installer(tmp_path, fake_bin, env)
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert "DEPLOY_RESULT=success phase=commit" in recovered.stdout
+    assert not snapshot.exists()
+    commands = "\n".join(_apply_log(tmp_path))
+    if worker == "commerce":
+        assert "up -d --no-deps commerce-worker" in commands
+        assert "commerce_worker_health" in commands
+        assert "import-start" not in commands
+    else:
+        assert "IMPORT_WORKER_IMAGE=retained-import-id\n" in (tmp_path / ".env").read_text()
+        assert "import-start" in commands
+        assert "import-running-readiness" in commands
+        assert "up -d --no-deps commerce-worker" not in commands
+        assert "commerce_worker_health" not in commands
+
+
+def _install_forward_import_probe(fake_bin):
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            """set -eu
+case " $* " in
+  *" image inspect "*"photo-prjct-import-worker"*|*" image inspect "*"retained-import-id"*)
+    echo retained-import-id; exit 0 ;;
+  *" compose "*" up -d --no-deps import-worker "*)
+    echo import-start >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != import-start-failure ]; exit ;;
+  *" compose "*" ps -q import-worker "*) echo import-id; exit 0 ;;
+  *" inspect "*" import-id "*)
+    if [ "$APPLY_SCENARIO" = import-not-running ]; then echo 'false false false'
+    else echo 'true false false'; fi
+    exit 0 ;;
+  *" compose "*" exec -T import-worker python -m import_worker --check-ready "*)
+    echo import-running-readiness >> "$COMMAND_LOG"
+    [ "$APPLY_SCENARIO" != import-not-ready ]; exit ;;
+esac
+""",
+            1,
+        )
+    )
 
 
 @pytest.mark.parametrize("timing", ["migrate", "health"])

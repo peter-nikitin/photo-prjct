@@ -108,16 +108,15 @@ try:
     image = os.environ['APP_IMAGE']
     if not re.fullmatch(r'[0-9a-f]{40}', sha):
         raise ValueError
-    original = re.fullmatch(r'(ghcr\.io/[a-z0-9_./-]+):[0-9a-f]{40}', retained['APP_IMAGE'])
-    if original is None or image != f'{original[1]}:{sha}':
+    if not re.fullmatch(r'ghcr\.io/[a-z0-9_./-]+:(latest|[0-9a-f]{40})', image):
         raise ValueError
     environment = {**os.environ, **retained, 'APP_IMAGE': image,
                    'RECOVER_FORWARD': 'True', 'FINDME_FORWARD_ENV_LOADED': '1',
+                   'DEPLOY_WEB': 'true',
+                   'DEPLOY_IMPORT': retained['DEPLOY_IMPORT'],
+                   'DEPLOY_COMMERCE': retained['DEPLOY_COMMERCE'],
                    'COMPOSE_PROJECT_NAME': 'photo-prjct'}
     environment.pop('PREVIOUS_DEPLOYMENT_PACKAGE_ROOT', None)
-    if retained.get('PHOTO_IMPORT_ENABLED') == 'True':
-        environment['IMPORT_WORKER_IMAGE'] = f'{original[1]}-import-worker:{sha}'
-        environment['PHOTO_IMPORT_BUILD'] = sha
 except (OSError, KeyError, ValueError):
     raise SystemExit('Invalid retained forward-recovery inputs') from None
 os.execve('/bin/sh', ['sh', *sys.argv[1:]], environment)
@@ -129,6 +128,12 @@ fi
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
 : "${APP_IMAGE:?Set APP_IMAGE}"
+: "${DEPLOY_WEB:?Set DEPLOY_WEB}"
+: "${DEPLOY_IMPORT:?Set DEPLOY_IMPORT}"
+: "${DEPLOY_COMMERCE:?Set DEPLOY_COMMERCE}"
+for component_selection in "$DEPLOY_WEB" "$DEPLOY_IMPORT" "$DEPLOY_COMMERCE"; do
+    case "$component_selection" in true|false) ;; *) exit 2 ;; esac
+done
 : "${SECRET_KEY:?Set SECRET_KEY}"
 : "${DEBUG:?Set DEBUG}"
 : "${ALLOWED_HOSTS:?Set ALLOWED_HOSTS}"
@@ -157,10 +162,6 @@ case "$requested_import_enabled" in
         : "${IMPORT_WORKER_IMAGE:?Set IMPORT_WORKER_IMAGE}"
         : "${PHOTO_IMPORT_WORKER_TOKEN:?Set PHOTO_IMPORT_WORKER_TOKEN}"
         : "${PHOTO_IMPORT_BUILD:?Set PHOTO_IMPORT_BUILD}"
-        case "$IMPORT_WORKER_IMAGE" in
-            *:"${APP_IMAGE##*:}") ;;
-            *) echo "Import and web images must use the same release tag" >&2; exit 2 ;;
-        esac
         ;;
     False) ;;
     *) echo "PHOTO_IMPORT_ENABLED must be True or False" >&2; exit 2 ;;
@@ -605,6 +606,24 @@ compose_with_requested_runtime_profiles() {
 }
 
 compose_reconcile_requested_runtime_profiles() {
+    # Let the current bounded pass finish and release its advisory lock. Never
+    # let Compose's default stop timeout turn accepted payment/email work into
+    # a forced termination. A slow drain fails this release with the owner alive.
+    for commerce_container in $(docker ps -aq \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=commerce-worker"); do
+        if [ "$(docker inspect --format '{{.State.Running}}' "$commerce_container")" = true ]; then
+            docker kill --signal TERM "$commerce_container" >/dev/null || return 1
+            commerce_stop_deadline=$(($(date +%s) + 1800))
+            while [ "$(docker inspect --format '{{.State.Running}}' "$commerce_container")" = true ]; do
+                if [ "$(date +%s)" -ge "$commerce_stop_deadline" ]; then
+                    echo "Commerce worker still owns accepted work; left alive to finish" >&2
+                    return 1
+                fi
+                sleep 2
+            done
+        fi
+    done
     if [ "$requested_commerce_worker_enabled" = True ]; then
         compose --profile commerce up -d --no-deps commerce-worker || return 1
     else
@@ -838,7 +857,12 @@ start_import_after_web_ready() {
     import_env_file="$1"
     compose_with_env_file "$import_env_file" --profile import run --rm --no-deps -T \
         import-worker python -m import_worker --check-ready || return 1
-    compose_with_env_file "$import_env_file" --profile import up -d --no-deps import-worker
+    compose_with_env_file "$import_env_file" --profile import up -d --no-deps import-worker || return 1
+    import_container="$(compose_with_env_file "$import_env_file" --profile import ps -q import-worker)" || return 1
+    [ -n "$import_container" ] || return 1
+    [ "$(docker inspect --format '{{.State.Running}} {{.State.Restarting}} {{.State.OOMKilled}}' "$import_container")" = 'true false false' ] || return 1
+    compose_with_env_file "$import_env_file" --profile import exec -T \
+        import-worker python -m import_worker --check-ready
 }
 
 previous_web_matches_processing_schema() (
@@ -984,7 +1008,6 @@ fi
 previous_import_enabled="False"
 previous_env_exists=0
 previous_deployed_image_exists=0
-has_successful_deployment=0
 has_established_deployment=0
 install -d -m 0755 "$DEPLOY_ROOT"
 if [ -f "$DEPLOY_ROOT/.env" ]; then
@@ -996,8 +1019,6 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     case "$previous_import_enabled" in True|False) ;; *) previous_import_enabled=False ;; esac
 fi
 if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
-    has_established_deployment=1
-    has_successful_deployment=1
     previous_deployed_image_exists=1
     previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
     cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
@@ -1041,21 +1062,23 @@ if [ "$previous_env_exists" -eq 1 ]; then
         selected_container="$(compose ps -q "$selected_slot")"
     fi
     [ -n "$selected_container" ] || fail "Selected Django container is absent"
-    selected_image="$(docker inspect --format '{{.Config.Image}}' "$selected_container")" || \
+    selected_image="$(docker inspect --format '{{.Image}}' "$selected_container")" || \
         fail "Selected Django image is unavailable"
-    if [ "$RECOVER_FORWARD" = False ]; then
-        previous_image="$(sed -n 's/^APP_IMAGE=//p' "$previous_env_tmp" | head -n 1)"
-        [ "$selected_image" = "$previous_image" ] || fail "Selected Django image is uncommitted; explicit forward recovery required"
-        if [ "$previous_deployed_image_exists" -eq 1 ]; then
-            [ "$selected_image" = "$(cat "$previous_deployed_image_tmp")" ] || \
-                fail "Selected Django image differs from successful release; explicit forward recovery required"
-        fi
-    fi
+    python3 - "$previous_env_tmp" "$selected_image" <<'PY_PIN_PREVIOUS'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_text('\n'.join(
+    f'APP_IMAGE={sys.argv[2]}' if line.startswith('APP_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_PREVIOUS
     # Any workers left by an interrupted reload still own accepted requests.
     web_slot drain || fail "Previous edge handoff remains undrained"
     # Old import images do not handle TERM gracefully. Refuse their replacement
     # before migrations or web selection; first activation needs an idle/disabled
     # import cutover or a separately approved worker upgrade.
+    if [ "$DEPLOY_IMPORT" = true ]; then
     for import_container in $(docker ps -q \
         --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
         --filter "label=com.docker.compose.service=import-worker"); do
@@ -1063,6 +1086,17 @@ if [ "$previous_env_exists" -eq 1 ]; then
             'from import_worker.runner import Runner; assert hasattr(Runner, "request_stop")' || \
             fail "Existing import worker cannot drain accepted work; explicit first-activation import cutover required"
     done
+    fi
+    if [ "$DEPLOY_COMMERCE" = true ]; then
+        for commerce_container in $(docker ps -q \
+            --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+            --filter "label=com.docker.compose.service=commerce-worker"); do
+            run_private_candidate_command docker exec "$commerce_container" python manage.py \
+                shell --no-imports -c \
+                'from commerce.management.commands.run_commerce_worker import Command; assert getattr(Command, "supports_graceful_stop", False)' || \
+                fail "Existing Commerce worker cannot drain accepted work; explicit first-activation Commerce cutover required"
+        done
+    fi
 fi
 
 ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}web,web-next,$PUBLIC_DOMAIN"
@@ -1075,6 +1109,8 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
 {
     printf 'APP_IMAGE=%s\n' "$requested_image"
     printf 'IMPORT_WORKER_IMAGE=%s\n' "${IMPORT_WORKER_IMAGE:-}"
+    printf 'DEPLOY_IMPORT=%s\n' "$DEPLOY_IMPORT"
+    printf 'DEPLOY_COMMERCE=%s\n' "$DEPLOY_COMMERCE"
     printf 'PHOTO_IMPORT_ENABLED=%s\n' "$requested_import_enabled"
     printf 'PHOTO_IMPORT_WORKER_TOKEN=%s\n' "${PHOTO_IMPORT_WORKER_TOKEN:-}"
     printf 'PHOTO_IMPORT_BUILD=%s\n' "${PHOTO_IMPORT_BUILD:-}"
@@ -1171,12 +1207,75 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     fi
 fi
 
-if ! compose_with_env_file "$requested_env_tmp" pull web; then
+if [ "$DEPLOY_WEB" = true ] && ! compose_with_env_file "$requested_env_tmp" pull web; then
     fail "Candidate application image pull failed"
 fi
+if [ "$DEPLOY_WEB" = true ]; then
+    requested_image="$(docker image inspect --format '{{.Id}}' "$requested_image")" || fail "Pulled application image identity unavailable"
+    [ -n "$requested_image" ] || fail "Pulled application image identity unavailable"
+    python3 - "$requested_env_tmp" "$requested_image" <<'PY_PIN_IMAGE'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+image = sys.argv[2]
+path.write_text('\n'.join(
+    f'APP_IMAGE={image}' if line.startswith('APP_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_IMAGE
+    APP_IMAGE="$requested_image"
+    export APP_IMAGE
+fi
 
-if [ "$requested_import_enabled" = True ]; then
-    compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
+if [ "$DEPLOY_IMPORT" = true ] && [ "$requested_import_enabled" = True ]; then
+    if [ "$RECOVER_FORWARD" = False ]; then
+        compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
+    fi
+    IMPORT_WORKER_IMAGE="$(docker image inspect --format '{{.Id}}' "$IMPORT_WORKER_IMAGE")" || fail "Selected import image identity unavailable"
+    [ -n "$IMPORT_WORKER_IMAGE" ] || fail "Selected import image identity unavailable"
+    export IMPORT_WORKER_IMAGE
+    python3 - "$requested_env_tmp" "$IMPORT_WORKER_IMAGE" <<'PY_PIN_IMPORT'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_text('\n'.join(
+    f'IMPORT_WORKER_IMAGE={sys.argv[2]}' if line.startswith('IMPORT_WORKER_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_IMPORT
+fi
+
+if [ "$DEPLOY_WEB" = false ]; then
+    [ -n "$selected_slot" ] || fail "Import activation requires an established Django deployment"
+    # Import has its own compatible HTTP contract; it does not perform Django
+    # release setup or change the selected edge. Retain the serving configuration.
+    python3 - "$previous_env_tmp" "$requested_env_tmp" <<'PY_IMPORT_ENV'
+from pathlib import Path
+import sys
+previous, requested = map(Path, sys.argv[1:])
+updates = {
+    line.partition('=')[0]: line
+    for line in requested.read_text().splitlines()
+    if line.partition('=')[0] in {
+        'IMPORT_WORKER_IMAGE', 'PHOTO_IMPORT_ENABLED', 'PHOTO_IMPORT_WORKER_TOKEN', 'PHOTO_IMPORT_BUILD'
+    }
+}
+lines = []
+for line in previous.read_text().splitlines():
+    name = line.partition('=')[0]
+    lines.append(updates.pop(name, line))
+requested.write_text('\n'.join([*lines, *updates.values()]) + '\n')
+PY_IMPORT_ENV
+    phase worker-health
+    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker drain failed"
+    if [ "$requested_import_enabled" = True ]; then
+        start_import_after_web_ready "$requested_env_tmp" || fail "Import API protocol readiness failed"
+    fi
+    mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
+    requested_env_tmp=""
+    phase commit
+    deployment_committed=1
+    exit 0
 fi
 
 if [ "$RECOVER_FORWARD" = True ]; then
@@ -1230,7 +1329,7 @@ else:
     print("gallery-private-media-preflight-ok")
 '
 phase private-media-preflight
-if [ "$has_successful_deployment" -eq 0 ]; then
+if [ -z "$selected_slot" ]; then
     echo "gallery-private-media-preflight-skipped:no-existing-deployment"
 else
     if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
@@ -1449,15 +1548,20 @@ web_slot drain || fail "Predecessor requests did not drain; selected traffic ret
 
 # Only now reconcile the other application processes; photo-worker pools remain
 # under their independent release authority.
-workers_reconciled=1
 phase worker-health
-compose_reconcile_requested_runtime_profiles || fail "Application worker reconciliation failed"
-stop_import_before_web_change "$previous_import_enabled" || fail "Import worker stop failed"
-if [ "$requested_import_enabled" = True ]; then
-    start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
+if [ "$DEPLOY_COMMERCE" = true ]; then
+    workers_reconciled=1
+    compose_reconcile_requested_runtime_profiles || fail "Application worker reconciliation failed"
+fi
+if [ "$DEPLOY_IMPORT" = true ]; then
+    workers_reconciled=1
+    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker stop failed"
+    if [ "$requested_import_enabled" = True ]; then
+        start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
+    fi
 fi
 
-if [ "$requested_commerce_worker_enabled" = True ]; then
+if [ "$DEPLOY_COMMERCE" = true ] && [ "$requested_commerce_worker_enabled" = True ]; then
     commerce_worker_attempt=1
     max_commerce_worker_attempts=6
     commerce_worker_wait_seconds=5

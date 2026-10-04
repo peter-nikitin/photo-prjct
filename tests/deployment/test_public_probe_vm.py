@@ -337,6 +337,7 @@ def test_public_reconcile_bootstraps_only_exact_main_push_with_pinned_transport(
 
     ssh.write_text(
         "#!/bin/sh\n"
+        'printf "OBSERVABILITY_STAGE=snapshot reason=unsafe_file_3\\n" >&2\n'
         'printf "OBSERVABILITY_FOUNDATION=failed reason=host_command_failed\\n" >&2\n'
         'printf "sensitive remote output must remain hidden\\n" >&2\n'
         "exit 1\n"
@@ -346,6 +347,7 @@ def test_public_reconcile_bootstraps_only_exact_main_push_with_pinned_transport(
         ["sh", str(PACKAGE / "run-remote.sh")], env=env, text=True, capture_output=True
     )
     assert failed.returncode == 2
+    assert "OBSERVABILITY_STAGE=snapshot reason=unsafe_file_3" in failed.stderr
     assert "OBSERVABILITY_FOUNDATION=failed reason=host_command_failed" in failed.stderr
     assert "PUBLIC_PROBE_DEPLOY=error code=action_failed" in failed.stderr
     assert "sensitive remote output" not in failed.stderr

@@ -230,6 +230,24 @@ def test_host_rollback_restores_saved_bytes_modes_and_prior_units(tmp_path, monk
     ]
 
 
+def test_reconciliation_reports_safe_snapshot_stage_without_file_contents(
+    tmp_path, monkeypatch, capsys
+):
+    module = host_module()
+    monkeypatch.setattr(module, "STATE", tmp_path)
+    monkeypatch.setattr(module, "fetch_source", lambda *args: {})
+    managed_file = Path("/usr/local/lib/findme-prometheus/exporter.py")
+    monkeypatch.setattr(module, "managed", lambda role: ([managed_file], []))
+
+    def fail_snapshot(*args):
+        raise ValueError(f"unsafe root-owned file: {managed_file}")
+
+    monkeypatch.setattr(module, "snapshot", fail_snapshot)
+    with pytest.raises(ValueError, match="unsafe root-owned file"):
+        module.reconcile_transaction("a" * 40, {"role": "public"}, tmp_path, tmp_path)
+    assert capsys.readouterr().err.strip() == "OBSERVABILITY_STAGE=snapshot reason=unsafe_file_0"
+
+
 def test_combined_package_selects_independent_application_and_observability_paths():
     module = classifier()
     paths = [

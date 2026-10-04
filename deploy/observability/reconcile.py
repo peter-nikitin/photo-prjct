@@ -376,20 +376,40 @@ def reconcile_transaction(
     revision: str, config: dict[str, str], source: Path, repository: Path
 ) -> None:
     """Run only through the authenticated bootstrap while its host lock remains held."""
-    manifest = fetch_source(revision, config["role"], source, repository)
+    try:
+        manifest = fetch_source(revision, config["role"], source, repository)
+    except Exception as error:
+        report_stage("source", error)
+        raise
     receipt = STATE / "receipt.json"
     backup = STATE / f"backup-{revision}-{time.time_ns()}"
     backup.mkdir(mode=0o700)
     (backup / "source.json").write_text(json.dumps({"sha": revision, "manifest": manifest}))
     files, units = managed(config["role"])
-    state = snapshot(files, units, backup)
+    try:
+        state = snapshot(files, units, backup)
+    except Exception as error:
+        report_stage("snapshot", error, files)
+        raise
     try:
         apply(source, config, revision)
-    except Exception:
+    except Exception as error:
+        report_stage("apply", error)
         restore(state, backup)
         raise
     receipt.write_text(json.dumps({"sha": revision, "manifest": manifest, "backup": str(backup)}))
     print(f"OBSERVABILITY_HOST_SHA={revision} status=green backup={backup}")
+
+
+def report_stage(stage: str, error: Exception, files: list[Path] | None = None) -> None:
+    """Expose only fixed stage/type markers, never remote command output or file contents."""
+    reason = type(error).__name__
+    if stage == "snapshot" and files is not None:
+        for index, path in enumerate(files):
+            if isinstance(error, ValueError) and str(error) == f"unsafe root-owned file: {path}":
+                reason = f"unsafe_file_{index}"
+                break
+    print(f"OBSERVABILITY_STAGE={stage} reason={reason}", file=sys.stderr)
 
 
 def reconcile(revision: str) -> None:

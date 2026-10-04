@@ -134,7 +134,7 @@ if [ ! -e "$helper" ] && [ ! -L "$helper" ]; then
     sudo -n python3 - public "$release" "$helper_hash"
 fi
 sudo -n "$helper" "$release"' <"$scratch/bootstrap.py" >"$output" 2>&1 || {
-        LC_ALL=C grep -E '^(OBSERVABILITY_FOUNDATION=(installed|existing|failed reason=[A-Za-z_]+)|OBSERVABILITY_HOST=failed reason=[A-Za-z_]+)$' "$output" >&2 || true
+        LC_ALL=C grep -E '^(OBSERVABILITY_FOUNDATION=(installed|existing|failed reason=[A-Za-z_]+)|OBSERVABILITY_STAGE=(source|snapshot|apply) reason=[A-Za-z0-9_]+|OBSERVABILITY_HOST=failed reason=[A-Za-z_]+)$' "$output" >&2 || true
         fail action_failed
     }
     LC_ALL=C grep -E '^OBSERVABILITY_HOST_SHA=[0-9a-f]{40} status=(green|unchanged)' "$output"

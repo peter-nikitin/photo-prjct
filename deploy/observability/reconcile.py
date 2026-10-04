@@ -59,9 +59,16 @@ def run(*args: str) -> str:
     ).stdout.strip()
 
 
-def root_owned(path: Path) -> None:
+def root_owned(path: Path, *, allow_root_group_write: bool = False) -> None:
     details = path.lstat()
-    if not stat.S_ISREG(details.st_mode) or details.st_uid != 0 or details.st_mode & 0o022:
+    group_write = bool(details.st_mode & 0o020)
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or details.st_uid != 0
+        or details.st_mode & 0o002
+        or group_write
+        and not (allow_root_group_write and details.st_gid == 0)
+    ):
         raise ValueError(f"unsafe root-owned file: {path}")
 
 
@@ -291,7 +298,8 @@ def install_selfie(helper: Path) -> None:
 
 def apply(source: Path, config: dict[str, str], revision: str) -> None:
     role = config["role"]
-    root_owned(Path("/usr/bin/unified_agent"))
+    # The pinned Yandex Debian package installs this root:root executable as 0775.
+    root_owned(Path("/usr/bin/unified_agent"), allow_root_group_write=True)
     run("/usr/bin/unified_agent", "--svnrevision")
     if role == "canonical":
         run(

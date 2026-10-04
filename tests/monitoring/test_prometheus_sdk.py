@@ -27,15 +27,35 @@ class DashboardTransportTests(unittest.TestCase):
         package = self.control.render(self.control.load_config())
         self.validate_dashboard(package)
 
+    def test_grouped_dashboard_survives_real_sdk_readback_defaults(self):
+        import json
+
+        from google.protobuf.json_format import MessageToDict, ParseDict
+        from yandex.cloud.monitoring.v3.dashboard_pb2 import Dashboard
+
+        desired = json.loads(self.control.render(self.control.load_config())["dashboard.json"])
+        received = MessageToDict(ParseDict(desired, Dashboard()))
+        assert all(received.get(key) == value for key, value in desired.items())
+        cfg = self.control.load_config()
+        received.update(id=cfg["dashboard_id"], folderId=cfg["folder_id"], etag="3")
+        transport = SimpleNamespace(
+            dashboard_get=lambda _dashboard_id: received,
+            request=lambda *_args: {"absent": True},
+        )
+        with patch.object(self.control, "preflight"):
+            self.assertTrue(self.control.check(cfg, transport)["dashboard_matches"])
+            received["widgets"][0]["group"]["title"] = "changed remotely"
+            self.assertFalse(self.control.check(cfg, transport)["dashboard_matches"])
+
     def test_cyrillic_target_name_rejected_before_promtool(self):
         import json
         from subprocess import CompletedProcess
 
         package = self.control.render(self.control.load_config())
         dashboard = json.loads(package["dashboard.json"])
-        dashboard["widgets"][0]["multiSourceChart"]["targets"][0]["prometheusTarget"]["name"] = (
-            "Свободно"
-        )
+        dashboard["widgets"][0]["group"]["widgets"][0]["multiSourceChart"]["targets"][0][
+            "prometheusTarget"
+        ]["name"] = "Свободно"
         package["dashboard.json"] = json.dumps(dashboard)
         with (
             TemporaryDirectory() as directory,
@@ -138,7 +158,25 @@ class DashboardTransportTests(unittest.TestCase):
                     ]
                 mutate(changed)
                 package = {
-                    "dashboard.json": json.dumps({"widgets": [{"multiSourceChart": changed}]})
+                    "dashboard.json": json.dumps(
+                        {
+                            "widgets": [
+                                {
+                                    "group": {
+                                        "id": "group",
+                                        "title": "Test",
+                                        "widgets": [
+                                            {
+                                                "id": changed.get("id"),
+                                                "position": {"w": "12", "h": "8"},
+                                                "multiSourceChart": changed,
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    )
                 }
                 with (
                     TemporaryDirectory() as directory,

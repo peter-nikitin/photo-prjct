@@ -64,7 +64,7 @@ Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 SOURCES
 
 apt-get update --error-on=any
-DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl docker.io docker-compose-v2
+DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl docker.io docker-compose-v2 git python3-yaml
 systemctl enable --now docker
 
 curl --fail --silent --show-error --connect-timeout 10 --max-time 120 \

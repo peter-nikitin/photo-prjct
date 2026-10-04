@@ -47,13 +47,141 @@ def config(control):
     return value
 
 
+def dashboard_charts(dashboard):
+    return [child for widget in dashboard["widgets"] for child in widget["group"]["widgets"]]
+
+
+def test_dashboard_groups_keep_chart_identity_and_nested_query_validation(
+    control, tmp_path, monkeypatch
+):
+    package = control.render(control.load_config())
+    dashboard = json.loads(package["dashboard.json"])
+    assert [widget["group"]["title"] for widget in dashboard["widgets"]] == [
+        "Public site",
+        "Django/API",
+        "Canonical VM",
+        "Commerce",
+        "Photo processing/workers",
+        "CDN",
+        "Image origin + VM",
+        "imgproxy",
+    ]
+    charts = dashboard_charts(dashboard)
+    assert len(charts) == 48
+    assert len({chart["multiSourceChart"]["id"] for chart in charts}) == len(charts)
+    assert all(chart.get("id") and chart.get("position") for chart in charts)
+    assert all(
+        chart["multiSourceChart"]["title"].startswith(dashboard["widgets"][index]["group"]["title"])
+        for index, widget in enumerate(dashboard["widgets"])
+        for chart in widget["group"]["widgets"]
+    )
+    django = dashboard["widgets"][1]["group"]["widgets"]
+    rates = next(
+        chart["multiSourceChart"]
+        for chart in django
+        if "запросы и 5xx" in chart["multiSourceChart"]["title"]
+    )
+    assert len(rates["targets"]) == 2
+    assert [target["prometheusTarget"]["name"] for target in rates["targets"]] == [
+        "Requests",
+        "Errors",
+    ]
+    assert all(
+        'route!~"processing_.*"' in target["prometheusTarget"]["query"]
+        for target in rates["targets"]
+    )
+    diagnostic = next(
+        chart["multiSourceChart"]
+        for chart in django
+        if "internal-control 5xx" in chart["multiSourceChart"]["title"]
+    )
+    assert 'route=~"processing_.*"' in diagnostic["targets"][0]["prometheusTarget"]["query"]
+    assert django[-1]["multiSourceChart"] == diagnostic
+    latency = next(
+        chart["multiSourceChart"]
+        for chart in django
+        if "задержка p50" in chart["multiSourceChart"]["title"]
+    )
+    assert all(
+        'route!~"processing_.*"' in target["prometheusTarget"]["query"]
+        for target in latency["targets"]
+    )
+    canonical = dashboard["widgets"][2]["group"]["widgets"]
+    assert "health 2xx" in canonical[0]["multiSourceChart"]["title"]
+    health_query = canonical[0]["multiSourceChart"]["targets"][0]["prometheusTarget"]["query"]
+    assert 'route="health"' in health_query and 'status_class="2xx"' in health_query
+    commerce = dashboard["widgets"][3]["group"]["widgets"]
+    assert "возраст очереди" in commerce[0]["multiSourceChart"]["title"]
+    assert "freshness" in commerce[1]["multiSourceChart"]["title"]
+    commerce_query = commerce[1]["multiSourceChart"]["targets"][0]["prometheusTarget"]["query"]
+    assert "time() - timestamp(commerce_worker_alive" in commerce_query
+    worker_titles = [
+        chart["multiSourceChart"]["title"] for chart in dashboard["widgets"][4]["group"]["widgets"]
+    ]
+    assert any("utilization" in title for title in worker_titles)
+    assert any("node diagnostics" in title for title in worker_titles)
+    by_title = {chart["multiSourceChart"]["title"]: chart["multiSourceChart"] for chart in charts}
+    shares = by_title["Image origin + VM — Image origin — доля 5xx и 429, %"]
+    share_queries = [target["prometheusTarget"]["query"] for target in shares["targets"]]
+    assert 'status_class="5xx"' in share_queries[0]
+    assert "origin_image_origin_limited_total" in share_queries[1]
+    assert all("origin_image_origin_responses_total" in query for query in share_queries)
+    errors = by_title["imgproxy — ошибки/с"]["targets"][0]["prometheusTarget"]["query"]
+    assert "imgproxy_errors_total" in errors
+    freshness = by_title["Photo processing/workers — Worker — возраст источников, с"]
+    assert len(freshness["targets"]) == 3
+    assert all(
+        "time() - worker_pool_" in t["prometheusTarget"]["query"] for t in freshness["targets"]
+    )
+    utilization = by_title["Photo processing/workers — node CPU utilization, %"]
+    assert (
+        utilization["targets"][0]["prometheusTarget"]["query"]
+        == "100 * worker_host_cpu_utilization"
+    )
+    node = by_title["Photo processing/workers — node diagnostics, 1 = доступно"]
+    assert [target["prometheusTarget"]["query"] for target in node["targets"]] == [
+        "worker_host_collection_available",
+        "worker_runtime_scrape_available",
+    ]
+    assert not any("vector(0)" in query for query in (health_query, commerce_query))
+    bad = json.loads(package["dashboard.json"])
+    bad["widgets"][0]["group"]["widgets"][0]["multiSourceChart"]["targets"][0]["prometheusTarget"][
+        "name"
+    ] = "Недопустимо"
+    package["dashboard.json"] = json.dumps(bad)
+    with pytest.raises(control.ControlError, match="target name"):
+        control._validate_dashboard(package, control.load_config())
+
+    good = control.render(control.load_config())
+    monkeypatch.setattr(
+        control.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0)
+    )
+    control.validate_dashboard_queries(good, tmp_path, "promtool")
+    rules = yaml.safe_load((tmp_path / "dashboard-query-rules.yml").read_text())
+    actual = {rule["expr"] for group in rules["groups"] for rule in group["rules"]}
+    expected = {
+        target["prometheusTarget"]["query"]
+        for chart in dashboard_charts(json.loads(good["dashboard.json"]))
+        for target in chart["multiSourceChart"]["targets"]
+        if "prometheusTarget" in target
+    }
+    assert actual == expected
+
+
 def test_offline_render_has_missing_observations_separate(control):
     package = control.render(control.load_config())
-    assert "max_over_time(findme_probe_success" in package["rules.yml"]
-    assert "[10m]) < 0.5" in package["rules.yml"]
+    assert "last_over_time(findme_probe_success" in package["rules.yml"]
+    assert "[6m]) < 0.5" in package["rules.yml"]
+    rendered = yaml.safe_load(package["rules.yml"])
+    outage = next(
+        rule
+        for rule in rendered["groups"][0]["rules"]
+        if rule.get("alert") == "PublicServiceUnavailable"
+    )
+    assert outage["for"] == "10m"
     assert "absent_over_time" in package["rules.yml"]
     assert "increase(findme_http_requests_total" in package["rules.yml"]
-    assert len(json.loads(package["dashboard.json"])["widgets"]) == 41
+    assert len(dashboard_charts(json.loads(package["dashboard.json"]))) == 48
 
 
 def test_worker_profile_is_git_enabled_and_explicit_disabled_profile_omits_workers(control):
@@ -72,7 +200,6 @@ def test_worker_profile_is_git_enabled_and_explicit_disabled_profile_omits_worke
         "WorkerCloudObservationMissing",
         "WorkerNativePublisherMissing",
         "WorkerHostDiagnosticsMissing",
-        "WorkerRuntimeDiagnosticsMissing",
     ]
 
     disabled_cfg = {**cfg, "worker_alerts_enabled": False}
@@ -103,11 +230,18 @@ def test_image_origin_rules_and_charts_are_scoped_and_can_be_withheld(control):
     assert 'job="findme-imgproxy"' in package["rules.yml"]
     assert 'job="findme-image-linux"' in package["rules.yml"]
     dashboard = json.loads(package["dashboard.json"])
-    assert len(dashboard["widgets"]) == 41
+    assert len(dashboard_charts(dashboard)) == 48
     queries = [
         target["monitoringTarget"]["query"]
-        for widget in dashboard["widgets"][27:]
+        for widget in dashboard_charts(dashboard)
+        if widget
+        in (
+            dashboard["widgets"][5]["group"]["widgets"]
+            + dashboard["widgets"][6]["group"]["widgets"]
+            + dashboard["widgets"][7]["group"]["widgets"]
+        )
         for target in widget["multiSourceChart"]["targets"]
+        if "monitoringTarget" in target
     ]
     assert all('folderId="b1g2qttgfhb4gdunvlge"' in query for query in queries)
     assert all(
@@ -177,7 +311,7 @@ def test_validate_package_checks_actual_dashboard_queries_and_behavior_fixtures(
     dashboard = json.loads(control.render(control.load_config())["dashboard.json"])
     rendered = {
         target["prometheusTarget"]["query"]
-        for widget in dashboard["widgets"]
+        for widget in dashboard_charts(dashboard)
         for target in widget["multiSourceChart"]["targets"]
         if "prometheusTarget" in target
     }
@@ -202,10 +336,55 @@ def test_rendered_project_receiver_delivers_email_and_telegram_recovery(control)
         {"channel_names": ["operator-email", "operator-telegram"], "send_resolved": True}
     ]
     assert routing["route"]["routes"] == [
-        {"receiver": "findme-operator", "matchers": ['project="findme-photo"']}
+        {
+            "receiver": "findme-operator",
+            "matchers": ['project="findme-photo"', 'notification="actionable"'],
+        }
     ]
     unmatched = next(item for item in routing["receivers"] if item["name"] == "unmatched")
     assert unmatched["yandex_monitoring_configs"] == [{"channel_names": []}]
+
+
+def test_only_measured_sustained_service_impact_routes_to_operator(control):
+    rules = yaml.safe_load(control.render(control.load_config())["rules.yml"])["groups"]
+    by_name = {rule["alert"]: rule for group in rules for rule in group["rules"]}
+    actionable = {
+        "PublicServiceUnavailable",
+        "DiskSpaceCritical",
+        "Application5xxDegradation",
+        "CommerceReadyWorkOverdue",
+        "WorkerReadyWorkOverdue",
+        "ImageOrigin5xxDegradation",
+        "ImageOriginRateLimited",
+        "ImageOriginDiskSpaceCritical",
+    }
+    assert {
+        name for name, rule in by_name.items() if rule["labels"].get("notification") == "actionable"
+    } == actionable
+    assert all(rule.get("for") for name, rule in by_name.items() if name not in actionable)
+    assert "WorkerRuntimeDiagnosticsMissing" not in by_name
+
+
+def test_customer_5xx_excludes_worker_control_routes(control):
+    cfg = control.load_config()
+    rule = next(
+        rule
+        for group in yaml.safe_load(control.render(cfg)["rules.yml"])["groups"]
+        for rule in group["rules"]
+        if rule["alert"] == "Application5xxDegradation"
+    )
+    assert 'route!~"processing_.*"' in rule["expr"]
+    assert rule["for"] == "5m"
+
+
+def test_worker_impact_requires_fresh_queue_and_capacity(control):
+    rules = yaml.safe_load(control.render(control.load_config())["rules.yml"])["groups"]
+    worker = next(group for group in rules if group["name"] == "findme-workers")
+    impact = next(rule for rule in worker["rules"] if rule["alert"] == "WorkerReadyWorkOverdue")
+    assert "worker_pool_queue_observation_available == 1" in impact["expr"]
+    assert "worker_pool_cloud_observation_timestamp_seconds" in impact["expr"]
+    assert "worker_pool_oldest_claimable_age_seconds > 300" in impact["expr"]
+    assert impact["for"] == "5m"
 
 
 def test_activation_rejects_missing_foundation(control):
@@ -290,6 +469,19 @@ def test_image_origin_activation_requires_fresh_workspace_samples(control):
 
     with pytest.raises(control.ControlError, match="expected sample missing: image_2xx"):
         control.preflight(cfg, MissingImageTransport(control, cfg), now=1000)
+
+
+def test_image_origin_preflight_allows_bounded_ingestion_lag(control):
+    cfg = config(control)
+    cfg["image_origin_alerts_enabled"] = True
+    transport = FakeTransport(control, cfg)
+    control.preflight(cfg, transport, now=1000)
+    queries = [
+        parse_qs(urlsplit(path).query)["query"][0]
+        for method, path, _body in transport.events
+        if method == "GET" and path.startswith("/api/v1/query?")
+    ]
+    assert control.image_selectors()["image_cpu_useful"] + "[180s]" in queries
 
 
 def test_apply_preflights_routes_then_owned_rules_and_preserves_dashboard(control, tmp_path):
@@ -667,7 +859,10 @@ def test_cli_missing_workspace_never_attempts_identity(control, capsys, monkeypa
 def test_http_absent_5xx_coalesces_only_when_total_exists(control):
     cfg = config(control)
     expression = control.expressions(cfg)["http_errors"]
-    assert "or (0 * sum(increase(findme_http_requests_total[5m])))" in expression
+    assert (
+        'or (0 * sum(increase(findme_http_requests_total{route!~"processing_.*"}[5m])))'
+        in expression
+    )
 
 
 @pytest.mark.parametrize("labels", [{}, {"job": "private-http"}])
@@ -705,6 +900,52 @@ def test_owned_rule_404_is_absence_but_other_http_errors_fail_closed(control, mo
     ]
     with pytest.raises(control.ControlError) as error:
         transport.request("PUT", "/extensions/v1/rules", {"content": "anything"})
+    assert "secret-never-print" not in str(error.value)
+
+
+def test_monitoring_get_retries_bounded_timeout_without_repeating_put(control, monkeypatch):
+    transport = control.CloudTransport.__new__(control.CloudTransport)
+    transport.config = config(control)
+    transport.token = "secret-never-print"
+    attempts = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"files": []}'
+
+    def timed_out_once(request, timeout):
+        attempts.append(request.get_method())
+        if len(attempts) == 1:
+            raise TimeoutError("secret-never-print")
+        return Response()
+
+    monkeypatch.setattr(control, "urlopen", timed_out_once)
+    monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
+    assert transport.request("GET", "/extensions/v1/rules") == {"files": []}
+    assert attempts == ["GET", "GET"]
+
+    attempts.clear()
+    with pytest.raises(control.ControlError) as error:
+        transport.request("PUT", "/extensions/v1/rules", {"content": "anything"})
+    assert attempts == ["PUT"]
+    assert "secret-never-print" not in str(error.value)
+
+    attempts.clear()
+
+    def always_timeout(request, timeout):
+        attempts.append(request.get_method())
+        raise TimeoutError("secret-never-print")
+
+    monkeypatch.setattr(control, "urlopen", always_timeout)
+    with pytest.raises(control.ControlError) as error:
+        transport.request("GET", "/extensions/v1/rules")
+    assert attempts == ["GET", "GET", "GET"]
     assert "secret-never-print" not in str(error.value)
 
 
@@ -956,18 +1197,23 @@ def test_diagnostic_charts_use_verified_gauges_and_scoped_counter_rates(control)
         DIAGNOSTIC_IO, ("disk_read", "disk_write", "network_rx", "network_tx"), strict=True
     ):
         assert expressions[key] == f"rate({selectors[metric]}[5m])"
-    widgets = json.loads(control.render(cfg)["dashboard.json"])["widgets"]
-    charts = [widget["multiSourceChart"] for widget in widgets[14:19]]
+    widgets = dashboard_charts(json.loads(control.render(cfg)["dashboard.json"]))
+    charts = [
+        widget["multiSourceChart"]
+        for widget in widgets
+        if widget["multiSourceChart"]["title"]
+        in {
+            "Canonical VM — Swap — свободно и всего, ГиБ",
+            "Canonical VM — Диск / — свободные inode, %",
+            "Canonical VM — Диск vda — чтение и запись, байт/с",
+            "Canonical VM — Сеть eth0 — приём и передача, байт/с",
+            "Canonical VM — Unified Agent — очередь отправки, сообщений",
+        }
+    ]
     assert [len(chart["targets"]) for chart in charts] == [2, 1, 2, 2, 1]
     for chart in (charts[0], charts[2], charts[3]):
         assert chart["displayLegend"] is True
-    assert [widget["position"] for widget in widgets[14:19]] == [
-        {"y": "56", "w": "12", "h": "8"},
-        {"x": "12", "y": "56", "w": "12", "h": "8"},
-        {"y": "64", "w": "12", "h": "8"},
-        {"x": "12", "y": "64", "w": "12", "h": "8"},
-        {"y": "72", "w": "12", "h": "8"},
-    ]
+    assert all(widget["position"]["w"] == "12" for widget in widgets)
     native = charts[4]["targets"][0]["monitoringTarget"]
     assert (
         native["query"] == '"ua.backlog"{folderId="b1g2qttgfhb4gdunvlge",service="custom",'
@@ -1029,33 +1275,52 @@ def test_missing_or_nonfinite_diagnostic_rate_blocks_apply(control, tmp_path, ke
 
 def test_render_resolves_histogram_quantile_placeholders_with_numeric_names(control):
     dashboard = json.loads(control.render(config(control))["dashboard.json"])
-    targets = dashboard["widgets"][9]["multiSourceChart"]["targets"]
+    targets = next(
+        chart["multiSourceChart"]["targets"]
+        for chart in dashboard_charts(dashboard)
+        if chart["multiSourceChart"]["title"] == "Django/API — HTTP — задержка p50 и p95, секунды"
+    )
     queries = [target["prometheusTarget"]["query"] for target in targets]
     assert queries == [
         f"histogram_quantile({quantile}, sum by (le) "
-        "(rate(findme_http_request_duration_seconds_bucket[5m])))"
+        '(rate(findme_http_request_duration_seconds_bucket{route!~"processing_.*"}[5m])))'
         for quantile in ("0.50", "0.95")
     ]
 
 
 def test_worker_dashboard_keeps_baseline_and_gates_fresh_pool_and_runtime_sources(control):
     dashboard = json.loads(control.render(config(control))["dashboard.json"])
-    assert len(dashboard["widgets"]) == 41
+    assert len(dashboard_charts(dashboard)) == 48
     worker = {
         widget["multiSourceChart"]["title"]: widget["multiSourceChart"]
-        for widget in dashboard["widgets"][19:27]
+        for widget in dashboard_charts(dashboard)
+        if widget["multiSourceChart"]["title"]
+        in {
+            "Photo processing/workers — Worker — доступные задачи",
+            "Photo processing/workers — Worker — возраст старейшей доступной задачи, с",
+            "Photo processing/workers — Worker — нагрузка очереди",
+            "Photo processing/workers — Worker — работающие VM",
+            "Photo processing/workers — Worker — завершённые операции/мин",
+            "Photo processing/workers — Worker — длительность операций p50/p95, с",
+            "Photo processing/workers — Worker — распределение длительности операций/мин",
+            "Photo processing/workers — Фото с принятым превью/мин",
+        }
     }
     assert list(worker) == [
-        "Worker — доступные задачи",
-        "Worker — возраст старейшей доступной задачи, с",
-        "Worker — нагрузка очереди",
-        "Worker — работающие VM",
-        "Worker — завершённые операции/мин",
-        "Worker — длительность операций p50/p95, с",
-        "Worker — распределение длительности операций/мин",
-        "Фото с принятым превью/мин",
+        "Photo processing/workers — Worker — возраст старейшей доступной задачи, с",
+        "Photo processing/workers — Worker — доступные задачи",
+        "Photo processing/workers — Worker — нагрузка очереди",
+        "Photo processing/workers — Worker — завершённые операции/мин",
+        "Photo processing/workers — Фото с принятым превью/мин",
+        "Photo processing/workers — Worker — работающие VM",
+        "Photo processing/workers — Worker — длительность операций p50/p95, с",
+        "Photo processing/workers — Worker — распределение длительности операций/мин",
     ]
-    for title in list(worker)[:3]:
+    for title in (
+        "Photo processing/workers — Worker — доступные задачи",
+        "Photo processing/workers — Worker — возраст старейшей доступной задачи, с",
+        "Photo processing/workers — Worker — нагрузка очереди",
+    ):
         chart = worker[title]
         assert chart["displayLegend"] is True
         query = chart["targets"][0]["prometheusTarget"]["query"]
@@ -1064,14 +1329,14 @@ def test_worker_dashboard_keeps_baseline_and_gates_fresh_pool_and_runtime_source
         assert "worker_pool_native_publisher_success_timestamp_seconds" not in query
         assert "time()" in query
         assert "vector(0)" not in query
-    capacity = worker["Worker — работающие VM"]
+    capacity = worker["Photo processing/workers — Worker — работающие VM"]
     capacity_query = capacity["targets"][0]["prometheusTarget"]["query"]
     assert capacity["displayLegend"] is True
     assert "worker_pool_cloud_observation_timestamp_seconds" in capacity_query
     assert "worker_pool_queue_observation_timestamp_seconds" not in capacity_query
     assert "worker_pool_native_publisher_success_timestamp_seconds" not in capacity_query
 
-    throughput = worker["Worker — завершённые операции/мин"]
+    throughput = worker["Photo processing/workers — Worker — завершённые операции/мин"]
     assert throughput["displayLegend"] is True
     assert throughput["description"] == (
         "Терминальные выполнения runtime по kind/outcome; callback_delivered не означает "
@@ -1089,7 +1354,7 @@ def test_worker_dashboard_keeps_baseline_and_gates_fresh_pool_and_runtime_source
     ) in throughput_query
     assert "vector(0)" not in throughput_query
 
-    duration = worker["Worker — длительность операций p50/p95, с"]
+    duration = worker["Photo processing/workers — Worker — длительность операций p50/p95, с"]
     duration_queries = [target["prometheusTarget"]["query"] for target in duration["targets"]]
     assert [target["prometheusTarget"]["name"] for target in duration["targets"]] == [
         "P50",
@@ -1101,7 +1366,7 @@ def test_worker_dashboard_keeps_baseline_and_gates_fresh_pool_and_runtime_source
     ]
     assert all("sum by (pool, kind, outcome, le)" in query for query in duration_queries)
 
-    buckets = worker["Worker — распределение длительности операций/мин"]
+    buckets = worker["Photo processing/workers — Worker — распределение длительности операций/мин"]
     bucket_queries = [target["prometheusTarget"]["query"] for target in buckets["targets"]]
     assert [target["prometheusTarget"]["name"] for target in buckets["targets"]] == [
         "Le1",
@@ -1120,7 +1385,7 @@ def test_worker_dashboard_keeps_baseline_and_gates_fresh_pool_and_runtime_source
     assert buckets["visualizationSettings"]["type"] == "VISUALIZATION_TYPE_COLUMN"
     assert buckets["description"].startswith("Непересекающиеся фактические интервалы: ≤1")
 
-    accepted = worker["Фото с принятым превью/мин"]
+    accepted = worker["Photo processing/workers — Фото с принятым превью/мин"]
     accepted_query = accepted["targets"][0]["prometheusTarget"]["query"]
     assert "rate(findme_accepted_previews_total[5m]) * 60" in accepted_query
     assert "timestamp(findme_accepted_previews_total)" in accepted_query

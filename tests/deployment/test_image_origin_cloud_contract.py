@@ -748,7 +748,7 @@ def _bootstrap_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
         'grep -q "https://security.ubuntu.com/ubuntu" "$FAKE_APT_SOURCES_AT_UPDATE"; '
         '[ "${FAKE_APT_UPDATE_FAIL:-0}" = 0 ] || '
         '[ "$*" = update ];; '
-        '"install -y ca-certificates curl docker.io docker-compose-v2") '
+        '"install -y ca-certificates curl docker.io docker-compose-v2 git python3-yaml") '
         ': >"$FAKE_APT_MARKER";; *) exit 1;; esac',
     )
     executable(

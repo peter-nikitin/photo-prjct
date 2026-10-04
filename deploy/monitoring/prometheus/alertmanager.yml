@@ -3,7 +3,7 @@ global:
 route:
   receiver: unmatched
   group_by:
-  - alertname
+  - incident
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
@@ -11,6 +11,7 @@ route:
   - receiver: findme-operator
     matchers:
     - project="findme-photo"
+    - notification="actionable"
 receivers:
 - name: unmatched
   yandex_monitoring_configs:

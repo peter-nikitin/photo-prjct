@@ -71,6 +71,8 @@ place, and add the new record to this index.
 | 0049 | [Retire local photo-worker recovery after remote acceptance](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md) | Accepted |
 | 0050 | [Decouple processing jobs and attempts from worker builds](0050-decouple-processing-queue-from-worker-builds.md) | Accepted |
 | 0051 | [Release photo-worker images independently](0051-release-photo-worker-images-independently.md) | Accepted |
+| 0052 | [Notify only on actionable service degradation](0052-notify-only-on-actionable-service-degradation.md) | Accepted |
+| 0053 | [Reconcile observability independently on main](0053-reconcile-observability-independently-on-main.md) | Accepted |
 | 0054 | [Retire SFace and fix the AdaFace vector dimension](0054-retire-sface-and-fix-adaface-vector-dimension.md) | Accepted |
 
 ## Public selfie-search outcome
@@ -82,9 +84,8 @@ embedding, cleanup-before-publication, stable bearer result, and paid-result-onl
 ADR 0020 supersedes only the inline-Django transport for already authorized gallery and result
 media; its direct Object Storage delivery is accepted but not yet implementation evidence. Lifecycle
 mutation, real-storage preflight, exact rollout-image model smoke, staging capacity evidence, and
-feature activation remain rollout work rather than completed decision evidence. The existing worker
-image already packages pinned public OpenCV Zoo YuNet/SFace files; it is not a new worker or a
-future private-model delivery mechanism.
+feature activation remain rollout work rather than completed decision evidence. The worker model packaging has since moved to pinned SCRFD/AdaFace under
+[ADR 0054](0054-retire-sface-and-fix-adaface-vector-dimension.md).
 
 [ADR 0021](0021-allow-original-download-for-authorized-photos.md) supersedes only ADR 0019 and
 ADR 0020's attachment-download exclusions. It accepts attachment delivery wherever those existing

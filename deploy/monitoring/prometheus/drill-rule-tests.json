@@ -1,11 +1,67 @@
 {
   "checks": [
-    {"at": "2m", "firing": {}},
-    {"at": "6m", "firing": {"WorkerReadyWorkOverdue": ["bulk", "selfie"]}},
-    {"at": "11m", "firing": {"WorkerReadyWorkOverdue": ["bulk", "selfie"], "WorkerPoolSaturated": ["bulk", "selfie"]}},
-    {"at": "15m", "firing": {"WorkerQueueObservationMissing": ["bulk"], "WorkerCloudObservationMissing": ["bulk"], "WorkerNativePublisherMissing": ["bulk"], "WorkerHostDiagnosticsMissing": ["selfie"], "WorkerRuntimeDiagnosticsMissing": ["selfie"]}},
-    {"at": "19m", "firing": {"WorkerQueueObservationMissing": ["selfie"], "WorkerCloudObservationMissing": ["selfie"], "WorkerNativePublisherMissing": ["selfie"], "WorkerHostDiagnosticsMissing": ["bulk"], "WorkerRuntimeDiagnosticsMissing": ["bulk"]}},
-    {"at": "24m", "firing": {}},
-    {"at": "33m", "firing": {}}
+    {
+      "at": "2m",
+      "firing": {}
+    },
+    {
+      "at": "6m",
+      "firing": {}
+    },
+    {
+      "at": "11m",
+      "firing": {
+        "WorkerReadyWorkOverdue": [
+          "bulk",
+          "selfie"
+        ],
+        "WorkerPoolSaturated": [
+          "bulk",
+          "selfie"
+        ]
+      }
+    },
+    {
+      "at": "19m",
+      "firing": {
+        "WorkerQueueObservationMissing": [
+          "bulk"
+        ],
+        "WorkerCloudObservationMissing": [
+          "bulk"
+        ],
+        "WorkerNativePublisherMissing": [
+          "bulk"
+        ],
+        "WorkerHostDiagnosticsMissing": [
+          "selfie"
+        ]
+      }
+    },
+    {
+      "at": "27m",
+      "firing": {
+        "WorkerQueueObservationMissing": [
+          "selfie"
+        ],
+        "WorkerCloudObservationMissing": [
+          "selfie"
+        ],
+        "WorkerNativePublisherMissing": [
+          "selfie"
+        ],
+        "WorkerHostDiagnosticsMissing": [
+          "bulk"
+        ]
+      }
+    },
+    {
+      "at": "34m",
+      "firing": {}
+    },
+    {
+      "at": "41m",
+      "firing": {}
+    }
   ]
 }

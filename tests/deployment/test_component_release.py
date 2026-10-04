@@ -91,7 +91,7 @@ def test_forward_dispatch_classification_forces_web_only_and_rejects_other_modes
             (True, True, False),
         ),
         (["deploy/apply-deployment.sh"], (True, False, False)),
-        ([".github/workflows/deploy.yml"], (True, True, True)),
+        ([".github/workflows/deploy.yml"], (False, False, False)),
         (["tests/deployment/test_component_release.py"], (False, False, False)),
         (["scripts/run-with-environment-secrets.py"], (True, False, False)),
         (["src/worker/tests/test_runtime.py"], (False, False, False)),

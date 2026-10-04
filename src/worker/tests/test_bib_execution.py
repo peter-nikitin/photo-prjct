@@ -226,12 +226,12 @@ def test_image_smoke_exercises_current_adaface_consumers(tmp_path, monkeypatch):
     calls = []
 
     def photo(path, **kwargs):
-        model = kwargs.get("model", "sface")
+        model = kwargs.get("model")
         calls.append(("photo", model))
         return SimpleNamespace(model=model, faces=(), warnings=("no_faces_detected",))
 
     def selfie(path, **kwargs):
-        calls.append(("selfie", kwargs.get("model", "sface")))
+        calls.append(("selfie", kwargs.get("model")))
         raise FaceEmbeddingError("no_face_detected")
 
     monkeypatch.setattr(model_smoke, "extract_face_embeddings", photo)

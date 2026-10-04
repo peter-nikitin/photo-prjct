@@ -369,6 +369,7 @@ commands = {
     'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
     'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
     'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
+    'reconcile-observability': 'exec sudo -n /usr/local/sbin/findme-observability-reconcile "$RELEASE_SHA"',
     'configure-monitoring': 'exec sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"',
     'verify-deployed-image': r'''set -eu
 test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"
@@ -558,7 +559,7 @@ mode=$1
 remote_deployment_values="$REMOTE_DEPLOYMENT_VALUES"
 
 case "$mode" in
-    deploy|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|public-monitor|remote-preflight|stage-paused-observability-release) ;;
+    reconcile-observability|deploy|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|public-monitor|remote-preflight|stage-paused-observability-release) ;;
     *) fail arguments unknown_operation ;;
 esac
 
@@ -636,6 +637,13 @@ case "$mode" in
         if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" SELFIE_FEEDBACK_ENABLED SELFIE_FEEDBACK_S3_BUCKET SELFIE_FEEDBACK_KMS_KEY_ID >"$command_output" 2>&1; then
             fail environment materialization_failed
         fi
+        ;;
+    reconcile-observability)
+        case "$RELEASE_SHA" in ''|*[!0-9a-f]*) fail input invalid_release_sha ;; esac
+        [ "${#RELEASE_SHA}" -eq 40 ] || fail input invalid_release_sha
+        [ "$(git rev-parse HEAD)" = "$RELEASE_SHA" ] || fail input checkout_sha_mismatch
+        remote_environment=$temporary_root/remote.env
+        write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" RELEASE_SHA
         ;;
     configure-monitoring)
         run_quietly copy copy_failed scp -r -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" deploy "$remote_target:/opt/photo-prjct/"

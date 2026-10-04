@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -27,6 +27,7 @@ API = "https://monitoring.api.cloud.yandex.net"
 PROMETHEUS_VERSION = "3.5.0"
 WORKER_POOLS = ("bulk", "selfie")
 WORKER_SOURCE_MAX_AGE = 90
+IMAGE_SOURCE_MAX_AGE = 180
 WORKER_POOL_METRICS = {
     "queue_available": "worker_pool_queue_observation_available",
     "queue_timestamp": "worker_pool_queue_observation_timestamp_seconds",
@@ -112,6 +113,16 @@ def selectors(config: dict[str, Any]) -> dict[str, str]:
     }
     requests = config["metrics"]["http_requests"]
     result["http_5xx"] = selector(requests["name"], {**requests["labels"], "status_class": "5xx"})
+    # All processing_* routes are private worker-control endpoints.
+    for key, selected in (
+        ("http_customer", result["http_requests"]),
+        ("http_customer_5xx", result["http_5xx"]),
+    ):
+        result[key] = (
+            selected[:-1] + ',route!~"processing_.*"}'
+            if selected.endswith("}")
+            else selected + '{route!~"processing_.*"}'
+        )
     return result
 
 
@@ -134,9 +145,10 @@ def expressions(config: dict[str, Any]) -> dict[str, str]:
             f"100 * rate({s['cpu_useful']}[5m]) / "
             f"(rate({s['cpu_useful']}[5m]) + rate({s['cpu_idle']}[5m]))"
         ),
-        "http_total": f"sum(increase({s['http_requests']}[5m]))",
+        "http_total": f"sum(increase({s['http_customer']}[5m]))",
         "http_errors": (
-            f"(sum(increase({s['http_5xx']}[5m])) or (0 * sum(increase({s['http_requests']}[5m]))))"
+            f"(sum(increase({s['http_customer_5xx']}[5m])) or "
+            f"(0 * sum(increase({s['http_customer']}[5m]))))"
         ),
         "commerce": f"max_over_time({s['commerce_alive']}[5m])",
         "commerce_window_age": f"max_over_time({s['commerce_age']}[5m])",
@@ -225,10 +237,19 @@ def render(config: dict[str, Any]) -> dict[str, str]:
         "image_cdn_resource": config["image_cdn_resource"],
         "disk_gib": f"{s['disk_free']} / 1073741824",
         "uptime_seconds": f"{s['uptime']} / 1000",
-        "http_rate": f"sum(rate({s['http_requests']}[5m]))",
-        "http_error_rate": f"sum(rate({s['http_5xx']}[5m]))",
-        "http_p50": f"histogram_quantile(0.50, sum by (le) (rate({histogram}[5m])))",
-        "http_p95": f"histogram_quantile(0.95, sum by (le) (rate({histogram}[5m])))",
+        "http_rate": f"sum(rate({s['http_customer']}[5m]))",
+        "http_error_rate": f"sum(rate({s['http_customer_5xx']}[5m]))",
+        "http_internal_error_rate": (
+            'sum(rate(findme_http_requests_total{status_class="5xx",route=~"processing_.*"}[5m]))'
+        ),
+        "http_p50": (
+            "histogram_quantile(0.50, sum by (le) "
+            f'(rate({histogram}{{route!~"processing_.*"}}[5m])))'
+        ),
+        "http_p95": (
+            "histogram_quantile(0.95, sum by (le) "
+            f'(rate({histogram}{{route!~"processing_.*"}}[5m])))'
+        ),
         "worker_pool_universe": (
             'label_replace(vector(1), "pool", "bulk", "", "") or '
             'label_replace(vector(1), "pool", "selfie", "", "")'
@@ -550,9 +571,9 @@ def preflight(config: dict[str, Any], transport: Any, *, now: float | None = Non
         ):
             _fresh_matrix(
                 transport,
-                f"{image_s[key]}[120s]",
+                f"{image_s[key]}[{IMAGE_SOURCE_MAX_AGE}s]",
                 key=key,
-                max_age=120,
+                max_age=IMAGE_SOURCE_MAX_AGE,
                 now=now,
             )
     if config["worker_alerts_enabled"]:
@@ -758,24 +779,34 @@ class CloudTransport:
             data=json.dumps(body).encode() if body else None,
             headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"},
         )
-        try:
-            with urlopen(request, timeout=30) as response:
-                raw = response.read()
-                return json.loads(raw) if raw else {}
-        except HTTPError as error:
-            if (
-                error.code == 404
-                and method == "GET"
-                and path
-                in {
-                    "/extensions/v1/rules/" + OWNED_RULES,
-                    "/extensions/v1/rules/findme-worker-activation-drill.yml",
-                }
-            ):
-                return {"content": "", "absent": True}
-            raise ControlError(f"Monitoring {method} failed (HTTP {error.code})") from None
-        except Exception:
-            raise ControlError(f"Monitoring {method} failed") from None
+        for attempt in range(3 if method == "GET" else 1):
+            try:
+                with urlopen(request, timeout=30) as response:
+                    raw = response.read()
+                    return json.loads(raw) if raw else {}
+            except HTTPError as error:
+                if (
+                    error.code == 404
+                    and method == "GET"
+                    and path
+                    in {
+                        "/extensions/v1/rules/" + OWNED_RULES,
+                        "/extensions/v1/rules/findme-worker-activation-drill.yml",
+                    }
+                ):
+                    return {"content": "", "absent": True}
+                raise ControlError(f"Monitoring {method} failed (HTTP {error.code})") from None
+            except (TimeoutError, URLError) as error:
+                timed_out = isinstance(error, TimeoutError) or isinstance(
+                    error.reason, TimeoutError
+                )
+                if timed_out and method == "GET" and attempt < 2:
+                    time.sleep(1)
+                    continue
+                raise ControlError(f"Monitoring {method} failed") from None
+            except Exception:
+                raise ControlError(f"Monitoring {method} failed") from None
+        raise AssertionError("unreachable Monitoring request retry state")
 
     def wait_rules_evaluation(
         self, name: str, *, expected: dict[str, list[str]], earliest: float
@@ -849,10 +880,31 @@ def identity(mode: str, oidc_path: Path | None = None) -> str:
         ) from None
 
 
+def _dashboard_charts(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
+    charts = []
+    group_ids = set()
+    chart_ids = set()
+    for widget in dashboard["widgets"]:
+        group = widget.get("group")
+        if not group or not group.get("id") or not group.get("title"):
+            raise ControlError("dashboard group invalid")
+        if group["id"] in group_ids:
+            raise ControlError("dashboard group identity duplicated")
+        group_ids.add(group["id"])
+        for child in group.get("widgets", []):
+            chart = child.get("multiSourceChart")
+            if not child.get("id") or not child.get("position") or not chart:
+                raise ControlError("dashboard child chart invalid")
+            if child["id"] in chart_ids or child["id"] != chart.get("id"):
+                raise ControlError("dashboard chart identity invalid")
+            chart_ids.add(child["id"])
+            charts.append(chart)
+    return charts
+
+
 def _validate_dashboard(package: dict[str, str], config: dict[str, Any]) -> None:
     dashboard = json.loads(package["dashboard.json"])
-    for widget in dashboard["widgets"]:
-        chart = widget["multiSourceChart"]
+    for chart in _dashboard_charts(dashboard):
         sources = {}
         for item in chart["dataSources"]:
             kinds = [kind for kind in ("prometheus", "monitoring") if kind + "DataSource" in item]
@@ -891,8 +943,8 @@ def validate_dashboard_queries(package: dict[str, str], output: Path, promtool: 
 
     dashboard = json.loads(package["dashboard.json"])
     queries: list[tuple[str, str]] = []
-    for widget in dashboard["widgets"]:
-        for item in widget["multiSourceChart"]["targets"]:
+    for chart in _dashboard_charts(dashboard):
+        for item in chart["targets"]:
             if "prometheusTarget" in item:
                 target = item["prometheusTarget"]
                 queries.append((target["name"], target["query"]))

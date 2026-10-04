@@ -4,12 +4,30 @@
       "name": "worker cap saturation is sustained",
       "interval": "1m",
       "input_series": [
-        {"series": "worker_pool_queue_observation_available{pool=\"selfie\"}", "values": "1+0x10"},
-        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0+60x10"},
-        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0+60x10"},
-        {"series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"selfie\"}", "values": "0+60x10"},
-        {"series": "worker_pool_running_instances{pool=\"selfie\"}", "values": "1+0x10"},
-        {"series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}", "values": "301+60x10"}
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"selfie\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_running_instances{pool=\"selfie\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}",
+          "values": "301+60x10"
+        }
       ],
       "alert_rule_test": [
         {
@@ -17,8 +35,14 @@
           "alertname": "WorkerPoolSaturated",
           "exp_alerts": [
             {
-              "exp_labels": {"pool": "selfie", "project": "findme-photo", "severity": "critical"},
-              "exp_annotations": {"summary": "A cap-one worker pool has sustained growing ready-work age."}
+              "exp_labels": {
+                "pool": "selfie",
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "A cap-one worker pool has sustained growing ready-work age."
+              }
             }
           ]
         },
@@ -27,8 +51,16 @@
           "alertname": "WorkerReadyWorkOverdue",
           "exp_alerts": [
             {
-              "exp_labels": {"pool": "selfie", "project": "findme-photo", "severity": "warning"},
-              "exp_annotations": {"summary": "Worker-ready work is older than three hundred seconds."}
+              "exp_labels": {
+                "pool": "selfie",
+                "project": "findme-photo",
+                "severity": "warning",
+                "notification": "actionable",
+                "incident": "photo-processing"
+              },
+              "exp_annotations": {
+                "summary": "Worker-ready work is older than three hundred seconds."
+              }
             }
           ]
         }
@@ -38,53 +70,121 @@
       "name": "worker below-cap backlog is not saturation",
       "interval": "1m",
       "input_series": [
-        {"series": "worker_pool_queue_observation_available{pool=\"bulk\"}", "values": "1+0x10"},
-        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}", "values": "0+60x10"},
-        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"bulk\"}", "values": "0+60x10"},
-        {"series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"bulk\"}", "values": "0+60x10"},
-        {"series": "worker_pool_running_instances{pool=\"bulk\"}", "values": "0+0x10"},
-        {"series": "worker_pool_oldest_claimable_age_seconds{pool=\"bulk\"}", "values": "301+60x10"}
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"bulk\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_running_instances{pool=\"bulk\"}",
+          "values": "0+0x10"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"bulk\"}",
+          "values": "301+60x10"
+        }
       ],
       "alert_rule_test": [
-        {"eval_time": "7m", "alertname": "WorkerPoolSaturated", "exp_alerts": []}
+        {
+          "eval_time": "7m",
+          "alertname": "WorkerPoolSaturated",
+          "exp_alerts": []
+        }
       ]
     },
     {
       "name": "worker age reset between evaluations breaks saturation persistence",
       "interval": "30s",
       "input_series": [
-        {"series": "worker_pool_queue_observation_available{pool=\"selfie\"}", "values": "1+0x14"},
-        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0+30x14"},
-        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0+30x14"},
-        {"series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"selfie\"}", "values": "0+30x14"},
-        {"series": "worker_pool_running_instances{pool=\"selfie\"}", "values": "1+0x14"},
-        {"series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}", "values": "301 331 361 391 421 351 381 411 441 471 501 531 561 591 621"}
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"selfie\"}",
+          "values": "1+0x14"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+30x14"
+        },
+        {
+          "series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+30x14"
+        },
+        {
+          "series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+30x14"
+        },
+        {
+          "series": "worker_pool_running_instances{pool=\"selfie\"}",
+          "values": "1+0x14"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}",
+          "values": "301 331 361 391 421 351 381 411 441 471 501 531 561 591 621"
+        }
       ],
       "alert_rule_test": [
-        {"eval_time": "6m", "alertname": "WorkerPoolSaturated", "exp_alerts": []}
+        {
+          "eval_time": "6m",
+          "alertname": "WorkerPoolSaturated",
+          "exp_alerts": []
+        }
       ]
     },
     {
       "name": "worker stale and future queue sources are missing",
       "interval": "1m",
       "input_series": [
-        {"series": "worker_pool_queue_observation_available{pool=\"bulk\"}", "values": "1+0x5"},
-        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}", "values": "0+0x5"},
-        {"series": "worker_pool_queue_observation_available{pool=\"selfie\"}", "values": "1+0x5"},
-        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}", "values": "600+0x5"}
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"bulk\"}",
+          "values": "1+0x5"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+0x5"
+        },
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"selfie\"}",
+          "values": "1+0x5"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "600+0x5"
+        }
       ],
       "alert_rule_test": [
         {
-          "eval_time": "3m",
+          "eval_time": "7m",
           "alertname": "WorkerQueueObservationMissing",
           "exp_alerts": [
             {
-              "exp_labels": {"pool": "bulk", "project": "findme-photo", "severity": "critical"},
-              "exp_annotations": {"summary": "Worker queue observations are missing, unavailable or stale."}
+              "exp_labels": {
+                "pool": "bulk",
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Worker queue observations are missing, unavailable or stale."
+              }
             },
             {
-              "exp_labels": {"pool": "selfie", "project": "findme-photo", "severity": "critical"},
-              "exp_annotations": {"summary": "Worker queue observations are missing, unavailable or stale."}
+              "exp_labels": {
+                "pool": "selfie",
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Worker queue observations are missing, unavailable or stale."
+              }
             }
           ]
         }
@@ -94,22 +194,50 @@
       "name": "worker queue unavailable between evaluations breaks saturation persistence",
       "interval": "30s",
       "input_series": [
-        {"series": "worker_pool_queue_observation_available{pool=\"selfie\"}", "values": "1 1 1 1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1"},
-        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0 30 60 90 120 120 180 210 240 270 300 330 360 390 420 450 480 510 540"},
-        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0+30x18"},
-        {"series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"selfie\"}", "values": "0+30x18"},
-        {"series": "worker_pool_running_instances{pool=\"selfie\"}", "values": "1+0x18"},
-        {"series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}", "values": "301 331 361 391 421 stale 481 511 541 571 601 631 661 691 721 751 781 811 841"}
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"selfie\"}",
+          "values": "1 1 1 1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0 30 60 90 120 120 180 210 240 270 300 330 360 390 420 450 480 510 540"
+        },
+        {
+          "series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+30x18"
+        },
+        {
+          "series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+30x18"
+        },
+        {
+          "series": "worker_pool_running_instances{pool=\"selfie\"}",
+          "values": "1+0x18"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}",
+          "values": "301 331 361 391 421 stale 481 511 541 571 601 631 661 691 721 751 781 811 841"
+        }
       ],
       "alert_rule_test": [
-        {"eval_time": "6m", "alertname": "WorkerPoolSaturated", "exp_alerts": []},
+        {
+          "eval_time": "6m",
+          "alertname": "WorkerPoolSaturated",
+          "exp_alerts": []
+        },
         {
           "eval_time": "9m",
           "alertname": "WorkerPoolSaturated",
           "exp_alerts": [
             {
-              "exp_labels": {"pool": "selfie", "project": "findme-photo", "severity": "critical"},
-              "exp_annotations": {"summary": "A cap-one worker pool has sustained growing ready-work age."}
+              "exp_labels": {
+                "pool": "selfie",
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "A cap-one worker pool has sustained growing ready-work age."
+              }
             }
           ]
         }
@@ -121,16 +249,28 @@
       "input_series": [],
       "alert_rule_test": [
         {
-          "eval_time": "3m",
+          "eval_time": "6m",
           "alertname": "WorkerQueueObservationMissing",
           "exp_alerts": [
             {
-              "exp_labels": {"pool": "bulk", "project": "findme-photo", "severity": "critical"},
-              "exp_annotations": {"summary": "Worker queue observations are missing, unavailable or stale."}
+              "exp_labels": {
+                "pool": "bulk",
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Worker queue observations are missing, unavailable or stale."
+              }
             },
             {
-              "exp_labels": {"pool": "selfie", "project": "findme-photo", "severity": "critical"},
-              "exp_annotations": {"summary": "Worker queue observations are missing, unavailable or stale."}
+              "exp_labels": {
+                "pool": "selfie",
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Worker queue observations are missing, unavailable or stale."
+              }
             }
           ]
         }
@@ -140,46 +280,213 @@
       "name": "idle bulk zero needs no node diagnostics",
       "interval": "1m",
       "input_series": [
-        {"series": "worker_pool_queue_observation_available{pool=\"bulk\"}", "values": "1+0x5"},
-        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}", "values": "0+60x5"},
-        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"bulk\"}", "values": "0+60x5"},
-        {"series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"bulk\"}", "values": "0+60x5"},
-        {"series": "worker_pool_running_instances{pool=\"bulk\"}", "values": "0+0x5"},
-        {"series": "worker_pool_expected_instances{pool=\"bulk\"}", "values": "0+0x5"},
-        {"series": "worker_pool_oldest_claimable_age_seconds{pool=\"bulk\"}", "values": "0+0x5"}
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"bulk\"}",
+          "values": "1+0x5"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x5"
+        },
+        {
+          "series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x5"
+        },
+        {
+          "series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x5"
+        },
+        {
+          "series": "worker_pool_running_instances{pool=\"bulk\"}",
+          "values": "0+0x5"
+        },
+        {
+          "series": "worker_pool_expected_instances{pool=\"bulk\"}",
+          "values": "0+0x5"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"bulk\"}",
+          "values": "0+0x5"
+        }
       ],
       "alert_rule_test": [
-        {"eval_time": "3m", "alertname": "WorkerPoolSaturated", "exp_alerts": []},
-        {"eval_time": "3m", "alertname": "WorkerHostDiagnosticsMissing", "exp_alerts": []},
-        {"eval_time": "3m", "alertname": "WorkerRuntimeDiagnosticsMissing", "exp_alerts": []}
+        {
+          "eval_time": "3m",
+          "alertname": "WorkerPoolSaturated",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "3m",
+          "alertname": "WorkerHostDiagnosticsMissing",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "3m",
+          "alertname": "WorkerRuntimeDiagnosticsMissing",
+          "exp_alerts": []
+        }
       ]
     },
     {
       "name": "worker missing publisher breaks saturation",
       "interval": "1m",
       "input_series": [
-        {"series": "worker_pool_queue_observation_available{pool=\"selfie\"}", "values": "1+0x10"},
-        {"series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0+60x10"},
-        {"series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}", "values": "0+60x10"},
-        {"series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"selfie\"}", "values": "0+0x10"},
-        {"series": "worker_pool_running_instances{pool=\"selfie\"}", "values": "1+0x10"},
-        {"series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}", "values": "301+60x10"}
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"selfie\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_native_publisher_success_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+0x10"
+        },
+        {
+          "series": "worker_pool_running_instances{pool=\"selfie\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"selfie\"}",
+          "values": "301+60x10"
+        }
       ],
       "alert_rule_test": [
-        {"eval_time": "7m", "alertname": "WorkerPoolSaturated", "exp_alerts": []},
+        {
+          "eval_time": "7m",
+          "alertname": "WorkerPoolSaturated",
+          "exp_alerts": []
+        },
         {
           "eval_time": "7m",
           "alertname": "WorkerNativePublisherMissing",
           "exp_alerts": [
             {
-              "exp_labels": {"pool": "selfie", "project": "findme-photo", "severity": "critical"},
-              "exp_annotations": {"summary": "Native worker metric publication is missing or stale."}
+              "exp_labels": {
+                "pool": "selfie",
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Native worker metric publication is missing or stale."
+              }
             },
             {
-              "exp_labels": {"pool": "bulk", "project": "findme-photo", "severity": "critical"},
-              "exp_annotations": {"summary": "Native worker metric publication is missing or stale."}
+              "exp_labels": {
+                "pool": "bulk",
+                "project": "findme-photo",
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "Native worker metric publication is missing or stale."
+              }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "worker busy pool without overdue work has no impact",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"bulk\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_running_instances{pool=\"bulk\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"bulk\"}",
+          "values": "0+0x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "7m",
+          "alertname": "WorkerReadyWorkOverdue",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "worker overdue impact is unknown when capacity source is stale",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"bulk\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+60x10"
+        },
+        {
+          "series": "worker_pool_cloud_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0+0x10"
+        },
+        {
+          "series": "worker_pool_running_instances{pool=\"bulk\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_oldest_claimable_age_seconds{pool=\"bulk\"}",
+          "values": "301+60x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "7m",
+          "alertname": "WorkerReadyWorkOverdue",
+          "exp_alerts": []
+        }
+      ]
+    },
+    {
+      "name": "short worker source gap stays diagnostic pending",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"bulk\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"bulk\"}",
+          "values": "0 60 120 120 120 300+60x5"
+        },
+        {
+          "series": "worker_pool_queue_observation_available{pool=\"selfie\"}",
+          "values": "1+0x10"
+        },
+        {
+          "series": "worker_pool_queue_observation_timestamp_seconds{pool=\"selfie\"}",
+          "values": "0+60x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "4m",
+          "alertname": "WorkerQueueObservationMissing",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "7m",
+          "alertname": "WorkerQueueObservationMissing",
+          "exp_alerts": []
         }
       ]
     }

@@ -319,6 +319,14 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 
 ## Accepted constraints
 
+- [ADR 0052](adr/0052-notify-only-on-actionable-service-degradation.md) limits operator
+  notifications to sustained, measured service degradation or imminent actionable capacity loss.
+  Missing telemetry remains diagnostic state, not an observed outage. [ADR 0053](adr/0053-reconcile-observability-independently-on-main.md)
+  requires observability-only changes to reconcile automatically from the merged `main` revision
+  without deploying Django or workers or waiting for a manual command. Both decisions are accepted
+  but their rule, route and deployment changes are not yet implemented; the current Monitoring
+  workflow still requires a manual dispatch and environment review.
+
 - [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) requires worker
   Instance Groups and their manager's Compute authority to reside in a dedicated folder in the
   existing cloud. The new worker subnet extends the existing VPC; canonical resources stay in

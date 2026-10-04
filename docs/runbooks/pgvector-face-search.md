@@ -68,7 +68,7 @@ run the physical command on the VM using the actual active image revision:
 ```sh
 web_container="$(compose ps -q web)"
 active_image="$(sudo docker inspect --format '{{.Config.Image}}' "$web_container")"
-test "$active_image" = "$(cat deployed-image)"
+test "$active_image" = "$(sudo cat deployed-image)"
 active_revision="$(sudo docker image inspect --format \
   '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$active_image")"
 compose exec -T web python manage.py retire_json_face_embeddings \

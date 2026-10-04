@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -30,8 +31,42 @@ CONFIGURATION = {
 CANONICAL = {**CONFIGURATION, "role": "canonical", "instance_id": "epdr5g3p24tdns9890nr"}
 
 
+class BootstrapError(RuntimeError):
+    """A fixed, safe failure code for the privileged bootstrap boundary."""
+
+
 def command(*args: str) -> bytes:
-    return subprocess.run(args, check=True, capture_output=True, timeout=180).stdout
+    return subprocess.run(
+        args,
+        check=True,
+        capture_output=True,
+        timeout=180,
+        env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+    ).stdout
+
+
+def host_dependencies() -> list[str]:
+    missing = []
+    if shutil.which("git") is None:
+        missing.append("git")
+    try:
+        command("/usr/bin/python3", "-c", "import yaml")
+    except (OSError, subprocess.SubprocessError):
+        missing.append("python3-yaml")
+    return missing
+
+
+def ensure_host_dependencies() -> None:
+    missing = host_dependencies()
+    if not missing:
+        return
+    try:
+        command("apt-get", "update", "--error-on=any")
+        command("apt-get", "install", "-y", *missing)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise BootstrapError("dependency_install_failed") from error
+    if host_dependencies():
+        raise BootstrapError("dependency_unavailable")
 
 
 def safe(path: Path, mode: int, directory: bool = False) -> None:
@@ -150,17 +185,24 @@ def bootstrap(revision: str, digest: str, root: Path = Path("/"), role: str = "p
         json.loads(targets[1].read_text()) != configuration or targets[2].read_bytes() != sudoers
     ):
         raise ValueError("existing foundation mismatch")
+    ensure_host_dependencies()
     with tempfile.TemporaryDirectory(prefix="findme-observability-bootstrap-") as scratch:
         directory = Path(scratch)
-        content = authenticate(
-            revision, directory, targets[0].read_bytes() if all(present) else None
-        )
+        try:
+            content = authenticate(
+                revision, directory, targets[0].read_bytes() if all(present) else None
+            )
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise BootstrapError("source_authentication_failed") from error
         if hashlib.sha256(content).hexdigest() != digest:
             raise ValueError("source checksum mismatch")
         fragment = directory / "sudoers"
         fragment.write_bytes(sudoers)
         fragment.chmod(0o440)
-        validate_sudoers(fragment)
+        try:
+            validate_sudoers(fragment)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise BootstrapError("sudoers_validation_failed") from error
         if all(present):
             return "existing"
         installed: list[Path] = []
@@ -185,6 +227,14 @@ if __name__ == "__main__":
     try:
         result = bootstrap(sys.argv[2], sys.argv[3], role=sys.argv[1])
         print(f"OBSERVABILITY_FOUNDATION={result}")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        print("OBSERVABILITY_FOUNDATION=failed", file=sys.stderr)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        if isinstance(error, BootstrapError):
+            reason = str(error)
+        elif isinstance(error, FileNotFoundError):
+            reason = "missing_host_command"
+        elif isinstance(error, subprocess.SubprocessError):
+            reason = "host_command_failed"
+        else:
+            reason = type(error).__name__
+        print(f"OBSERVABILITY_FOUNDATION=failed reason={reason}", file=sys.stderr)
         raise SystemExit(1) from None

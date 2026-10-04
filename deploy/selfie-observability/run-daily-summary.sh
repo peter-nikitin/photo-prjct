@@ -35,6 +35,7 @@ journalctl \
     --until "$window_end" \
     --output=cat \
     "CONTAINER_TAG=findme.service=web" + \
+    "CONTAINER_TAG=findme.service=web-next" + \
     "CONTAINER_TAG=findme.service=worker" + \
     "CONTAINER_TAG=findme.service=nginx" \
     > "$journal_input"

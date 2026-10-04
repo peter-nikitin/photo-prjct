@@ -107,17 +107,22 @@ def test_docker_observation_has_bound_and_uses_web(collector, monkeypatch):
 
     def execute(command, **kwargs):
         calls.append((command, kwargs))
+        if any(argument.endswith("web-slot.py") for argument in command):
+            return subprocess.CompletedProcess(command, 0, "web-next\n")
         return subprocess.CompletedProcess(
             command, 0, '{"worker_alive":false,"oldest_ready_age_seconds":0}'
         )
 
     monkeypatch.setattr(collector.subprocess, "run", execute)
     collector.observe(collector.Config("folder", "/srv/findme"))
-    command, options = calls[0]
+    selection, selection_options = calls[0]
+    command, options = calls[1]
+    assert selection[1:] == ["/srv/findme/deploy/web-slot.py", "--root", "/srv/findme", "selected"]
+    assert selection_options["timeout"] == 15
     assert command[-10:] == [
         "exec",
         "-T",
-        "web",
+        "web-next",
         "python",
         "manage.py",
         "commerce_worker_health",

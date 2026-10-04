@@ -1169,7 +1169,7 @@ def test_existing_unknown_duplicate_and_drifted_targets_are_rejected_before_muta
 
 def test_collector_cloud_fault_still_publishes_demand_but_reports_incomplete_collection(tmp_path):
     collector = module("metrics")
-    runner = Mock(side_effect=[TimeoutError("sensitive-url"), Mock()])
+    runner = Mock(side_effect=[Mock(stdout="web\n"), TimeoutError("sensitive-url"), Mock()])
     path = tmp_path / "worker-pools-observation.json"
     path.write_text(
         json.dumps(
@@ -1188,14 +1188,16 @@ def test_collector_cloud_fault_still_publishes_demand_but_reports_incomplete_col
             },
             run=runner,
         )
-    assert runner.call_count == 2
-    assert "publish_worker_pool_metrics" in runner.call_args_list[1].args[0]
-    assert runner.call_args_list[1].args[0][-2:] == ["--folder-id", "canonical-folder"]
+    assert runner.call_count == 3
+    assert "publish_worker_pool_metrics" in runner.call_args_list[2].args[0]
+    assert runner.call_args_list[2].args[0][-2:] == ["--folder-id", "canonical-folder"]
 
 
 def test_collector_publication_fault_is_not_reported_as_success(tmp_path):
     collector = module("metrics")
-    runner = Mock(side_effect=[Mock(), subprocess.CalledProcessError(1, "publish")])
+    runner = Mock(
+        side_effect=[Mock(stdout="web\n"), Mock(), subprocess.CalledProcessError(1, "publish")]
+    )
     path = tmp_path / "worker-pools-observation.json"
     path.write_text(
         json.dumps(
@@ -1208,7 +1210,7 @@ def test_collector_publication_fault_is_not_reported_as_success(tmp_path):
     )
     with pytest.raises(subprocess.CalledProcessError):
         collector.collect({"deploy_root": str(tmp_path), "cloud": str(path)}, run=runner)
-    assert runner.call_count == 2
+    assert runner.call_count == 3
 
 
 @pytest.mark.parametrize(

@@ -457,7 +457,9 @@ esac
 """,
     )
     deployment_root = tmp_path / "deployment"
-    deployment_root.mkdir()
+    (deployment_root / "deploy").mkdir(parents=True)
+    (deployment_root / "deploy/web-slot.py").write_text("slot selector fixture\n")
+    _write_executable(fake_bin / "python3", 'printf "web\\n"')
     (deployment_root / ".env").write_text("COMMERCE_ORDER_ACCESS_SIGNING_SECRET=secret\\n")
 
     result = _run(
@@ -672,6 +674,7 @@ exec "$@"
 printf 'docker %s\\n' "$*" >> "$COMMAND_LOG"
 """,
     )
+    _write_executable(fake_bin / "python3", 'printf "web\\n"')
     env = {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "CRONTAB_STATE": str(crontab_state),
@@ -713,6 +716,73 @@ printf 'docker %s\\n' "$*" >> "$COMMAND_LOG"
     )
     assert unsafe.returncode == 2
     assert "unsupported characters" in unsafe.stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("deploy/run-commerce-worker-health.sh", "commerce_worker_health"),
+        ("deploy/run-upload-cleanup.sh", "cleanup_stale_uploads"),
+        ("deploy/run-cart-cleanup.sh", "cleanup_expired_carts"),
+    ],
+)
+def test_scheduled_django_commands_use_selected_slot_when_web_is_stopped(
+    tmp_path: Path, fake_bin: Path, script: str, expected: str
+) -> None:
+    deployment = tmp_path / "deployment"
+    (deployment / "deploy").mkdir(parents=True)
+    (deployment / ".env").write_text("APP_IMAGE=test\n", encoding="utf-8")
+    (deployment / "deploy/web-slot.py").write_text("selected-slot CLI fixture\n")
+    (deployment / "deploy/nginx").mkdir()
+    (deployment / "deploy/nginx/selected-slot").write_text("web-next\n")
+    _write_executable(
+        fake_bin / "python3",
+        'case "$*" in *web-slot.py*) printf "%s\\n" "$SELECTED_SLOT" ;; *) exit 2 ;; esac',
+    )
+    _write_executable(
+        fake_bin / "docker",
+        'printf "%s\\n" "$*" >> "$COMMAND_LOG"\n'
+        'case " $* " in *" exec -T web-next "*) exit 0 ;; *) exit 3 ;; esac',
+    )
+    _write_executable(fake_bin / "flock", 'shift 4\nexec "$@"')
+    command_log = tmp_path / "commands.log"
+    result = _run(
+        script,
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "DEPLOY_ROOT": str(deployment),
+            "SELECTED_SLOT": "web-next",
+            "COMMAND_LOG": str(command_log),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = command_log.read_text(encoding="utf-8")
+    assert "exec -T web-next" in command
+    assert expected in command
+    assert "exec -T web " not in command
+
+
+def test_scheduled_django_command_fails_when_slot_selection_is_unavailable(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    deployment = tmp_path / "deployment"
+    (deployment / "deploy").mkdir(parents=True)
+    _write_executable(fake_bin / "python3", "exit 1")
+    _write_executable(fake_bin / "docker", 'printf called > "$COMMAND_LOG"')
+    _write_executable(fake_bin / "flock", 'shift 4\nexec "$@"')
+    command_log = tmp_path / "commands.log"
+    result = _run(
+        "deploy/run-cart-cleanup.sh",
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "DEPLOY_ROOT": str(deployment),
+            "COMMAND_LOG": str(command_log),
+        },
+    )
+
+    assert result.returncode != 0
+    assert not command_log.exists()
 
 
 def _apply_env(
@@ -4371,6 +4441,11 @@ def test_installed_runner_uses_managed_sibling_after_candidate_changes(
     env = _observability_install_env(tmp_path, fake_bin)
     candidate = tmp_path / "deploy/selfie-observability/summarize.py"
     candidate.write_text("print('managed-summary')\n", encoding="utf-8")
+    selector_marker = tmp_path / "deployment-selector-executed"
+    (tmp_path / "deploy/web-slot.py").write_text(
+        f"from pathlib import Path\nPath({str(selector_marker)!r}).touch()\nprint('web')\n",
+        encoding="utf-8",
+    )
 
     installed = _run("deploy/selfie-observability/root-helper.sh", env=env)
     assert installed.returncode == 0, installed.stderr
@@ -4392,6 +4467,7 @@ def test_installed_runner_uses_managed_sibling_after_candidate_changes(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "managed-summary\n"
+    assert not selector_marker.exists()
 
 
 @pytest.mark.parametrize("failed_command", ["disable", "stop"])
@@ -4507,6 +4583,7 @@ printf '{"probe_id":"00000000-0000-0000-0000-000000000001"}\n'
             ROOT / "deploy/selfie-observability/root-helper.sh",
             "verify-probe",
             "00000000-0000-0000-0000-000000000001",
+            "web-next",
         ],
         env={**os.environ, **env},
         text=True,
@@ -4516,7 +4593,7 @@ printf '{"probe_id":"00000000-0000-0000-0000-000000000001"}\n'
 
     assert (result.returncode == 0) is expected_success, result.stderr
     journal_calls = (tmp_path / "systemctl.log.probe-journal").read_text(encoding="utf-8")
-    assert "CONTAINER_TAG=findme.service=web" in journal_calls
+    assert "CONTAINER_TAG=findme.service=web-next" in journal_calls
     assert "findme.environment=" not in journal_calls
 
 
@@ -4525,6 +4602,7 @@ printf '{"probe_id":"00000000-0000-0000-0000-000000000001"}\n'
     [
         ["verify-probe", "not-a-uuid"],
         ["verify-probe", "00000000-0000-0000-0000-000000000001", "extra"],
+        ["verify-probe", "00000000-0000-0000-0000-000000000001", "web-old"],
     ],
 )
 def test_root_helper_rejects_probe_arguments_before_journal_read(
@@ -4789,6 +4867,7 @@ def test_root_helper_reads_only_the_root_owned_package() -> None:
     [
         ("ok", True),
         ("no-event", True),
+        ("selected-next", True),
         ("wrong-tag", False),
         ("unreadable-probe", False),
     ],
@@ -4819,7 +4898,10 @@ def test_observability_verifier_checks_caps_timer_driver_tags_and_probe(
         fake_bin / "docker",
         """
 case "$*" in
-  *" ps -q web") printf 'web-id\n' ;;
+  *" ps -q web")
+    [ "$VERIFY_SCENARIO" != selected-next ] && printf 'web-id\n' ;;
+  *" ps -q web-next")
+    [ "$VERIFY_SCENARIO" = selected-next ] && printf 'web-next-id\n' ;;
   *" ps -q nginx") printf 'nginx-id\n' ;;
   *" ps -q worker-bulk") printf 'worker-bulk-id\n' ;;
   *" ps -q worker-selfie") printf 'worker-selfie-id\n' ;;
@@ -4827,6 +4909,7 @@ case "$*" in
     [ "$VERIFY_SCENARIO" = wrong-tag ] && printf 'json-file|wrong\n' || \
       printf 'journald|findme.service=web\n'
     ;;
+  *"inspect "*web-next-id*) printf 'journald|findme.service=web-next\n' ;;
   *"inspect "*nginx-id*)
     printf 'journald|findme.service=nginx\n'
     ;;
@@ -4836,7 +4919,7 @@ case "$*" in
   *"inspect "*worker-selfie-id*)
     printf 'journald|findme.service=worker-selfie\n'
     ;;
-  *" exec -T web "*) printf '%s\n' "$*" > "$PROBE_COMMAND_LOG" ;;
+  *" exec -T "$SELECTED_SLOT" "*) printf '%s\n' "$*" > "$PROBE_COMMAND_LOG" ;;
 esac
 """,
     )
@@ -4855,8 +4938,12 @@ case "$*" in
 esac
 """,
     )
-    # Deterministic UUID makes the journal harness independent of secret or random output.
-    _write_executable(fake_bin / "python3", "printf '00000000-0000-0000-0000-000000000001\n'")
+    # Deterministic selection and UUID keep this host harness independent of Docker state.
+    _write_executable(
+        fake_bin / "python3",
+        'case "$*" in *web-slot.py*) printf "%s\\n" "$SELECTED_SLOT" ;; '
+        '*) printf "00000000-0000-0000-0000-000000000001\\n" ;; esac',
+    )
     _write_executable(
         fake_bin / "sudo",
         """
@@ -4864,6 +4951,7 @@ esac
 [ "${1-}" = /usr/local/sbin/findme-selfie-observability ] || exit 2
 [ "${2-}" = verify-probe ] || exit 2
 [ "${3-}" = 00000000-0000-0000-0000-000000000001 ] || exit 2
+[ "${4-}" = "$SELECTED_SLOT" ] || exit 2
 [ "$VERIFY_SCENARIO" != unreadable-probe ]
 """,
     )
@@ -4873,6 +4961,7 @@ esac
         "COMPOSE_PROJECT_NAME": "photo-prjct",
         "SELFIE_OBSERVABILITY_JOURNAL_DIR": str(tmp_path / "journal"),
         "VERIFY_SCENARIO": scenario,
+        "SELECTED_SLOT": "web-next" if scenario == "selected-next" else "web",
         "EXPECTED_PROBE_LINE": '"probe_id":"00000000-0000-0000-0000-000000000001"',
         "PROBE_COMMAND_LOG": str(tmp_path / "probe-command.log"),
     }
@@ -4883,7 +4972,8 @@ esac
     probe_command_log = tmp_path / "probe-command.log"
     if scenario != "wrong-tag":
         probe_command = probe_command_log.read_text(encoding="utf-8")
-        assert " exec -T web sh -c " in probe_command
+        selected = "web-next" if scenario == "selected-next" else "web"
+        assert f" exec -T {selected} sh -c " in probe_command
         assert "2>/proc/1/fd/2" in probe_command
     if scenario == "disabled-timer":
         assert result.stderr == "selfie summary timer is not enabled\n"

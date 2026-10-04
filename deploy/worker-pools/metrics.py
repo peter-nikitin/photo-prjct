@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -27,6 +28,22 @@ def collect(config, *, run=subprocess.run):
             raise ValueError("invalid cloud folder")
     if cloud["folder_id"] == cloud["canonical_folder_id"]:
         raise ValueError("worker and canonical folders must differ")
+    selected = run(
+        [
+            sys.executable,
+            str(root / "deploy/web-slot.py"),
+            "--root",
+            str(root),
+            "selected",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=15,
+    ).stdout.strip()
+    if selected not in {"web", "web-next"}:
+        raise ValueError("invalid selected Django slot")
     prefix = [
         "docker",
         "compose",
@@ -40,7 +57,7 @@ def collect(config, *, run=subprocess.run):
         str(root / "docker-compose.https.yml"),
         "exec",
         "-T",
-        "web",
+        selected,
         "python",
         "manage.py",
     ]

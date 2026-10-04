@@ -76,6 +76,8 @@ def test_production_commands_cannot_run_legacy_compose_identity_cutover():
 
 def test_observability_requires_web_and_nginx_only(tmp_path):
     (tmp_path / ".env").write_text("PHOTO_PROCESSING_ENABLED=True\n")
+    (tmp_path / "deploy").mkdir()
+    (tmp_path / "deploy/web-slot.py").write_text("print('web')\n")
     calls = tmp_path / "calls"
     docker = tmp_path / "docker"
     docker.write_text("""#!/bin/sh

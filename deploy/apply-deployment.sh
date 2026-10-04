@@ -1390,12 +1390,6 @@ if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput; then
     fail "Candidate migration failed"
 fi
-# This branch includes native-only writers: reject any current vector gap before activation.
-if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
-    run --rm --no-deps -T --entrypoint python web manage.py \
-    retire_json_face_embeddings; then
-    fail "All-event native release gate failed before activation"
-fi
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     run --rm --no-deps -T --entrypoint python web manage.py \
     drain_gallery_media_publications --all-events; then

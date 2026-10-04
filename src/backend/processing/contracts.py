@@ -22,13 +22,8 @@ CAPTURE_METADATA_CONTRACT = ProcessorContract(
 )
 FACE_EMBEDDING_CONTRACT = ProcessorContract(
     processor_type="face_embedding",
-    contract_version=1,
-    processor_version=1,
-)
-FACE_EMBEDDING_BENCHMARK_CONTRACT = ProcessorContract(
-    processor_type="face_embedding_benchmark",
     contract_version=3,
-    processor_version=1,
+    processor_version=5,
 )
 GENERATE_PREVIEW_CONTRACT = ProcessorContract(
     processor_type="generate_preview",
@@ -44,16 +39,6 @@ BIB_RECOGNITION_CONTRACT = ProcessorContract(
     processor_type="bib_recognition",
     contract_version=1,
     processor_version=1,
-)
-PREVIEW_FACE_EMBEDDING_CONTRACT = ProcessorContract(
-    processor_type="face_embedding",
-    contract_version=2,
-    processor_version=3,
-)
-QUALITY_FACE_EMBEDDING_CONTRACT = ProcessorContract(
-    processor_type="face_embedding",
-    contract_version=3,
-    processor_version=3,
 )
 SELFIE_QUERY_CONTRACT = ProcessorContract(
     processor_type="selfie_query",

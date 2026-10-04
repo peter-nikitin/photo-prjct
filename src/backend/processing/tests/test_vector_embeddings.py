@@ -1,6 +1,3 @@
-import hashlib
-import json
-from copy import deepcopy
 from datetime import date
 from unittest.mock import patch
 
@@ -18,6 +15,10 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
+from processing.services.face_quality import (
+    active_face_embedding_generations,
+    current_face_embedding_generation,
+)
 from processing.services.vector_embeddings import (
     persist_accepted_embedding,
     vector_values,
@@ -32,27 +33,19 @@ def detection(request):
         name="Vector", slug="vector", start_date=date.today(), end_date=date.today()
     )
     photo = Photo.objects.create(id="vector-photo", event=event, src="photo.jpg")
+    generation = (
+        active_face_embedding_generations(event)[1]
+        if getattr(request, "param", None) == "vector_only"
+        else current_face_embedding_generation()
+    )
     fields = dict(
         event=event,
-        contract_version=1,
+        contract_version=3,
         processor_type="face_embedding",
-        processor_version=1,
-        configuration={},
-        configuration_hash="a" * 64,
+        processor_version=5,
+        configuration=generation["configuration"],
+        configuration_hash=generation["configuration_hash"],
     )
-    if getattr(request, "param", None) == "vector_only":
-        from processing.services.enrollment import LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION
-
-        configuration = deepcopy(LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION)
-        configuration["embedding_storage"] = "vector_only"
-        fields.update(
-            contract_version=3,
-            processor_version=5,
-            configuration=configuration,
-            configuration_hash=hashlib.sha256(
-                json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest(),
-        )
     run = EventProcessingRun.objects.create(**fields)
     job = ProcessingJob.objects.create(**fields, run=run, photo=photo, input_fingerprint={})
     attempt = ProcessingAttempt.objects.create(
@@ -101,7 +94,7 @@ def test_vector_only_publication_rejects_non_kept_faces(detection, status):
     assert not FaceEmbeddingVector.objects.exists()
 
 
-@pytest.mark.parametrize(("model", "dimensions"), [("sface", 128), ("adaface-ir18-webface4m", 512)])
+@pytest.mark.parametrize(("model", "dimensions"), [("adaface-ir18-webface4m", 512)])
 def test_native_publication_keeps_identity_metadata_and_values(detection, model, dimensions):
     values = [1.0] + [0.0] * (dimensions - 1)
     row = persist_accepted_embedding(
@@ -160,21 +153,27 @@ def test_either_write_failure_rolls_back_both_stores(detection, store):
     ):
         with pytest.raises(IntegrityError):
             persist_accepted_embedding(
-                detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
+                detection=detection,
+                model_version="adaface-ir18-webface4m",
+                vector=[1.0] + [0.0] * 511,
+                metadata={},
             )
     assert not FaceEmbeddingVector.objects.exists()
 
 
 def test_detection_is_unique_and_terminal_vector_is_immutable(detection):
     persist_accepted_embedding(
-        detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
+        detection=detection,
+        model_version="adaface-ir18-webface4m",
+        vector=[1.0] + [0.0] * 511,
+        metadata={},
     )
     row = FaceEmbeddingVector.objects.get(detection=detection)
     with pytest.raises(IntegrityError), transaction.atomic():
         FaceEmbeddingVector.objects.create(
-            detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127
+            detection=detection, model_version="adaface-ir18-webface4m", vector=[1.0] + [0.0] * 511
         )
-    row.vector = [0.0, 1.0] + [0.0] * 126
+    row.vector = [0.0, 1.0] + [0.0] * 510
     with pytest.raises(ValidationError):
         row.save()
 
@@ -192,11 +191,14 @@ def test_database_constraints_protect_bulk_writes(detection, model, values):
 
 def test_database_blocks_mutating_or_deleting_accepted_vector_evidence(detection):
     persist_accepted_embedding(
-        detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
+        detection=detection,
+        model_version="adaface-ir18-webface4m",
+        vector=[1.0] + [0.0] * 511,
+        metadata={},
     )
     with pytest.raises(IntegrityError), transaction.atomic():
         FaceEmbeddingVector.objects.filter(detection=detection).update(
-            vector=[0.0, 1.0] + [0.0] * 126
+            vector=[0.0, 1.0] + [0.0] * 510
         )
     with pytest.raises(IntegrityError), transaction.atomic():
         FaceEmbeddingVector.objects.filter(detection=detection).delete()

@@ -41,11 +41,9 @@ from processing.bib_validation import BibResultError, validate_bib_result
 from processing.contracts import (
     BIB_RECOGNITION_CONTRACT,
     CAPTURE_METADATA_CONTRACT,
-    FACE_EMBEDDING_BENCHMARK_CONTRACT,
     FACE_EMBEDDING_CONTRACT,
     GENERATE_PREVIEW_CONTRACT,
     GENERATE_WATERMARKED_PREVIEW_CONTRACT,
-    PREVIEW_FACE_EMBEDDING_CONTRACT,
     SELFIE_QUERY_CONTRACT,
     AttemptReference,
     ClaimedJob,
@@ -65,10 +63,7 @@ from processing.results import parse_canonical_timestamp
 from processing.services import worker_pool_lifecycle, worker_pool_telemetry
 from processing.services.bibs import complete_bib_attempt
 from processing.services.face_quality import (
-    HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
-    LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
-    QUALITY_FACE_PROCESSOR_VERSION,
     QUALITY_FACE_PROCESSOR_VERSIONS,
     quality_face_claim_input_geometry,
     quality_face_result_geometry,
@@ -88,8 +83,6 @@ from processing.storage import ExactObjectDownloadStorage, ExactPreviewStorage, 
 
 _SECRET_MARKER = re.compile(r"(?:[a-z][a-z0-9+.-]*://|x-amz-|signature=|credential=|token=)", re.I)
 _SOURCE_FIELDS = {"DateTime", "DateTimeDigitized", "DateTimeOriginal"}
-_V2_FACE_EMBEDDING_MAX_FACES = 32
-_V2_FACE_EMBEDDING_DIMENSIONS = 128
 _EXIF_SOURCE_VALUE = re.compile(r"\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}")
 _EXIF_SOURCE_OFFSET = re.compile(r"[+-]\d{2}:\d{2}")
 _CAPTURE_METADATA_WARNINGS = {
@@ -168,7 +161,6 @@ _SELFIE_QUERY_FAILURES = {
 _PROCESSOR_FAILURES = {
     "capture_metadata": _CAPTURE_METADATA_FAILURES,
     "face_embedding": _FACE_EMBEDDING_FAILURES,
-    "face_embedding_benchmark": _FACE_EMBEDDING_FAILURES,
     "generate_preview": _GENERATE_PREVIEW_FAILURES,
     "generate_watermarked_preview": _GENERATE_WATERMARKED_PREVIEW_FAILURES,
     "selfie_query": _SELFIE_QUERY_FAILURES,
@@ -197,7 +189,6 @@ _PROCESSOR_FAILURES = {
 _PROCESSOR_RESULT_WARNINGS = {
     "capture_metadata": _CAPTURE_METADATA_WARNINGS,
     "face_embedding": _FACE_RESULT_WARNING_CODES,
-    "face_embedding_benchmark": _FACE_RESULT_WARNING_CODES,
     "generate_preview": _GENERATE_PREVIEW_WARNING_CODES,
     "generate_watermarked_preview": _GENERATE_WATERMARKED_PREVIEW_WARNING_CODES,
     "selfie_query": set(),
@@ -1028,21 +1019,6 @@ def _claimed_payload(
             ]
         }
     elif (
-        job.contract_version == PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version
-        and job.processor_type == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_type
-        and job.processor_version == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_version
-    ):
-        derivative = PhotoDerivative.objects.get(photo_id=job.photo_id, variant="preview-small-v1")
-        payload["job"] = cast(dict[str, object], payload["job"]) | {
-            "input_geometry": {
-                "coordinate_space": "preview-small-v1",
-                "pixel_width": derivative.width,
-                "pixel_height": derivative.height,
-                "oriented_source_width": derivative.oriented_source_width,
-                "oriented_source_height": derivative.oriented_source_height,
-            }
-        }
-    elif (
         job.contract_version == QUALITY_FACE_CONTRACT_VERSION
         and job.processor_type == FACE_EMBEDDING_CONTRACT.processor_type
         and job.processor_version in QUALITY_FACE_PROCESSOR_VERSIONS
@@ -1181,16 +1157,6 @@ def _processor_contract(processor_type: str, contract_version: int, processor_ve
             CAPTURE_METADATA_CONTRACT.processor_version,
         ),
         (
-            FACE_EMBEDDING_CONTRACT.contract_version,
-            FACE_EMBEDDING_CONTRACT.processor_type,
-            FACE_EMBEDDING_CONTRACT.processor_version,
-        ),
-        (
-            FACE_EMBEDDING_BENCHMARK_CONTRACT.contract_version,
-            FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_type,
-            FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_version,
-        ),
-        (
             GENERATE_PREVIEW_CONTRACT.contract_version,
             GENERATE_PREVIEW_CONTRACT.processor_type,
             GENERATE_PREVIEW_CONTRACT.processor_version,
@@ -1201,24 +1167,9 @@ def _processor_contract(processor_type: str, contract_version: int, processor_ve
             GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_version,
         ),
         (
-            PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version,
-            PREVIEW_FACE_EMBEDDING_CONTRACT.processor_type,
-            PREVIEW_FACE_EMBEDDING_CONTRACT.processor_version,
-        ),
-        (
-            QUALITY_FACE_CONTRACT_VERSION,
+            FACE_EMBEDDING_CONTRACT.contract_version,
             FACE_EMBEDDING_CONTRACT.processor_type,
-            HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
-        ),
-        (
-            QUALITY_FACE_CONTRACT_VERSION,
-            FACE_EMBEDDING_CONTRACT.processor_type,
-            QUALITY_FACE_PROCESSOR_VERSION,
-        ),
-        (
-            QUALITY_FACE_CONTRACT_VERSION,
-            FACE_EMBEDDING_CONTRACT.processor_type,
-            LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
+            FACE_EMBEDDING_CONTRACT.processor_version,
         ),
     }
 
@@ -1306,13 +1257,6 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
             attempt.contract_version,
             attempt.configuration,
         ):
-            return False
-        legacy_preview_valid = not (
-            attempt.contract_version == PREVIEW_FACE_EMBEDDING_CONTRACT.contract_version
-            and attempt.processor_type == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_type
-            and attempt.processor_version == PREVIEW_FACE_EMBEDDING_CONTRACT.processor_version
-        ) or _matches_accepted_preview_geometry(attempt, data["result"])
-        if not legacy_preview_valid:
             return False
         if (
             attempt.contract_version == QUALITY_FACE_CONTRACT_VERSION
@@ -1443,8 +1387,6 @@ def _valid_result(
             contract_version=contract_version,
             configuration=configuration,
         )
-    if processor_type == FACE_EMBEDDING_BENCHMARK_CONTRACT.processor_type:
-        return _valid_face_embedding_benchmark_result(value)
     if processor_type in {
         GENERATE_PREVIEW_CONTRACT.processor_type,
         GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
@@ -1534,117 +1476,13 @@ def _valid_capture_metadata_result(value: object, *, configuration: object) -> b
 def _valid_face_embedding_result(
     value: object, *, contract_version: int = 1, configuration: object | None = None
 ) -> bool:
-    if contract_version == QUALITY_FACE_CONTRACT_VERSION:
-        try:
-            validate_quality_face_result(value, configuration=configuration)
-        except ValueError:
-            return False
-        return True
-    if not isinstance(value, dict):
+    if contract_version != QUALITY_FACE_CONTRACT_VERSION:
         return False
-    if not ("face_count" in value and "faces" in value and "warnings" in value):
+    try:
+        validate_quality_face_result(value, configuration=configuration)
+    except ValueError:
         return False
-    if value.get("timings") is not None and not isinstance(value["timings"], dict):
-        return False
-    maximum_faces = _V2_FACE_EMBEDDING_MAX_FACES if contract_version == 2 else 1_024
-    embedding_dimensions = _V2_FACE_EMBEDDING_DIMENSIONS if contract_version == 2 else 512
-    if not (
-        isinstance(value["face_count"], int)
-        and not isinstance(value["face_count"], bool)
-        and 0 <= value["face_count"] <= maximum_faces
-    ):
-        return False
-    if not _safe_face_model(value.get("model", "sface")):
-        return False
-    faces = value["faces"]
-    if not (
-        isinstance(faces, list)
-        and len(faces) <= maximum_faces
-        and len(faces) == value["face_count"]
-    ):
-        return False
-    warnings = value["warnings"]
-    if not (
-        isinstance(warnings, list)
-        and len(warnings) <= 8
-        and all(_valid_face_warning(code) for code in warnings)
-    ):
-        return False
-    has_single_query_face_usable = value.get("has_single_query_face_usable")
-    if has_single_query_face_usable is not None and not isinstance(
-        has_single_query_face_usable, bool
-    ):
-        return False
-    if contract_version == 2:
-        geometry = value.get("input_geometry")
-        if not (
-            isinstance(geometry, dict)
-            and set(geometry)
-            == {
-                "coordinate_space",
-                "pixel_width",
-                "pixel_height",
-                "oriented_source_width",
-                "oriented_source_height",
-            }
-            and geometry["coordinate_space"] == "preview-small-v1"
-            and all(_positive_int(geometry[name]) for name in set(geometry) - {"coordinate_space"})
-        ):
-            return False
-    return all(
-        _valid_face_embedding_record(face, embedding_dimensions=embedding_dimensions)
-        for face in faces
-    )
-
-
-def _valid_face_embedding_benchmark_result(value: object) -> bool:
-    if not isinstance(value, dict) or set(value) != {"model", "face_count", "warnings", "timings"}:
-        return False
-    if not _safe_face_model(value["model"]):
-        return False
-    if not (
-        isinstance(value["face_count"], int)
-        and not isinstance(value["face_count"], bool)
-        and 0 <= value["face_count"] <= _V2_FACE_EMBEDDING_MAX_FACES
-    ):
-        return False
-    warnings = value["warnings"]
-    if not (
-        isinstance(warnings, list)
-        and len(warnings) <= 8
-        and all(_valid_face_warning(code) for code in warnings)
-    ):
-        return False
-    timings = value["timings"]
-    return (
-        isinstance(timings, dict)
-        and set(timings) == {"decode_ms", "model_load_ms", "detect_ms", "embed_ms", "total_ms"}
-        and all(_duration(duration) for duration in timings.values())
-        and timings["total_ms"]
-        >= (
-            timings["decode_ms"]
-            + timings["model_load_ms"]
-            + timings["detect_ms"]
-            + timings["embed_ms"]
-        )
-    )
-
-
-def _matches_accepted_preview_geometry(attempt: ProcessingAttempt, result: object) -> bool:
-    if not isinstance(result, dict):
-        return False
-    derivative = PhotoDerivative.objects.filter(
-        photo_id=attempt.photo_id, variant="preview-small-v1", accepted_attempt_id__isnull=False
-    ).first()
-    if derivative is None:
-        return False
-    return result.get("input_geometry") == {
-        "coordinate_space": "preview-small-v1",
-        "pixel_width": derivative.width,
-        "pixel_height": derivative.height,
-        "oriented_source_width": derivative.oriented_source_width,
-        "oriented_source_height": derivative.oriented_source_height,
-    }
+    return True
 
 
 def _valid_preview_result(value: object, *, processor_type: str = "generate_preview") -> bool:
@@ -1720,74 +1558,6 @@ def _preview_output_slot(
         "max_height": 1600,
         "checksum_algorithm": "sha256",
     }
-
-
-def _safe_face_model(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value))
-        and _safe_durable_string(value)
-    )
-
-
-def _valid_face_warning(value: object) -> bool:
-    return _valid_warning_code(FACE_EMBEDDING_CONTRACT.processor_type, value)
-
-
-def _valid_face_embedding_record(value: object, *, embedding_dimensions: int) -> bool:
-    if not isinstance(value, dict):
-        return False
-    if set(value).issuperset({"face_id", "bbox", "quality", "embedding_sha256"}):
-        if not (
-            isinstance(value["face_id"], str)
-            and 0 < len(value["face_id"]) <= 64
-            and _safe_durable_string(value["face_id"])
-        ):
-            return False
-        if not (
-            isinstance(value["bbox"], list)
-            and len(value["bbox"]) == 4
-            and all(_safe_face_coordinate(item) for item in value["bbox"])
-        ):
-            return False
-        quality = value["quality"]
-        if not (isinstance(quality, (int, float)) and 0.0 <= quality <= 1.0):
-            return False
-        return (
-            isinstance(value["embedding_sha256"], str)
-            and re.fullmatch(r"[0-9a-f]{64}", value["embedding_sha256"]) is not None
-        )
-    if not {"index", "bbox", "confidence", "landmarks", "embedding"} <= set(value):
-        return False
-    if not (
-        isinstance(value["index"], int)
-        and value["index"] >= 0
-        and not isinstance(value["index"], bool)
-        and _valid_face_bbox(value["bbox"])
-    ):
-        return False
-    if not (isinstance(value["confidence"], (int, float)) and 0.0 <= value["confidence"] <= 1.0):
-        return False
-    landmarks = value["landmarks"]
-    if not (
-        isinstance(landmarks, list)
-        and len(landmarks) == 5
-        and all(
-            isinstance(point, list)
-            and len(point) == 2
-            and all(isinstance(coord, (int, float)) for coord in point)
-            for point in landmarks
-        )
-    ):
-        return False
-    embedding = value["embedding"]
-    if not (
-        isinstance(embedding, list)
-        and len(embedding) <= embedding_dimensions
-        and all(isinstance(item, (int, float)) for item in embedding)
-    ):
-        return False
-    return True
 
 
 def _valid_face_bbox(value: object) -> bool:

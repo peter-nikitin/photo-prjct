@@ -84,11 +84,7 @@ def _close_run_report(
         return None
     report = _report_payload(run, jobs, now)
     if "historical_adaface_backfill" in run.report:
-        from processing.services.historical_adaface import validate_backfill_receipt
-
-        report["historical_adaface_backfill"] = validate_backfill_receipt(
-            run.report["historical_adaface_backfill"]
-        )
+        report["historical_adaface_backfill"] = run.report["historical_adaface_backfill"]
     if _serialized_bytes(report) > _report_limit(run):
         raise ValueError("The configured cohort does not fit in its bounded processing report.")
     run.report = report

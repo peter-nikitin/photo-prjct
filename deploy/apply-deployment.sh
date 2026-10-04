@@ -174,7 +174,7 @@ if [ "$requested_processing_enabled" != True ] || \
 fi
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
 requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
-requested_bulk_processor_identities="${PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1}"
+requested_bulk_processor_identities="${PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,3/face_embedding/5,1/bib_recognition/1}"
 requested_selfie_processor_identities="${PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES:-1/selfie_query/2}"
 requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_bulk_processor_types="${PHOTO_WORKER_BULK_PROCESSOR_TYPES:-bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview}"
@@ -419,7 +419,7 @@ while :; do
             ;;
     esac
     case "$processor_identity" in
-        1/capture_metadata/2|2/generate_preview/1|2/generate_watermarked_preview/1|2/face_embedding/3|3/face_embedding/5|1/bib_recognition/1)
+        1/capture_metadata/2|2/generate_preview/1|2/generate_watermarked_preview/1|3/face_embedding/5|1/bib_recognition/1)
             ;;
         *)
             echo "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
@@ -482,7 +482,6 @@ if [ "$requested_preview_enabled" = True ]; then
         1/capture_metadata/2 \
         2/generate_preview/1 \
         2/generate_watermarked_preview/1 \
-        2/face_embedding/3 \
         3/face_embedding/5 \
         1/bib_recognition/1; do
         case ",$requested_bulk_processor_identities," in
@@ -506,9 +505,6 @@ fi
 requested_selfie_search_max_upload_bytes=20971520
 requested_selfie_search_max_pixels=25000000
 requested_selfie_search_download_ttl_seconds=120
-requested_selfie_search_embedding_model=sface
-requested_selfie_search_embedding_dimensions=128
-requested_selfie_search_cosine_distance_threshold=0.363
 requested_selfie_search_temporary_prefix=selfie-search/
 requested_selfie_search_lifecycle_max_age_hours=24
 
@@ -750,9 +746,6 @@ clear_candidate_compose_interpolation() {
         SELFIE_SEARCH_MAX_UPLOAD_BYTES \
         SELFIE_SEARCH_MAX_PIXELS \
         SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS \
-        SELFIE_SEARCH_EMBEDDING_MODEL \
-        SELFIE_SEARCH_EMBEDDING_DIMENSIONS \
-        SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD \
         SELFIE_SEARCH_TEMPORARY_PREFIX \
         SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS \
         SELFIE_FEEDBACK_ENABLED \
@@ -1086,8 +1079,6 @@ if [ "${FINDME_CANONICAL_LOCK:-}" != 1 ]; then
     FINDME_CANONICAL_LOCK=1
     export FINDME_CANONICAL_LOCK
 fi
-python3 "$(dirname "$0")/verify-native-release.py" --root "$DEPLOY_ROOT" \
-    --app-image "$requested_image" || fail "Deployment violates native AdaFace capability"
 if [ "$RECOVER_FORWARD" = True ]; then
     [ -f "$DEPLOY_ROOT/.deployment-recovery/candidate.env" ] || fail "Forward recovery inputs missing"
 else
@@ -1246,9 +1237,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'SELFIE_SEARCH_MAX_UPLOAD_BYTES=%s\n' "$requested_selfie_search_max_upload_bytes"
     printf 'SELFIE_SEARCH_MAX_PIXELS=%s\n' "$requested_selfie_search_max_pixels"
     printf 'SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS=%s\n' "$requested_selfie_search_download_ttl_seconds"
-    printf 'SELFIE_SEARCH_EMBEDDING_MODEL=%s\n' "$requested_selfie_search_embedding_model"
-    printf 'SELFIE_SEARCH_EMBEDDING_DIMENSIONS=%s\n' "$requested_selfie_search_embedding_dimensions"
-    printf 'SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD=%s\n' "$requested_selfie_search_cosine_distance_threshold"
     printf 'SELFIE_SEARCH_TEMPORARY_PREFIX=%s\n' "$requested_selfie_search_temporary_prefix"
     printf 'SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS=%s\n' "$requested_selfie_search_lifecycle_max_age_hours"
     printf 'SELFIE_FEEDBACK_ENABLED=%s\n' "$requested_selfie_feedback_enabled"

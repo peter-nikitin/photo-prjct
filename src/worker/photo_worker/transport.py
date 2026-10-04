@@ -9,7 +9,7 @@ REMOTE_API_URL = "https://findme-photo.ru:8443/internal/photo-processing/v1"
 POOL_IDENTITIES = {
     "bulk": (
         "1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,"
-        "2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1"
+        "3/face_embedding/5,1/bib_recognition/1"
     ),
     "selfie": "1/selfie_query/2",
 }

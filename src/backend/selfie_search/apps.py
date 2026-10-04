@@ -66,41 +66,17 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
                 )
             )
     threshold = settings.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD
-    if settings.ADAFACE_LOCAL_EXPERIMENT_ENABLED:
-        if settings.DEBUG is not True:
-            errors.append(
-                Error(
-                    "AdaFace local experiment requires DEBUG=True.",
-                    id="selfie_search.E003",
-                )
-            )
-        if (
-            settings.SELFIE_SEARCH_EMBEDDING_MODEL != "adaface-ir18-webface4m"
-            or settings.SELFIE_SEARCH_EMBEDDING_DIMENSIONS != 512
-            or isinstance(threshold, bool)
-            or not isinstance(threshold, (int, float))
-            or not math.isfinite(threshold)
-            or not 0.0 <= threshold <= 2.0
-            or threshold == 0.363
-        ):
-            errors.append(
-                Error(
-                    "AdaFace local experiment requires its exact 512-dimensional finite "
-                    "threshold contract.",
-                    id="selfie_search.E004",
-                )
-            )
-    elif (
-        settings.SELFIE_SEARCH_EMBEDDING_MODEL != "sface"
-        or settings.SELFIE_SEARCH_EMBEDDING_DIMENSIONS != 128
+    if (
+        settings.SELFIE_SEARCH_EMBEDDING_MODEL != "adaface-ir18-webface4m"
+        or settings.SELFIE_SEARCH_EMBEDDING_DIMENSIONS != 512
         or isinstance(threshold, bool)
         or not isinstance(threshold, (int, float))
         or not math.isfinite(threshold)
-        or threshold != 0.363
+        or threshold != 0.42
     ):
         errors.append(
             Error(
-                "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD must be the approved finite value 0.363.",
+                "Selfie search requires the approved AdaFace 512D/0.42 contract.",
                 id="selfie_search.E004",
             )
         )

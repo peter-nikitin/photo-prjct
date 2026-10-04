@@ -38,7 +38,8 @@ from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     CONTRACT_VERSION,
     FACE_EMBEDDING_CONFIGURATION,
-    FACE_EMBEDDING_PROCESSOR_VERSION,
+    QUALITY_FACE_CONTRACT_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSION,
     request_capture_metadata,
 )
 from processing.services.jobs import claim_job, complete_attempt
@@ -89,7 +90,6 @@ class SearchJobTests(TestCase):
             start_date=date(2026, 7, 30),
             end_date=date(2026, 7, 30),
             city="Moscow",
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.storage = RecordingStorage()
 
@@ -135,6 +135,7 @@ class SearchJobTests(TestCase):
                 configuration={
                     "embedding_model": "adaface-ir18-webface4m",
                     "embedding_dimensions": 512,
+                    "cosine_distance_threshold": 0.42,
                 }
             ),
         )
@@ -155,6 +156,21 @@ class SearchJobTests(TestCase):
                 ),
                 "model_revision": "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca",
             },
+        )
+
+    def test_worker_configuration_rejects_superseded_model_and_threshold(self) -> None:
+        search = self.make_search(with_candidate=False)
+        for change in (
+            {"embedding_model": "sface"},
+            {"embedding_dimensions": 128},
+            {"cosine_distance_threshold": 0.363},
+        ):
+            with self.subTest(change=change):
+                search.configuration = search.configuration | change
+                with self.assertRaises(ValueError):
+                    selfie_worker_configuration(search)
+        search.configuration = submission_configuration(
+            event=self.event, content_type="image/jpeg", content_size=1024
         )
 
     def make_search(self, *, with_candidate: bool = True) -> SelfieSearch:
@@ -192,9 +208,9 @@ class SearchJobTests(TestCase):
         )
         run = EventProcessingRun.objects.create(
             event=self.event,
-            contract_version=CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             configuration_hash=configuration_hash,
         )
@@ -202,9 +218,9 @@ class SearchJobTests(TestCase):
             event=self.event,
             run=run,
             photo=photo,
-            contract_version=CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             configuration_hash=configuration_hash,
             input_fingerprint={},
@@ -214,9 +230,9 @@ class SearchJobTests(TestCase):
             run=run,
             job=job,
             photo=photo,
-            contract_version=CONTRACT_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
             processor_type="face_embedding",
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             input_fingerprint={},
             status=ProcessingAttempt.Status.SUCCEEDED,
@@ -232,13 +248,13 @@ class SearchJobTests(TestCase):
         )
         FaceEmbeddingVector.objects.create(
             detection=detection,
-            model_version="sface",
-            vector=[1.0 - distance, sqrt(1 - (1.0 - distance) ** 2)] + [0.0] * 126,
+            model_version="adaface-ir18-webface4m",
+            vector=[1.0 - distance, sqrt(1 - (1.0 - distance) ** 2)] + [0.0] * 510,
         )
         PhotoFaceEmbeddingProjection.objects.create(
             photo=photo,
-            contract_version=CONTRACT_VERSION,
-            processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
+            contract_version=QUALITY_FACE_CONTRACT_VERSION,
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION,
             configuration_hash=configuration_hash,
             accepted_attempt=attempt,
         )
@@ -264,9 +280,9 @@ class SearchJobTests(TestCase):
         )
 
     def result(self, *, first: float = 1.0) -> dict[str, object]:
-        vector = [first, sqrt(1 - first**2)] + [0.0] * 126
+        vector = [first, sqrt(1 - first**2)] + [0.0] * 510
         return {
-            "model": "sface",
+            "model": "adaface-ir18-webface4m",
             "embedding": vector,
             "bbox": [1.0, 2.0, 32.0, 32.0],
             "confidence": 0.96,
@@ -427,7 +443,7 @@ class SearchJobTests(TestCase):
     def test_enabled_completion_persists_direct_and_cluster_provenance_before_cleanup(self) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="integration-anchor", distance=0.1)
-        member = self.add_candidate(search=search, photo_id="integration-member", distance=0.4)
+        member = self.add_candidate(search=search, photo_id="integration-member", distance=0.45)
         generations = search.configuration["gallery_face_embedding_generations"]
         corpus = FaceClusterCorpus.objects.create(
             event=self.event,
@@ -439,8 +455,8 @@ class SearchJobTests(TestCase):
             contract_version=1,
             processor_type="face_embedding",
             processor_version=1,
-            model_version="sface",
-            embedding_dimensions=128,
+            model_version="adaface-ir18-webface4m",
+            embedding_dimensions=512,
             edge_threshold=0.2,
             representative_threshold=0.2,
             distance_block_size=1,
@@ -474,10 +490,10 @@ class SearchJobTests(TestCase):
             configuration={
                 "policy_id": POLICY_ID,
                 "corpus_configuration_hash": corpus.configuration_hash,
-                "direct_threshold": 0.363,
+                "direct_threshold": 0.42,
                 "anchor_threshold": 0.2,
             },
-            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.42, 0.2),
             approved_evaluation_report_hash="d" * 64,
         )
         claimed = self.claim(search)
@@ -521,7 +537,7 @@ class SearchJobTests(TestCase):
         self.assertEqual(terminal_event["cluster_corpus_version"], 1)
         self.assertEqual(
             terminal_event["cluster_configuration_hash"],
-            cluster_expansion_policy_hash("b" * 64, 0.363, 0.2),
+            cluster_expansion_policy_hash("b" * 64, 0.42, 0.2),
         )
         evidence_count = SelfieSearchClusterEvidence.objects.filter(result__search=search).count()
         self.assertEqual(evidence_count, 2)
@@ -540,8 +556,8 @@ class SearchJobTests(TestCase):
             contract_version=1,
             processor_type="face_embedding",
             processor_version=1,
-            model_version="sface",
-            embedding_dimensions=128,
+            model_version="adaface-ir18-webface4m",
+            embedding_dimensions=512,
             edge_threshold=0.2,
             representative_threshold=0.2,
             distance_block_size=1,
@@ -559,10 +575,10 @@ class SearchJobTests(TestCase):
             configuration={
                 "policy_id": POLICY_ID,
                 "corpus_configuration_hash": corpus.configuration_hash,
-                "direct_threshold": 0.363,
+                "direct_threshold": 0.42,
                 "anchor_threshold": 0.2,
             },
-            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.42, 0.2),
             approved_evaluation_report_hash="d" * 64,
         )
         claimed = self.claim(search)
@@ -595,7 +611,7 @@ class SearchJobTests(TestCase):
     def test_member_read_database_error_keeps_outer_completion_transaction_usable(self) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="member-error-anchor", distance=0.1)
-        member = self.add_candidate(search=search, photo_id="member-error-member", distance=0.4)
+        member = self.add_candidate(search=search, photo_id="member-error-member", distance=0.45)
         corpus = FaceClusterCorpus.objects.create(
             event=self.event,
             version=1,
@@ -610,8 +626,8 @@ class SearchJobTests(TestCase):
             contract_version=1,
             processor_type="face_embedding",
             processor_version=1,
-            model_version="sface",
-            embedding_dimensions=128,
+            model_version="adaface-ir18-webface4m",
+            embedding_dimensions=512,
             edge_threshold=0.2,
             representative_threshold=0.2,
             distance_block_size=1,
@@ -645,10 +661,10 @@ class SearchJobTests(TestCase):
             configuration={
                 "policy_id": POLICY_ID,
                 "corpus_configuration_hash": corpus.configuration_hash,
-                "direct_threshold": 0.363,
+                "direct_threshold": 0.42,
                 "anchor_threshold": 0.2,
             },
-            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.42, 0.2),
             approved_evaluation_report_hash="j" * 64,
         )
         claimed = self.claim(search)
@@ -686,7 +702,7 @@ class SearchJobTests(TestCase):
     def test_cluster_evidence_persistence_failure_rolls_back_accepted_callback(self) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="rollback-anchor", distance=0.1)
-        member = self.add_candidate(search=search, photo_id="rollback-member", distance=0.4)
+        member = self.add_candidate(search=search, photo_id="rollback-member", distance=0.45)
         corpus = FaceClusterCorpus.objects.create(
             event=self.event,
             version=1,
@@ -701,8 +717,8 @@ class SearchJobTests(TestCase):
             contract_version=1,
             processor_type="face_embedding",
             processor_version=1,
-            model_version="sface",
-            embedding_dimensions=128,
+            model_version="adaface-ir18-webface4m",
+            embedding_dimensions=512,
             edge_threshold=0.2,
             representative_threshold=0.2,
             distance_block_size=1,
@@ -736,10 +752,10 @@ class SearchJobTests(TestCase):
             configuration={
                 "policy_id": POLICY_ID,
                 "corpus_configuration_hash": corpus.configuration_hash,
-                "direct_threshold": 0.363,
+                "direct_threshold": 0.42,
                 "anchor_threshold": 0.2,
             },
-            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.2),
+            configuration_hash=cluster_expansion_policy_hash(corpus.configuration_hash, 0.42, 0.2),
             approved_evaluation_report_hash="g" * 64,
         )
         claimed = self.claim(search)
@@ -996,8 +1012,8 @@ class SearchJobTests(TestCase):
         self.assertEqual(failure_search.status, SelfieSearch.Status.NO_FACE)
         self.assertEqual(failure_search.failure_code, "no_face")
         self.assertEqual(ready.attempt.status, SelfieSearchAttempt.Status.SUCCEEDED)
-        self.assertEqual(empty_search.status, SelfieSearch.Status.READY)
-        self.assertEqual(empty_search.matched_photo_count, 1)
+        self.assertEqual(empty_search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual(empty_search.matched_photo_count, 0)
 
 
 class SearchCompletionConcurrencyTests(TransactionTestCase):
@@ -1012,7 +1028,6 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
             end_date=date(2026, 9, 14),
             city="Moscow",
             timezone_name="Europe/Moscow",
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def make_search(self, token: str) -> SelfieSearch:
@@ -1066,7 +1081,7 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
             try:
                 complete_search_attempt(
                     first_claim.attempt.id,
-                    result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
+                    result={"model": "adaface-ir18-webface4m", "embedding": [1.0] + [0.0] * 511},
                     storage=RecordingStorage(),
                 )
             except BaseException as error:

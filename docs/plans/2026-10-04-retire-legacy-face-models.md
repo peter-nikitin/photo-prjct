@@ -5,8 +5,8 @@
 - Owner: project maintainer
 - Related specification: [legacy model retirement](../superpowers/specs/2026-10-04-retire-legacy-face-models-design.md)
 - Related architecture: [Search](../architecture.md#search), [Photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing)
-- Related ADRs: [0052](../adr/0052-retire-sface-and-fix-adaface-vector-dimension.md), [0040](../adr/0040-use-pgvector-for-exact-face-search.md), [0041](../adr/0041-accept-pgvector-numerical-boundaries.md)
-- ADR impact: Implements accepted ADR 0052; preserves exact ranking and numerical policy from ADRs 0040/0041.
+- Related ADRs: [0054](../adr/0054-retire-sface-and-fix-adaface-vector-dimension.md), [0040](../adr/0040-use-pgvector-for-exact-face-search.md), [0041](../adr/0041-accept-pgvector-numerical-boundaries.md)
+- ADR impact: Implements accepted ADR 0054; preserves exact ranking and numerical policy from ADRs 0040/0041.
 
 ## Goal
 
@@ -23,6 +23,7 @@ Use the specification's acceptance criteria. In addition, a restored existing lo
 ## Worker/state/artifact release safeguards
 
 - [x] **Live-state inventory.** The 2026-10-04 read-only audit records one published and eight unavailable SFace events, one published event with 17,043 photos, 16,162 accepted AdaFace outcomes, 225 no-face, 20 quality-rejected, 636 accepted recognition differences, and no pending AdaFace jobs or active leases. Before release, refresh web/worker build IDs; event, job, attempt, search, lease and vector counts; ready results; active corpus; and temporary selfie-object inventory with bounded queries. An existing local PostgreSQL snapshot volume `pgvector-local-snapshot_snapshot_data` and prior dumps are available for rehearsal; do not download a duplicate before inspecting these.
+- [x] **Additional accepted coverage gap.** The 2026-10-04 follow-up read-only audit found 73 published `cyclingrace-klin` photos with 174 old kept detections and no AdaFace v5 job/projection. The event has 6,621 current AdaFace projections, all with matching current state. The user accepted losing those 73 old matches without reprocessing or a special runtime exception. Report the gap at release; a wholly unreconciled published event still blocks contraction.
 - [x] **Compatibility matrix.** Old web/worker can create and consume SFace 128D rows and cannot run after contraction. Candidate web/worker accept only current AdaFace 512D and retain old rows as inert history until the guarded data step. Old nonterminal SFace search/processing work is terminalized, not retried. Ready results remain readable under candidate code and after contraction. A candidate failure before vector deletion can recover with compatible candidate images; after deletion only a verified backup plus compatible images or forward repair is supported.
 - [x] **Reviewed data-state migration or reset semantics.** Reconcile published AdaFace evidence first; accept terminal no-face and quality rejection. Retain unavailable events with empty current recognition where sources are absent. Preserve attempt, detection, projection, activation audit and ready result records. Redact raw SFace arrays in historical attempt/late-receipt JSON; preserve original receipt hashes as submitted-payload fingerprints. Remove only SFace pgvector rows, old active corpora/selection and obsolete executable code. Protect AdaFace vectors and all result membership.
 - [x] **End-to-end contract sizing.** Keep the existing maximum current AdaFace face callback and selfie-query payload contract. Exercise maximum 32-face/512-component face completion through worker serialization, private callback, validation and native persistence; verify the existing request-size limits. No larger payload or new request field is introduced.
@@ -91,7 +92,7 @@ Execute this plan through `$execute-implementation-plan`.
 - **Produces:** Rehearsed upgrade, complete package evidence and updated implemented architecture.
 
 - [ ] Rehearse the exact data transition against the existing local snapshot, including old ready links and fixed-vector schema checks. Do not touch production data.
-- [ ] Reconcile delivered behavior with the specification and ADR 0052; update architecture only for implemented facts.
+- [ ] Reconcile delivered behavior with the specification and ADR 0054; update architecture only for implemented facts.
 - [ ] Run selector/fingerprint, `make check`, all selector-required expensive suites, `make static`, `git diff --check` and active-code inventory. Record exact results and remaining live rollout gates.
 
 ## Verification

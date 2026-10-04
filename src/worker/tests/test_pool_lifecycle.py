@@ -316,7 +316,7 @@ def test_registration_responses_are_installed_in_serial_order():
     )
 
 
-def test_warm_models_exercises_cached_detector_and_both_recognizers(monkeypatch):
+def test_warm_models_exercises_cached_adaface_detector_and_recognizer(monkeypatch):
     from photo_worker import face_embedding
     from photo_worker.adaface import ADAFACE_MODEL_NAME
 
@@ -324,7 +324,7 @@ def test_warm_models_exercises_cached_detector_and_both_recognizers(monkeypatch)
     runtimes = {}
 
     def runtime(_cv2, **kwargs):
-        model = kwargs["model"]
+        model = ADAFACE_MODEL_NAME
         models.append(model)
         runtimes.setdefault(model, SimpleNamespace(detector=Mock(), recognizer=Mock()))
         return runtimes[model]
@@ -333,6 +333,6 @@ def test_warm_models_exercises_cached_detector_and_both_recognizers(monkeypatch)
     monkeypatch.setattr(face_embedding, "_runtime_for_model", runtime)
     monkeypatch.setattr(face_embedding, "_extract_embedding", Mock(return_value=(1.0,) * 512))
     face_embedding.warm_models()
-    assert models == ["sface", ADAFACE_MODEL_NAME]
+    assert models == [ADAFACE_MODEL_NAME]
     assert all(value.detector.detect.called for value in runtimes.values())
-    assert face_embedding._extract_embedding.call_count == 2
+    assert face_embedding._extract_embedding.call_count == 1

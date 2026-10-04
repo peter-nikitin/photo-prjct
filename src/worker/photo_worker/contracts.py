@@ -22,17 +22,12 @@ PROCESSOR_TYPE = "capture_metadata"
 CAPTURE_METADATA_PROCESSOR_VERSION = 2
 PROCESSOR_VERSION = CAPTURE_METADATA_PROCESSOR_VERSION
 PROCESSOR_TYPE_FACE_EMBEDDING = "face_embedding"
-PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK = "face_embedding_benchmark"
-PROCESSOR_VERSION_FACE_EMBEDDING = 1
-HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 3
-PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY = 4
 PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY = 5
 PREVIEW_CONTRACT_VERSION = 2
 PROCESSOR_TYPE_GENERATE_PREVIEW = "generate_preview"
 PROCESSOR_VERSION_GENERATE_PREVIEW = 1
 PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW = "generate_watermarked_preview"
 PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW = 1
-PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW = 3
 PROCESSOR_TYPE_SELFIE_QUERY = "selfie_query"
 PROCESSOR_VERSION_SELFIE_QUERY = 2
 PROCESSOR_TYPE_BIB_RECOGNITION = "bib_recognition"
@@ -43,14 +38,11 @@ BIB_INFERENCE_CONFIGURATION_SHA256 = (
 )
 MAX_FACE_EMBEDDINGS_PER_JOB = 32
 MAX_FACE_EMBEDDING_DIMENSIONS = ADAFACE_EMBEDDING_DIMENSIONS
-SFACE_FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 128 * 1024
 FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES = 384 * 1024
 SELFIE_MAX_INPUT_BYTES = 20 * 1024 * 1024
 SELFIE_MAX_PIXELS = 25_000_000
 SELFIE_TERMINAL_PAYLOAD_MAX_BYTES = 16 * 1024
 DEFAULT_FACE_DETECTION_THRESHOLD = 0.75
-SFACE_MODEL_NAME = "sface"
-SFACE_EMBEDDING_DIMENSIONS = 128
 _PINNED_ADAFACE_IDENTITY = {
     "alignment": "scrfd-five-landmark-112x112",
     "input_normalization": "rgb-value-over-255-minus-0.5-over-0.5",
@@ -140,51 +132,6 @@ V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION: dict[str, object] = {
         "max_pixels": 2_560_000,
         "poll_min_delay_seconds": 5,
         "terminal_result_max_bytes": 8_192,
-    },
-}
-V2_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
-    "retry_policy": {
-        "max_attempts": 3,
-        "base_backoff_seconds": 30,
-        "max_backoff_seconds": 300,
-        "jitter_seconds": 5,
-        "lease_max_seconds": 300,
-    },
-    "max_cohort_size": 16,
-    "report_max_bytes": 262_144,
-    "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
-    "face_embedding": {
-        "model": SFACE_MODEL_NAME,
-        "min_face_px": 32,
-        "max_faces_per_photo": 32,
-        "normalize_embeddings": True,
-    },
-    "worker": {
-        "api_response_max_bytes": SFACE_FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
-        "concurrency": 1,
-        "heartbeat_interval_seconds": 30,
-        "lease_duration_seconds": 120,
-        "max_input_bytes": 50 * 1024 * 1024,
-        "max_pixels": 100_000_000,
-        "poll_min_delay_seconds": 5,
-        "terminal_result_max_bytes": SFACE_FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES,
-    },
-}
-SCRFD_FACE_EMBEDDING_CONFIGURATION: dict[str, object] = {
-    **V2_FACE_EMBEDDING_CONFIGURATION,
-    "face_embedding": {
-        **cast(dict[str, object], V2_FACE_EMBEDDING_CONFIGURATION["face_embedding"]),
-        "detection_threshold": 0.5,
-    },
-}
-FACE_EMBEDDING_BENCHMARK_CONFIGURATION: dict[str, object] = {
-    **V2_FACE_EMBEDDING_CONFIGURATION,
-    "max_cohort_size": 500,
-    "benchmark": {
-        "label": "baseline",
-        "source_mode": "event",
-        "source_run_id": None,
-        "requested_count": 1,
     },
 }
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
@@ -389,9 +336,9 @@ class ProcessorConfiguration:
     terminal_result_max_bytes: int
     max_faces: int = 1
     face_detection_threshold: float = DEFAULT_FACE_DETECTION_THRESHOLD
-    model: str = SFACE_MODEL_NAME
+    model: str = ADAFACE_MODEL_NAME
     preview_variant: str | None = None
-    embedding_dimensions: int = SFACE_EMBEDDING_DIMENSIONS
+    embedding_dimensions: int = ADAFACE_EMBEDDING_DIMENSIONS
     minimum_face_px: int = 1
     event_timezone: str | None = None
     quality_thresholds: FaceQualityThresholds | None = None
@@ -403,7 +350,7 @@ class ProcessorConfiguration:
     def from_value(cls, value: object) -> ProcessorConfiguration:
         max_faces: object = 1
         face_threshold: object = DEFAULT_FACE_DETECTION_THRESHOLD
-        model: object = SFACE_MODEL_NAME
+        model: object = ADAFACE_MODEL_NAME
         event_timezone: str | None = None
         quality_thresholds: FaceQualityThresholds | None = None
         normalization = "utc_assume_utc_if_missing"
@@ -425,7 +372,6 @@ class ProcessorConfiguration:
         }
         expected_adaface_face = expected_face | {"adaface", "scrfd"}
         expected_vector_only_face = expected_adaface_face | {"embedding_storage"}
-        expected_benchmark = expected_face | {"benchmark"}
         expected_preview = {
             "retry_policy",
             "max_cohort_size",
@@ -468,7 +414,7 @@ class ProcessorConfiguration:
             watermark_config = None
             selfie_config = None
             configuration_kind = "capture_metadata"
-        elif set(value) in (expected_face, expected_adaface_face, expected_vector_only_face):
+        elif set(value) in (expected_adaface_face, expected_vector_only_face):
             if "embedding_storage" in value and value["embedding_storage"] != "vector_only":
                 raise ContractError("invalid embedding storage")
             capture = None
@@ -477,13 +423,6 @@ class ProcessorConfiguration:
             watermark_config = None
             selfie_config = None
             configuration_kind = "face_embedding"
-        elif set(value) == expected_benchmark:
-            capture = None
-            face_config = value["face_embedding"]
-            preview_config = None
-            watermark_config = None
-            selfie_config = None
-            configuration_kind = "face_embedding_benchmark"
         elif set(value) == expected_preview:
             capture = None
             face_config = None
@@ -498,7 +437,7 @@ class ProcessorConfiguration:
             watermark_config = value["generate_watermarked_preview"]
             selfie_config = None
             configuration_kind = "generate_watermarked_preview"
-        elif set(value) in (expected_selfie, expected_adaface_selfie):
+        elif set(value) == expected_adaface_selfie:
             capture = None
             face_config = None
             preview_config = None
@@ -558,18 +497,6 @@ class ProcessorConfiguration:
         ):
             raise ContractError("invalid processor configuration")
 
-        benchmark = value.get("benchmark")
-        if configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK and not (
-            isinstance(benchmark, dict)
-            and set(benchmark) == {"label", "source_mode", "source_run_id", "requested_count"}
-            and _safe_string(benchmark["label"], maximum=64)
-            and benchmark["source_mode"] in {"event", "replay"}
-            and (benchmark["source_run_id"] is None or _uuid_string(benchmark["source_run_id"]))
-            and _positive_int(benchmark["requested_count"])
-            and benchmark["requested_count"] <= 500
-        ):
-            raise ContractError("invalid processor configuration")
-
         bib_config = value.get("bib_recognition")
         bib_identity: str | None = None
         bib_deadline: int | None = None
@@ -608,8 +535,8 @@ class ProcessorConfiguration:
             bib_deadline = 300
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
-            model = SFACE_MODEL_NAME
-            embedding_dimensions = SFACE_EMBEDDING_DIMENSIONS
+            model = ADAFACE_MODEL_NAME
+            embedding_dimensions = ADAFACE_EMBEDDING_DIMENSIONS
             minimum_face_px = 1
         elif selfie_config is not None:
             is_adaface = (
@@ -619,18 +546,11 @@ class ProcessorConfiguration:
                 and value.get("adaface") == _PINNED_ADAFACE_IDENTITY
                 and value.get("scrfd") == _PINNED_SCRFD_IDENTITY
             )
-            is_sface = (
-                isinstance(selfie_config, dict)
-                and selfie_config.get("model") == SFACE_MODEL_NAME
-                and selfie_config.get("embedding_dimensions") == SFACE_EMBEDDING_DIMENSIONS
-                and "adaface" not in value
-                and "scrfd" not in value
-            )
             if not (
                 isinstance(selfie_config, dict)
                 and set(selfie_config)
                 == {"detection_threshold", "embedding_dimensions", "min_face_px", "model"}
-                and (is_adaface or is_sface)
+                and is_adaface
                 and selfie_config["min_face_px"] == 32
                 and _bounded_probability(selfie_config["detection_threshold"])
                 and worker["max_input_bytes"] == SELFIE_MAX_INPUT_BYTES
@@ -657,8 +577,8 @@ class ProcessorConfiguration:
             normalization = cast(str, capture["normalization"])
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
-            model = SFACE_MODEL_NAME
-            embedding_dimensions = SFACE_EMBEDDING_DIMENSIONS
+            model = ADAFACE_MODEL_NAME
+            embedding_dimensions = ADAFACE_EMBEDDING_DIMENSIONS
             minimum_face_px = 1
         elif face_config is not None:
             if not isinstance(face_config, dict):
@@ -676,35 +596,22 @@ class ProcessorConfiguration:
             if set(face_config) - allowed_face_fields:
                 raise ContractError("invalid processor configuration")
             if has_quality:
-                if face_config.get("model") == SFACE_MODEL_NAME:
-                    if set(face_config) != {
+                if (
+                    set(face_config)
+                    != {
                         "max_faces",
                         "detection_threshold",
                         "model",
+                        "embedding_dimensions",
                         "normalize_embeddings",
                         "quality",
-                    }:
-                        raise ContractError("invalid processor configuration")
-                    model = SFACE_MODEL_NAME
-                    embedding_dimensions = SFACE_EMBEDDING_DIMENSIONS
-                elif face_config.get("model") == ADAFACE_MODEL_NAME:
-                    if (
-                        set(face_config)
-                        != {
-                            "max_faces",
-                            "detection_threshold",
-                            "model",
-                            "embedding_dimensions",
-                            "normalize_embeddings",
-                            "quality",
-                        }
-                        or face_config["embedding_dimensions"] != MAX_FACE_EMBEDDING_DIMENSIONS
-                    ):
-                        raise ContractError("invalid processor configuration")
-                    model = ADAFACE_MODEL_NAME
-                    embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
-                else:
+                    }
+                    or face_config.get("model") != ADAFACE_MODEL_NAME
+                    or face_config.get("embedding_dimensions") != MAX_FACE_EMBEDDING_DIMENSIONS
+                ):
                     raise ContractError("invalid processor configuration")
+                model = ADAFACE_MODEL_NAME
+                embedding_dimensions = MAX_FACE_EMBEDDING_DIMENSIONS
                 if face_config["normalize_embeddings"] is not True:
                     raise ContractError("invalid processor configuration")
                 quality = face_config["quality"]
@@ -741,22 +648,8 @@ class ProcessorConfiguration:
                 face_config["normalize_embeddings"], bool
             ):
                 raise ContractError("invalid processor configuration")
-            if (
-                not has_quality
-                and face_config
-                not in (
-                    V2_FACE_EMBEDDING_CONFIGURATION["face_embedding"],
-                    SCRFD_FACE_EMBEDDING_CONFIGURATION["face_embedding"],
-                )
-                and (
-                    face_config.get("model") != ADAFACE_MODEL_NAME
-                    or face_config.get("embedding_dimensions") != ADAFACE_EMBEDDING_DIMENSIONS
-                    or face_config.get("normalize_embeddings") is not True
-                )
-            ):
-                raise ContractError("invalid processor configuration")
             if not has_quality:
-                model = cast(str, face_config["model"])
+                raise ContractError("invalid processor configuration")
             if (
                 not _positive_int(configured_max_faces)
                 or cast(int, configured_max_faces) > MAX_FACE_EMBEDDINGS_PER_JOB
@@ -765,22 +658,11 @@ class ProcessorConfiguration:
             if not _bounded_probability(configured_face_threshold):
                 raise ContractError("invalid processor configuration")
             max_faces = cast(int, configured_max_faces)
-            required_payload_bytes = (
-                FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES
-                if model == ADAFACE_MODEL_NAME
-                else SFACE_FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES
-            )
-            if worker["terminal_result_max_bytes"] < required_payload_bytes:
+            if worker["terminal_result_max_bytes"] < FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES:
                 raise ContractError("terminal_result_max_bytes cannot carry face result")
-            if worker["api_response_max_bytes"] < required_payload_bytes:
+            if worker["api_response_max_bytes"] < FACE_EMBEDDING_TERMINAL_PAYLOAD_MAX_BYTES:
                 raise ContractError("api_response_max_bytes cannot carry face result")
             face_threshold = cast(float, configured_face_threshold)
-            if not has_quality:
-                embedding_dimensions = (
-                    ADAFACE_EMBEDDING_DIMENSIONS
-                    if model == ADAFACE_MODEL_NAME
-                    else SFACE_EMBEDDING_DIMENSIONS
-                )
             minimum_face_px = (
                 quality_thresholds.minimum_face_px
                 if quality_thresholds is not None
@@ -794,8 +676,8 @@ class ProcessorConfiguration:
                 raise ContractError("invalid processor configuration")
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
-            model = SFACE_MODEL_NAME
-            embedding_dimensions = SFACE_EMBEDDING_DIMENSIONS
+            model = ADAFACE_MODEL_NAME
+            embedding_dimensions = ADAFACE_EMBEDDING_DIMENSIONS
             minimum_face_px = 1
         else:
             if not (
@@ -808,8 +690,8 @@ class ProcessorConfiguration:
                 raise ContractError("invalid processor configuration")
             max_faces = 1
             face_threshold = DEFAULT_FACE_DETECTION_THRESHOLD
-            model = SFACE_MODEL_NAME
-            embedding_dimensions = SFACE_EMBEDDING_DIMENSIONS
+            model = ADAFACE_MODEL_NAME
+            embedding_dimensions = ADAFACE_EMBEDDING_DIMENSIONS
             minimum_face_px = 1
 
         if worker["terminal_result_max_bytes"] > worker["api_response_max_bytes"]:
@@ -985,30 +867,7 @@ class ClaimedJob:
                 PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
                 PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
             )
-            preview_face = identity == (
-                PREVIEW_CONTRACT_VERSION,
-                PROCESSOR_TYPE_FACE_EMBEDDING,
-                PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
-            )
-            quality_face = identity in {
-                (
-                    3,
-                    PROCESSOR_TYPE_FACE_EMBEDDING,
-                    HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
-                ),
-                (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
-                (
-                    3,
-                    PROCESSOR_TYPE_FACE_EMBEDDING,
-                    PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
-                ),
-            }
-            preview_only_quality_face = identity == (
-                3,
-                PROCESSOR_TYPE_FACE_EMBEDDING,
-                PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
-            )
-            preview_only_quality_face = preview_only_quality_face or identity == (
+            quality_face = identity == (
                 3,
                 PROCESSOR_TYPE_FACE_EMBEDDING,
                 PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
@@ -1017,30 +876,13 @@ class ClaimedJob:
             fields = (
                 photo_fields
                 | ({"output_slots"} if preview or watermarked_preview else set())
-                | ({"input_geometry"} if preview_face or quality_face_with_geometry else set())
+                | ({"input_geometry"} if quality_face_with_geometry else set())
             )
             if set(value) != fields:
                 raise ContractError("invalid claimed job")
             configuration = ProcessorConfiguration.from_value(value["configuration"])
-            quality_identity_matches = (
-                identity
-                in {
-                    (
-                        3,
-                        PROCESSOR_TYPE_FACE_EMBEDDING,
-                        HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
-                    ),
-                    (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
-                }
-                and _is_sface_quality_configuration(value["configuration"])
-            ) or (
-                identity
-                == (
-                    3,
-                    PROCESSOR_TYPE_FACE_EMBEDDING,
-                    PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
-                )
-                and _is_pinned_adaface_quality_configuration(value["configuration"])
+            quality_identity_matches = quality_face and _is_pinned_adaface_quality_configuration(
+                value["configuration"]
             )
             photo_fingerprint = InputFingerprint.from_value(
                 value["input_fingerprint"], contract_version=version
@@ -1064,22 +906,10 @@ class ClaimedJob:
             supported_identity = identity in {
                 (CONTRACT_VERSION, PROCESSOR_TYPE, PROCESSOR_VERSION),
                 (
-                    CONTRACT_VERSION,
-                    PROCESSOR_TYPE_FACE_EMBEDDING,
-                    PROCESSOR_VERSION_FACE_EMBEDDING,
-                ),
-                (
-                    3,
-                    PROCESSOR_TYPE_FACE_EMBEDDING,
-                    HISTORICAL_PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY,
-                ),
-                (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_QUALITY),
-                (
                     3,
                     PROCESSOR_TYPE_FACE_EMBEDDING,
                     PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
                 ),
-                (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1),
                 (
                     PREVIEW_CONTRACT_VERSION,
                     PROCESSOR_TYPE_GENERATE_PREVIEW,
@@ -1089,11 +919,6 @@ class ClaimedJob:
                     PREVIEW_CONTRACT_VERSION,
                     PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
                     PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
-                ),
-                (
-                    PREVIEW_CONTRACT_VERSION,
-                    PROCESSOR_TYPE_FACE_EMBEDDING,
-                    PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
                 ),
                 (
                     BIB_CONTRACT_VERSION,
@@ -1107,33 +932,12 @@ class ClaimedJob:
                     and configuration.configuration_kind == PROCESSOR_TYPE
                 )
                 or (
-                    identity == (3, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK, 1)
-                    and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK
-                    and photo_fingerprint.original_key is not None
-                    and photo_fingerprint.object_key is None
-                    and input_geometry is None
-                )
-                or (
-                    identity
-                    == (
-                        CONTRACT_VERSION,
-                        PROCESSOR_TYPE_FACE_EMBEDDING,
-                        PROCESSOR_VERSION_FACE_EMBEDDING,
-                    )
-                    and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
-                    and configuration.quality_thresholds is None
-                )
-                or (
                     quality_face
                     and quality_identity_matches
                     and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
                     and configuration.quality_thresholds is not None
                     and (
-                        (
-                            not preview_only_quality_face
-                            and photo_fingerprint.original_key is not None
-                            and input_geometry is None
-                        )
+                        (photo_fingerprint.original_key is not None and input_geometry is None)
                         or (
                             photo_fingerprint.media_kind == "preview-small-v1"
                             and _preview_key_matches_photo(photo_fingerprint, value["photo_id"])
@@ -1171,14 +975,6 @@ class ClaimedJob:
                     and photo_fingerprint.object_etag is None
                     and len(output_slots) == 1
                     and output_slots[0].variant == "preview-watermarked-v1"
-                )
-                or (
-                    preview_face
-                    and configuration.configuration_kind == PROCESSOR_TYPE_FACE_EMBEDDING
-                    and value["configuration"] == SCRFD_FACE_EMBEDDING_CONFIGURATION
-                    and photo_fingerprint.media_kind == "preview-small-v1"
-                    and not output_slots
-                    and _valid_preview_input_geometry(input_geometry, photo_fingerprint)
                 )
             )
             expects_output_slot = preview or watermarked_preview
@@ -1296,12 +1092,6 @@ class FaceEmbeddingFace:
             and bool(self.error_code)
             and len(self.error_code) <= 64
         )
-        legacy_kept = (
-            self.status == "kept"
-            and self.quality is None
-            and self.embedding is not None
-            and self.error_code is None
-        )
         accepted_kept = (
             self.status == "kept"
             and self.quality is not None
@@ -1322,7 +1112,7 @@ class FaceEmbeddingFace:
             and has_technical_error
             and (self.quality is None or self.quality.decision == "accepted")
         )
-        if not (legacy_kept or accepted_kept or quality_rejected or technical_failed):
+        if not (accepted_kept or quality_rejected or technical_failed):
             raise ValueError("invalid face embedding record")
 
     def as_payload(self) -> dict[str, object]:
@@ -1332,10 +1122,6 @@ class FaceEmbeddingFace:
             "confidence": self.confidence,
             "landmarks": [list(point) for point in self.landmarks],
         }
-        if self.quality is None and self.status == "kept":
-            assert self.embedding is not None
-            payload["embedding"] = list(self.embedding)
-            return payload
         payload["status"] = self.status
         if self.quality is not None:
             payload["quality"] = self.quality.as_payload()
@@ -1467,17 +1253,6 @@ def _bounded_probability(value: object) -> bool:
     )
 
 
-def _is_sface_quality_configuration(value: object) -> bool:
-    if not isinstance(value, dict) or "adaface" in value:
-        return False
-    face = value.get("face_embedding")
-    return (
-        isinstance(face, dict)
-        and face.get("model") == SFACE_MODEL_NAME
-        and face.get("embedding_dimensions") is None
-    )
-
-
 def _is_pinned_adaface_quality_configuration(value: object) -> bool:
     if (
         not isinstance(value, dict)
@@ -1504,34 +1279,24 @@ def _valid_event_timezone(value: object) -> bool:
 
 
 def _processor_version(processor_type: str, contract_version: int = CONTRACT_VERSION) -> int:
-    if processor_type == PROCESSOR_TYPE:
-        return PROCESSOR_VERSION
-    if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
-        if contract_version == PREVIEW_CONTRACT_VERSION:
-            return PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW
-        if contract_version == 3:
-            return PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY
-        return PROCESSOR_VERSION_FACE_EMBEDDING
-    if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
-        return 1
-    if (
-        processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW
-        and contract_version == PREVIEW_CONTRACT_VERSION
-    ):
-        return PROCESSOR_VERSION_GENERATE_PREVIEW
-    if (
-        processor_type == PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW
-        and contract_version == PREVIEW_CONTRACT_VERSION
-    ):
-        return PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW
-    if processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
-        return PROCESSOR_VERSION_SELFIE_QUERY
-    if (
-        processor_type == PROCESSOR_TYPE_BIB_RECOGNITION
-        and contract_version == BIB_CONTRACT_VERSION
-    ):
-        return PROCESSOR_VERSION_BIB_RECOGNITION
-    raise ContractError("unsupported processor type")
+    versions = {
+        (CONTRACT_VERSION, PROCESSOR_TYPE): PROCESSOR_VERSION,
+        (3, PROCESSOR_TYPE_FACE_EMBEDDING): PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
+        (
+            PREVIEW_CONTRACT_VERSION,
+            PROCESSOR_TYPE_GENERATE_PREVIEW,
+        ): PROCESSOR_VERSION_GENERATE_PREVIEW,
+        (
+            PREVIEW_CONTRACT_VERSION,
+            PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+        ): PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
+        (CONTRACT_VERSION, PROCESSOR_TYPE_SELFIE_QUERY): PROCESSOR_VERSION_SELFIE_QUERY,
+        (BIB_CONTRACT_VERSION, PROCESSOR_TYPE_BIB_RECOGNITION): PROCESSOR_VERSION_BIB_RECOGNITION,
+    }
+    try:
+        return versions[(contract_version, processor_type)]
+    except KeyError as error:
+        raise ContractError("unsupported processor type") from error
 
 
 def _utc_timestamp(value: object) -> bool:

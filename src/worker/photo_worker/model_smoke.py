@@ -1,4 +1,4 @@
-"""Build-time smoke for the pinned SCRFD, SFace, and AdaFace worker models."""
+"""Build-time smoke for the pinned SCRFD and AdaFace worker models."""
 
 from __future__ import annotations
 
@@ -43,31 +43,33 @@ def main() -> None:
 
 
 def _assert_photo_embedding_no_face(path: Path) -> None:
-    for model in ("sface", "adaface-ir18-webface4m"):
-        result = extract_face_embeddings(
-            path,
-            max_bytes=path.stat().st_size,
-            detection_threshold=0.5,
-            model=model,
-        )
-        if result.model != model or result.faces != () or result.warnings != ("no_faces_detected",):
-            raise RuntimeError("face_model_smoke_unexpected_photo_result")
+    result = extract_face_embeddings(
+        path,
+        max_bytes=path.stat().st_size,
+        detection_threshold=0.5,
+        model="adaface-ir18-webface4m",
+    )
+    if (
+        result.model != "adaface-ir18-webface4m"
+        or result.faces != ()
+        or result.warnings != ("no_faces_detected",)
+    ):
+        raise RuntimeError("face_model_smoke_unexpected_photo_result")
 
 
 def _assert_selfie_query_no_face(path: Path) -> None:
-    for model in ("sface", "adaface-ir18-webface4m"):
-        try:
-            extract_selfie_embedding(
-                path,
-                max_bytes=path.stat().st_size,
-                content_type="image/jpeg",
-                detection_threshold=0.5,
-                model=model,
-            )
-        except FaceEmbeddingError as error:
-            if error.code == "no_face_detected":
-                continue
+    try:
+        extract_selfie_embedding(
+            path,
+            max_bytes=path.stat().st_size,
+            content_type="image/jpeg",
+            detection_threshold=0.5,
+            model="adaface-ir18-webface4m",
+        )
+    except FaceEmbeddingError as error:
+        if error.code != "no_face_detected":
             raise RuntimeError("face_model_smoke_unexpected_selfie_error") from error
+    else:
         raise RuntimeError("face_model_smoke_expected_no_face")
 
 

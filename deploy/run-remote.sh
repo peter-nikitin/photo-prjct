@@ -233,158 +233,6 @@ for line in sys.stdin:
         raise SystemExit(2)
     environment[name] = decode(encoded)
 mode = sys.argv[1]
-benchmark_command = r'''set -eu
-cd /opt/photo-prjct
-
-worker_identity="$(sed -n 's/^PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=//p' .env | head -n 1)"
-test "$worker_identity" = '3/face_embedding_benchmark/1'
-worker_replicas="$(sed -n 's/^PHOTO_WORKER_REPLICAS=//p' .env | head -n 1)"
-preview_enabled="$(sed -n 's/^PHOTO_PROCESSING_PREVIEW_ENABLED=//p' .env | head -n 1)"
-test "$preview_enabled" = False
-
-run_web() {
-  docker compose --project-name photo-prjct \
-    --env-file .env \
-    -f docker-compose.deployment.yml \
-    -f docker-compose.https.yml \
-    exec -T -e BENCHMARK_SOURCE_RUN_UUID web python manage.py "$@"
-}
-
-require_uuid() {
-  printf '%s' "$1" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-}
-
-case "$BENCHMARK_OPERATION" in
-  baseline)
-    test "$worker_replicas" = 1
-    test -n "$BENCHMARK_EVENT_SLUG"
-    benchmark_run_id="$(run_web run_face_embedding_benchmark \
-      --event "$BENCHMARK_EVENT_SLUG" \
-      --limit 114 \
-      --label deployment-baseline-one-replica)"
-    require_uuid "$benchmark_run_id"
-    printf 'BENCHMARK_RUN_ID=%s\n' "$benchmark_run_id"
-    ;;
-  replay)
-    test "$worker_replicas" = 2
-    require_uuid "$BENCHMARK_SOURCE_RUN_UUID"
-    benchmark_run_id="$(run_web run_face_embedding_benchmark \
-      --source-run "$BENCHMARK_SOURCE_RUN_UUID" \
-      --label deployment-replay-two-replicas)"
-    require_uuid "$benchmark_run_id"
-    printf 'BENCHMARK_RUN_ID=%s\n' "$benchmark_run_id"
-    ;;
-  report)
-    require_uuid "$BENCHMARK_SOURCE_RUN_UUID"
-    export BENCHMARK_SOURCE_RUN_UUID
-    run_web shell -c '
-from collections import Counter, defaultdict
-import json
-import os
-from django.core.management.base import CommandError
-from processing.models import EventProcessingRun, ProcessingAttempt, ProcessingJob
-
-run = EventProcessingRun.objects.filter(pk=os.environ["BENCHMARK_SOURCE_RUN_UUID"]).first()
-if run is None:
-    raise CommandError("benchmark run does not exist")
-if not (
-    run.contract_version == 3
-    and run.processor_type == "face_embedding_benchmark"
-    and run.processor_version == 1
-    and run.status == EventProcessingRun.Status.CLOSED
-):
-    raise CommandError("benchmark run must be closed")
-
-jobs = list(ProcessingJob.objects.filter(run=run).only("id", "status", "created_at", "input_fingerprint"))
-attempts = list(
-    ProcessingAttempt.objects.filter(run=run).only(
-        "job_id", "status", "error_code", "claimed_at", "terminal_at",
-        "download_duration_ms", "compute_duration_ms", "total_duration_ms", "result",
-    )
-)
-terminal_statuses = {
-    ProcessingJob.Status.SUCCEEDED,
-    ProcessingJob.Status.FAILED,
-    ProcessingJob.Status.CANCELLED,
-}
-terminal_attempts = [attempt for attempt in attempts if attempt.terminal_at is not None]
-attempts_by_job = defaultdict(list)
-for attempt in attempts:
-    attempts_by_job[attempt.job_id].append(attempt)
-
-def percentile(values, fraction):
-    ordered = sorted(values)
-    if not ordered:
-        return None
-    position = (len(ordered) - 1) * fraction
-    lower = int(position)
-    upper = min(lower + 1, len(ordered) - 1)
-    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
-
-def timing(result, name):
-    value = result.get("timings", {}).get(name)
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-creation_to_claim = []
-for job in jobs:
-    claims = [attempt.claimed_at for attempt in attempts_by_job[job.id] if attempt.claimed_at]
-    if claims:
-        creation_to_claim.append((min(claims) - job.created_at).total_seconds() * 1000)
-measurements = {
-    "download": [attempt.download_duration_ms for attempt in terminal_attempts if attempt.download_duration_ms is not None],
-    "compute": [attempt.compute_duration_ms for attempt in terminal_attempts if attempt.compute_duration_ms is not None],
-    "total": [attempt.total_duration_ms for attempt in terminal_attempts if attempt.total_duration_ms is not None],
-    "model_load": [value for attempt in terminal_attempts if (value := timing(attempt.result, "model_load_ms")) is not None],
-    "decode": [value for attempt in terminal_attempts if (value := timing(attempt.result, "decode_ms")) is not None],
-    "detect": [value for attempt in terminal_attempts if (value := timing(attempt.result, "detect_ms")) is not None],
-    "embed": [value for attempt in terminal_attempts if (value := timing(attempt.result, "embed_ms")) is not None],
-}
-size_buckets = Counter()
-for job in jobs:
-    size = job.input_fingerprint.get("original_size")
-    if isinstance(size, int) and size < 1_000_000:
-        size_buckets["<1MB"] += 1
-    elif isinstance(size, int) and size < 5_000_000:
-        size_buckets["1-5MB"] += 1
-    elif isinstance(size, int) and size < 10_000_000:
-        size_buckets["5-10MB"] += 1
-    else:
-        size_buckets[">=10MB"] += 1
-wall_clock_ms = (run.closed_at - run.created_at).total_seconds() * 1000
-output = {
-    "cohort_size": len(jobs),
-    "terminal_outcomes": dict(sorted(Counter(job.status for job in jobs if job.status in terminal_statuses).items())),
-    "sample_counts": {
-        "jobs": len(jobs),
-        "terminal_attempts": len(terminal_attempts),
-        "creation_to_claim_ms": len(creation_to_claim),
-        **{f"{name}_ms": len(values) for name, values in measurements.items()},
-    },
-    "retried_job_count": sum(len(job_attempts) > 1 for job_attempts in attempts_by_job.values()),
-    "expired_attempt_count": sum(attempt.status == ProcessingAttempt.Status.EXPIRED for attempt in attempts),
-    "stale_attempt_count": sum(attempt.status == ProcessingAttempt.Status.STALE for attempt in attempts),
-    "lease_loss_count": sum(attempt.error_code == "lease_not_current" for attempt in attempts),
-    "terminal_error_code_counts": dict(sorted(Counter(attempt.error_code for attempt in terminal_attempts if attempt.error_code).items())),
-    "representative_input_size_distribution": dict(sorted(size_buckets.items())),
-    "representative_dimension_distribution": "not_collected_by_benchmark_contract",
-    "wall_clock_ms": wall_clock_ms,
-    "photos_per_minute": len([job for job in jobs if job.status in terminal_statuses]) / (wall_clock_ms / 60_000) if wall_clock_ms else None,
-    "creation_to_claim_p50_ms": percentile(creation_to_claim, 0.5),
-    "creation_to_claim_p95_ms": percentile(creation_to_claim, 0.95),
-    **{
-        f"{name}_{percentile_name}_ms": percentile(values, fraction)
-        for name, values in measurements.items()
-        for percentile_name, fraction in (("p50", 0.5), ("p95", 0.95))
-    },
-}
-print(json.dumps(output, sort_keys=True))
-'
-    ;;
-  *)
-    exit 2
-    ;;
-esac'''
-
 deployment_command = r'''set -eu
 deployment_root=/opt/photo-prjct
 exec 9>"$deployment_root/.deployment.lock"
@@ -476,8 +324,6 @@ if [ "$recover_forward" = True ]; then
   DEPLOY_ROOT="$deployment_root" COMPOSE_PROJECT_NAME=photo-prjct \
     sh "$candidate_package/deploy/apply-deployment.sh" --verify-forward-candidate
   retained_predecessor="$(sed -n '1p' "$deployment_root/.deployment-recovery/package-path")"
-else
-  python3 "$candidate_package/deploy/verify-native-release.py" --root "$deployment_root" --app-image "$APP_IMAGE"
 fi
 previous_entry_count=0
 for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
@@ -548,7 +394,6 @@ for name in journald.conf selfie-search-summary.service selfie-search-summary.ti
   cmp -s "deploy/selfie-observability/$name" "/usr/local/lib/findme-selfie-observability-package/$name"
 done
 sudo -n /usr/local/sbin/findme-selfie-observability verify''',
-    'face-embedding-benchmark': benchmark_command,
 }
 if mode not in commands:
     raise SystemExit(2)
@@ -619,9 +464,6 @@ PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS
 SELFIE_SEARCH_MAX_UPLOAD_BYTES
 SELFIE_SEARCH_MAX_PIXELS
 SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS
-SELFIE_SEARCH_EMBEDDING_MODEL
-SELFIE_SEARCH_EMBEDDING_DIMENSIONS
-SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD
 SELFIE_SEARCH_TEMPORARY_PREFIX
 SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS
 SELFIE_FEEDBACK_ENABLED
@@ -716,7 +558,7 @@ mode=$1
 remote_deployment_values="$REMOTE_DEPLOYMENT_VALUES"
 
 case "$mode" in
-    deploy|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|face-embedding-benchmark|public-monitor|remote-preflight|stage-paused-observability-release) ;;
+    deploy|private-storage|selfie-storage|selfie-feedback-storage|configure-monitoring|verify-deployed-image|verify-paused-observability-release|public-monitor|remote-preflight|stage-paused-observability-release) ;;
     *) fail arguments unknown_operation ;;
 esac
 
@@ -814,19 +656,10 @@ case "$mode" in
             fail environment materialization_failed
         fi
         ;;
-    face-embedding-benchmark)
-        remote_environment=$temporary_root/remote.env
-        if ! write_remote_environment "$FINDME_ENV_FILE" "$remote_environment" BENCHMARK_OPERATION BENCHMARK_EVENT_SLUG BENCHMARK_SOURCE_RUN_UUID >"$command_output" 2>&1; then
-            fail environment materialization_failed
-        fi
-        ;;
 esac
 
 quoted_program=$(quote_for_remote_shell "$REMOTE_PROGRAM")
 run_quietly_with_stdin remote remote_failed "$remote_environment" ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i "$key_file" "$remote_target" "exec python3 -c '$quoted_program' '$mode'"
-if [ "$mode" = face-embedding-benchmark ]; then
-    cat "$command_output"
-fi
 if [ "$mode" = deploy ]; then
     relay_deployment_markers
 fi

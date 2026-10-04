@@ -9,11 +9,9 @@ from uuid import UUID
 from selfie_search.models import SelfieSearch
 
 _NORMALIZATION_TOLERANCE = 1e-6
-_SELFIE_QUERY_MODEL = "sface"
-_SELFIE_QUERY_DIMENSIONS = 128
-_SELFIE_QUERY_THRESHOLD = 0.363
 _ADAFACE_QUERY_MODEL = "adaface-ir18-webface4m"
 _ADAFACE_QUERY_DIMENSIONS = 512
+_ADAFACE_QUERY_THRESHOLD = 0.42
 
 
 class RankingError(ValueError):
@@ -60,22 +58,10 @@ def _configuration(search: SelfieSearch) -> _SearchConfiguration:
         raise RankingError("search configuration is invalid")
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
         raise RankingError("search configuration is invalid")
-    if not math.isfinite(threshold) or not 0.0 <= threshold <= 2.0:
-        raise RankingError("search configuration is invalid")
-    if (
-        model == _SELFIE_QUERY_MODEL
-        and dimensions == _SELFIE_QUERY_DIMENSIONS
-        and math.isclose(
-            threshold, _SELFIE_QUERY_THRESHOLD, rel_tol=0.0, abs_tol=_NORMALIZATION_TOLERANCE
-        )
-    ):
-        return _SearchConfiguration(model=model, dimensions=dimensions, threshold=float(threshold))
     if (
         model != _ADAFACE_QUERY_MODEL
         or dimensions != _ADAFACE_QUERY_DIMENSIONS
-        or math.isclose(
-            threshold, _SELFIE_QUERY_THRESHOLD, rel_tol=0.0, abs_tol=_NORMALIZATION_TOLERANCE
-        )
+        or threshold != _ADAFACE_QUERY_THRESHOLD
     ):
         raise RankingError("search configuration is invalid")
     return _SearchConfiguration(model=model, dimensions=dimensions, threshold=float(threshold))

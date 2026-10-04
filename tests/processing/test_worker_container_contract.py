@@ -14,7 +14,6 @@ import yaml
 from django.test import Client, override_settings
 
 ROOT = Path(__file__).resolve().parents[2]
-OPENCV_ZOO_REVISION = "47534e27c9851bb1128ccc0102f1145e27f23f98"
 ADAFACE_REVISION = "0dd53f188fa27968b0a1326970ebf4aeb37ce2ca"
 ADAFACE_MODEL_DIRECTORY = "/worker/models/adaface-ir18-webface4m"
 ADAFACE_ARTIFACTS = (
@@ -37,12 +36,6 @@ SCRFD_MODEL = (
     "PHOTO_WORKER_SCRFD_MODEL_PATH",
     "det_10g.onnx",
     "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
-)
-SFACE_MODEL = (
-    "PHOTO_WORKER_SFACE_MODEL_PATH",
-    "face_recognition_sface_2021dec.onnx",
-    "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
-    "models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
 )
 FORBIDDEN_SETTINGS = {
     "DB_NAME",
@@ -83,11 +76,6 @@ def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() 
 
     archive_url, archive_checksum = BUFFALO_L_ARCHIVE
     scrfd_environment, scrfd_filename, scrfd_checksum = SCRFD_MODEL
-    sface_environment, sface_filename, sface_checksum, sface_source_path = SFACE_MODEL
-    sface_destination = f"/worker/models/{sface_filename}"
-    sface_source = (
-        f"https://github.com/opencv/opencv_zoo/raw/{OPENCV_ZOO_REVISION}/{sface_source_path}"
-    )
 
     if f"ADD --checksum=sha256:{archive_checksum} {archive_url}" not in dockerfile:
         failures.append("missing immutable buffalo_l archive")
@@ -97,11 +85,8 @@ def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() 
         failures.append("missing model-only SCRFD packaging stage")
     if f"{scrfd_environment}=/worker/models/{scrfd_filename}" not in dockerfile:
         failures.append(f"missing {scrfd_environment} container path")
-    sface_instruction = f"ADD --checksum=sha256:{sface_checksum} {sface_source} {sface_destination}"
-    if sface_instruction not in dockerfile:
-        failures.append(f"missing immutable {sface_filename} artifact")
-    if f"{sface_environment}={sface_destination}" not in dockerfile:
-        failures.append(f"missing {sface_environment} container path")
+    if "sface" in dockerfile.lower():
+        failures.append("worker image still contains SFace artifact or environment")
     if "yunet" in dockerfile.lower():
         failures.append("worker image still contains YuNet")
     requirements = (ROOT / "src/worker/requirements.txt").read_text(encoding="utf-8")

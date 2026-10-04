@@ -1,4 +1,4 @@
-# 0052: Retire SFace and fix the AdaFace vector dimension
+# 0054: Retire SFace and fix the AdaFace vector dimension
 
 - Status: Accepted
 - Date: 2026-10-04

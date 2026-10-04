@@ -39,10 +39,6 @@ class EventQuerySet(models.QuerySet):
 
 
 class Event(models.Model):
-    class FaceSearchGeneration(models.TextChoices):
-        SFACE_V3 = "sface_v3", "SFace v3"
-        ADAFACE_V5 = "adaface_v5", "AdaFace v5"
-
     class AccessType(models.TextChoices):
         FREE = "free", "Free"
         PAID = "paid", "Paid"
@@ -73,12 +69,6 @@ class Event(models.Model):
         db_default=PublicationStatus.UNAVAILABLE,
     )
     timezone_name = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001
-    face_search_generation = models.CharField(
-        max_length=16,
-        choices=FaceSearchGeneration,
-        default=FaceSearchGeneration.ADAFACE_V5,
-        db_default=FaceSearchGeneration.ADAFACE_V5,
-    )
     bib_search_enabled = models.BooleanField(default=False, db_default=False)
 
     objects = EventQuerySet.as_manager()

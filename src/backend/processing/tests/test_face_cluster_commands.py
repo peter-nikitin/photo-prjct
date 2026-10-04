@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -17,12 +18,17 @@ from processing.models import (
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
+    PhotoFaceEmbeddingProjection,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
 )
 from processing.services.enrollment import FACE_EMBEDDING_CONFIGURATION
 from processing.services.face_cluster_corpora import build_face_cluster_corpus
+from processing.services.face_quality import (
+    active_face_embedding_generations,
+    current_face_embedding_generation,
+)
 
 
 class FaceClusterCommandTests(TestCase):
@@ -35,7 +41,6 @@ class FaceClusterCommandTests(TestCase):
             end_date=date(2026, 8, 5),
             city="Moscow",
             publication_status=Event.PublicationStatus.PUBLISHED,
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         self.make_embedding()
 
@@ -50,12 +55,13 @@ class FaceClusterCommandTests(TestCase):
             original_content_type="image/jpeg",
             uploaded_at=timezone.now(),
         )
-        configuration_hash = "a" * 64
+        configuration_hash = current_face_embedding_generation()["configuration_hash"]
+        assert isinstance(configuration_hash, str)
         run = EventProcessingRun.objects.create(
             event=self.event,
-            contract_version=1,
+            contract_version=3,
             processor_type="face_embedding",
-            processor_version=1,
+            processor_version=5,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             configuration_hash=configuration_hash,
         )
@@ -63,9 +69,9 @@ class FaceClusterCommandTests(TestCase):
             event=self.event,
             run=run,
             photo=photo,
-            contract_version=1,
+            contract_version=3,
             processor_type="face_embedding",
-            processor_version=1,
+            processor_version=5,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             configuration_hash=configuration_hash,
             input_fingerprint={},
@@ -75,9 +81,9 @@ class FaceClusterCommandTests(TestCase):
             run=run,
             job=job,
             photo=photo,
-            contract_version=1,
+            contract_version=3,
             processor_type="face_embedding",
-            processor_version=1,
+            processor_version=5,
             configuration=FACE_EMBEDDING_CONFIGURATION,
             input_fingerprint={},
             status=ProcessingAttempt.Status.SUCCEEDED,
@@ -102,9 +108,16 @@ class FaceClusterCommandTests(TestCase):
         )
         FaceEmbeddingVector.objects.create(
             detection=detection,
-            model_version="sface",
-            vector=[1.0] + [0.0] * 127,
+            model_version="adaface-ir18-webface4m",
+            vector=[1.0] + [0.0] * 511,
             metadata={},
+        )
+        PhotoFaceEmbeddingProjection.objects.create(
+            photo=photo,
+            contract_version=3,
+            processor_version=5,
+            configuration_hash=configuration_hash,
+            accepted_attempt=attempt,
         )
 
     def test_command_requires_explicit_thresholds_and_prints_only_uuid(self) -> None:
@@ -172,7 +185,7 @@ class FaceClusterCommandTests(TestCase):
             "--corpus",
             str(corpus.pk),
             "--policy-hash",
-            cluster_expansion_policy_hash(corpus.configuration_hash, 0.363, 0.05),
+            cluster_expansion_policy_hash(corpus.configuration_hash, 0.42, 0.05),
             "--anchor-threshold",
             "0.05",
             "--evaluation-report-hash",
@@ -181,5 +194,9 @@ class FaceClusterCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command(*arguments)
         output = StringIO()
-        call_command(*arguments, "--confirm-numeric-gates-reviewed", stdout=output)
+        with patch(
+            "selfie_search.services.submission._face_embedding_generations",
+            return_value=active_face_embedding_generations(self.event),
+        ):
+            call_command(*arguments, "--confirm-numeric-gates-reviewed", stdout=output)
         self.assertRegex(output.getvalue().strip(), re.compile(r"^[0-9a-f-]{36}$"))

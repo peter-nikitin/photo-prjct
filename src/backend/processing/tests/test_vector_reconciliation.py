@@ -10,7 +10,11 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from processing.models import FaceEmbeddingVector, PhotoFaceEmbeddingProjection
+from processing.models import (
+    FaceEmbeddingVector,
+    PhotoFaceEmbeddingProjection,
+    PhotoProcessingState,
+)
 from processing.services.vector_reconciliation import vector_identity_gaps, verify_embeddings
 from processing.tests.test_vector_embeddings import detection  # noqa: F401
 
@@ -29,6 +33,15 @@ def native_detection(detection):  # noqa: F811 - imported pytest fixture depende
     photo.uploaded_by = get_user_model().objects.create_user(username="native-owner")
     photo.uploaded_at = timezone.now()
     photo.save()
+    PhotoProcessingState.objects.create(
+        photo=photo,
+        processor_type="face_embedding",
+        status=PhotoProcessingState.Status.SUCCEEDED,
+        current_run=source_detection.attempt.run,
+        current_job=source_detection.attempt.job,
+        current_attempt=source_detection.attempt,
+        accepted_attempt=source_detection.attempt,
+    )
     PhotoFaceEmbeddingProjection.objects.create(
         photo=photo,
         accepted_attempt=source_detection.attempt,
@@ -39,7 +52,7 @@ def native_detection(detection):  # noqa: F811 - imported pytest fixture depende
     return source_detection
 
 
-def generation(source_detection, model="sface"):
+def generation(source_detection, model="adaface-ir18-webface4m"):
     attempt = source_detection.attempt
     return dict(
         model=model,
@@ -51,8 +64,8 @@ def generation(source_detection, model="sface"):
     )
 
 
-@pytest.mark.parametrize(("model", "dimensions"), [("sface", 128), ("adaface-ir18-webface4m", 512)])
-def test_native_verifier_accepts_both_models_without_json(native_detection, model, dimensions):
+@pytest.mark.parametrize(("model", "dimensions"), [("adaface-ir18-webface4m", 512)])
+def test_native_verifier_accepts_current_model_without_json(native_detection, model, dimensions):
     FaceEmbeddingVector.objects.create(
         detection=native_detection, model_version=model, vector=[1.0] + [0.0] * (dimensions - 1)
     )
@@ -76,11 +89,11 @@ def test_native_verifier_accepts_both_models_without_json(native_detection, mode
     )
 
 
-@pytest.mark.parametrize("native_model", [None, "adaface-ir18-webface4m"])
+@pytest.mark.parametrize("native_model", [None, "sface"])
 def test_native_verifier_rejects_missing_or_wrong_model(native_detection, native_model):
     if native_model:
         FaceEmbeddingVector.objects.create(
-            detection=native_detection, model_version=native_model, vector=[1.0] + [0.0] * 511
+            detection=native_detection, model_version=native_model, vector=[1.0] + [0.0] * 127
         )
     report = verify_embeddings(native_detection.attempt.event, [generation(native_detection)])
     assert sum(report["groups"][0][field] for field in ("missing", "invalid", "divergent")) == 1
@@ -120,7 +133,9 @@ def test_scalar_identity_gaps_are_native_and_do_not_select_payloads(native_detec
     assert '"processing_faceembedding"' not in queries[0]["sql"]
     assert '."vector"' not in queries[0]["sql"]
     FaceEmbeddingVector.objects.create(
-        detection=native_detection, model_version="sface", vector=[1.0] + [0.0] * 127
+        detection=native_detection,
+        model_version="adaface-ir18-webface4m",
+        vector=[1.0] + [0.0] * 511,
     )
     assert vector_identity_gaps(native_detection.attempt.event, generations) == dict(
         eligible=1, missing=0, divergent=0
@@ -129,7 +144,9 @@ def test_scalar_identity_gaps_are_native_and_do_not_select_payloads(native_detec
 
 def test_hidden_native_evidence_is_inactive(native_detection):
     FaceEmbeddingVector.objects.create(
-        detection=native_detection, model_version="sface", vector=[1.0] + [0.0] * 127
+        detection=native_detection,
+        model_version="adaface-ir18-webface4m",
+        vector=[1.0] + [0.0] * 511,
     )
     photo = native_detection.attempt.photo
     photo.is_hidden = True
@@ -159,7 +176,9 @@ def test_scalar_command_requires_event_and_rejects_gaps(native_detection):
             stdout=StringIO(),
         )
     FaceEmbeddingVector.objects.create(
-        detection=native_detection, model_version="sface", vector=[1.0] + [0.0] * 127
+        detection=native_detection,
+        model_version="adaface-ir18-webface4m",
+        vector=[1.0] + [0.0] * 511,
     )
     out = StringIO()
     call_command(

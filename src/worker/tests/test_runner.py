@@ -10,11 +10,9 @@ from photo_worker.client import ApiError, CallbackResult, DownloadError
 from photo_worker.contracts import (
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_FACE_EMBEDDING,
-    PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
-    V2_FACE_EMBEDDING_CONFIGURATION,
     V2_GENERATE_PREVIEW_CONFIGURATION,
     V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION,
     CaptureMetadataResult,
@@ -99,10 +97,7 @@ def configuration(
         "worker": {
             "concurrency": 1,
             "api_response_max_bytes": (
-                384 * 1024
-                if processor_type
-                in {PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK}
-                else 16_384
+                384 * 1024 if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING else 16_384
             ),
             "heartbeat_interval_seconds": heartbeat_interval_seconds,
             "lease_duration_seconds": 120,
@@ -121,7 +116,6 @@ def configuration(
                     if processor_type
                     in {
                         PROCESSOR_TYPE_FACE_EMBEDDING,
-                        PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
                     }
                     else 8_192
                 )
@@ -461,56 +455,6 @@ def watermarked_preview_claim() -> Claim:
     )
 
 
-def preview_face_claim() -> Claim:
-    return Claim.from_response(
-        {
-            "empty": False,
-            "job": {
-                "id": "00000000-0000-0000-0000-000000000021",
-                "attempt_id": "00000000-0000-0000-0000-000000000012",
-                "contract_version": 2,
-                "processor_type": PROCESSOR_TYPE_FACE_EMBEDDING,
-                "processor_version": 3,
-                "configuration": {
-                    **V2_FACE_EMBEDDING_CONFIGURATION,
-                    "face_embedding": {
-                        "model": "sface",
-                        "min_face_px": 32,
-                        "max_faces_per_photo": 32,
-                        "normalize_embeddings": True,
-                        "detection_threshold": 0.5,
-                    },
-                },
-                "photo_id": "photo-2",
-                "event_id": "00000000-0000-0000-0000-000000000013",
-                "run_id": "00000000-0000-0000-0000-000000000014",
-                "input_fingerprint": {
-                    "object_key": "derivatives/previews/photo-2/preview-small-v1/"
-                    "00000000-0000-0000-0000-000000000012-"
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
-                    "object_size": 1024,
-                    "object_content_type": "image/jpeg",
-                    "object_etag": None,
-                    "media_kind": "preview-small-v1",
-                    "pixel_width": 1600,
-                    "pixel_height": 1000,
-                },
-                "input_geometry": {
-                    "coordinate_space": "preview-small-v1",
-                    "pixel_width": 1600,
-                    "pixel_height": 1000,
-                    "oriented_source_width": 3200,
-                    "oriented_source_height": 2000,
-                },
-                "input_limits": {"max_bytes": 1024, "content_type": "image/jpeg"},
-                "lease_expires_at": "2026-07-30T10:03:00Z",
-                "download_url": "https://storage.example.test/download?signature=download-secret",
-                "download_expires_at": "2026-07-30T10:01:00Z",
-            },
-        }
-    )
-
-
 class PreviewClient(Client):
     def __init__(self) -> None:
         super().__init__(preview_claim())
@@ -787,26 +731,8 @@ def test_second_temporary_context_close_failure_removes_all_files_without_public
     assert list(tmp_path.iterdir()) == []
 
 
-def make_face_embedding_result() -> FaceEmbeddingResult:
-    return FaceEmbeddingResult(
-        model="sface",
-        faces=(
-            FaceEmbeddingFace(
-                index=0,
-                bbox=(1.0, 2.0, 32.0, 32.0),
-                confidence=0.96,
-                landmarks=((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)),
-                embedding=tuple(float(i) / 128 for i in range(128)),
-            ),
-        ),
-        has_single_query_face_usable=True,
-        warnings=(),
-        timings={"decode_ms": 1, "model_load_ms": 2, "detect_ms": 3, "embed_ms": 4, "total_ms": 10},
-    )
-
-
 def quality_face_claim() -> Claim:
-    claim = preview_face_claim()
+    claim = make_claim()
     assert claim.job is not None
     thresholds = FaceQualityThresholds(
         algorithm_version="normalized-laplacian-v1",
@@ -821,6 +747,7 @@ def quality_face_claim() -> Claim:
         job=replace(
             claim.job,
             contract_version=3,
+            processor_type=PROCESSOR_TYPE_FACE_EMBEDDING,
             processor_version=5,
             configuration=replace(
                 claim.job.configuration,
@@ -880,6 +807,16 @@ def quality_face_embedding_result() -> FaceEmbeddingResult:
 
 def maximum_face_embedding_result() -> FaceEmbeddingResult:
     """Measured maximum v2 output: 32 AdaFace vectors plus every typed field."""
+    quality = FaceQualityEvidence(
+        algorithm_version="normalized-laplacian-v1",
+        crop_size=112,
+        confidence=0.9876543,
+        minimum_side_px=1600.0,
+        relative_area=0.1,
+        sharpness=60.0,
+        decision="accepted",
+        reasons=(),
+    )
     return FaceEmbeddingResult(
         model="adaface-ir18-webface4m",
         faces=tuple(
@@ -896,6 +833,7 @@ def maximum_face_embedding_result() -> FaceEmbeddingResult:
                 ),
                 # ``float(np.float32(1 / sqrt(512)))`` uses this full wire representation.
                 embedding=tuple(0.04419417306780815 for _ in range(512)),
+                quality=quality,
             )
             for index in range(32)
         ),
@@ -927,7 +865,7 @@ def test_worker_polls_selfie_first_then_keeps_existing_processors_available(
 ) -> None:
     caplog.set_level("INFO")
     selfie_claim = make_claim(processor_type=PROCESSOR_TYPE_SELFIE_QUERY)
-    face_claim = preview_face_claim()
+    face_claim = quality_face_claim()
 
     class OrderedClient(Client):
         def __init__(self) -> None:
@@ -941,7 +879,7 @@ def test_worker_polls_selfie_first_then_keeps_existing_processors_available(
     client = OrderedClient()
     monkeypatch.setattr(
         "photo_worker.runner.extract_face_embeddings",
-        lambda *_args, **_kwargs: make_face_embedding_result(),
+        lambda *_args, **_kwargs: quality_face_embedding_result(),
     )
     worker = Worker(
         client,
@@ -1244,7 +1182,7 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
     )
     monkeypatch.setenv(
         "PHOTO_WORKER_PROCESSOR_IDENTITIES",
-        "1/capture_metadata/2,1/selfie_query/2,2/generate_preview/1,2/face_embedding/3",
+        "1/capture_metadata/2,1/selfie_query/2,2/generate_preview/1,3/face_embedding/5",
     )
     plural, _client = WorkerConfig.from_env()
     monkeypatch.delenv("PHOTO_WORKER_PROCESSOR_IDENTITIES")
@@ -1263,7 +1201,7 @@ def test_worker_configuration_parses_plural_processors_and_legacy_singular(
         "1/capture_metadata/2",
         "1/selfie_query/2",
         "2/generate_preview/1",
-        "2/face_embedding/3",
+        "3/face_embedding/5",
     )
     assert product.processor_types == (
         PROCESSOR_TYPE_SELFIE_QUERY,
@@ -1343,7 +1281,7 @@ def test_environment_product_identity_preserves_product_type_fallbacks(
     assert Worker(client, config).run_once() == 7
     assert client.claim_identities == [
         (1, PROCESSOR_TYPE_SELFIE_QUERY, 2),
-        (2, PROCESSOR_TYPE_FACE_EMBEDDING, 3),
+        (3, PROCESSOR_TYPE_FACE_EMBEDDING, 5),
         (1, PROCESSOR_TYPE, 2),
         (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1),
     ]
@@ -1437,40 +1375,6 @@ def test_capture_metadata_v2_passes_event_timezone_and_serializes_provenance(
     }
 
 
-def test_worker_processes_face_embedding_claim_and_submits_typed_result(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    caplog.set_level("INFO")
-    client = Client(preview_face_claim())
-    monkeypatch.setattr(
-        "photo_worker.runner.extract_face_embeddings",
-        lambda *_args, **_kwargs: make_face_embedding_result(),
-    )
-    worker = Worker(
-        client,
-        WorkerConfig(
-            worker_build="worker-test",
-            lease_seconds=60,
-            temp_dir=tmp_path,
-            processor_type=PROCESSOR_TYPE_FACE_EMBEDDING,
-        ),
-    )
-
-    delay = worker.run_once()
-
-    assert delay is None
-    assert client.completed[0]["outcome"] == "success"
-    assert client.completed[0]["processor_type"] == PROCESSOR_TYPE_FACE_EMBEDDING
-    assert client.completed[0]["result"]["face_count"] == 1
-    assert client.completed[0]["result"]["faces"][0]["index"] == 0
-    assert client.completed[0]["result"]["has_single_query_face_usable"] is True
-    assert len(json.dumps(client.completed[0], separators=(",", ":")).encode()) <= 8_192
-    assert list(tmp_path.iterdir()) == []
-    assert "phase=succeeded" in caplog.text
-
-
 def test_worker_submits_v5_adaface_quality_records_and_passes_the_frozen_thresholds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1501,38 +1405,6 @@ def test_worker_submits_v5_adaface_quality_records_and_passes_the_frozen_thresho
     assert face["status"] == "quality_rejected"
     assert face["quality"]["reasons"] == ["borderline_blur", "low_confidence"]
     assert "embedding" not in face
-
-
-def test_worker_submits_preview_face_result_with_declared_geometry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client = Client(preview_face_claim())
-    monkeypatch.setattr(
-        "photo_worker.runner.extract_face_embeddings",
-        lambda *_args, **_kwargs: make_face_embedding_result(),
-    )
-
-    Worker(
-        client,
-        WorkerConfig(
-            worker_build="worker-test",
-            lease_seconds=60,
-            temp_dir=tmp_path,
-            processor_identities=("2/face_embedding/3",),
-        ),
-    ).run_once()
-
-    assert len(client.completed) == 1
-    assert client.failed == []
-    assert client.completed[0]["result"]["input_geometry"] == {
-        "coordinate_space": "preview-small-v1",
-        "pixel_width": 1600,
-        "pixel_height": 1000,
-        "oriented_source_width": 3200,
-        "oriented_source_height": 2000,
-    }
-    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("worker_build", ["previous-image", "replacement-image"])
@@ -1568,7 +1440,7 @@ def test_worker_submits_maximum_v5_adaface_payload_within_contract_bound(
 def test_worker_maps_model_inference_timeout_to_retryable_failure_for_face_embedding(
     tmp_path: Path,
 ) -> None:
-    client = Client(preview_face_claim())
+    client = Client(quality_face_claim())
     worker = Worker(
         client,
         WorkerConfig(
@@ -1615,7 +1487,7 @@ def test_worker_waits_only_after_every_configured_identity_is_empty() -> None:
             processor_identities=(
                 "1/capture_metadata/2",
                 "2/generate_preview/1",
-                "2/face_embedding/3",
+                "3/face_embedding/5",
             ),
         ),
     )
@@ -1624,7 +1496,7 @@ def test_worker_waits_only_after_every_configured_identity_is_empty() -> None:
     assert client.claim_identities == [
         (1, "capture_metadata", 2),
         (2, "generate_preview", 1),
-        (2, "face_embedding", 3),
+        (3, "face_embedding", 5),
     ]
 
 
@@ -1637,7 +1509,6 @@ def test_worker_reaches_backlogged_identity_without_sleeping_between_empty_queue
         "1/capture_metadata/2",
         "2/generate_preview/1",
         "2/generate_watermarked_preview/1",
-        "2/face_embedding/3",
         "3/face_embedding/5",
         "1/bib_recognition/1",
     )
@@ -1654,13 +1525,11 @@ def test_worker_reaches_backlogged_identity_without_sleeping_between_empty_queue
         (1, "capture_metadata", 2),
         (2, "generate_preview", 1),
         (2, "generate_watermarked_preview", 1),
-        (2, "face_embedding", 3),
         current_face,
         (1, "bib_recognition", 1),
         (1, "capture_metadata", 2),
         (2, "generate_preview", 1),
         (2, "generate_watermarked_preview", 1),
-        (2, "face_embedding", 3),
         current_face,
     ]
 
@@ -1681,7 +1550,7 @@ def test_worker_keeps_explicit_preview_identities_after_public_priority_processo
                 "1/capture_metadata/2",
                 "1/selfie_query/2",
                 "2/generate_preview/1",
-                "2/face_embedding/3",
+                "3/face_embedding/5",
             ),
         ),
     )
@@ -1689,7 +1558,7 @@ def test_worker_keeps_explicit_preview_identities_after_public_priority_processo
     assert worker.run_once() == 3
     assert client.claim_identities == [
         (1, "selfie_query", 2),
-        (2, "face_embedding", 3),
+        (3, "face_embedding", 5),
         (1, "capture_metadata", 2),
         (2, "generate_preview", 1),
     ]
@@ -1700,7 +1569,7 @@ def test_continuous_selfie_claims_poll_every_photo_identity_within_one_photo_opp
 ) -> None:
     """A permanent interactive queue cannot prevent any configured photo identity being polled."""
     selfie = (1, PROCESSOR_TYPE_SELFIE_QUERY, 2)
-    scrfd_face = (2, PROCESSOR_TYPE_FACE_EMBEDDING, 3)
+    current_face = (3, PROCESSOR_TYPE_FACE_EMBEDDING, 5)
     capture = (1, PROCESSOR_TYPE, 2)
     preview = (2, PROCESSOR_TYPE_GENERATE_PREVIEW, 1)
     client = SchedulingClient({selfie})
@@ -1718,7 +1587,7 @@ def test_continuous_selfie_claims_poll_every_photo_identity_within_one_photo_opp
                 "1/capture_metadata/2",
                 "1/selfie_query/2",
                 "2/generate_preview/1",
-                "2/face_embedding/3",
+                "3/face_embedding/5",
             ),
         ),
     )
@@ -1727,31 +1596,7 @@ def test_continuous_selfie_claims_poll_every_photo_identity_within_one_photo_opp
     assert worker.run_once() is None
     assert worker.run_once() is None
 
-    assert client.claim_identities == [selfie, scrfd_face, capture, preview, selfie]
-
-
-def test_continuous_scrfd_face_claims_do_not_starve_other_photo_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The photo cursor advances past a claimed legacy identity before the next opportunity."""
-    selfie = (1, PROCESSOR_TYPE_SELFIE_QUERY, 2)
-    scrfd_face = (2, PROCESSOR_TYPE_FACE_EMBEDDING, 3)
-    client = SchedulingClient({scrfd_face})
-    worker = Worker(
-        client,
-        WorkerConfig(
-            worker_build="worker-test",
-            lease_seconds=60,
-            processor_types=(PROCESSOR_TYPE_SELFIE_QUERY, PROCESSOR_TYPE_FACE_EMBEDDING),
-            processor_identities=("2/face_embedding/3",),
-        ),
-    )
-    monkeypatch.setattr(worker, "_process", lambda _job: None)
-
-    assert worker.run_once() is None
-    assert worker.run_once() is None
-
-    assert client.claim_identities == [selfie, scrfd_face, selfie, scrfd_face]
+    assert client.claim_identities == [selfie, current_face, capture, preview, selfie]
 
 
 def test_claimed_configuration_sets_the_next_poll_delay(tmp_path: Path) -> None:

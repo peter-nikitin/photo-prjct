@@ -28,6 +28,11 @@ from processing.models import (
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def isolate_published_test_events():
+    Event.objects.published().update(publication_status="unavailable")
+
+
 @pytest.fixture
 def history():
     event = Event.objects.create(
@@ -42,15 +47,20 @@ def history():
         if cursor.fetchone()[0]:
             cursor.execute("UPDATE picflow_event SET face_search_generation='adaface_v5'")
     photo = Photo.objects.create(id="retirement-photo", event=event, src="local.jpg")
+    from processing.services.face_quality import active_face_embedding_generations
+
+    generation = active_face_embedding_generations(event)[0]
     rows = []
     for index, (model, dimensions) in enumerate((("sface", 128), ("adaface-ir18-webface4m", 512))):
         fields = dict(
             event=event,
             contract_version=3,
             processor_type="face_embedding",
-            processor_version=5,
-            configuration={"face_embedding": {"model": model}},
-            configuration_hash=str(index) * 64,
+            processor_version=3 if index == 0 else 5,
+            configuration={"face_embedding": {"model": model}}
+            if index == 0
+            else generation["configuration"],
+            configuration_hash=str(index) * 64 if index == 0 else generation["configuration_hash"],
         )
         run = EventProcessingRun.objects.create(**fields)
         job = ProcessingJob.objects.create(
@@ -95,7 +105,7 @@ def history():
             photo=photo,
             accepted_attempt=attempt,
             contract_version=3,
-            processor_version=5,
+            processor_version=job.processor_version,
             configuration_hash=job.configuration_hash,
         )
         receipt = ProcessingLateReceipt.objects.create(
@@ -210,12 +220,24 @@ def test_contraction_restores_immutability_and_rejects_legacy_vectors(history):
 def test_failure_rolls_back_redaction_purge_and_trigger_changes(history):
     from processing.management.commands.retire_legacy_face_vectors import Command
 
+    original_finalize = Command._finalize
+
+    def fail_after_ddl(command, cursor):
+        original_finalize(command, cursor)
+        raise CommandError("forced finalization failure")
+
     with (
-        patch.object(Command, "_finalize", side_effect=CommandError("forced finalization failure")),
+        patch.object(Command, "_finalize", fail_after_ddl),
         pytest.raises(CommandError, match="forced"),
     ):
         execute(finalize=True)
     assert FaceEmbeddingVector.objects.count() == 2
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE "
+            "table_name='picflow_event' AND column_name='face_search_generation')"
+        )
+        assert cursor.fetchone()[0] is True
     history[0][0].refresh_from_db()
     assert "embedding" in history[0][0].result["faces"][0]
     with pytest.raises(IntegrityError), transaction.atomic(), connection.cursor() as cursor:
@@ -333,3 +355,141 @@ def test_each_statement_receives_only_remaining_transaction_budget():
         cursor.execute("SELECT 2")
     assert raw_cursor.execute.call_args_list[0].args[1] == ["2000ms", "2000ms"]
     assert raw_cursor.execute.call_args_list[2].args[1] == ["1599ms", "1599ms"]
+
+
+def publish_current_history(history):
+    from processing.models import PhotoProcessingState
+
+    attempt = history[1][0]
+    event = attempt.event
+    event.publication_status = Event.PublicationStatus.PUBLISHED
+    event.save(update_fields=["publication_status"])
+    PhotoProcessingState.objects.create(
+        photo=attempt.photo,
+        processor_type="face_embedding",
+        status="succeeded",
+        current_run_id=attempt.run_id,
+        current_job_id=attempt.job_id,
+        current_attempt=attempt,
+        accepted_attempt=attempt,
+    )
+    return event
+
+
+def test_published_current_cohort_reports_accepted_projection_gaps(history):
+    baseline = Photo.objects.filter(event__publication_status="published").count()
+    event = publish_current_history(history)
+    Photo.objects.bulk_create(
+        [Photo(id=f"accepted-gap-{index}", event=event, src="gap.jpg") for index in range(73)]
+    )
+    receipt = execute()[0]
+    assert receipt["published_cohort"] == {
+        "photos": baseline + 74,
+        "without_current_projection": baseline + 73,
+        "current_projections": 1,
+        "events_without_current_projection": 0,
+        "kept_detections": 1,
+        "inconsistent_projections": 0,
+        "invalid_native_vectors": 0,
+    }
+
+
+@pytest.mark.parametrize("failure", ["state", "hash", "vector"])
+def test_inconsistent_published_current_cohort_blocks_before_mutation(history, failure):
+    from processing.models import PhotoProcessingState
+
+    publish_current_history(history)
+    if failure == "state":
+        PhotoProcessingState.objects.all().update(current_attempt=None)
+    elif failure == "hash":
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            cursor.execute(
+                "ALTER TABLE processing_photofaceembeddingprojection DISABLE TRIGGER "
+                "proc_face_projection_identity_guard_trg"
+            )
+            cursor.execute(
+                "ALTER TABLE processing_photofaceembeddingprojection DISABLE TRIGGER "
+                "proc_face_projection_validate_trg"
+            )
+            PhotoFaceEmbeddingProjection.objects.filter(pk=history[1][2].pk).update(
+                configuration_hash="z" * 64
+            )
+            cursor.execute(
+                "ALTER TABLE processing_photofaceembeddingprojection ENABLE TRIGGER "
+                "proc_face_projection_validate_trg"
+            )
+            cursor.execute(
+                "ALTER TABLE processing_photofaceembeddingprojection ENABLE TRIGGER "
+                "proc_face_projection_identity_guard_trg"
+            )
+    else:
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            cursor.execute(
+                "ALTER TABLE processing_faceembeddingvector DISABLE TRIGGER "
+                "proc_vector_evidence_trg"
+            )
+            cursor.execute(
+                "DELETE FROM processing_faceembeddingvector WHERE "
+                "model_version='adaface-ir18-webface4m'"
+            )
+            cursor.execute(
+                "ALTER TABLE processing_faceembeddingvector ENABLE TRIGGER proc_vector_evidence_trg"
+            )
+    with pytest.raises(CommandError, match="published current cohort"):
+        execute()
+    assert FaceEmbeddingVector.objects.filter(model_version="sface").count() == 1
+
+
+def test_finalize_drops_legacy_event_selector_without_updating_history(history):
+    with connection.cursor() as cursor:
+        cursor.execute("UPDATE picflow_event SET face_search_generation='sface_v3'")
+    execute(finalize=True)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE "
+            "table_name='picflow_event' AND column_name='face_search_generation')"
+        )
+        assert cursor.fetchone()[0] is False
+    assert execute(finalize=True)[0]["contracted"] is True
+
+
+def test_finalize_requires_event_state_migration(history):
+    from django.db.migrations.recorder import MigrationRecorder
+
+    MigrationRecorder(connection).record_unapplied(
+        "picflow", "0017_remove_event_face_search_generation_state"
+    )
+    with pytest.raises(CommandError, match="event.*migration"):
+        execute(finalize=True)
+    assert FaceEmbeddingVector.objects.count() == 2
+
+
+def test_published_photos_without_any_current_projection_fail_closed():
+    event = Event.objects.create(
+        name="Unreconciled",
+        slug="unreconciled",
+        start_date=date.today(),
+        end_date=date.today(),
+        publication_status="published",
+    )
+    Photo.objects.create(id="unreconciled", event=event, src="old.jpg")
+    with pytest.raises(CommandError, match="published current cohort"):
+        execute()
+
+
+def test_one_current_event_does_not_authorize_unreconciled_published_event(history):
+    publish_current_history(history)
+    event = Event.objects.create(
+        name="Second unreconciled",
+        slug="second-unreconciled",
+        start_date=date.today(),
+        end_date=date.today(),
+        publication_status="published",
+    )
+    Photo.objects.create(id="second-unreconciled", event=event, src="old.jpg")
+    with pytest.raises(CommandError, match="published current cohort"):
+        execute()
+    assert FaceEmbeddingVector.objects.filter(model_version="sface").count() == 1
+    assert run_retirement()[0]["published_cohort"]["events_without_current_projection"] == 1

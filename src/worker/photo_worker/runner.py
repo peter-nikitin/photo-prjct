@@ -25,12 +25,10 @@ from photo_worker.contracts import (
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_BIB_RECOGNITION,
     PROCESSOR_TYPE_FACE_EMBEDDING,
-    PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
     PROCESSOR_TYPE_SELFIE_QUERY,
     PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
-    PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
     PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
     PROCESSOR_VERSION_SELFIE_QUERY,
     CaptureMetadataResult,
@@ -74,7 +72,6 @@ _SUPPORTED_IDENTITIES = {
         PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
         PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
     ),
-    (2, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW),
     (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY),
     (1, PROCESSOR_TYPE_SELFIE_QUERY, PROCESSOR_VERSION_SELFIE_QUERY),
     (1, PROCESSOR_TYPE_BIB_RECOGNITION, 1),
@@ -311,7 +308,7 @@ class Worker:
 
     A plural configuration gives a claimed selfie one photo round-robin opportunity before the
     next selfie claim. The photo cursor advances past a claimed exact identity, bounding each
-    configured photo identity's wait even while selfie or legacy face queues remain nonempty.
+    configured photo identity's wait even while selfie or face queues remain nonempty.
     """
 
     def __init__(
@@ -732,10 +729,7 @@ class Worker:
                 date_field_precedence=job.configuration.date_field_precedence,
                 event_timezone=event_timezone,
             )
-        if job.processor_type in {
-            PROCESSOR_TYPE_FACE_EMBEDDING,
-            PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK,
-        }:
+        if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
             result = extract_face_embeddings(
                 input_path,
                 max_bytes=job.input_limits.max_bytes,
@@ -745,19 +739,8 @@ class Worker:
                 model=job.configuration.model,
                 quality_thresholds=job.configuration.quality_thresholds,
             )
-            if job.contract_version == PREVIEW_CONTRACT_VERSION:
-                if job.input_geometry is None:
-                    raise ValueError("preview face claim is missing input geometry")
-                return result.as_payload() | {"input_geometry": job.input_geometry}
             if job.input_geometry is not None:
                 return result.as_payload() | {"input_geometry": job.input_geometry}
-            if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK:
-                return {
-                    "model": result.model,
-                    "face_count": len(result.faces),
-                    "warnings": list(result.warnings),
-                    "timings": dict(result.timings),
-                }
             return result
         if job.processor_type == PROCESSOR_TYPE_GENERATE_PREVIEW:
             return generate_preview(
@@ -916,11 +899,7 @@ def _parse_processor_identity(value: str) -> tuple[int, str, int]:
 
 def _default_processor_identity(processor_type: str) -> tuple[int, str, int]:
     if processor_type == PROCESSOR_TYPE_FACE_EMBEDDING:
-        identity = (
-            PREVIEW_CONTRACT_VERSION,
-            processor_type,
-            PROCESSOR_VERSION_FACE_EMBEDDING_PREVIEW,
-        )
+        identity = (3, processor_type, PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY)
     elif processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
         identity = (1, processor_type, PROCESSOR_VERSION_SELFIE_QUERY)
     elif processor_type == PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW:
@@ -986,11 +965,7 @@ def _lifecycle(
         phase,
         redact(job.event_id, secrets=secrets),
         redact(job.run_id, secrets=secrets),
-        (
-            "<omitted>"
-            if job.processor_type == PROCESSOR_TYPE_FACE_EMBEDDING_BENCHMARK
-            else redact(job.photo_id, secrets=secrets)
-        ),
+        redact(job.photo_id, secrets=secrets),
         redact(job.search_id, secrets=secrets),
         redact(job.id, secrets=secrets),
         redact(job.attempt_id, secrets=secrets),

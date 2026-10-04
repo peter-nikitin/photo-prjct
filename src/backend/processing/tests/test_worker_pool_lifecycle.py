@@ -695,7 +695,6 @@ class LifecycleTests(TransactionTestCase):
             timezone_name="Europe/Moscow",
             start_date=date.today(),
             end_date=date.today(),
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
         storage = Mock()
         storage.create_download_grant.return_value.url = "https://storage.test/private"

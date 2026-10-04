@@ -34,10 +34,10 @@ class EventModelTests(TestCase):
         values.update(overrides)
         return Event.objects.create(**values)
 
-    def test_new_event_defaults_to_adaface_v5(self) -> None:
-        event = self.make_event(name="AdaFace default", slug="adaface-default")
+    def test_event_has_no_face_model_selector(self) -> None:
+        event = self.make_event(name="Current face contract", slug="current-face-contract")
 
-        self.assertEqual(event.face_search_generation, Event.FaceSearchGeneration.ADAFACE_V5)
+        self.assertFalse(hasattr(event, "face_search_generation"))
 
     def test_new_event_defaults_bib_search_to_disabled(self) -> None:
         event = self.make_event(name="Bib disabled default", slug="bib-disabled-default")

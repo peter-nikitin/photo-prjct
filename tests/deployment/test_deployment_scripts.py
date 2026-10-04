@@ -1,6 +1,5 @@
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -448,15 +447,6 @@ def _apply_env(
     *,
     scenario: str,
 ) -> dict[str, str]:
-    # Dedicated component-release tests exercise the real native DB/image guard.
-    _write_executable(
-        fake_bin / "python3",
-        'case " $* " in *"verify-native-release.py"*) '
-        'printf "native-web-guard\\n" >> "$COMMAND_LOG"; exit 0 ;; esac\n'
-        + "exec "
-        + shlex.quote(sys.executable)
-        + ' "$@"',
-    )
     (tmp_path / ".env").write_bytes(PREVIOUS_ENV)
     (tmp_path / ".env").chmod(0o640)
     (tmp_path / "previous-env.expected").write_bytes(PREVIOUS_ENV)
@@ -1193,18 +1183,10 @@ def test_web_release_clears_recovery_before_next_installer_and_release(
     (tmp_path / "worker-pools-current.json").write_text("{}\n")
     _write_executable(
         fake_bin / "python3",
-        """
-case "$*" in
-  *verify-native-release.py*) printf 'native-web-guard\n' >> "$COMMAND_LOG"; exit 0 ;;
-esac
-exec """
-        + sys.executable
-        + """ "$@"
-""",
+        "exec " + sys.executable + ' "$@"',
     )
     first = _run("deploy/apply-deployment.sh", env=env)
     assert first.returncode == 0, first.stderr
-    assert "native-web-guard" in _apply_log(tmp_path)
     assert not (tmp_path / ".deployment-recovery").exists()
 
     source = (ROOT / "deploy/run-remote.sh").read_text()
@@ -2090,7 +2072,7 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
             "PHOTO_PROCESSING_FACE_ENABLED": "True",
             "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES": (
                 "1/capture_metadata/2,2/generate_preview/1,"
-                "2/generate_watermarked_preview/1,2/face_embedding/3,"
+                "2/generate_watermarked_preview/1,"
                 "3/face_embedding/5,1/bib_recognition/1"
             ),
         }
@@ -2104,7 +2086,7 @@ def test_preview_first_activation_accepts_and_persists_current_worker_identities
     assert "PHOTO_PROCESSING_FACE_ENABLED=True" in deployed_env
     assert (
         "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,"
-        "2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,"
+        "2/generate_preview/1,2/generate_watermarked_preview/1,"
         "3/face_embedding/5,1/bib_recognition/1" in deployed_env
     )
 
@@ -2133,7 +2115,7 @@ def test_deployment_default_worker_identities_are_disjoint_and_complete(
     )
     default_identity_line = (
         "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,"
-        "2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,"
+        "2/generate_preview/1,2/generate_watermarked_preview/1,"
         "3/face_embedding/5,1/bib_recognition/1"
     )
     assert persisted_default == default_identity_line
@@ -2162,7 +2144,7 @@ def test_deployment_persists_the_fixed_watermarked_preview_bulk_identity(
     deployed_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     assert (
         "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=1/capture_metadata/2,"
-        "2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,"
+        "2/generate_preview/1,2/generate_watermarked_preview/1,"
         "3/face_embedding/5,1/bib_recognition/1" in deployed_env
     )
 
@@ -2228,7 +2210,6 @@ def test_preview_first_activation_rejects_partial_or_implicit_configuration(
         "1/capture_metadata/2",
         "2/generate_preview/1",
         "2/generate_watermarked_preview/1",
-        "2/face_embedding/3",
         "3/face_embedding/5",
         "1/bib_recognition/1",
     ),
@@ -2240,7 +2221,6 @@ def test_preview_activation_requires_every_approved_photo_identity_before_mutati
         "1/capture_metadata/2",
         "2/generate_preview/1",
         "2/generate_watermarked_preview/1",
-        "2/face_embedding/3",
         "3/face_embedding/5",
         "1/bib_recognition/1",
     )
@@ -2656,7 +2636,7 @@ def test_postgres_volume_inspection_error_fails_safely_before_mutation(
         "DEPLOY_PHASE=snapshot",
         "DEPLOY_RESULT=failure phase=snapshot rollback=not-needed",
     ]
-    assert _apply_log(tmp_path) == ["native-web-guard", "volume-inspect photo-prjct_pgdata"]
+    assert _apply_log(tmp_path) == ["volume-inspect photo-prjct_pgdata"]
     for name in (".env", "deployed-image"):
         assert not (tmp_path / name).exists()
     _assert_no_env_temporary_files(tmp_path)

@@ -1,6 +1,7 @@
 # mypy: disable-error-code=union-attr
 
 import hashlib
+from copy import deepcopy
 from datetime import date, timedelta
 from queue import Queue
 from threading import Barrier, Thread
@@ -29,14 +30,13 @@ from processing.models import (
 from processing.services import jobs as jobs_service
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
-    FACE_EMBEDDING_QUALITY_CONFIGURATION,
+    FACE_EMBEDDING_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
     capture_metadata_configuration,
     request_capture_metadata,
     request_face_embedding_enqueue,
     request_processor,
 )
-from processing.services.face_quality import historical_adaface_face_embedding_generations
 from processing.services.jobs import (
     MAX_ATTEMPTS,
     claim_job,
@@ -58,7 +58,6 @@ class ProcessingJobServiceTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Europe/Moscow",
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def private_photo(self, suffix: str, *, event: Event | None = None) -> Photo:
@@ -75,43 +74,7 @@ class ProcessingJobServiceTests(TestCase):
         )
 
     def quality_configuration(self) -> dict[str, object]:
-        return {
-            "retry_policy": {
-                "max_attempts": 3,
-                "base_backoff_seconds": 30,
-                "max_backoff_seconds": 300,
-                "jitter_seconds": 5,
-                "lease_max_seconds": 300,
-            },
-            "max_cohort_size": 16,
-            "report_max_bytes": 262_144,
-            "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
-            "face_embedding": {
-                "model": "sface",
-                "max_faces": 32,
-                "detection_threshold": 0.75,
-                "normalize_embeddings": True,
-                "quality": {
-                    "algorithm_version": "normalized-laplacian-v1",
-                    "crop_size": 112,
-                    "minimum_face_px": 20,
-                    "severe_blur_threshold": 10.0,
-                    "borderline_blur_threshold": 20.0,
-                    "minimum_relative_area": 0.1,
-                    "minimum_confidence": 0.8,
-                },
-            },
-            "worker": {
-                "api_response_max_bytes": 131_072,
-                "concurrency": 1,
-                "heartbeat_interval_seconds": 30,
-                "lease_duration_seconds": 120,
-                "max_input_bytes": 50 * 1024 * 1024,
-                "max_pixels": 100_000_000,
-                "poll_min_delay_seconds": 5,
-                "terminal_result_max_bytes": 131_072,
-            },
-        }
+        return deepcopy(FACE_EMBEDDING_CONFIGURATION)
 
     def quality_evidence(
         self, decision: str = "accepted", reasons: list[str] | None = None
@@ -138,7 +101,7 @@ class ProcessingJobServiceTests(TestCase):
         if status == "kept":
             return face | {
                 "quality": self.quality_evidence(),
-                "embedding": [1.0] + [0.0] * 127,
+                "embedding": [1.0] + [0.0] * 511,
             }
         if status == "quality_rejected":
             return face | {
@@ -151,9 +114,16 @@ class ProcessingJobServiceTests(TestCase):
 
     def quality_result(self, faces: list[dict[str, object]]) -> dict[str, object]:
         return {
-            "model": "sface",
+            "model": "adaface-ir18-webface4m",
             "face_count": len(faces),
             "faces": faces,
+            "input_geometry": {
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 1600,
+                "pixel_height": 1000,
+                "oriented_source_width": 3200,
+                "oriented_source_height": 2000,
+            },
             "has_single_query_face_usable": sum(face["status"] == "kept" for face in faces) == 1,
             "warnings": ["faces_truncated", "face_embedding_failed"],
             "timings": {
@@ -167,17 +137,19 @@ class ProcessingJobServiceTests(TestCase):
 
     def claim_quality_face(self, suffix: str):
         photo = self.private_photo(suffix)
+        derivative = self.publish_preview(photo)
         request_processor(
             photo,
             processor_type="face_embedding",
             contract_version=3,
-            processor_version=3,
+            processor_version=5,
             configuration=self.quality_configuration(),
+            input_fingerprint=self.face_input_fingerprint(derivative),
         )
         return claim_job(
             contract_version=3,
             processor_type="face_embedding",
-            processor_version=3,
+            processor_version=5,
         )
 
     def reenroll_quality_face(
@@ -209,13 +181,16 @@ class ProcessingJobServiceTests(TestCase):
             photo,
             processor_type="face_embedding",
             contract_version=3,
-            processor_version=3,
+            processor_version=5,
             configuration=configuration,
+            input_fingerprint=self.face_input_fingerprint(
+                PhotoDerivative.objects.get(photo=photo, variant="preview-small-v1")
+            ),
         )
         return claim_job(
             contract_version=3,
             processor_type="face_embedding",
-            processor_version=3,
+            processor_version=5,
         )
 
     def publish_preview(self, photo: Photo) -> PhotoDerivative:
@@ -270,6 +245,17 @@ class ProcessingJobServiceTests(TestCase):
         state.succeeded_at = timezone.now()
         state.save(update_fields=["status", "accepted_attempt", "succeeded_at", "updated_at"])
         return derivative
+
+    def face_input_fingerprint(self, derivative: PhotoDerivative) -> dict[str, int | str | None]:
+        return {
+            "object_key": derivative.final_key,
+            "object_size": derivative.byte_size,
+            "object_content_type": derivative.content_type,
+            "object_etag": None,
+            "media_kind": derivative.variant,
+            "pixel_width": derivative.width,
+            "pixel_height": derivative.height,
+        }
 
     def test_claim_seals_the_enrolled_cohort_and_creates_a_leased_current_attempt(self) -> None:
         first = self.private_photo("first")
@@ -500,39 +486,22 @@ class ProcessingJobServiceTests(TestCase):
         self.assertTrue(empty.empty)
         self.assertEqual(ProcessingJob.objects.get().status, ProcessingJob.Status.QUEUED)
 
-    def test_native_foreground_jobs_precede_historical_backlog_and_keep_fifo(self) -> None:
-        generation = historical_adaface_face_embedding_generations()[0]
-        configuration = generation["configuration"]
-        assert isinstance(configuration, dict)
-        states = []
-        for suffix, receipt in (
-            ("historical-first", {"cohort_sha256": "a" * 64, "photo_count": 3}),
-            ("historical-second", {"cohort_sha256": "a" * 64, "photo_count": 3}),
-            ("historical-third", {"cohort_sha256": "a" * 64, "photo_count": 3}),
-            ("foreground-first", None),
-            ("foreground-second", None),
-        ):
-            states.append(
-                request_processor(
-                    self.private_photo(suffix),
-                    contract_version=3,
-                    processor_type="face_embedding",
-                    processor_version=5,
-                    configuration=configuration,
-                    historical_adaface_receipt=receipt,
-                )
+    def test_current_face_jobs_claim_in_available_order(self) -> None:
+        configuration = FACE_EMBEDDING_CONFIGURATION
+        states = [
+            request_processor(
+                self.private_photo(suffix),
+                contract_version=3,
+                processor_type="face_embedding",
+                processor_version=5,
+                configuration=configuration,
             )
-            if suffix == "historical-third":
-                active = claim_job(
-                    contract_version=3,
-                    processor_type="face_embedding",
-                    processor_version=5,
-                )
-                self.assertEqual(active.job.photo_id, "job-historical-first")
+            for suffix in ("first", "second", "third")
+        ]
         now = timezone.now()
         for index, state in enumerate(states):
             ProcessingJob.objects.filter(pk=state.current_job_id).update(
-                available_at=now - timedelta(minutes=4 - index)
+                available_at=now - timedelta(minutes=3 - index)
             )
         claims = [
             claim_job(
@@ -541,57 +510,12 @@ class ProcessingJobServiceTests(TestCase):
                 processor_version=5,
                 now=now,
             )
-            for _ in states[1:]
+            for _ in states
         ]
         self.assertEqual(
             [claim.job.photo_id for claim in claims],
-            [
-                "job-foreground-first",
-                "job-foreground-second",
-                "job-historical-second",
-                "job-historical-third",
-            ],
+            ["job-first", "job-second", "job-third"],
         )
-        self.assertEqual(claims[0].job.configuration_hash, claims[2].job.configuration_hash)
-        self.assertNotIn("historical_adaface_backfill", claims[0].job.run.report)
-
-    def test_invalid_historical_receipt_does_not_deprioritize_foreground(self) -> None:
-        generation = historical_adaface_face_embedding_generations()[0]
-        configuration = generation["configuration"]
-        assert isinstance(configuration, dict)
-        states = [
-            request_processor(
-                self.private_photo("invalid-receipt"),
-                contract_version=3,
-                processor_type="face_embedding",
-                processor_version=5,
-                configuration=configuration,
-            )
-        ]
-        EventProcessingRun.objects.filter(pk=states[0].current_run_id).update(
-            report={"historical_adaface_backfill": {"cohort_sha256": "a" * 64, "photo_count": True}}
-        )
-        states.append(
-            request_processor(
-                self.private_photo("ordinary"),
-                contract_version=3,
-                processor_type="face_embedding",
-                processor_version=5,
-                configuration=configuration,
-            )
-        )
-        now = timezone.now()
-        for index, state in enumerate(states):
-            ProcessingJob.objects.filter(pk=state.current_job_id).update(
-                available_at=now - timedelta(minutes=2 - index)
-            )
-        claim = claim_job(
-            contract_version=3,
-            processor_type="face_embedding",
-            processor_version=5,
-            now=now,
-        )
-        self.assertEqual(claim.job.photo_id, "job-invalid-receipt")
 
     def test_claim_scope_selects_only_the_exact_event_and_configuration(self) -> None:
         other_event = Event.objects.create(
@@ -700,23 +624,19 @@ class ProcessingJobServiceTests(TestCase):
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_claim_only_selects_an_exactly_compatible_processor(self) -> None:
         photo = self.private_photo("face-compatible")
+        self.publish_preview(photo)
         request_face_embedding_enqueue(photo)
 
         claim = claim_job(
-            contract_version=1,
+            contract_version=3,
             processor_type="face_embedding",
-            processor_version=1,
+            processor_version=5,
         )
-        mismatch_version = claim_job(
-            contract_version=1,
-            processor_type="face_embedding",
-            processor_version=2,
-        )
-
         self.assertFalse(claim.empty)
         self.assertEqual(claim.job.processor_type, "face_embedding")
-        self.assertEqual(claim.job.processor_version, 1)
-        self.assertTrue(mismatch_version.empty)
+        self.assertEqual(claim.job.processor_version, 5)
+        with self.assertRaises(ValueError):
+            claim_job(contract_version=1, processor_type="face_embedding", processor_version=1)
 
     def test_empty_queue_returns_an_explicit_backoff_response(self) -> None:
         empty = claim_job(
@@ -824,65 +744,34 @@ class ProcessingJobServiceTests(TestCase):
         face_state = request_face_embedding_enqueue(photo)
         assert face_state.current_job is not None
         claimed = claim_job(
-            contract_version=2,
+            contract_version=3,
             processor_type="face_embedding",
-            processor_version=3,
+            processor_version=5,
         )
         complete_attempt(
             claimed.attempt.id,
-            result={
-                "model": "sface",
-                "face_count": 1,
-                "faces": [
-                    {
-                        "index": 0,
-                        "bbox": [10, 20, 30, 40],
-                        "confidence": 0.9,
-                        "landmarks": [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
-                        "embedding": [1.0] + [0.0] * 127,
-                    }
-                ],
-                "warnings": [],
+            result=self.quality_result([self.quality_face(0, "kept")])
+            | {
                 "input_geometry": {
                     "coordinate_space": "preview-small-v1",
                     "pixel_width": derivative.width,
                     "pixel_height": derivative.height,
                     "oriented_source_width": derivative.oriented_source_width,
                     "oriented_source_height": derivative.oriented_source_height,
-                },
+                }
             },
         )
 
         detection = PhotoFaceDetection.objects.get(attempt=claimed.attempt)
         parallel = FaceEmbeddingVector.objects.get(detection=detection)
-        self.assertEqual(
-            parallel.metadata,
-            {
-                "index": 0,
-                "bbox": [10.0, 20.0, 30.0, 40.0],
-                "quality": 0.9,
-                "landmarks": [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
-                "quality_flags": [],
-                "source": "face_embedding",
-                "confidence": 0.9,
-            },
-        )
+        self.assertEqual(parallel.metadata["confidence"], 0.95)
+        self.assertEqual(parallel.metadata["quality"]["decision"], "accepted")
         self.assertNotIn("embedding", parallel.metadata)
-        self.assertEqual(
-            detection.geometry,
-            {
-                "bbox": [10.0, 20.0, 30.0, 40.0],
-                "landmarks": [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
-                "model": "sface",
-                "coordinate_space": "preview-small-v1",
-                "pixel_width": 1600,
-                "pixel_height": 1000,
-                "oriented_source_width": 3200,
-                "oriented_source_height": 2000,
-                "scale_x": 2.0,
-                "scale_y": 2.0,
-            },
-        )
+        self.assertEqual(detection.geometry["model"], "adaface-ir18-webface4m")
+        self.assertEqual(detection.geometry["coordinate_space"], "preview-small-v1")
+        self.assertEqual(detection.geometry["pixel_width"], 1600)
+        self.assertEqual(detection.geometry["oriented_source_width"], 3200)
+        self.assertEqual(detection.geometry["scale_x"], 2.0)
 
     def test_v3_mixed_truncated_result_persists_every_face_without_rejected_vectors(self) -> None:
         claimed = self.claim_quality_face("v3-mixed")
@@ -902,7 +791,7 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(
             artifact.feature_payload,
             {
-                "model": "sface",
+                "model": "adaface-ir18-webface4m",
                 "warnings": ["faces_truncated", "face_embedding_failed"],
                 "timings": {
                     "decode_ms": 1,
@@ -952,214 +841,30 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(detections[2].features["error_code"], "model_inference_error")
         self.assertEqual(detections[3].features["error_code"], "invalid_face_quality")
 
-    def test_both_callback_producers_roll_back_when_parallel_store_fails(self) -> None:
-        for quality in (False, True):
-            for store in ("FaceEmbeddingVector",):
-                with self.subTest(quality=quality, store=store):
-                    suffix = f"parallel-{int(quality)}-{int(store == 'FaceEmbeddingVector')}"
-                    if quality:
-                        claimed = self.claim_quality_face(suffix)
-                        result = self.quality_result([self.quality_face(0, "kept")])
-                    else:
-                        photo = self.private_photo(suffix)
-                        request_processor(
-                            photo,
-                            processor_type="face_embedding",
-                            contract_version=1,
-                            processor_version=1,
-                            configuration=self.quality_configuration(),
-                        )
-                        claimed = claim_job(
-                            contract_version=1,
-                            processor_type="face_embedding",
-                            processor_version=1,
-                        )
-                        result = {
-                            "model": "sface",
-                            "faces": [
-                                {
-                                    "index": 0,
-                                    "bbox": [0, 0, 10, 10],
-                                    "confidence": 0.9,
-                                    "landmarks": [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
-                                    "embedding": [1.0] + [0.0] * 127,
-                                }
-                            ],
-                        }
-                    with (
-                        patch(
-                            f"processing.services.vector_embeddings.{store}.objects.create",
-                            side_effect=IntegrityError("parallel write failed"),
-                        ),
-                        self.assertRaises(IntegrityError),
-                    ):
-                        complete_attempt(claimed.attempt.id, result=result)
-                    claimed.attempt.refresh_from_db()
-                    self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
-                    self.assertFalse(claimed.attempt.accepted)
-                    self.assertFalse(
-                        PhotoFaceDetection.objects.filter(attempt=claimed.attempt).exists()
-                    )
-                    self.assertFalse(
-                        FaceEmbeddingVector.objects.filter(
-                            detection__attempt=claimed.attempt
-                        ).exists()
-                    )
-                    self.assertFalse(
-                        PhotoFaceEmbeddingProjection.objects.filter(
-                            accepted_attempt=claimed.attempt
-                        ).exists()
-                    )
-
-    def test_complete_face_results_publish_and_replace_only_their_exact_generation(self) -> None:
-        baseline = self.claim_quality_face("projection-generations")
-        photo = baseline.attempt.photo
-        baseline_hash = baseline.job.configuration_hash
-        self.assertFalse(PhotoFaceEmbeddingProjection.objects.filter(photo=photo).exists())
-
-        complete_attempt(
-            baseline.attempt.id,
-            result=self.quality_result([self.quality_face(0, "kept")]),
-        )
-
-        candidate_configuration = self.quality_configuration()
-        candidate_face_configuration = candidate_configuration["face_embedding"]
-        assert isinstance(candidate_face_configuration, dict)
-        candidate_quality = candidate_face_configuration["quality"]
-        assert isinstance(candidate_quality, dict)
-        candidate_quality["minimum_face_px"] = 24
-        candidate = self.reenroll_quality_face(
-            photo,
-            configuration=candidate_configuration,
-        )
-        complete_attempt(
-            candidate.attempt.id,
-            result=self.quality_result([self.quality_face(0, "kept")]),
-        )
-
-        candidate_hash = candidate.job.configuration_hash
-        self.assertNotEqual(candidate_hash, baseline_hash)
-        self.assertEqual(
-            set(
-                PhotoFaceEmbeddingProjection.objects.filter(photo=photo).values_list(
-                    "configuration_hash", "accepted_attempt_id"
-                )
+    def test_current_face_callback_rolls_back_when_native_store_fails(self) -> None:
+        claimed = self.claim_quality_face("native-store-failure")
+        with (
+            patch(
+                "processing.services.vector_embeddings.FaceEmbeddingVector.objects.create",
+                side_effect=IntegrityError("native write failed"),
             ),
-            {
-                (baseline_hash, baseline.attempt.id),
-                (candidate_hash, candidate.attempt.id),
-            },
-        )
-
-        replacement = self.reenroll_quality_face(
-            photo,
-            configuration=candidate_configuration,
-        )
-        complete_attempt(
-            replacement.attempt.id,
-            result=self.quality_result([self.quality_face(0, "kept")]),
-        )
-
-        self.assertEqual(PhotoFaceEmbeddingProjection.objects.filter(photo=photo).count(), 2)
-        self.assertEqual(
-            PhotoFaceEmbeddingProjection.objects.get(
-                photo=photo,
-                configuration_hash=baseline_hash,
-            ).accepted_attempt_id,
-            baseline.attempt.id,
-        )
-        self.assertEqual(
-            PhotoFaceEmbeddingProjection.objects.get(
-                photo=photo,
-                configuration_hash=candidate_hash,
-            ).accepted_attempt_id,
-            replacement.attempt.id,
-        )
-
-    def test_historical_v3_and_v4_projections_coexist_with_distinct_attempts(self) -> None:
-        photo = self.private_photo("quality-v3-v4")
-        derivative = self.publish_preview(photo)
-        fingerprint = {
-            "object_key": derivative.final_key,
-            "object_size": derivative.byte_size,
-            "object_content_type": derivative.content_type,
-            "object_etag": None,
-            "media_kind": "preview-small-v1",
-            "pixel_width": derivative.width,
-            "pixel_height": derivative.height,
-        }
-        geometry = {
-            "coordinate_space": "preview-small-v1",
-            "pixel_width": 1600,
-            "pixel_height": 1000,
-            "oriented_source_width": 3200,
-            "oriented_source_height": 2000,
-        }
-        request_processor(
-            photo,
-            processor_type="face_embedding",
-            contract_version=3,
-            processor_version=3,
-            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
-            input_fingerprint=fingerprint,
-        )
-        historical = claim_job(
-            contract_version=3,
-            processor_type="face_embedding",
-            processor_version=3,
-        )
-        complete_attempt(
-            historical.attempt.id,
-            result=self.quality_result([self.quality_face(0, "kept")])
-            | {"input_geometry": geometry},
-        )
-
-        request_processor(
-            photo,
-            processor_type="face_embedding",
-            contract_version=3,
-            processor_version=4,
-            configuration=FACE_EMBEDDING_QUALITY_CONFIGURATION,
-            input_fingerprint=fingerprint,
-            replace_terminal_generation=True,
-        )
-        candidate = claim_job(
-            contract_version=3,
-            processor_type="face_embedding",
-            processor_version=4,
-        )
-        complete_attempt(
-            candidate.attempt.id,
-            result=self.quality_result([self.quality_face(0, "kept")])
-            | {"input_geometry": geometry},
-        )
-
-        projections = list(
-            PhotoFaceEmbeddingProjection.objects.filter(photo=photo).order_by("processor_version")
-        )
-        self.assertEqual([projection.processor_version for projection in projections], [3, 4])
-        self.assertEqual(projections[0].configuration_hash, projections[1].configuration_hash)
-        self.assertEqual(
-            [projection.accepted_attempt_id for projection in projections],
-            [historical.attempt.id, candidate.attempt.id],
-        )
-        self.assertEqual(
-            list(
-                FaceProcessingAttemptArtifact.objects.filter(
-                    attempt_id__in=[historical.attempt.id, candidate.attempt.id]
-                )
-                .order_by("attempt__processor_version")
-                .values_list("quality_payload", flat=True)
-            ),
-            [
-                {"rejection_reasons": {}, "technical_failure_reasons": {}},
-                {"rejection_reasons": {}, "technical_failure_reasons": {}},
-            ],
+            self.assertRaises(IntegrityError),
+        ):
+            complete_attempt(
+                claimed.attempt.id,
+                result=self.quality_result([self.quality_face(0, "kept")]),
+            )
+        claimed.attempt.refresh_from_db()
+        self.assertEqual(claimed.attempt.status, ProcessingAttempt.Status.IN_PROGRESS)
+        self.assertFalse(claimed.attempt.accepted)
+        self.assertFalse(PhotoFaceDetection.objects.filter(attempt=claimed.attempt).exists())
+        self.assertFalse(
+            PhotoFaceEmbeddingProjection.objects.filter(accepted_attempt=claimed.attempt).exists()
         )
 
     def test_v3_malformed_result_rolls_back_terminal_persistence_atomically(self) -> None:
         rejected_with_vector = self.quality_face(0, "quality_rejected") | {
-            "embedding": [1.0] + [0.0] * 127
+            "embedding": [1.0] + [0.0] * 511
         }
         accepted_measurements_claimed_rejected = self.quality_face(0, "quality_rejected")
         accepted_quality = accepted_measurements_claimed_rejected["quality"]
@@ -1212,13 +917,13 @@ class ProcessingJobServiceTests(TestCase):
             self.private_photo("v3-invalid-configuration"),
             processor_type="face_embedding",
             contract_version=3,
-            processor_version=3,
+            processor_version=5,
             configuration=configuration,
         )
         claimed = claim_job(
             contract_version=3,
             processor_type="face_embedding",
-            processor_version=3,
+            processor_version=5,
         )
 
         with self.assertRaises(ValueError):
@@ -1457,14 +1162,15 @@ class ProcessingJobServiceTests(TestCase):
     def test_wrong_processor_success_has_no_capture_time_projection(self) -> None:
         """Catch face evidence becoming a capture-time projection source."""
         photo = self.private_photo("face-not-capture")
+        self.publish_preview(photo)
         request_face_embedding_enqueue(photo)
         claimed = claim_job(
-            contract_version=1,
+            contract_version=3,
             processor_type="face_embedding",
-            processor_version=1,
+            processor_version=5,
         )
 
-        complete_attempt(claimed.attempt.id, result={"face_count": 0, "faces": [], "warnings": []})
+        complete_attempt(claimed.attempt.id, result=self.quality_result([]))
 
         photo.refresh_from_db()
         self.assertIsNone(photo.capture_time)
@@ -1719,7 +1425,7 @@ class ProcessingJobServiceTests(TestCase):
                 self.private_photo(f"many-runs-{number}"),
                 contract_version=3,
                 processor_type="face_embedding",
-                processor_version=3,
+                processor_version=5,
                 configuration=configuration,
             )
 
@@ -1728,7 +1434,7 @@ class ProcessingJobServiceTests(TestCase):
                 self.private_photo("many-runs-next"),
                 contract_version=3,
                 processor_type="face_embedding",
-                processor_version=3,
+                processor_version=5,
                 configuration=configuration,
             )
 

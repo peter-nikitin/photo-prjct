@@ -13,10 +13,10 @@
   [0041](../../adr/0041-accept-pgvector-numerical-boundaries.md),
   [0049](../../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md),
   [0051](../../adr/0051-release-photo-worker-images-independently.md),
-  [0052](../../adr/0052-retire-sface-and-fix-adaface-vector-dimension.md)
+  [0054](../../adr/0054-retire-sface-and-fix-adaface-vector-dimension.md)
 - **Related work:** [Historical AdaFace backfill](2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md),
   [pgvector reader retirement](../../plans/2026-10-04-complete-pgvector-face-read-cutover.md)
-- **ADR impact:** Recorded by accepted ADR 0052 for the durable AdaFace-only recognition and
+- **ADR impact:** Recorded by accepted ADR 0054 for the durable AdaFace-only recognition and
   legacy-vector retirement boundary. Conforms to ADRs 0017, 0019, 0024, 0025, 0040, 0041, 0049
   and 0051.
   ADR 0040 required SFace and AdaFace to coexist **during the storage transition** and explicitly
@@ -39,6 +39,11 @@ that every former SFace face has an AdaFace counterpart. A photo with a terminal
 or quality-rejected outcome contributes no new face. The 636 formerly searchable photos in the
 published historical event that have no suitable AdaFace face are accepted as recognition-quality
 differences; the old SFace result is not copied, synthesized or used to fill the gap.
+The 2026-10-04 follow-up audit also found 73 published `cyclingrace-klin` photos with 174
+old kept SFace detections but no AdaFace v5 job or projection. The event itself already has
+6,621 accepted AdaFace projections. The user explicitly accepted losing those 73 photos from
+face search without reprocessing them. Report this gap in the release inventory; it is not a
+blocker and must not create a special runtime filter or adapter.
 
 ## Current state to reconcile
 
@@ -97,7 +102,9 @@ membership and current media authorization without rerunning recognition.
 ### Existing events and data
 
 - For a published event, the current AdaFace attempt, detection, projection and vector evidence
-  must be reconciled before its active SFace selection is removed. Terminal no-face and quality
+  that exists must be reconciled before its active SFace selection is removed. A published event
+  with photos but no current AdaFace projection is incomplete and blocks contraction. Individual
+  missing projections explicitly accepted above do not block the event. Terminal no-face and quality
   rejection are valid AdaFace outcomes. The former-SFace replacement count is reported for
   review, but it cannot veto acceptance of those terminal outcomes or cause a fallback to SFace.
   No event is switched by changing its generation field alone. Both selfie and gallery-face
@@ -192,7 +199,8 @@ exact before/after aggregates without listing biometric identities.
    or invalid evidence fails closed. No second vector store or query-vector persistence appears.
 4. Customer-equivalent uploaded-selfie and gallery-face searches on published events return
    exact AdaFace results under existing threshold, ordering, privacy and media rules. The 636
-   accepted recognition differences are not filled with old faces. Old ready bearer links remain
+   accepted recognition differences and 73 accepted Klin photo gaps are not filled with old faces.
+   Old ready bearer links remain
    readable with unchanged saved membership and authorized media; old failed links remain
    terminal.
 5. Database, web and worker read-back prove the active model, zero old-model writes/claims,

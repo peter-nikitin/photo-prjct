@@ -6,7 +6,6 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from picflow.models import Event, Photo
 
-from processing.contracts import QUALITY_FACE_EMBEDDING_CONTRACT
 from processing.models import (
     BIB_RECOGNITION_PROCESSOR,
     FACE_EMBEDDING_PROCESSOR,
@@ -20,13 +19,7 @@ from processing.services.bibs import bib_configuration
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     FACE_EMBEDDING_CONFIGURATION,
-    FACE_EMBEDDING_QUALITY_CONFIGURATION,
     GENERATE_PREVIEW_CONFIGURATION,
-    HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
-    LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
-    LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
-    QUALITY_FACE_CONTRACT_VERSION,
-    QUALITY_FACE_PROCESSOR_VERSION,
     CaptureTimeReprocessingTarget,
     capture_metadata_configuration,
     enroll_event_capture_time_reprocessing,
@@ -35,13 +28,11 @@ from processing.services.enrollment import (
     reconcile_face_embedding,
     request_bib_recognition,
     request_capture_metadata,
-    request_face_embedding_candidate_enqueue,
     request_face_embedding_enqueue,
     request_generate_preview,
     request_generate_watermarked_preview,
     request_processor,
 )
-from processing.services.face_quality import local_adaface_face_embedding_generations
 
 
 class CaptureMetadataEnrollmentTests(TestCase):
@@ -54,7 +45,6 @@ class CaptureMetadataEnrollmentTests(TestCase):
             end_date=date.today(),
             city="Moscow",
             timezone_name="Europe/Moscow",
-            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def private_photo(
@@ -153,131 +143,28 @@ class CaptureMetadataEnrollmentTests(TestCase):
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_embedding_request_creates_job_with_expected_configuration(self) -> None:
         photo = self.private_photo("face-enabled")
+        self.publish_preview(photo)
         state = request_face_embedding_enqueue(photo)
         assert state.current_job is not None
 
         run = state.current_run
         self.assertEqual(run.processor_type, FACE_EMBEDDING_PROCESSOR)
-        self.assertEqual(run.contract_version, 1)
-        self.assertEqual(run.processor_version, 1)
+        self.assertEqual(run.contract_version, 3)
+        self.assertEqual(run.processor_version, 5)
         self.assertEqual(
             state.current_job.configuration["face_embedding"],
             FACE_EMBEDDING_CONFIGURATION["face_embedding"],
         )
         self.assertEqual(state.current_job.processor_type, FACE_EMBEDDING_PROCESSOR)
-        self.assertEqual(state.current_job.processor_version, 1)
-
-    def test_v4_candidate_reuses_the_frozen_v3_quality_configuration(self) -> None:
-        self.assertEqual(
-            (
-                QUALITY_FACE_EMBEDDING_CONTRACT.processor_type,
-                QUALITY_FACE_EMBEDDING_CONTRACT.contract_version,
-                QUALITY_FACE_EMBEDDING_CONTRACT.processor_version,
-            ),
-            (
-                "face_embedding",
-                QUALITY_FACE_CONTRACT_VERSION,
-                HISTORICAL_QUALITY_FACE_PROCESSOR_VERSION,
-            ),
-        )
-
-    @override_settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, DEBUG=True)
-    def test_local_adaface_generation_pins_scrfd_and_adaface_in_v5(self) -> None:
-        """Changing either model must produce a different local experimental generation."""
-        generation = local_adaface_face_embedding_generations()[0]
-
-        self.assertEqual(
-            (
-                generation["contract_version"],
-                generation["processor_type"],
-                generation["processor_version"],
-                generation["model"],
-            ),
-            (3, "face_embedding", 5, "adaface-ir18-webface4m"),
-        )
-        self.assertEqual(LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION, 5)
-        self.assertEqual(
-            LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["face_embedding"],
-            {
-                "model": "adaface-ir18-webface4m",
-                "embedding_dimensions": 512,
-                "max_faces": 32,
-                "detection_threshold": 0.5,
-                "normalize_embeddings": True,
-                "quality": {
-                    "algorithm_version": "normalized-laplacian-v1",
-                    "crop_size": 112,
-                    "minimum_face_px": 32,
-                    "severe_blur_threshold": 25.0,
-                    "borderline_blur_threshold": 50.0,
-                    "minimum_relative_area": 0.0009,
-                    "minimum_confidence": 0.82,
-                },
-            },
-        )
-        self.assertEqual(
-            LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["scrfd"],
-            {
-                "input_size": [640, 640],
-                "model": "scrfd-10g-kps",
-                "model_artifact_sha256": (
-                    "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
-                ),
-                "nms_threshold": 0.4,
-            },
-        )
-        self.assertEqual(
-            cast(
-                dict[str, object],
-                LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION["adaface"],
-            )["alignment"],
-            "scrfd-five-landmark-112x112",
-        )
-        self.assertEqual(
-            FACE_EMBEDDING_QUALITY_CONFIGURATION["face_embedding"],
-            {
-                "model": "sface",
-                "max_faces": 32,
-                "detection_threshold": 0.75,
-                "normalize_embeddings": True,
-                "quality": {
-                    "algorithm_version": "normalized-laplacian-v1",
-                    "crop_size": 112,
-                    "minimum_face_px": 32,
-                    "severe_blur_threshold": 25.0,
-                    "borderline_blur_threshold": 50.0,
-                    "minimum_relative_area": 0.0009,
-                    "minimum_confidence": 0.82,
-                },
-            },
-        )
-
-    def test_candidate_enqueue_rejects_yunet_quality_generation_before_creating_work(self) -> None:
-        photo = self.private_photo("candidate-preview")
-        self.publish_preview(photo)
-        run_count = EventProcessingRun.objects.count()
-        job_count = ProcessingJob.objects.count()
-
-        with self.assertRaisesRegex(ValueError, "SCRFD quality generation is not approved"):
-            request_face_embedding_candidate_enqueue(photo)
-
-        self.assertEqual(
-            EventProcessingRun.objects.count(),
-            run_count,
-        )
-        self.assertEqual(ProcessingJob.objects.count(), job_count)
-        self.assertFalse(
-            ProcessingJob.objects.filter(
-                contract_version=QUALITY_FACE_CONTRACT_VERSION,
-                processor_version=QUALITY_FACE_PROCESSOR_VERSION,
-            ).exists()
-        )
+        self.assertEqual(state.current_job.processor_version, 5)
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_face_reconciliation_creates_missing_states_and_bounded_jobs(self) -> None:
         first = self.private_photo("face-first")
         second = self.private_photo("face-second")
         third = self.private_photo("face-third")
+        for photo in (first, second, third):
+            self.publish_preview(photo)
         legacy = Photo.objects.create(
             id="legacy",
             event=self.event,
@@ -287,7 +174,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
         reconciled = reconcile_face_embedding(limit=2)
 
         self.assertEqual([state.photo_id for state in reconciled], [first.pk, second.pk])
-        self.assertEqual(ProcessingJob.objects.count(), 2)
+        self.assertEqual(ProcessingJob.objects.filter(processor_type="face_embedding").count(), 2)
         self.assertEqual(
             PhotoProcessingState.objects.get(
                 photo=first, processor_type=FACE_EMBEDDING_PROCESSOR
@@ -533,7 +420,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
 
         assert state.current_job is not None
         self.assertEqual(
-            (state.current_job.contract_version, state.current_job.processor_version), (2, 3)
+            (state.current_job.contract_version, state.current_job.processor_version), (3, 5)
         )
         self.assertEqual(
             state.current_job.configuration["face_embedding"]["detection_threshold"], 0.5
@@ -566,8 +453,6 @@ class CaptureMetadataEnrollmentTests(TestCase):
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_new_adaface_event_enqueues_v5_from_the_published_preview(self) -> None:
-        self.event.face_search_generation = Event.FaceSearchGeneration.ADAFACE_V5
-        self.event.save(update_fields=["face_search_generation"])
         photo = self.private_photo("adaface-preview")
         derivative = self.publish_preview(photo)
 
@@ -577,9 +462,7 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertEqual(
             (state.current_job.contract_version, state.current_job.processor_version), (3, 5)
         )
-        self.assertEqual(
-            state.current_job.configuration, LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION
-        )
+        self.assertEqual(state.current_job.configuration, FACE_EMBEDDING_CONFIGURATION)
         self.assertEqual(state.current_job.input_fingerprint["object_key"], derivative.final_key)
 
     def test_empty_verified_etag_is_normalized_to_unavailable_evidence(self) -> None:

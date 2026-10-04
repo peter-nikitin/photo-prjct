@@ -13,6 +13,9 @@ from typing import Any
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 from django.db.migrations.recorder import MigrationRecorder
+from picflow.models import Event
+
+from processing.services.face_quality import active_face_embedding_generations
 
 # Historical identities belong only to this one-time data transition.
 LEGACY_MODEL = "sface"
@@ -94,12 +97,29 @@ class Command(BaseCommand):
                 connection
             ).applied_migrations():
                 raise CommandError("Retirement state migration must be applied")
+        if (
+            options["execute"]
+            and options["finalize"]
+            and ("picflow", "0017_remove_event_face_search_generation_state")
+            not in MigrationRecorder(connection).applied_migrations()
+        ):
+            raise CommandError(
+                "Retirement event state migration must be applied before finalization"
+            )
         self._holding_mutation_locks = False
         inventory_started = monotonic()
         with connection.cursor() as cursor:
             before = self._counts(cursor)
             if options["execute"]:
                 self._require_drained(cursor)
+        published_cohort = self._published_cohort()
+        if options["execute"] and (
+            published_cohort["inconsistent_projections"]
+            or published_cohort["invalid_native_vectors"]
+            or published_cohort["events_without_current_projection"]
+        ):
+            self.stdout.write(json.dumps({"published_cohort": published_cohort}, sort_keys=True))
+            raise CommandError("Inconsistent published current cohort; retirement refused")
         inventory_ms = (monotonic() - inventory_started) * 1000
         for batch in range(max_batches if options["execute"] else 1):
             discovery_started = monotonic()
@@ -135,8 +155,10 @@ class Command(BaseCommand):
                         cursor = DeadlineCursor(raw_cursor, self, deadline)
                         cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
                         tables = (
-                            [VECTOR_TABLE]
-                            if candidates["legacy_vectors"] or options["finalize"]
+                            [VECTOR_TABLE, "picflow_event"]
+                            if options["finalize"]
+                            else [VECTOR_TABLE]
+                            if candidates["legacy_vectors"]
                             else []
                         )
                         for (table, _, _), key in zip(
@@ -167,6 +189,7 @@ class Command(BaseCommand):
                 "after": after,
                 "removed": planned,
                 "contracted": contracted,
+                "published_cohort": published_cohort,
                 "timing_ms": {
                     "inventory": round(inventory_ms, 3),
                     "discovery": round(discovery_ms, 3),
@@ -181,6 +204,92 @@ class Command(BaseCommand):
             inventory_ms = 0.0
             if not remaining:
                 break
+
+    def _published_cohort(self) -> dict[str, int]:
+        """Validate published v5 evidence before any exclusive lock, without vector payloads.
+
+        Missing projections are accepted recognition loss. Existing v5 projections must
+        agree with both approved generations and the exact succeeded current pointers.
+        """
+        approved = []
+        parameters = []
+        for generation in active_face_embedding_generations(Event()):
+            approved.append(
+                "(p.contract_version=%s AND p.processor_version=%s AND "
+                "p.configuration_hash=%s AND a.configuration=%s::jsonb)"
+            )
+            parameters.extend(
+                [
+                    generation["contract_version"],
+                    generation["processor_version"],
+                    generation["configuration_hash"],
+                    json.dumps(generation["configuration"]),
+                ]
+            )
+        identity = " OR ".join(approved)
+        valid = (
+            f"({identity}) AND a.accepted AND a.status='succeeded' AND "
+            "a.processor_type='face_embedding' AND a.photo_id=p.photo_id AND "
+            "a.event_id=photo.event_id AND a.contract_version=p.contract_version AND "
+            "a.processor_version=p.processor_version AND j.processor_type='face_embedding' AND "
+            "j.photo_id=p.photo_id AND j.event_id=photo.event_id AND j.run_id=a.run_id AND "
+            "j.contract_version=p.contract_version AND j.processor_version=p.processor_version AND "
+            "j.configuration_hash=p.configuration_hash AND j.configuration=a.configuration AND "
+            "r.processor_type='face_embedding' AND r.event_id=photo.event_id AND "
+            "r.contract_version=p.contract_version AND r.processor_version=p.processor_version AND "
+            "r.configuration_hash=p.configuration_hash AND r.configuration=a.configuration AND "
+            "state.status='succeeded' AND state.accepted_attempt_id=a.id AND "
+            "state.current_attempt_id=a.id AND state.current_job_id=j.id AND "
+            "state.current_run_id=r.id"
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM picflow_photo photo JOIN picflow_event event "
+                "ON event.id=photo.event_id WHERE event.publication_status='published'"
+            )
+            photos = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT count(*) FROM (SELECT photo.event_id FROM picflow_photo photo "
+                "JOIN picflow_event event ON event.id=photo.event_id "
+                "LEFT JOIN processing_photofaceembeddingprojection p ON p.photo_id=photo.id "
+                "LEFT JOIN processing_processingattempt a ON a.id=p.accepted_attempt_id "
+                "WHERE event.publication_status='published' GROUP BY photo.event_id "
+                f"HAVING count(p.id) FILTER (WHERE {identity})=0) unreconciled",
+                parameters,
+            )
+            events_without_current_projection = cursor.fetchone()[0]
+            # One aggregate join avoids a correlated anti-subquery for each projection.
+            # No vector values or payloads leave the database.
+            cursor.execute(
+                "SELECT count(DISTINCT p.id), count(DISTINCT p.photo_id), "
+                f"count(DISTINCT p.id) FILTER (WHERE NOT coalesce(({valid}), false)), "
+                "count(d.id), count(d.id) FILTER (WHERE v.id IS NULL OR "
+                "v.model_version<>%s OR vector_dims(v.vector)<>512) "
+                "FROM processing_photofaceembeddingprojection p "
+                "JOIN picflow_photo photo ON photo.id=p.photo_id "
+                "JOIN picflow_event event ON event.id=photo.event_id "
+                "LEFT JOIN processing_processingattempt a ON a.id=p.accepted_attempt_id "
+                "LEFT JOIN processing_processingjob j ON j.id=a.job_id "
+                "LEFT JOIN processing_eventprocessingrun r ON r.id=a.run_id "
+                "LEFT JOIN processing_photoprocessingstate state ON state.photo_id=p.photo_id "
+                "AND state.processor_type='face_embedding' "
+                "LEFT JOIN processing_photofacedetection d ON d.attempt_id=a.id "
+                "AND d.status='kept' "
+                "LEFT JOIN processing_faceembeddingvector v ON v.detection_id=d.id "
+                "WHERE event.publication_status='published' "
+                "AND (p.processor_version=5 OR a.processor_version=5)",
+                [*parameters, CURRENT_MODEL],
+            )
+            projections, projected_photos, inconsistent, kept, invalid_vectors = cursor.fetchone()
+        return {
+            "photos": photos,
+            "without_current_projection": photos - projected_photos,
+            "current_projections": projections,
+            "events_without_current_projection": events_without_current_projection,
+            "kept_detections": kept,
+            "inconsistent_projections": inconsistent,
+            "invalid_native_vectors": invalid_vectors,
+        }
 
     def _check_deadline(self, deadline: float) -> None:
         if monotonic() >= deadline:
@@ -315,19 +424,9 @@ class Command(BaseCommand):
         )
         if cursor.fetchone()[0]:
             raise CommandError("Active legacy cluster corpus must be deactivated")
-        cursor.execute(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE "
-            "table_name='picflow_event' AND "
-            "column_name='face_search_generation')"
-        )
-        if cursor.fetchone()[0]:
-            cursor.execute(
-                "SELECT count(*) FROM picflow_event WHERE face_search_generation='sface_v3'"
-            )
-            if cursor.fetchone()[0]:
-                raise CommandError("Legacy event selection must be reconciled before retirement")
 
     def _finalize(self, cursor) -> None:
+        cursor.execute("ALTER TABLE picflow_event DROP COLUMN IF EXISTS face_search_generation")
         cursor.execute(f"ALTER TABLE {VECTOR_TABLE} DROP CONSTRAINT proc_vector_model_dimension")
         cursor.execute(
             f"ALTER TABLE {VECTOR_TABLE} ALTER COLUMN vector TYPE vector(512) "

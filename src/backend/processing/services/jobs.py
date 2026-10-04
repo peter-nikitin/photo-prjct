@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import random
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -12,7 +11,6 @@ from typing import Any
 from uuid import UUID
 
 from django.db import IntegrityError, transaction
-from django.db.models import Case, QuerySet, Value, When
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -24,7 +22,6 @@ from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
     FaceProcessingAttemptArtifact,
-    PhotoDerivative,
     PhotoFaceDetection,
     PhotoProcessingState,
     ProcessingAttempt,
@@ -69,6 +66,11 @@ def claim_job(
 ) -> ClaimedJob | EmptyClaim:
     """Atomically seal and lease compatible, optionally exact-scoped work."""
     now = now or timezone.now()
+    if processor_type == FACE_EMBEDDING_PROCESSOR and (
+        contract_version != QUALITY_FACE_CONTRACT_VERSION
+        or processor_version not in QUALITY_FACE_PROCESSOR_VERSIONS
+    ):
+        raise ValueError("unsupported processor contract")
     tried: set[UUID] = set()
     with transaction.atomic():
         while True:
@@ -88,8 +90,6 @@ def claim_job(
             if configuration_hash is not None:
                 candidates = candidates.filter(configuration_hash=configuration_hash)
             candidates = candidates.order_by("available_at", "created_at", "id")
-            if (contract_version, processor_type, processor_version) == (3, "face_embedding", 5):
-                candidates = _prioritize_foreground(candidates)
             candidate = candidates.exclude(pk__in=tried).first()
             if candidate is None:
                 return EmptyClaim()
@@ -145,31 +145,6 @@ def claim_job(
                 next_attempt_at=None,
             )
             return ClaimedJob(job=job, attempt=attempt)
-
-
-def _prioritize_foreground(candidates: QuerySet[ProcessingJob]) -> QuerySet[ProcessingJob]:
-    # New photos after activation use the same vector-only configuration. Only the durable,
-    # validated enrollment receipt makes work historical; do not load biometric run reports.
-    from processing.services.historical_adaface import (
-        BACKFILL_REPORT_KEY,
-        validate_backfill_receipt,
-    )
-
-    historical_runs = []
-    for run_id, receipt in (
-        candidates.filter(run__report__has_key=BACKFILL_REPORT_KEY)
-        .order_by()
-        .values_list("run_id", f"run__report__{BACKFILL_REPORT_KEY}")
-        .distinct()
-    ):
-        try:
-            validate_backfill_receipt(receipt)
-        except ValueError:
-            continue
-        historical_runs.append(run_id)
-    return candidates.annotate(
-        historical_priority=Case(When(run_id__in=historical_runs, then=Value(1)), default=Value(0))
-    ).order_by("historical_priority", "available_at", "created_at", "id")
 
 
 def heartbeat_attempt(
@@ -629,68 +604,13 @@ def _terminal_failure(
 
 def _persist_face_embedding_result(attempt: ProcessingAttempt, result: dict[str, Any]) -> bool:
     if (
-        attempt.contract_version == QUALITY_FACE_CONTRACT_VERSION
-        and attempt.processor_version in QUALITY_FACE_PROCESSOR_VERSIONS
+        attempt.contract_version != QUALITY_FACE_CONTRACT_VERSION
+        or attempt.processor_version not in QUALITY_FACE_PROCESSOR_VERSIONS
     ):
-        validated = validate_quality_face_result(
-            result,
-            configuration=attempt.configuration,
-        )
-        input_geometry = quality_face_result_geometry(attempt, result)
-        _persist_quality_face_result(attempt, validated, input_geometry=input_geometry)
-        return True
-    if not isinstance(result, dict):
-        return False
-    model = _coerce_face_model(result, attempt.configuration)
-    input_geometry = _face_input_geometry(attempt, result)
-    faces = result.get("faces")
-    if not isinstance(faces, list):
-        return False
-    artifact = FaceProcessingAttemptArtifact.objects.create(
-        attempt=attempt,
-        status=FaceProcessingAttemptArtifact.Status.COMPLETE,
-        feature_payload={
-            "model": model,
-            "warnings": _safe_json_list(result.get("warnings"), maximum=8),
-            "timings": _safe_json_dict(result.get("timings")),
-            "face_count": len(faces),
-            "has_single_query_face_usable": bool(result.get("has_single_query_face_usable", False)),
-        },
-        quality_payload={
-            "quality": result.get("quality"),
-            "model": model,
-        },
-    )
-    for face in _iter_face_records(result):
-        index, record = face
-        if index is None:
-            continue
-        detection = PhotoFaceDetection.objects.create(
-            attempt=attempt,
-            artifact=artifact,
-            face_index=index,
-            status=PhotoFaceDetection.Status.KEPT,
-            geometry={
-                "bbox": _safe_face_bbox(record.get("bbox")),
-                "landmarks": record.get("landmarks", []),
-                "model": model,
-            }
-            | input_geometry,
-            features={
-                "confidence": record.get("quality"),
-                "quality": record.get("quality"),
-                "warnings": _safe_json_list(record.get("quality_flags"), maximum=8),
-                "source": record.get("source", "model"),
-            },
-        )
-        embedding = record.get("embedding")
-        if embedding is not None:
-            persist_accepted_embedding(
-                detection=detection,
-                model_version=model,
-                vector=embedding,
-                metadata=_safe_dict(record),
-            )
+        raise ValueError("unsupported face-processing contract")
+    validated = validate_quality_face_result(result, configuration=attempt.configuration)
+    input_geometry = quality_face_result_geometry(attempt, result)
+    _persist_quality_face_result(attempt, validated, input_geometry=input_geometry)
     return True
 
 
@@ -754,187 +674,6 @@ def _persist_quality_face_result(
                     "quality": face.quality,
                 },
             )
-
-
-def _face_input_geometry(attempt: ProcessingAttempt, result: dict[str, Any]) -> dict[str, Any]:
-    """Persist explicit preview coordinates only when they bind the accepted derivative."""
-    if attempt.contract_version != 2:
-        return {}
-    geometry = result.get("input_geometry")
-    if not isinstance(geometry, dict):
-        raise ValueError("preview face result is missing input geometry")
-    derivative = PhotoDerivative.objects.filter(
-        photo_id=attempt.photo_id,
-        variant="preview-small-v1",
-        accepted_attempt_id__isnull=False,
-    ).first()
-    expected = (
-        {
-            "coordinate_space": "preview-small-v1",
-            "pixel_width": derivative.width,
-            "pixel_height": derivative.height,
-            "oriented_source_width": derivative.oriented_source_width,
-            "oriented_source_height": derivative.oriented_source_height,
-        }
-        if derivative is not None
-        else None
-    )
-    if geometry != expected:
-        raise ValueError("preview face result geometry disagrees with the accepted derivative")
-    return {
-        **expected,
-        "scale_x": expected["oriented_source_width"] / expected["pixel_width"],
-        "scale_y": expected["oriented_source_height"] / expected["pixel_height"],
-    }
-
-
-def _iter_face_records(result: dict[str, Any]) -> list[tuple[int | None, dict[str, Any]]]:
-    faces = result.get("faces")
-    if not isinstance(faces, list):
-        return []
-    records: list[tuple[int | None, dict[str, Any]]] = []
-    for index, raw in enumerate(faces):
-        if not isinstance(raw, dict):
-            continue
-        if {"face_id", "bbox", "quality", "embedding_sha256"}.issubset(raw):
-            quality = raw.get("quality")
-            bbox = _safe_face_bbox(raw.get("bbox"))
-            if bbox is None:
-                continue
-            vector = _coerce_embedding(raw.get("embedding"))
-            if vector is None:
-                vector = _maybe_embedding_from_sha256(raw.get("embedding_sha256"))
-            if quality is None or not isinstance(quality, (int, float)) or not (0 <= quality <= 1):
-                continue
-            records.append(
-                (
-                    index,
-                    {
-                        "index": index,
-                        "bbox": bbox,
-                        "quality": quality,
-                        "embedding": vector,
-                        "landmarks": [],
-                        "confidence": quality,
-                        "source": "legacy",
-                    },
-                )
-            )
-            continue
-        if {
-            "index",
-            "bbox",
-            "confidence",
-            "embedding",
-            "landmarks",
-        }.issubset(raw):
-            raw_bbox = _safe_face_bbox(raw.get("bbox"))
-            if raw_bbox is None:
-                continue
-            quality = raw.get("confidence")
-            quality = quality if isinstance(quality, (int, float)) and 0 <= quality <= 1 else None
-            if quality is None:
-                continue
-            embedding = _coerce_embedding(raw.get("embedding"))
-            if embedding is None:
-                continue
-            landmarks = raw.get("landmarks")
-            if not (
-                isinstance(landmarks, (list, tuple))
-                and len(landmarks) == 5
-                and all(
-                    isinstance(point, (list, tuple))
-                    and len(point) == 2
-                    and all(_safe_face_coordinate(item) for item in point)
-                    for point in landmarks
-                )
-            ):
-                continue
-            records.append(
-                (
-                    _coerce_int(raw.get("index")),
-                    {
-                        "index": raw.get("index"),
-                        "bbox": raw_bbox,
-                        "quality": quality,
-                        "embedding": embedding,
-                        "landmarks": list(map(list, landmarks)),
-                        "quality_flags": raw.get("quality_flags", []),
-                        "source": "face_embedding",
-                        "confidence": quality,
-                    },
-                )
-            )
-    return records
-
-
-def _coerce_int(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
-
-
-def _safe_face_coordinate(value: Any) -> bool:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    return math.isfinite(value)
-
-
-def _safe_face_bbox(value: Any) -> list[float] | None:
-    if not isinstance(value, (list, tuple)):
-        return None
-    if len(value) != 4:
-        return None
-    if not all(_safe_face_coordinate(item) for item in value):
-        return None
-    return [float(item) for item in value]
-
-
-def _coerce_face_model(result: dict[str, Any], configuration: dict[str, Any]) -> str:
-    candidate = result.get("model")
-    if isinstance(candidate, str) and candidate:
-        return candidate
-    face_config = configuration.get("face_embedding")
-    if isinstance(face_config, dict):
-        configured = face_config.get("model")
-        if isinstance(configured, str) and configured:
-            return configured
-    return "sface"
-
-
-def _coerce_embedding(value: Any) -> list[float] | None:
-    if not isinstance(value, (list, tuple)):
-        return None
-    if len(value) > 512:
-        return None
-    output: list[float] = []
-    for item in value:
-        if not isinstance(item, (int, float)) or isinstance(item, bool):
-            return None
-        output.append(float(item))
-    return output
-
-
-def _maybe_embedding_from_sha256(value: Any) -> list[float] | None:
-    if not isinstance(value, str) or len(value) != 64:
-        return None
-    return None
-
-
-def _safe_json_list(value: Any, *, maximum: int) -> list[Any]:
-    if not isinstance(value, list):
-        return []
-    return value[:maximum]
-
-
-def _safe_json_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    return {}
-
-
-def _safe_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 def _terminal_stale(

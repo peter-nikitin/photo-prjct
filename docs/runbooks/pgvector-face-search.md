@@ -1,3 +1,5 @@
+> Historical pgvector reader-cutover runbook. Its SFace coexistence steps are superseded by [legacy face vector retirement](legacy-face-vector-retirement.md).
+
 # Exact pgvector face search: release and recovery
 
 Related: [cutover plan](../plans/2026-10-04-complete-pgvector-face-read-cutover.md),

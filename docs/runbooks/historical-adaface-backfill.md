@@ -1,4 +1,6 @@
-# Historical AdaFace backfill
+> Historical record: its SFace switches, temporary image labels and commands were retired by ADR 0054. Use [legacy face vector retirement](legacy-face-vector-retirement.md) for the current release.
+
+# Historical AdaFace backfill (completed rollout record)
 
 This is the operator path for the [approved specification](../superpowers/specs/2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md)
 and [ADR 0049](../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md).

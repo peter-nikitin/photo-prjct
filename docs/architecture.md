@@ -119,10 +119,9 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first
   policy; when the separate `PHOTO_PROCESSING_PREVIEW_ENABLED` gate is enabled it queues
   `2/generate_preview/1`, publishes a verified immutable preview, and only then queues preview-
-  backed face work selected by the event's immutable search generation. Events that existed before
-  the AdaFace rollout remain on `2/face_embedding/3` using SCRFD/SFace; newly created events default
-  to `3/face_embedding/5` using SCRFD/AdaFace with 512-dimensional embeddings and provisional direct
-  distance threshold `0.42`. No existing event is replayed or reinterpreted. The standalone worker polls the private Django API with one-at-a-
+  backed face work using `3/face_embedding/5`, SCRFD/AdaFace, and 512-dimensional embeddings.
+  Existing accepted AdaFace outcomes remain valid; missing current recognition is not synthesized.
+  The direct distance threshold remains `0.42`. The standalone worker polls the private Django API with one-at-a-
   time round-robin identity scheduling, has no Django/database or permanent Object Storage
   credentials, and receives only short-lived grants for exact input/output objects. Local targeted
   tests exercise real-JPEG preview generation, publication, gallery selection, preview-backed face
@@ -686,7 +685,7 @@ broker, vector engine, and ML implementations shown for later processing require
 changes while retaining exact SQL ranking and strict eligibility/privacy. The
 [retirement plan](plans/2026-10-04-complete-pgvector-face-read-cutover.md) removes the temporary
 reader gate, the Python/JSON ranking path and the JSON embedding table. The current application
-reads and writes `FaceEmbeddingVector` for both SFace (128D) and AdaFace (512D). Both selfie and
+reads and writes `FaceEmbeddingVector` only for AdaFace (512D). Both selfie and
 gallery-face searches compute full-cohort cosine distances, best detections, fixed-threshold
 membership and order in PostgreSQL without gallery-vector hydration. Missing or invalid native
 evidence fails closed; saved results remain in the shared search-history tables. A scored/window
@@ -694,8 +693,9 @@ stream avoids repeatedly scanning best-face reduction for every eligible detecti
 deployed PostgreSQL use a `256m` Docker shared-memory ceiling for concurrent native searches; this
 is a ceiling, not a memory reservation or an accepted production concurrency target. The table
 contraction runs after deployment commit because the canonical deployment applies migrations
-before replacing the old web process. SFace-to-AdaFace reprocessing and SFace-model retirement
-remain separate work.
+before replacing the old web process. The guarded post-commit retirement removes old vectors
+and fixes the physical column at `vector(512)`; repository code alone does not prove that
+contraction has run in production.
 
 1. The customer selects an event before searching.
 2. A bib query is a separate GET request using `?bib=<1-16 ASCII digits>` and matches current
@@ -718,22 +718,19 @@ remain separate work.
    exposed through the non-expiring public bearer link accepted by ADR 0019. Results from other
    events never enter the snapshot.
 
-An event with the version-4 candidate still resolves its frozen baseline until an explicit guarded
-activation appends the candidate selection. That selection is event-scoped and cannot mutate older
-search snapshots, projections, attempts, or activation records; a rollback appends the preceding
-generation selection. The candidate does not alter the ordinary `0.363` ranking threshold or the
-immutable direct and optional cluster-expansion evidence that ADRs 0019, 0024, and 0025 require.
+Historical activation records remain audit evidence. Current query selection uses the AdaFace
+cohort without an event model selector. The candidate does not alter the ordinary `0.42`
+ranking threshold or immutable direct and optional cluster-expansion evidence.
 
 The worker-backed selfie source is implemented in the repository and locally verified with real
-SCRFD/SFace inference for the submitted selfie query. The existing selfie E2E's gallery side uses
-deterministic accepted embedding fixtures for historical stored `1/face_embedding/1` and current
-preview-backed `2/face_embedding/3`; its preview-first member is canonical-deployment-reachable through an
+SCRFD/AdaFace inference for the submitted selfie query. The selfie E2E's gallery side uses
+deterministic accepted 512D embeddings for current `3/face_embedding/5`; its preview-first member is reachable through an
 accepted, verified `2/generate_preview/1` derivative and the resulting enrollment into
-`2/face_embedding/3`.
+`3/face_embedding/5`.
 That evidence covers a published paid event, frozen event-only candidates, stable ranked results,
-selfie deletion before `ready`, and ready-result media for both generations without opening the
-normal paid gallery. The existing immutable worker image packages pinned official SCRFD and OpenCV
-Zoo SFace models and runs a non-root build-time smoke through both `face_embedding` and
+selfie deletion before `ready`, and ready-result media without opening the
+normal paid gallery. The worker image packages pinned SCRFD and AdaFace models and runs a
+non-root build-time smoke through both `face_embedding` and
 `selfie_query`; the exact rollout image must run that same smoke before activation.
 Public selfie search is always available when its existing processing prerequisites are healthy;
 the retired availability switch is no longer an active setting. No temporary-lifecycle mutation,

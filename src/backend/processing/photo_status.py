@@ -21,7 +21,7 @@ from django.db.models import (
     When,
 )
 from django.db.models.fields import CharField
-from picflow.models import Event, Photo
+from picflow.models import Photo
 
 from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
@@ -34,13 +34,11 @@ from processing.models import (
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     CONTRACT_VERSION,
-    FACE_EMBEDDING_PROCESSOR_VERSION,
     GENERATE_PREVIEW_PROCESSOR_VERSION,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION,
-    LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
     PREVIEW_CONTRACT_VERSION,
-    PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
     QUALITY_FACE_CONTRACT_VERSION,
+    QUALITY_FACE_PROCESSOR_VERSION,
 )
 
 CATEGORY_PROCESSING = "processing"
@@ -199,24 +197,9 @@ def _current_identity(processor_type: str) -> Q:
             current_job__contract_version=PREVIEW_CONTRACT_VERSION,
             current_job__processor_version=GENERATE_WATERMARKED_PREVIEW_PROCESSOR_VERSION,
         )
-    return (
-        Q(
-            photo__processing_generation=Photo.ProcessingGeneration.LEGACY_ORIGINAL_V1,
-            current_job__contract_version=CONTRACT_VERSION,
-            current_job__processor_version=FACE_EMBEDDING_PROCESSOR_VERSION,
-        )
-        | Q(
-            photo__processing_generation__in=_PREVIEW_GENERATIONS,
-            photo__event__face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
-            current_job__contract_version=PREVIEW_CONTRACT_VERSION,
-            current_job__processor_version=PREVIEW_FACE_EMBEDDING_PROCESSOR_VERSION,
-        )
-        | Q(
-            photo__processing_generation__in=_PREVIEW_GENERATIONS,
-            photo__event__face_search_generation=Event.FaceSearchGeneration.ADAFACE_V5,
-            current_job__contract_version=QUALITY_FACE_CONTRACT_VERSION,
-            current_job__processor_version=LOCAL_ADAFACE_QUALITY_FACE_PROCESSOR_VERSION,
-        )
+    return Q(
+        current_job__contract_version=QUALITY_FACE_CONTRACT_VERSION,
+        current_job__processor_version=QUALITY_FACE_PROCESSOR_VERSION,
     )
 
 

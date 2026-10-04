@@ -76,12 +76,12 @@ def test_model_runtime_is_not_shared_between_parallel_slots(tmp_path, monkeypatc
 
     def get_runtime():
         runtime = face_embedding._get_model_runtime(
-            object(), tmp_path / "detector", tmp_path / "recognizer", "sface"
+            object(), tmp_path / "detector", tmp_path / "recognizer"
         )
         barrier.wait(timeout=3)
         assert (
             face_embedding._get_model_runtime(
-                object(), tmp_path / "detector", tmp_path / "recognizer", "sface"
+                object(), tmp_path / "detector", tmp_path / "recognizer"
             )
             is runtime
         )
@@ -91,6 +91,11 @@ def test_model_runtime_is_not_shared_between_parallel_slots(tmp_path, monkeypatc
         first = executor.submit(get_runtime)
         second = executor.submit(get_runtime)
         assert first.result() is not second.result()
+
+
+def test_face_extraction_rejects_more_than_32_faces_before_loading_models(tmp_path: Path) -> None:
+    with pytest.raises(FaceEmbeddingError, match="unsupported_input"):
+        extract_face_embeddings(tmp_path / "unused.jpg", max_bytes=1024, max_faces=33)
 
 
 def test_adaface_recovers_canonical_crop_from_displaced_scaled_rotated_landmarks() -> None:
@@ -222,8 +227,8 @@ def test_adaface_rejects_an_artifact_whose_digest_does_not_match(tmp_path: Path)
         verify_file_digest(artifact, "0" * 64)
 
 
-def test_detect_faces_adapts_scrfd_source_corners_to_sface_width_and_height() -> None:
-    """Passing SCRFD corner coordinates to SFace unchanged would break alignment."""
+def test_detect_faces_adapts_scrfd_source_corners_to_width_and_height() -> None:
+    """SCRFD corner coordinates must become width and height in the result."""
 
     detector = _FakeDetector([_detection(size=10)])
 
@@ -268,8 +273,14 @@ def test_scrfd_landmarks_drive_adaface_gallery_embedding(
         "photo_worker.face_embedding._extract_embedding",
         lambda *_args, **_kwargs: tuple(float(i) for i in range(512)),
     )
+    monkeypatch.setattr(
+        "photo_worker.face_embedding.evaluate_face_quality",
+        lambda *_args, **_kwargs: _quality("accepted"),
+    )
 
-    result = extract_face_embeddings(source, max_bytes=1024, model=ADAFACE_MODEL_NAME)
+    result = extract_face_embeddings(
+        source, max_bytes=1024, model=ADAFACE_MODEL_NAME, quality_thresholds=_quality_thresholds()
+    )
 
     assert result.faces == (
         FaceEmbeddingFace(
@@ -278,6 +289,7 @@ def test_scrfd_landmarks_drive_adaface_gallery_embedding(
             confidence=0.99,
             landmarks=((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
             embedding=tuple(float(i) for i in range(512)),
+            quality=_quality("accepted"),
         ),
     )
     assert result.has_single_query_face_usable is True
@@ -307,7 +319,7 @@ def test_extract_face_embeddings_reuses_models_across_image_sizes(
     monkeypatch.setattr(
         "photo_worker.face_embedding._decode_image", lambda *_args, **_kwargs: images.pop(0)
     )
-    model_paths = [tmp_path / "scrfd.onnx", tmp_path / "sface.onnx"]
+    model_paths = [tmp_path / "scrfd.onnx", tmp_path / "adaface"]
     monkeypatch.setattr(
         "photo_worker.face_embedding._model_path", lambda *_args, **_kwargs: model_paths.pop(0)
     )
@@ -321,7 +333,7 @@ def test_extract_face_embeddings_reuses_models_across_image_sizes(
     monkeypatch.setattr("photo_worker.face_embedding._load_models", load_models)
 
     extract_face_embeddings(source, max_bytes=1024)
-    model_paths[:] = [tmp_path / "scrfd.onnx", tmp_path / "sface.onnx"]
+    model_paths[:] = [tmp_path / "scrfd.onnx", tmp_path / "adaface"]
     extract_face_embeddings(source, max_bytes=1024)
 
     assert creations == {"detector": 1, "recognizer": 1}
@@ -590,6 +602,7 @@ def test_face_record_rejects_every_contradictory_v3_state() -> None:
         "landmarks": ((1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)),
     }
     contradictory_states = (
+        {"status": "kept", "quality": None, "embedding": vector, "error_code": None},
         {"status": "quality_rejected", "quality": accepted, "embedding": None, "error_code": None},
         {"status": "kept", "quality": rejected, "embedding": vector, "error_code": None},
         {
@@ -619,8 +632,8 @@ def test_face_record_rejects_every_contradictory_v3_state() -> None:
             FaceEmbeddingFace(**shared, **state)
 
 
-def test_face_record_retains_legacy_and_intended_terminal_forms() -> None:
-    """State validation must retain the v1/v2 kept record and both v3 technical forms."""
+def test_face_record_retains_current_terminal_forms() -> None:
+    """State validation keeps current accepted, rejected, and technical forms."""
     accepted = _quality("accepted")
     rejected = _quality("quality_rejected")
     vector = tuple(2.0 for _ in range(512))
@@ -632,7 +645,6 @@ def test_face_record_retains_legacy_and_intended_terminal_forms() -> None:
     }
 
     records = (
-        FaceEmbeddingFace(**shared, embedding=vector),
         FaceEmbeddingFace(**shared, status="kept", quality=accepted, embedding=vector),
         FaceEmbeddingFace(
             **shared,
@@ -656,7 +668,7 @@ def test_face_record_retains_legacy_and_intended_terminal_forms() -> None:
         ),
     )
 
-    assert len(records) == 5
+    assert len(records) == 4
 
 
 def test_extract_selfie_embedding_requires_exactly_one_face_and_normalizes_vector(
@@ -667,14 +679,14 @@ def test_extract_selfie_embedding_requires_exactly_one_face_and_normalizes_vecto
     detector = _selfie_model_mocks(monkeypatch, DummyImage(64, 64), [_detection()])
     monkeypatch.setattr(
         "photo_worker.face_embedding._extract_embedding",
-        lambda *_args, **_kwargs: tuple(2.0 for _ in range(128)),
+        lambda *_args, **_kwargs: tuple(2.0 for _ in range(512)),
     )
 
     result = extract_selfie_embedding(source, max_bytes=1024, content_type="image/png")
 
-    assert len(result.embedding) == 128
+    assert len(result.embedding) == 512
     assert sum(value * value for value in result.embedding) == pytest.approx(1.0)
-    assert result.model == "sface"
+    assert result.model == ADAFACE_MODEL_NAME
     assert detector.calls == [0.5]
 
 

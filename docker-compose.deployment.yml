@@ -52,7 +52,7 @@ services:
     mem_limit: 128m
     pids_limit: 32
 
-  web:
+  web: &web_slot
     image: ${APP_IMAGE:?APP_IMAGE must be set}
     environment:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
@@ -150,6 +150,13 @@ services:
       driver: journald
       options:
         tag: "findme.service=web"
+
+  web-next:
+    <<: *web_slot
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=web-next"
 
   import-worker:
     image: ${IMPORT_WORKER_IMAGE:-}

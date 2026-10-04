@@ -27,7 +27,7 @@ def test_import_worker_is_isolated_and_bounded():
             == "http://web:8000/internal/photo-import/v1/"
         )
         for name, service in services.items():
-            if name not in {"web", "import-worker"}:
+            if name not in {"web", "web-next", "import-worker"}:
                 assert "PHOTO_IMPORT_WORKER_TOKEN" not in service.get("environment", {})
     dockerfile = (ROOT / "Dockerfile.import-worker").read_text()
     assert "USER importer" in dockerfile and "src/backend" not in dockerfile

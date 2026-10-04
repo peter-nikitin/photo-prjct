@@ -1391,6 +1391,18 @@ if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     fail "Candidate migration failed"
 fi
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py sync_feature_flags; then
+    fail "Candidate feature synchronization failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py bootstrap_photographer_group; then
+    fail "Candidate photographer group bootstrap failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py collectstatic --noinput; then
+    fail "Candidate static collection failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     run --rm --no-deps -T --entrypoint python web manage.py \
     drain_gallery_media_publications --all-events; then
     fail "Gallery media publication drain failed"
@@ -1431,16 +1443,9 @@ max_compose_attempts=3
 compose_wait_seconds=5
 while [ "$attempt" -le "$max_compose_attempts" ]; do
     compose_up_status=0
-    if [ "$previous_env_exists" -eq 0 ] && [ "$requested_processing_enabled" = False ] && \
-        [ "$requested_commerce_worker_enabled" = False ]; then
-        compose_up_command() {
-            compose up -d --remove-orphans
-        }
-    else
-        compose_up_command() {
-            compose_reconcile_requested_runtime_profiles
-        }
-    fi
+    compose_up_command() {
+        compose_reconcile_requested_runtime_profiles
+    }
     native_only_activation_started=1
     if compose_up_command; then
         break

@@ -224,8 +224,9 @@ docker compose up --build -d
 docker compose logs -f web
 ```
 
-Do not overwrite an existing `.env`; update it from `.env.example` instead. The container entrypoint
-applies migrations and collects static files automatically. Once the web service has started, leave
+Do not overwrite an existing `.env`; update it from `.env.example` instead. The local Compose
+web entrypoint applies migrations, synchronizes feature definitions, creates the photographer group,
+and collects static files before starting the server. Once the web service has started, leave
 the logs with `Ctrl+C` and create an administrator if the local database is new:
 
 ```bash
@@ -287,8 +288,8 @@ docker compose up --build -d
 docker compose logs -f web
 ```
 
-The entrypoint applies migrations, creates the `Photographer` permission group, and collects static
-files. For a fresh database, create a superuser:
+The local Compose web entrypoint applies migrations, synchronizes feature definitions, creates the
+`Photographer` permission group, and collects static files. For a fresh database, create a superuser:
 
 ```bash
 docker compose exec web python manage.py createsuperuser

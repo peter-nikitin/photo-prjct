@@ -1124,6 +1124,37 @@ def _apply_log(tmp_path: Path) -> list[str]:
     return (tmp_path / "apply.log").read_text(encoding="utf-8").splitlines()
 
 
+@pytest.mark.parametrize("previous_slots", [("web",), ("web", "web-next")])
+def test_release_setup_runs_once_before_web_activation(
+    tmp_path: Path, fake_bin: Path, previous_slots: tuple[str, ...]
+) -> None:
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    (tmp_path / "docker-compose.deployment.yml").write_text(
+        "services:\n" + "".join(f"  {slot}:\n    image: old-image\n" for slot in previous_slots),
+        encoding="utf-8",
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stderr
+    commands = _apply_log(tmp_path)
+    expected = (
+        "candidate-migrate",
+        "sync_feature_flags",
+        "bootstrap_photographer_group",
+        "collectstatic --noinput",
+    )
+    indices = []
+    for marker in expected:
+        matches = [index for index, command in enumerate(commands) if marker in command]
+        assert len(matches) == 1, (marker, matches)
+        indices.append(matches[0])
+    assert indices == sorted(indices)
+    candidate_up = next(
+        index for index, command in enumerate(commands) if " up -d --no-deps web nginx" in command
+    )
+    assert indices[-1] < candidate_up
+    assert not any(" up -d --remove-orphans" in command for command in commands)
+
+
 @pytest.mark.parametrize(
     ("scenario", "expect_prune"),
     [("success", True), ("image-prune-failure", True), ("public-failure", False)],
@@ -1690,9 +1721,38 @@ def test_entrypoint_runs_gunicorn_with_the_stable_profile(tmp_path: Path, fake_b
     )
 
 
-def test_entrypoint_stops_before_remaining_bootstrap_when_feature_flag_sync_fails(
-    tmp_path: Path, fake_bin: Path
-) -> None:
+def test_web_slots_have_equivalent_application_configuration() -> None:
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "-f",
+            "docker-compose.deployment.yml",
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "APP_IMAGE": "test-release"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    import json
+
+    services = json.loads(result.stdout)["services"]
+    web = services["web"]
+    next_web = services["web-next"]
+    for key in ("image", "environment", "depends_on", "healthcheck", "expose", "restart"):
+        assert next_web[key] == web[key]
+    assert next_web["logging"]["options"]["tag"] == "findme.service=web-next"
+    assert web["logging"]["options"]["tag"] == "findme.service=web"
+
+
+def test_entrypoint_starts_gunicorn_without_release_setup(tmp_path: Path, fake_bin: Path) -> None:
     _write_executable(
         fake_bin / "python",
         """
@@ -1721,11 +1781,9 @@ esac
         check=False,
     )
 
-    assert result.returncode == 23
-    assert (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines() == [
-        "python manage.py migrate --noinput",
-        "python manage.py sync_feature_flags",
-    ]
+    assert result.returncode == 0, result.stderr
+    assert len((tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()) == 1
+    assert (tmp_path / "commands.log").read_text(encoding="utf-8").startswith("gunicorn ")
 
 
 def test_entrypoint_recreates_the_shared_multiprocess_directory_before_gunicorn(

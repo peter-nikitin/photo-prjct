@@ -1,7 +1,7 @@
 # Zero-downtime Django deployment implementation plan
 
 - Date: 2026-10-04
-- Status: Proposed for maintainer review
+- Status: Approved by maintainer on 2026-10-04
 - Owner: project maintainer
 - Related specification: [Zero-downtime Django releases](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md)
 - Related architecture: [Current architecture — implemented](../architecture.md#current-architecture--implemented)
@@ -22,16 +22,16 @@ Not applicable: this plan changes neither the photo-worker claim/result contract
 
 ### Task 1: Make Django slots start without database mutation
 
-**Files:** `src/backend/entrypoint.sh`, `docker-compose.deployment.yml`, `deploy/apply-deployment.sh`, `tests/deployment/test_deployment_scripts.py`, `tests/deployment/test_import_deployment.py`.
+**Files:** `src/backend/entrypoint.sh`, `src/backend/local-entrypoint.sh` (new), `docker-compose.yml`, `docker-compose.deployment.yml`, `deploy/apply-deployment.sh`, `tests/deployment/test_deployment_scripts.py`, `tests/deployment/test_import_deployment.py`, `tests/deployment/test_local_web.py`, `tests/processing/test_worker_container_contract.py`, `tests/processing/test_import_worker_container_contract.py`, `tests/deployment/test_commerce_deployment_compose.py`, `src/backend/ingestion/tests/test_bootstrap_group.py`, `README.md`.
 
 - **Specification:** [Selected design](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#selected-design), [Shared database and compatibility contract](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#shared-database-and-compatibility-contract).
 - **Depends on:** none.
-- **Produces:** `web` and `web-next` are otherwise equivalent Compose services; starting either runs Gunicorn without migration, feature synchronization, group bootstrap or other database mutation. The deploy entrypoint performs that setup once before candidate start.
+- **Produces:** `web` and `web-next` are otherwise equivalent deployment Compose services; starting either runs Gunicorn without migration, feature synchronization, group bootstrap or other database mutation. The deploy entrypoint performs that setup once before candidate start. Ordinary local Compose keeps its existing database/static preparation through an explicit local-only startup path.
 
-- [ ] Write focused failing tests: both slot services render with equivalent private application settings and distinct service names; entrypoint startup does not invoke mutating Django commands; the existing deploy path performs release setup exactly once before candidate start.
-- [ ] Run `make test TESTS="tests/deployment/test_deployment_scripts.py tests/deployment/test_import_deployment.py"`; record the expected focused failures.
+- [ ] Write focused failing tests: both slot services render with equivalent private application settings and distinct service names; deployment entrypoint startup does not invoke mutating Django commands; the existing deploy path performs release setup exactly once before candidate start; ordinary local Compose still prepares migrations, feature definitions, photographer group and static files before local web starts.
+- [ ] Run `sh scripts/run-in-test-env.sh .venv/bin/pytest -q -m operational tests/deployment/test_deployment_scripts.py tests/deployment/test_import_deployment.py`; record the expected focused failures.
 - [ ] Implement the smallest Compose/entrypoint/deploy changes. Keep the currently serving `web` container untouched while adding `web-next`; do not reconcile either slot through an all-service `compose up` during preparation.
-- [ ] Re-run the same focused command GREEN. Confirm first-activation and already-two-slot cases in the fake deployment harness.
+- [ ] Re-run the same focused command and the three Compose consumer contract files GREEN. Confirm first-activation and already-two-slot cases in the fake deployment harness.
 
 ### Task 2: Route all Django traffic to one selected slot, retaining static assets
 
@@ -42,7 +42,7 @@ Not applicable: this plan changes neither the photo-worker claim/result contract
 - **Produces:** a single validated active-upstream selection in the existing Nginx configuration, readable after process restart; `deploy/web-slot.py` validates `web` or `web-next`, prepares the candidate configuration, switches by graceful reload and reads back the selected upstream. It never publishes a new listener or restarts the edge. The internal import URL goes through the selected private route. A shared additive static-files volume retains immutable assets from both releases.
 
 - [ ] Add failing Nginx/config tests for selection of each slot, private worker and import routing, public denial of import endpoints, unchanged bearer/privacy headers, invalid upstream rejection, and old/new hashed static URLs across a switch.
-- [ ] Run `make test TESTS="tests/deployment/test_deployment_scripts.py tests/deployment/test_import_deployment.py"` and `sh tests/deployment/validate-nginx.sh`; record the focused failures.
+- [ ] Run `sh scripts/run-in-test-env.sh .venv/bin/pytest -q -m operational tests/deployment/test_deployment_scripts.py tests/deployment/test_import_deployment.py` and `sh tests/deployment/validate-nginx.sh`; record the focused failures.
 - [ ] Implement a small host-owned slot selector and Nginx template change. Store only the selected upstream in the already bind-mounted Nginx directory so the first migration does not recreate Nginx to add a mount. Seed existing static assets into the additive volume before the first switch, then add candidate assets without deleting predecessor files.
 - [ ] Re-run focused tests and Nginx validation GREEN. Verify that an invalid candidate config leaves the old selected upstream in place.
 
@@ -55,7 +55,7 @@ Not applicable: this plan changes neither the photo-worker claim/result contract
 - **Produces:** ordinary Deploy starts only the unselected web slot, checks readiness, atomically switches and validates the edge, drains the previous slot, then commits `deployed-image`. It leaves the old slot serving on pre-switch failure and preserves it on uncertain post-switch failure. The existing deployment lock and safe forward-recovery path remain authoritative.
 
 - [ ] Add failing phase tests for candidate pull/setup/readiness failure, Nginx validation failure, successful held-request handoff, post-switch smoke failure, interrupted retry, drain timeout and prior-image compatibility. Assert that neither Nginx nor PostgreSQL is stopped or recreated on an ordinary web release and the marker advances only after verified success.
-- [ ] Run `make test TESTS="tests/deployment/test_deployment_scripts.py tests/deployment/test_remote_only_deployment.py tests/deployment/test_component_release.py"`; record focused RED outcomes.
+- [ ] Run `sh scripts/run-in-test-env.sh .venv/bin/pytest -q -m operational tests/deployment/test_deployment_scripts.py tests/deployment/test_remote_only_deployment.py tests/deployment/test_component_release.py`; record focused RED outcomes.
 - [ ] Replace the ordinary release's `compose stop nginx`, broad `compose up` and unconditional database reconciliation with slot-specific candidate operations. Keep initial certificate/database bootstrap and explicit exceptional database/certificate maintenance separate. Move Commerce/import worker image reconciliation after web selection without changing the private import contract or terminating accepted work.
 - [ ] Re-run focused tests GREEN. Run `sh tests/deployment/validate-web-slot-handoff.sh` against local disposable Docker containers: hold an old-slot request open while switching, check new requests and private routes on the candidate, and prove the held request completes before predecessor stop. A failed/uncertain switch must show a healthy selected slot and truthful deployment failure.
 

@@ -7,7 +7,8 @@
   ADR 0017 for a separate pre-activation capacity-measurement requirement for this relocation;
   ADR 0018 for observation-only monitoring metrics used by these worker autoscalers only
 - Superseded by: [ADR 0049](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
-  only for post-acceptance recovery through on-host photo workers
+  only for post-acceptance recovery through on-host photo workers;
+  [ADR 0051](0051-release-photo-worker-images-independently.md) for shared web/worker SHA and coupled image rollout
 
 ## Context
 

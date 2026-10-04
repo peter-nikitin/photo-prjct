@@ -56,7 +56,7 @@ def test_generic_workflows_use_only_the_canonical_secret_consumers() -> None:
     assert set(deploy[True]) == {"push", "workflow_dispatch"}
     assert deploy[True]["push"] == {"branches": ["main"]}
     assert deploy["name"] == "Deploy"
-    assert deploy["jobs"]["deploy"]["concurrency"]["group"] == "deploy"
+    assert deploy["concurrency"]["group"] == "deploy"
     assert all("environment" not in job for job in deploy["jobs"].values())
     _resolver_step(
         deploy["jobs"]["stage-observability-release"],
@@ -548,7 +548,7 @@ def _initial_deployment_helper(tmp_path: Path, *, apply_status: int) -> tuple[Pa
     helper = deploy_dir / "run-remote.sh"
     shutil.copy2(HELPER, helper)
     (deploy_dir / "worker-pools").mkdir()
-    (deploy_dir / "worker-pools/release.py").write_text("def deployment_guard(*args): pass\n")
+    (deploy_dir / "verify-native-release.py").write_text("# fixture native guard\n")
     shutil.copy2(ROOT / "deploy/package-deployment.sh", deploy_dir / "package-deployment.sh")
     for name in ("__init__.py", "services/__init__.py", "services/worker_pool_cloud.py"):
         target = project_root / "src/backend/processing" / name
@@ -578,17 +578,17 @@ def _initial_deployment_environment(
     return environment, sentinel
 
 
-def test_installer_rejects_missing_remote_marker_before_package_replacement(
+def test_installer_accepts_web_release_without_legacy_fleet_marker(
     tmp_path: Path, remote_boundary: Path
 ) -> None:
     helper, apply_log, _candidate_compose = _initial_deployment_helper(tmp_path, apply_status=0)
     environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
     result = _run_helper(["deploy"], environment, helper=helper)
-    assert result.returncode == 2
-    assert not apply_log.exists()
+    assert result.returncode == 0, result.stderr
+    assert apply_log.exists()
     remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
-    assert not (remote_root / "docker-compose.deployment.yml").exists()
-    assert not (remote_root / "deploy").exists()
+    assert (remote_root / "docker-compose.deployment.yml").exists()
+    assert (remote_root / "deploy").exists()
 
 
 @pytest.mark.parametrize("compatible", [True, False])
@@ -607,15 +607,18 @@ def test_first_remote_only_upgrade_runs_candidate_guard_with_legacy_installed_he
     (remote_root / "worker-pools-current.json").write_text("{}")
     (remote_root / "worker-pools-release.json").write_text('{"phase":"committed"}')
     guard_log = tmp_path / "candidate-guard.log"
-    candidate = helper.parent / "worker-pools"
-    (candidate / "release.py").write_text(
+    (helper.parent / "verify-native-release.py").write_text(
+        "import argparse\n"
         "from pathlib import Path\n"
-        "def deployment_guard(root, app_image, worker_image, manifest):\n"
-        "    assert (root / 'deploy/package-version').read_text() == 'previous\\n'\n"
-        "    assert (root / 'deploy/worker-pools/release.py').read_text() "
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--root', type=Path)\n"
+        "parser.add_argument('--app-image')\n"
+        "root = parser.parse_args().root\n"
+        "assert (root / 'deploy/package-version').read_text() == 'previous\\n'\n"
+        "assert (root / 'deploy/worker-pools/release.py').read_text() "
         "== 'LEGACY_RELEASE = True\\n'\n"
-        f"    Path({str(guard_log)!r}).write_text('candidate-guard\\n')\n"
-        + ("    raise ValueError('incompatible native release')\n" if not compatible else "")
+        f"Path({str(guard_log)!r}).write_text('candidate-guard\\n')\n"
+        + ("raise ValueError('incompatible native release')\n" if not compatible else "")
     )
     result = _run_helper(["deploy"], environment, helper=helper)
     assert guard_log.exists(), result.stderr
@@ -707,7 +710,7 @@ def test_failed_deploy_relays_exact_candidate_pull_failure_without_other_output(
         SSH_STDOUT=(
             "DEPLOY_PHASE=candidate-pull elapsed_seconds=0\n"
             f"unsafe diagnostic {sentinel}\n"
-            "Fleet release preflight failed\n"
+            "Candidate application image pull failed\n"
             "DEPLOY_RESULT=failure phase=candidate-pull "
             "rollback=not-needed elapsed_seconds=5\n"
         ),
@@ -718,7 +721,7 @@ def test_failed_deploy_relays_exact_candidate_pull_failure_without_other_output(
     assert result.returncode == 2
     assert result.stdout == (
         "DEPLOY_PHASE=candidate-pull elapsed_seconds=0\n"
-        "Fleet release preflight failed\n"
+        "Candidate application image pull failed\n"
         "DEPLOY_RESULT=failure phase=candidate-pull "
         "rollback=not-needed elapsed_seconds=5\n"
     )
@@ -726,7 +729,7 @@ def test_failed_deploy_relays_exact_candidate_pull_failure_without_other_output(
     assert sentinel not in result.stdout + result.stderr
 
 
-def test_failed_deploy_relays_only_known_fleet_preflight_steps(
+def test_failed_deploy_rejects_obsolete_fleet_preflight_markers(
     tmp_path: Path, remote_boundary: Path
 ) -> None:
     environment, sentinel = _remote_environment(tmp_path, remote_boundary)
@@ -744,12 +747,7 @@ def test_failed_deploy_relays_only_known_fleet_preflight_steps(
     result = _run_helper(["deploy"], environment)
 
     assert result.returncode == 2
-    assert result.stdout == (
-        "FLEET_PREFLIGHT_STEP=lock\n"
-        "FLEET_PREFLIGHT_STEP=manifest-validation\n"
-        "FLEET_PREFLIGHT_STEP=manifest-checksum\n"
-        "Fleet release preflight failed\n"
-    )
+    assert result.stdout == ""
     assert sentinel not in result.stdout + result.stderr
 
 

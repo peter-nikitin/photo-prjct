@@ -3,9 +3,11 @@
 import json
 from copy import deepcopy
 from datetime import timedelta
+from io import BytesIO
 from math import sqrt
 from typing import Any, cast
 from unittest.mock import patch
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pytest
@@ -70,6 +72,10 @@ def _remote_session(client, settings, pool):
     [(128, False, False), (512, False, False), (512, True, False), (512, True, True)],
 )
 def test_maximum_gallery_callback_publication(client, settings, dimensions, remote, vector_only):
+    from photo_worker.client import HttpClient
+    from photo_worker.contracts import Claim
+    from photo_worker.runner import _success_payload
+
     from processing.models import FaceEmbedding, FaceEmbeddingVector, ProcessingAttempt
     from processing.services.enrollment import (
         FACE_EMBEDDING_QUALITY_CONFIGURATION,
@@ -149,15 +155,12 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
         },
         "input_geometry": job["input_geometry"],
     }
-    body = h.terminal_body(
-        job,
-        contract_version=3,
-        processor_type="face_embedding",
-        processor_version=version,
-        result=result,
+    worker_job = Claim.from_response(response.json()).job
+    assert worker_job is not None
+    body = _success_payload(
+        worker_job, "2026-07-29T10:00:00Z", "2026-07-29T10:00:03Z", result, 1, 2, 3
     )
-    if remote:
-        body["worker_build"] = envelope["worker_build"]
+    assert "worker_build" not in body
     encoded = json.dumps(body).encode()
     worker_configuration = cast(dict[str, int], configuration["worker"])
     assert len(encoded) < worker_configuration["terminal_result_max_bytes"]
@@ -170,8 +173,22 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
     assert rejected.status_code == 400
     assert FaceEmbedding.objects.count() == FaceEmbeddingVector.objects.count() == 0
     assert ProcessingAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease
-    complete = h.post(f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body)
-    assert complete.status_code == 200, complete.json()
+
+    def opener(request, *, timeout):
+        wire = client.post(
+            urlsplit(request.full_url).path,
+            request.data,
+            content_type=request.get_header("Content-type"),
+            **h.headers,
+        )
+        assert wire.status_code == 200, wire.content
+        return BytesIO(wire.content)
+
+    worker_client = HttpClient(
+        "https://worker.test/internal/photo-processing/v1", "worker-secret", opener=opener
+    )
+    complete = worker_client.complete(job["attempt_id"], body)
+    assert complete.status == "succeeded" and not complete.stale
     assert FaceEmbedding.objects.count() == (0 if vector_only else 32)
     assert FaceEmbeddingVector.objects.count() == 32
     assert ProcessingAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease
@@ -219,7 +236,7 @@ def test_remote_selfie_callback_uses_enabled_vector_reader_and_keeps_results_imm
         job = claim.json()["job"]
         member = WorkerPoolMember.objects.get(instance_id="selfie-node")
         assert str(member.active_selfie_attempt_id) == job["attempt_id"]
-        body = wire.success_body(job) | {"worker_build": envelope["worker_build"]}
+        body = wire.success_body(job)
         assert len(json.dumps(body).encode()) < 16384
         with CaptureQueriesContext(connection) as queries:
             complete = wire.post(

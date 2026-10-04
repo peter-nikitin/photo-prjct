@@ -13,6 +13,8 @@ from photo_worker.face_quality import FaceQualityEvidence
 
 ROOT = Path(__file__).resolve().parents[2]
 ENV = {
+    "WORKER_SLOT": "b",
+    "WORKER_PORT": "9102",
     "WORKER_IMAGE": "ghcr.io/example/photo-prjct-worker@sha256:" + "a" * 64,
     "PHOTO_WORKER_BUILD": "a" * 40,
     "PHOTO_PROCESSING_FLEET_TOKEN": "fleet-only",
@@ -46,18 +48,18 @@ def test_worker_only_compose_projects_loopback_runtime_port_without_backend_cred
             "mode": "ingress",
             "host_ip": "127.0.0.1",
             "target": 9101,
-            "published": "9101",
+            "published": "9102",
             "protocol": "tcp",
         }
     ]
-    assert worker["environment"]["PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED"] == "False"
+    assert worker["environment"]["PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED"] == "True"
     assert {
         (mount["source"], mount["target"], mount["read_only"]) for mount in worker["volumes"]
     } == {
         ("/proc/sys/kernel/random/boot_id", "/run/findme-worker/boot-id", True),
         ("/etc/findme-worker/instance-id", "/run/findme-worker/instance-id", True),
     }
-    assert worker["container_name"] == "findme-photo-worker"
+    assert worker["container_name"] == "findme-photo-worker-b"
     assert worker["stop_grace_period"] == "16m0s"
     assert worker["cpus"] == 2.0
     assert worker["mem_limit"] == "5368709120"

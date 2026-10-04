@@ -228,7 +228,7 @@ class CloudObservationTests(TestCase):
             observe_cloud("bulk", self.config, reader=reader)
         self.assertEqual(WorkerPool.objects.values().get(name="bulk"), before)
 
-    def test_missing_or_wrong_actual_image_evidence_cannot_be_relabelled_from_template(self):
+    def test_cloud_membership_survives_missing_or_stale_image_metadata(self):
         from processing.services.worker_pool_observation import observe_cloud
 
         reader = CloudReader("fake-token")
@@ -240,9 +240,13 @@ class CloudObservationTests(TestCase):
             },
         ):
             self.instance["metadata"] = metadata
-            with patch.object(reader, "get", side_effect=self.get), self.assertRaises(ValueError):
-                observe_cloud("bulk", self.config, reader=reader)
-        self.assertEqual(WorkerPool.objects.get(name="bulk").observation_sequence, 0)
+            with patch.object(reader, "get", side_effect=self.get):
+                self.assertTrue(observe_cloud("bulk", self.config, reader=reader))
+            pool = WorkerPool.objects.get(name="bulk")
+            self.assertEqual(pool.observed_members[0]["instance_id"], "old-node")
+            self.assertEqual(
+                pool.observed_members[0]["worker_build"], metadata.get("findme-worker-build", "")
+            )
 
     def test_out_of_order_snapshot_is_rejected_by_coordinator(self):
         from processing.services.worker_pool_observation import observe_cloud

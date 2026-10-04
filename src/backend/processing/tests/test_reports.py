@@ -67,7 +67,6 @@ class ProcessingRunReportTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-report",
         )
 
     def preview_photo(self, suffix: str) -> Photo:
@@ -82,7 +81,6 @@ class ProcessingRunReportTests(TestCase):
             contract_version=2,
             processor_type="generate_preview",
             processor_version=1,
-            worker_build="preview-report-worker",
         )
 
     def close_one_successful_run(self) -> EventProcessingRun:
@@ -343,7 +341,6 @@ class ProcessingRunReportTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="worker-report",
             now=first_claim.job.available_at,
         )
         assert isinstance(retry, ClaimedJob)
@@ -419,7 +416,6 @@ class ProcessingRunReportTests(TestCase):
             processor_version=1,
             configuration=first.job.configuration,
             input_fingerprint=first.job.input_fingerprint,
-            worker_build="stale-preview-worker",
             status=ProcessingAttempt.Status.STALE,
             terminal_at=timezone.now(),
             result={"signed_url": "https://must-not-escape.test/stale"},
@@ -550,7 +546,6 @@ class ProcessingRunReportTests(TestCase):
             contract_version=2,
             processor_type="generate_watermarked_preview",
             processor_version=1,
-            worker_build="watermark-report-worker",
         )
         assert isinstance(watermark_claim, ClaimedJob)
         watermark_bytes = b"watermarked-report-output"
@@ -642,9 +637,6 @@ class ProcessingRunReportTests(TestCase):
                     processor_version=job.processor_version,
                     configuration=job.configuration,
                     input_fingerprint=job.input_fingerprint,
-                    worker_build=(f"{job_number:03d}-{attempt_number}" + control_character * 128)[
-                        :128
-                    ],
                     status=status,
                     terminal_at=now,
                     result={
@@ -753,7 +745,6 @@ class EventBibProcessingReportTests(TestCase):
                 contract_version=1,
                 processor_type="bib_recognition",
                 processor_version=1,
-                worker_build="bib-report-worker",
             )
             assert isinstance(claimed, ClaimedJob)
             self.assertEqual(claimed.job.photo_id, photo.pk)

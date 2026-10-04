@@ -138,17 +138,23 @@ class FleetLifecycle:
         threading.Thread(target=deadline, daemon=True).start()
         try:
             self._client.bind_member(self._identity.envelope())
-            self._startup_retry(lambda: self._client.member_request("register"))
             if self._draining.is_set() or self._closed.is_set():
                 return
             self._warmup()
             if not self._draining.is_set() and not self._closed.is_set():
                 self._warm = True
-                self._startup_retry(self.pulse)
+                self._startup_retry(self._register)
                 self._thread = threading.Thread(target=self._run, daemon=True)
                 self._thread.start()
         finally:
             started.set()
+
+    def _register(self) -> None:
+        # Registration is the handoff: a cold or failed candidate never fences the old process.
+        result = self._client.member_request("register")
+        if result.get("draining") is True:
+            self._drain.request()
+        self._admitted = result.get("ready") is True
 
     def _startup_retry(self, operation: Callable[[], object]) -> None:
         while not self._draining.is_set() and not self._closed.is_set():
@@ -167,12 +173,12 @@ class FleetLifecycle:
             try:
                 result = self._send_heartbeat()
             except ApiError as error:
-                if error.code != "registration_changed" or self._draining.is_set():
+                if error.code != "registration_changed":
                     raise
-                # A delayed registration from another process may supersede this one.
-                # Recover once per pulse; no unbounded retry or interruption of job keeper.
-                self._client.member_request("register")
-                result = self._send_heartbeat()
+                # The replacement owns new claims. Preserve the independent attempt keeper
+                # and callbacks, and never displace the replacement by re-registering.
+                self._drain.request()
+                return
             if result.get("draining") is True:
                 self._drain.request()
             self._admitted = result.get("ready") is True

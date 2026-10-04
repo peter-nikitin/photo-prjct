@@ -153,9 +153,9 @@ class HttpClient:
         # or send a heartbeat while its registration response is still in flight.
         with self._member_lock:
             payload: dict[str, object] = self._member | fields
-            if operation == "heartbeat":
+            if operation in {"heartbeat", "retire"}:
                 if self._registration_generation is None:
-                    raise ValueError("member heartbeat requires registration")
+                    raise ValueError("member operation requires registration")
                 payload["registration_generation"] = self._registration_generation
             result = self.post_json(f"members/{operation}", payload)
             if operation == "register":
@@ -205,16 +205,13 @@ class HttpClient:
     def claim_job(
         self,
         *,
-        worker_build: str,
         lease_seconds: int,
         processor_type: str = PROCESSOR_TYPE,
         processor_version: int | None = None,
         contract_version: int = 1,
     ) -> Claim:
-        if self._transport == "remote" and (
-            self._member is None or self._member["worker_build"] != worker_build
-        ):
-            raise ValueError("remote claim requires matching registered host identity")
+        if self._transport == "remote" and self._member is None:
+            raise ValueError("remote claim requires registered host identity")
         with self._member_lock:
             envelope: dict[str, object] = dict(self._member or {})
             if self._transport == "remote":
@@ -233,7 +230,6 @@ class HttpClient:
                             if processor_version is None
                             else processor_version
                         ),
-                        "worker_build": worker_build,
                         "lease_seconds": lease_seconds,
                     }
                     | envelope,

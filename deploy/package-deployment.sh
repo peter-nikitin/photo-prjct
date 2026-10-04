@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Build the sole canonical application package, including the exact shared cloud transport.
+# Include the shared cloud transport used by explicit one-time provisioning.
 [ "$#" -eq 1 ] || exit 2
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 archive=$1

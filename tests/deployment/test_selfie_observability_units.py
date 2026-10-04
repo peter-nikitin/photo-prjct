@@ -172,9 +172,7 @@ def test_deployment_workflow_uses_canonical_compose_tags(tmp_path: Path) -> None
         'printf "%s\\n%s\\n" "$DEPLOY_ROOT" "$COMPOSE_PROJECT_NAME"\n'
     )
     (candidate / "deploy" / "worker-pools").mkdir()
-    (candidate / "deploy" / "worker-pools" / "release.py").write_text(
-        "def deployment_guard(*args): pass\n"
-    )
+    (candidate / "deploy" / "verify-native-release.py").write_text("# fixture guard\n")
     deployment_root = tmp_path / "deployment"
     deployment_root.mkdir()
     (deployment_root / "worker-pools-current.json").write_text("{}")
@@ -192,6 +190,7 @@ def test_deployment_workflow_uses_canonical_compose_tags(tmp_path: Path) -> None
             **os.environ,
             "PATH": str(binary) + ":" + os.environ["PATH"],
             "DEPLOYMENT_ARCHIVE_NAME": ".deployment-candidate.fixture.tar",
+            "APP_IMAGE": "candidate-image",
         },
         text=True,
         capture_output=True,

@@ -34,6 +34,98 @@ trap 'exit 129' HUP
 
 printf 'DEPLOY_PHASE=validate elapsed_seconds=%s\n' "$(elapsed_seconds)"
 
+RECOVER_FORWARD="${RECOVER_FORWARD:-False}"
+case "$RECOVER_FORWARD" in True|False) ;; *) exit 2 ;; esac
+forward_verify_only=0
+case "$#:${1:-}" in
+    0:) ;;
+    1:--verify-forward-candidate)
+        [ "$RECOVER_FORWARD" = True ] || exit 2
+        forward_verify_only=1
+        ;;
+    *) exit 2 ;;
+esac
+if [ "$RECOVER_FORWARD" = True ] && [ "${FINDME_FORWARD_ENV_LOADED:-}" != 1 ]; then
+    : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
+    if [ "${FINDME_CANONICAL_LOCK:-}" != 1 ]; then
+        exec 9>"$DEPLOY_ROOT/.deployment.lock"
+        flock -n 9 || exit 1
+        export FINDME_CANONICAL_LOCK=1
+    fi
+    # Read only the exact root-private retained inputs while holding the canonical lock.
+    # Do not source dotenv as shell code or replace its settings with current CI values.
+    python3 - "$0" "$@" <<'PY_FORWARD'
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+
+def private_file(path):
+    if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
+        raise ValueError
+    return path.read_text()
+
+
+def value(encoded):
+    if not encoded.startswith('"'):
+        return encoded
+    if len(encoded) < 2 or not encoded.endswith('"'):
+        raise ValueError
+    result = []
+    index = 1
+    while index < len(encoded) - 1:
+        character = encoded[index]
+        if character == '\\':
+            index += 1
+            if index >= len(encoded) - 1:
+                raise ValueError
+            character = {'n': '\n', 'r': '\r', 't': '\t'}.get(encoded[index], encoded[index])
+        result.append(character)
+        index += 1
+    return ''.join(result)
+
+
+try:
+    root = Path(os.environ['DEPLOY_ROOT']).resolve()
+    snapshot = root / '.deployment-recovery'
+    if snapshot.is_symlink() or not snapshot.is_dir() or stat.S_IMODE(snapshot.stat().st_mode) != 0o700:
+        raise ValueError
+    private_file(snapshot / 'previous.env')
+    predecessor = Path(private_file(snapshot / 'package-path').strip())
+    if (predecessor.is_symlink() or predecessor.parent != root
+            or not predecessor.name.startswith('.deployment-previous.')
+            or not predecessor.is_dir()):
+        raise ValueError
+    retained = {}
+    for line in private_file(snapshot / 'candidate.env').splitlines():
+        name, separator, encoded = line.partition('=')
+        if not separator or not re.fullmatch(r'[A-Z][A-Z0-9_]*', name) or name in retained:
+            raise ValueError
+        retained[name] = value(encoded)
+    sha = os.environ['RELEASE_SHA']
+    image = os.environ['APP_IMAGE']
+    if not re.fullmatch(r'[0-9a-f]{40}', sha):
+        raise ValueError
+    original = re.fullmatch(r'(ghcr\.io/[a-z0-9_./-]+):[0-9a-f]{40}', retained['APP_IMAGE'])
+    if original is None or image != f'{original[1]}:{sha}':
+        raise ValueError
+    environment = {**os.environ, **retained, 'APP_IMAGE': image,
+                   'RECOVER_FORWARD': 'True', 'FINDME_FORWARD_ENV_LOADED': '1',
+                   'COMPOSE_PROJECT_NAME': 'photo-prjct'}
+    environment.pop('PREVIOUS_DEPLOYMENT_PACKAGE_ROOT', None)
+    if retained.get('PHOTO_IMPORT_ENABLED') == 'True':
+        environment['IMPORT_WORKER_IMAGE'] = f'{original[1]}-import-worker:{sha}'
+        environment['PHOTO_IMPORT_BUILD'] = sha
+except (OSError, KeyError, ValueError):
+    raise SystemExit('Invalid retained forward-recovery inputs') from None
+os.execve('/bin/sh', ['sh', *sys.argv[1:]], environment)
+PY_FORWARD
+    trap - EXIT INT TERM HUP
+    exit 0
+fi
+
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
 : "${APP_IMAGE:?Set APP_IMAGE}"
@@ -74,17 +166,10 @@ case "$requested_import_enabled" in
     *) echo "PHOTO_IMPORT_ENABLED must be True or False" >&2; exit 2 ;;
 esac
 requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
-if [ "${WORKER_POOL_ACTIVATION:-normal}" != normal ]; then
-    echo "Only normal remote fleet deployment is supported" >&2
-    exit 2
-fi
-fleet_prepared=0
 if [ "$requested_processing_enabled" != True ] || \
     [ -z "${PHOTO_PROCESSING_FLEET_TOKEN:-}" ] || \
-    [ -z "${WORKER_POOL_PRIVATE_API_IPV4:-}" ] || \
-    [ -z "${WORKER_POOL_RELEASE_MANIFEST:-}" ] || \
-    [ -z "${WORKER_POOL_RELEASE_CHECKSUM:-}" ]; then
-    echo "Remote deployment requires enabled API, fleet credential and reviewed release" >&2
+    [ -z "${WORKER_POOL_PRIVATE_API_IPV4:-}" ]; then
+    echo "Remote deployment requires enabled API, fleet credential and private edge" >&2
     exit 2
 fi
 requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
@@ -366,21 +451,6 @@ case "${PHOTO_UPLOAD_ENABLED:-False}" in
         ;;
 esac
 
-case "$requested_processing_enabled" in
-    True)
-        if [ -z "${WORKER_IMAGE:-}" ]; then
-            echo "Set WORKER_IMAGE" >&2
-            exit 2
-        fi
-        ;;
-    False)
-        ;;
-    *)
-        echo "PHOTO_PROCESSING_ENABLED must be True or False" >&2
-        exit 2
-        ;;
-esac
-
 case "$requested_preview_enabled" in
     True|False)
         ;;
@@ -589,11 +659,11 @@ cleanup() {
         ${candidate_command_output_tmp:+"$candidate_command_output_tmp"}
 }
 
-clear_fleet_recovery_snapshot() {
+clear_deployment_recovery_snapshot() {
     rm -f "$DEPLOY_ROOT/.deployment-recovery/previous.env" \
         "$DEPLOY_ROOT/.deployment-recovery/deployed-image" \
         "$DEPLOY_ROOT/.deployment-recovery/package-path" \
-        "$DEPLOY_ROOT/.deployment-recovery/worker-topology"
+        "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
     rmdir "$DEPLOY_ROOT/.deployment-recovery"
 }
 
@@ -657,7 +727,6 @@ clear_candidate_compose_interpolation() {
         PRIVATE_MEDIA_S3_ACCESS_KEY_ID \
         PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY \
         PRIVATE_MEDIA_ALLOWED_ORIGINS \
-        WORKER_IMAGE \
         PHOTO_WORKER_POOL_COORDINATOR_ENABLED \
         PHOTO_PROCESSING_FLEET_TOKEN \
         WORKER_POOL_PRIVATE_API_IPV4 \
@@ -666,7 +735,6 @@ clear_candidate_compose_interpolation() {
         PHOTO_PROCESSING_FACE_ENABLED \
         PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS \
         PHOTO_PROCESSING_MAX_REQUEST_BYTES \
-        PHOTO_WORKER_BUILD \
         PHOTO_WORKER_LEASE_SECONDS \
         PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES \
         PHOTO_WORKER_BULK_PROCESSOR_TYPES \
@@ -833,10 +901,42 @@ start_import_after_web_ready() {
     compose_with_env_file "$import_env_file" --profile import up -d --no-deps import-worker
 }
 
+previous_web_matches_processing_schema() (
+    # Probe the predecessor model against the actual DB even if migrate failed after
+    # committing processing.0016. Do not output rows or restore any canonical state.
+    [ -n "$previous_env_tmp" ] && [ -f "$previous_env_tmp" ] || return 1
+    clear_candidate_compose_interpolation
+    run_private_candidate_command compose_with_env_file "$previous_env_tmp" \
+        run --rm --no-deps -T --entrypoint python web manage.py shell --no-imports -c '
+from django.db import connection, transaction
+from processing.models import ProcessingAttempt
+with transaction.atomic():
+    with connection.cursor() as cursor:
+        cursor.execute("SET TRANSACTION READ ONLY")
+        cursor.execute("SET LOCAL statement_timeout = '\''5s'\''")
+    list(ProcessingAttempt.objects.all()[:1])
+'
+)
+
 recover_previous_deployment() {
-    if [ "$fleet_prepared" -eq 1 ]; then
-        # Failure keeps compatible candidate web in place until remote ownership is safe.
-        fleet_phase rollback || return 1
+    if [ "$previous_env_exists" -eq 1 ] && ! previous_web_matches_processing_schema; then
+        echo "Previous web is incompatible with the current processing schema; automatic recovery blocked" >&2
+        candidate_recovery_env="$DEPLOY_ROOT/.env"
+        if [ -n "$requested_env_tmp" ] && [ -f "$requested_env_tmp" ]; then
+            candidate_recovery_env="$requested_env_tmp"
+        fi
+        # Keep the installed candidate and private inputs for explicit forward recovery.
+        # Also stop a predecessor still running when failure preceded candidate activation.
+        install -m 0600 "$candidate_recovery_env" \
+            "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
+        candidate_recovery_env_status=$?
+        compose stop web
+        candidate_web_stop_status=$?
+        if [ "$candidate_recovery_env_status" -ne 0 ] || [ "$candidate_web_stop_status" -ne 0 ]; then
+            echo "Blocked recovery could not preserve candidate inputs or stop web; operator intervention required" >&2
+        fi
+        echo "Candidate package and .deployment-recovery retained; keep claims paused and recover forward" >&2
+        return 1
     fi
     if [ "$previous_import_enabled" = True ] || \
         [ "$candidate_import_worker_start_attempted" -eq 1 ]; then
@@ -896,18 +996,26 @@ on_exit() {
     set +e
     trap - EXIT INT TERM HUP
 
+    if [ "$forward_verify_only" -eq 1 ] && [ "$status" -eq 0 ]; then
+        cleanup
+        exit 0
+    fi
     if [ "$mutation_started" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
         [ "$status" -ne 0 ] || status=1
         if [ "$recovery_in_progress" -eq 0 ]; then
             recovery_in_progress=1
-            if ! recover_previous_deployment; then
+            if [ "$RECOVER_FORWARD" = True ]; then
+                rollback_result=failed
+                compose stop web || echo "Forward recovery could not stop web" >&2
+                echo "Forward recovery failed; original snapshot retained and claims must stay paused" >&2
+            elif ! recover_previous_deployment; then
                 rollback_result=failed
                 echo "Previous deployment recovery failed" >&2
                 diagnostics
             else
                 rollback_result=succeeded
                 if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
-                    clear_fleet_recovery_snapshot || rollback_result=failed
+                    clear_deployment_recovery_snapshot || rollback_result=failed
                 fi
                 if [ "${previous_upload_enabled:-False}" = True ]; then
                     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
@@ -928,10 +1036,6 @@ on_exit() {
                     echo "Observability managed-file rollback failed" >&2
                 }
         fi
-    elif [ "$fleet_prepared" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
-        # No fleet mutation has begun. Close the prepared receipt before the installer
-        # restores a potentially legacy package that has no fleet recovery command.
-        fleet_phase rollback || status=1
     fi
 
     cleanup
@@ -974,17 +1078,13 @@ if [ "${FINDME_CANONICAL_LOCK:-}" != 1 ]; then
     FINDME_CANONICAL_LOCK=1
     export FINDME_CANONICAL_LOCK
 fi
-python3 "$(dirname "$0")/worker-pools/release.py" deployment-guard --root "$DEPLOY_ROOT" \
-    --app-image "$requested_image" --worker-image "${WORKER_POOL_WORKER_DIGEST:-}" \
-    --manifest "${WORKER_POOL_RELEASE_MANIFEST:-}" || fail "Deployment violates native generation or local retirement boundary"
-[ ! -e "$DEPLOY_ROOT/.deployment-recovery" ] || fail "Canonical recovery remains unfinished"
-[ -f "$DEPLOY_ROOT/worker-pools-current.json" ] || fail "Committed remote fleet marker is required"
-fleet_phase() {
-    FINDME_CANONICAL_DEPLOY=1 PYTHONPATH="$DEPLOY_ROOT/deploy/worker-pools/_canonical" \
-        python3 "$DEPLOY_ROOT/deploy/worker-pools/release.py" "$1" --root "$DEPLOY_ROOT" \
-        --manifest "${WORKER_POOL_RELEASE_MANIFEST:-}" --checksum "${WORKER_POOL_RELEASE_CHECKSUM:-}" \
-        --app-image "$requested_image" --worker-image "${WORKER_POOL_WORKER_DIGEST:-}"
-}
+python3 "$(dirname "$0")/verify-native-release.py" --root "$DEPLOY_ROOT" \
+    --app-image "$requested_image" || fail "Deployment violates native AdaFace capability"
+if [ "$RECOVER_FORWARD" = True ]; then
+    [ -f "$DEPLOY_ROOT/.deployment-recovery/candidate.env" ] || fail "Forward recovery inputs missing"
+else
+    [ ! -e "$DEPLOY_ROOT/.deployment-recovery" ] || fail "Canonical recovery remains unfinished"
+fi
 previous_import_enabled="False"
 previous_upload_enabled="False"
 previous_processing_enabled="False"
@@ -1120,7 +1220,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'COMMERCE_SUPPORT_CONTACT=%s\n' "$requested_commerce_support_contact"
     printf 'COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS=%s\n' "$requested_commerce_worker_health_max_ready_age_seconds"
     printf 'COMMERCE_WORKER_ENABLED=%s\n' "$requested_commerce_worker_enabled"
-    printf 'WORKER_IMAGE=%s\n' "${WORKER_IMAGE:-}"
     printf 'PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True\n'
     write_literal_dotenv_value PHOTO_PROCESSING_FLEET_TOKEN "$PHOTO_PROCESSING_FLEET_TOKEN"
     printf 'WORKER_POOL_PRIVATE_API_IPV4=%s\n' "$WORKER_POOL_PRIVATE_API_IPV4"
@@ -1129,7 +1228,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PHOTO_PROCESSING_FACE_ENABLED=%s\n' "$requested_face_enabled"
     printf 'PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=%s\n' "${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}"
     printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}"
-    printf 'PHOTO_WORKER_BUILD=%s\n' "${PHOTO_WORKER_BUILD:-capture-metadata-v1}"
     printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
     printf 'PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=%s\n' "$requested_bulk_processor_identities"
     printf 'PHOTO_WORKER_BULK_PROCESSOR_TYPES=%s\n' "$requested_bulk_processor_types"
@@ -1172,8 +1270,30 @@ if [ "$requested_import_enabled" = True ]; then
     compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
 fi
 
-fleet_phase preflight || fail "Fleet release preflight failed"
-fleet_prepared=1
+if [ "$RECOVER_FORWARD" = True ]; then
+    candidate_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$requested_image")" || fail "Forward image revision unavailable"
+    [ "$candidate_revision" = "$RELEASE_SHA" ] || fail "Forward image does not match the approved SHA"
+    if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+        run --rm --no-deps -T --entrypoint python web manage.py shell --no-imports -c '
+# FORWARD_RECOVERY_PROTOCOL: schema and claim protocol must both be build-independent.
+from inspect import signature
+from django.db import connection, transaction
+from processing.models import ProcessingAttempt, WorkerPool
+from processing.services.jobs import claim_job
+assert "worker_build" not in {field.name for field in ProcessingAttempt._meta.fields}
+assert "worker_build" not in signature(claim_job).parameters
+with transaction.atomic():
+    with connection.cursor() as cursor:
+        cursor.execute("SET TRANSACTION READ ONLY")
+        cursor.execute("SET LOCAL statement_timeout = '\''5s'\''")
+    list(ProcessingAttempt.objects.order_by("pk")[:1])
+    assert dict(WorkerPool.objects.filter(name__in=["bulk", "selfie"]).values_list("name", "claims_paused")) == {"bulk": True, "selfie": True}
+'; then
+        fail "Forward candidate schema/protocol or paused-claims probe failed"
+    fi
+    [ "$forward_verify_only" -eq 0 ] || exit 0
+fi
+
 
 gallery_media_preflight='
 from contextlib import closing
@@ -1227,13 +1347,15 @@ fi
 phase observability-preflight
 verify_observability_bootstrap || fail "Selfie observability bootstrap is missing or stale; run deploy/bootstrap-selfie-observability.sh as an operator"
 phase observability-reconcile
-# Retain the compatible predecessor until remote ownership is safe on failure.
-mkdir -m 0700 "$DEPLOY_ROOT/.deployment-recovery"
-install -m 0600 "$previous_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/previous.env"
-if [ "$previous_deployed_image_exists" -eq 1 ]; then
-    install -m 0600 "$previous_deployed_image_tmp" "$DEPLOY_ROOT/.deployment-recovery/deployed-image"
+# Retain the prior web package and environment until commit or verified recovery.
+if [ "$RECOVER_FORWARD" = False ]; then
+    mkdir -m 0700 "$DEPLOY_ROOT/.deployment-recovery"
+    install -m 0600 "$previous_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/previous.env"
+    if [ "$previous_deployed_image_exists" -eq 1 ]; then
+        install -m 0600 "$previous_deployed_image_tmp" "$DEPLOY_ROOT/.deployment-recovery/deployed-image"
+    fi
+    (umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}" > "$DEPLOY_ROOT/.deployment-recovery/package-path")
 fi
-(umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}" > "$DEPLOY_ROOT/.deployment-recovery/package-path")
 observability_installed=1
 mutation_started=1
 sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
@@ -1371,7 +1493,6 @@ fi
 
 phase worker-health
 sudo -n /usr/local/sbin/findme-worker-pool-metrics verify || fail "Native collector is not active"
-fleet_phase rollout || fail "Canonical fleet release failed"
 
 commerce_worker_is_ready() {
     commerce_worker_containers="$(compose_with_requested_runtime_profiles ps -q commerce-worker)"
@@ -1436,9 +1557,8 @@ printf '%s\n' "$requested_image" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
 sudo -n "$observability_helper" commit
-fleet_phase commit || fail "Fleet release verification failed"
 deployment_committed=1
-clear_fleet_recovery_snapshot || fail "Committed recovery gate cleanup failed"
+clear_deployment_recovery_snapshot || fail "Committed recovery gate cleanup failed"
 if ! docker image prune -a -f >/dev/null; then
     echo "Unused Docker image cleanup failed after deployment commit" >&2
     printf 'DEPLOY_IMAGE_PRUNE_RESULT=failure\n'

@@ -209,13 +209,13 @@ def test_local_actual_oom_and_auto_restart_are_observed_without_control_in_probe
             ["docker", *args], check=True, capture_output=True, text=True, timeout=15
         ).stdout.strip()
 
-    if docker("ps", "-a", "--filter", "name=^/findme-photo-worker$", "--format", "{{.ID}}"):
+    if docker("ps", "-a", "--filter", "name=^/findme-photo-worker-a$", "--format", "{{.ID}}"):
         pytest.skip("exact worker name is occupied; fixture cannot replace another container")
     identifier = docker(
         "run",
         "--detach",
         "--name",
-        "findme-photo-worker",
+        "findme-photo-worker-a",
         "--label",
         "findme.telemetry-test=task3",
         "--memory",

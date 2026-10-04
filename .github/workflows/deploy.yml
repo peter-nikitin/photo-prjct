@@ -6,31 +6,6 @@ on:
       - main
   workflow_dispatch:
     inputs:
-      finalize_initial_workers:
-        description: Finalize only the pinned initial remote receipt without deploying
-        required: true
-        default: false
-        type: boolean
-      finalizer_source_sha256:
-        description: Exact reviewed finalize_initial.py SHA256
-        required: false
-        type: string
-      finalizer_web_sha:
-        description: Exact expected initial web SHA
-        required: false
-        type: string
-      finalizer_worker_digest:
-        description: Exact expected initial worker digest
-        required: false
-        type: string
-      finalizer_bulk_group:
-        description: Exact expected initial bulk group ID
-        required: false
-        type: string
-      finalizer_selfie_group:
-        description: Exact expected initial selfie group ID
-        required: false
-        type: string
       verify_private_storage:
         description: Run the confirmed real-storage contract probe after disabled deployment
         required: true
@@ -61,6 +36,11 @@ on:
         required: false
         default: ""
         type: string
+      recover_forward:
+        description: Recover the retained canonical candidate with this exact compatible web SHA
+        required: true
+        default: false
+        type: boolean
       verify_paused_observability_release:
         description: Verify the staged privileged package for deployment_sha before deployment
         required: true
@@ -77,48 +57,15 @@ on:
         default: false
         type: boolean
 
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+  queue: max
+
 jobs:
-  finalize-initial-workers:
-    name: Finalize pinned initial remote receipt
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.finalize_initial_workers }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    concurrency:
-      group: deploy
-      cancel-in-progress: false
-    steps:
-      - name: Require reviewed branch dispatch
-        env:
-          DISPATCH_REF: ${{ github.ref }}
-        run: |
-          test "$DISPATCH_REF" != refs/heads/main
-          test "${{ inputs.preflight }}" != true
-          test "${{ inputs.configure_monitoring_agent }}" != true
-          test "${{ inputs.validate_deploy_issue }}" != true
-          test "${{ inputs.stage_paused_observability_release }}" != true
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Finalize installed canonical release
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          INITIAL_FINALIZER_SOURCE_SHA256: ${{ inputs.finalizer_source_sha256 }}
-          INITIAL_FINALIZER_WEB_SHA: ${{ inputs.finalizer_web_sha }}
-          INITIAL_FINALIZER_WORKER_DIGEST: ${{ inputs.finalizer_worker_digest }}
-          INITIAL_FINALIZER_BULK_GROUP: ${{ inputs.finalizer_bulk_group }}
-          INITIAL_FINALIZER_SELFIE_GROUP: ${{ inputs.finalizer_selfie_group }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check --identity github-oidc \
-            -- deploy/run-remote.sh finalize-initial-workers
   classify-release:
     name: Classify deployment release
-    if: ${{ !inputs.preflight && !inputs.finalize_initial_workers }}
+    if: ${{ !inputs.preflight || inputs.recover_forward }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,7 +73,9 @@ jobs:
       requires_observability_bootstrap: ${{ steps.classify.outputs.requires_observability_bootstrap }}
       observability_source_manifest_sha256: ${{ steps.classify.outputs.observability_source_manifest_sha256 }}
       release_sha: ${{ steps.classify.outputs.release_sha }}
-      worker_inputs_changed: ${{ steps.classify.outputs.worker_inputs_changed }}
+      web_changed: ${{ steps.classify.outputs.web_changed }}
+      worker_changed: ${{ steps.classify.outputs.worker_changed }}
+      worker_base_changed: ${{ steps.classify.outputs.worker_base_changed }}
     steps:
       - name: Check out release history
         uses: actions/checkout@v4
@@ -141,9 +90,18 @@ jobs:
           set -eu
           release_sha="${{ github.sha }}"
           requires_observability_bootstrap=${{ inputs.stage_paused_observability_release }}
-          worker_inputs_changed=true
           manifest_sha256=
           pause_reason=
+          if [ "${{ inputs.recover_forward }}" = true ]; then
+            test "${{ github.event_name }}" = workflow_dispatch
+            test "${{ inputs.preflight }}" != true
+            test "${{ inputs.configure_monitoring_agent }}" != true
+            test "${{ inputs.validate_deploy_issue }}" != true
+            test "${{ inputs.stage_paused_observability_release }}" != true
+            test "${{ inputs.verify_private_storage }}" != true
+            test "${{ inputs.verify_selfie_search_storage }}" != true
+            test "${{ inputs.verify_selfie_feedback_storage }}" != true
+          fi
           if [ "${{ github.event_name }}" = workflow_dispatch ] && \
              [ "${{ inputs.configure_monitoring_agent }}" != true ] && \
              [ "${{ inputs.validate_deploy_issue }}" != true ]; then
@@ -161,6 +119,13 @@ jobs:
               echo "deployment_sha must identify the commit object exactly" >&2
               exit 2
             }
+            if [ "${{ inputs.recover_forward }}" = true ]; then
+              echo 'web_changed=true' >> "$GITHUB_OUTPUT"
+              echo 'worker_changed=false' >> "$GITHUB_OUTPUT"
+              echo 'worker_base_changed=false' >> "$GITHUB_OUTPUT"
+            else
+              python deploy/classify-release.py --base "${release_sha}^" --head "$release_sha" >> "$GITHUB_OUTPUT"
+            fi
           elif [ "${{ github.event_name }}" = push ]; then
             if [ "${{ github.event.before }}" = 0000000000000000000000000000000000000000 ]; then
               requires_observability_bootstrap=true
@@ -169,9 +134,7 @@ jobs:
               requires_observability_bootstrap=true
               pause_reason="Commit ${GITHUB_SHA} changes the privileged selfie-observability package."
             fi
-            if git diff --quiet "${{ github.event.before }}..${{ github.sha }}" -- Dockerfile.worker .dockerignore src/worker; then
-              worker_inputs_changed=false
-            fi
+            python deploy/classify-release.py --base "${{ github.event.before }}" --head "$release_sha" >> "$GITHUB_OUTPUT"
           fi
 
           if [ "$requires_observability_bootstrap" = true ] || \
@@ -188,7 +151,6 @@ jobs:
           echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
           echo "requires_observability_bootstrap=$requires_observability_bootstrap" >> "$GITHUB_OUTPUT"
           echo "observability_source_manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
-          echo "worker_inputs_changed=$worker_inputs_changed" >> "$GITHUB_OUTPUT"
           if [ "$requires_observability_bootstrap" = true ]; then
             {
               echo "## Privileged observability package staged"
@@ -207,7 +169,7 @@ jobs:
 
   stage-observability-release:
     name: Stage privileged observability source
-    if: ${{ inputs.stage_paused_observability_release && !inputs.preflight && !inputs.finalize_initial_workers }}
+    if: ${{ inputs.stage_paused_observability_release && !inputs.preflight }}
     runs-on: ubuntu-latest
     needs: [classify-release]
     permissions:
@@ -249,8 +211,8 @@ jobs:
             -- deploy/run-remote.sh stage-paused-observability-release
 
   build:
-    name: Build immutable image
-    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && !inputs.finalize_initial_workers }}
+    name: Publish changed component images
+    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && (needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.worker_changed == 'true') }}
     runs-on: ubuntu-latest
     needs: [classify-release]
     permissions:
@@ -258,8 +220,6 @@ jobs:
       packages: write
     outputs:
       app_image: ${{ steps.image.outputs.app_image }}
-      worker_image: ${{ steps.image.outputs.worker_image }}
-      worker_digest: ${{ steps.worker_ref.outputs.worker_digest }}
       import_worker_image: ${{ steps.image.outputs.import_worker_image }}
     steps:
       - name: Checkout repository
@@ -284,8 +244,11 @@ jobs:
           release_sha="${{ needs.classify-release.outputs.release_sha }}"
           echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${release_sha}" >> "$GITHUB_OUTPUT"
           echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" >> "$GITHUB_OUTPUT"
+          base_key="$(git ls-tree -r HEAD -- Dockerfile.worker-base .dockerignore .github/workflows/deploy.yml src/worker/requirements.txt src/worker/requirements.cpu.txt | sha256sum | cut -d ' ' -f 1)"
+          echo "worker_base=ghcr.io/${GITHUB_REPOSITORY}-worker-base:${base_key}" >> "$GITHUB_OUTPUT"
           echo "import_worker_image=ghcr.io/${GITHUB_REPOSITORY}-import-worker:${release_sha}" >> "$GITHUB_OUTPUT"
       - name: Build and push import image
+        if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -295,6 +258,7 @@ jobs:
           cache-from: type=gha,scope=import-worker
           cache-to: type=gha,mode=max,scope=import-worker,ignore-error=true
       - name: Build and push image
+        if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -304,41 +268,65 @@ jobs:
           tags: ${{ steps.image.outputs.app_image }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web,ignore-error=true
-      - name: Build and push worker image
-        id: worker
+      - name: Build and push worker base
+        id: base
+        if: ${{ needs.classify-release.outputs.worker_base_changed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.worker
-          build-args: RELEASE_SHA=${{ needs.classify-release.outputs.release_sha }}
+          file: ./Dockerfile.worker-base
           push: true
-          tags: ${{ steps.image.outputs.worker_image }}
-          cache-from: type=gha,scope=worker
-          cache-to: type=gha,mode=max,scope=worker,ignore-error=true
-      - name: Resolve reviewed worker digest
-        id: worker_ref
+          tags: ${{ steps.image.outputs.worker_base }}
+          cache-from: type=gha,scope=worker-base
+          cache-to: type=gha,mode=max,scope=worker-base,ignore-error=true
+      - name: Resolve immutable worker base
+        id: base_ref
+        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
         env:
-          BUILT_DIGEST: ${{ steps.worker.outputs.digest }}
+          BASE_IMAGE: ${{ steps.image.outputs.worker_base }}
         run: |
           set -eu
-          digest="$BUILT_DIGEST"
+          digest="$(docker buildx imagetools inspect "$BASE_IMAGE" --format '{{.Manifest.Digest}}')"
           case "$digest" in sha256:*) ;; *) exit 2 ;; esac
           hash="${digest#sha256:}"
           test "${#hash}" -eq 64
           test -z "$(printf '%s' "$hash" | tr -d '0-9a-f')"
-          echo "worker_digest=ghcr.io/${GITHUB_REPOSITORY}-worker@${digest}" >> "$GITHUB_OUTPUT"
+          echo "image=${BASE_IMAGE%:*}@${digest}" >> "$GITHUB_OUTPUT"
+      - name: Build and push worker image
+        id: worker
+        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.worker
+          build-args: |
+            RELEASE_SHA=${{ needs.classify-release.outputs.release_sha }}
+            WORKER_BASE_IMAGE=${{ steps.base_ref.outputs.image }}
+          push: true
+          tags: ${{ steps.image.outputs.worker_image }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker,ignore-error=true
+      - name: Publish current worker pointer
+        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
+        env:
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: |
+          set -eu
+          digest="$WORKER_DIGEST"
+          case "$digest" in sha256:*) ;; *) exit 2 ;; esac
+          hash="${digest#sha256:}"
+          test "${#hash}" -eq 64
+          test -z "$(printf '%s' "$hash" | tr -d '0-9a-f')"
+          docker buildx imagetools create --tag "ghcr.io/${GITHUB_REPOSITORY}-worker:latest" "ghcr.io/${GITHUB_REPOSITORY}-worker@${digest}"
 
   deploy:
     name: Deploy
-    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && !inputs.finalize_initial_workers }}
+    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && needs.classify-release.outputs.web_changed == 'true' }}
     runs-on: ubuntu-latest
     needs: [classify-release, build]
     permissions:
       contents: read
       id-token: write
-    concurrency:
-      group: deploy
-      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -365,11 +353,9 @@ jobs:
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
-          WORKER_IMAGE: ${{ needs.build.outputs.worker_image }}
+          RECOVER_FORWARD: ${{ inputs.recover_forward && 'True' || 'False' }}
+          RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
           WORKER_POOL_PRIVATE_API_IPV4: ${{ vars.WORKER_POOL_PRIVATE_API_IPV4 }}
-          WORKER_POOL_RELEASE_MANIFEST: ${{ vars.WORKER_POOL_RELEASE_MANIFEST }}
-          WORKER_POOL_RELEASE_CHECKSUM: ${{ vars.WORKER_POOL_RELEASE_CHECKSUM }}
-          WORKER_POOL_WORKER_DIGEST: ${{ needs.build.outputs.worker_digest }}
           IMPORT_WORKER_IMAGE: ${{ needs.build.outputs.import_worker_image }}
           PHOTO_IMPORT_ENABLED: ${{ vars.PHOTO_IMPORT_ENABLED || 'False' }}
           PHOTO_IMPORT_BUILD: ${{ needs.classify-release.outputs.release_sha }}
@@ -397,7 +383,6 @@ jobs:
           PHOTO_PROCESSING_FACE_ENABLED: ${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'True' }}
           PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS: ${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}
           PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '393216' }}
-          PHOTO_WORKER_BUILD: ${{ vars.PHOTO_WORKER_BUILD || 'capture-metadata-v1' }}
           PHOTO_WORKER_LEASE_SECONDS: ${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}
           PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES || '1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1' }}
           PHOTO_WORKER_BULK_PROCESSOR_TYPES: ${{ vars.PHOTO_WORKER_BULK_PROCESSOR_TYPES || 'bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview' }}
@@ -483,7 +468,7 @@ jobs:
 
   reconcile-deploy-issue:
     name: Reconcile deployment issue
-    if: ${{ always() && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && !inputs.finalize_initial_workers }}
+    if: ${{ always() && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && needs.classify-release.outputs.web_changed == 'true' }}
     runs-on: ubuntu-latest
     needs: [classify-release, build, deploy]
     permissions:
@@ -543,7 +528,7 @@ jobs:
 
   validate-deploy-issue:
     name: Validate deployment issue notification
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && !inputs.preflight && !inputs.finalize_initial_workers }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && !inputs.preflight && !inputs.recover_forward }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -588,7 +573,7 @@ jobs:
 
   configure-monitoring-agent:
     name: Configure Unified Agent
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.finalize_initial_workers }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.recover_forward }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -612,7 +597,7 @@ jobs:
 
   lockbox-preflight:
     name: Validate Lockbox projections
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight && !inputs.finalize_initial_workers }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight && !inputs.recover_forward }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -1,0 +1,11 @@
+[Unit]
+Description=FindMe worker current image replacement
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/findme-worker/updater.py
+TimeoutStartSec=2700
+UMask=0077

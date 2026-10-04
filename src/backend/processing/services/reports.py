@@ -118,13 +118,6 @@ def _report_payload(
             "version": run.processor_version,
             "configuration": run.configuration,
         },
-        "worker_builds": sorted(
-            set(
-                ProcessingAttempt.objects.filter(run=run)
-                .exclude(worker_build="")
-                .values_list("worker_build", flat=True)
-            )
-        )[: _max_attempts(run) * _cohort_limit(run)],
         "cohort_size": len(jobs),
         "counts": {
             "denominator": len(jobs),
@@ -351,15 +344,13 @@ def report_upper_bound_bytes(configuration: dict[str, Any]) -> int:
 
     Every unvalidated character is conservatively six JSON bytes (``\\u001f``).  The generic
     configuration payload is itself capped at ``JSON_MAX_BYTES``; reports retain at most 20 rows,
-    three worker builds per row, eight warning codes, one 32-char photo id, one 64-char error code,
+    eight warning codes, one 32-char photo id, one 64-char error code,
     and a UUID accepted-attempt id.  Doubling the summed bound reserves JSON keys, dates, counts,
     separators, and future fixed fields while remaining below the explicit 256 KiB report cap.
     """
     cohort = _cohort_limit_from_configuration(configuration)
-    attempts = _max_attempts_from_configuration(configuration)
     row_limits = _row_limits(configuration)
     escaped = 6
-    worker_build_json = 2 + 128 * escaped + 1
     warning_json = 2 + row_limits["max_warning_chars"] * escaped + 1
     row_json = 512 + 32 * escaped + 36 + 64 * escaped + row_limits["max_warnings"] * warning_json
     preview_summary_json = (
@@ -370,29 +361,15 @@ def report_upper_bound_bytes(configuration: dict[str, Any]) -> int:
         )
         else 0
     )
-    return 2 * (
-        JSON_MAX_BYTES
-        + cohort * attempts * worker_build_json
-        + cohort * row_json
-        + preview_summary_json
-        + 4_096
-    )
+    return 2 * (JSON_MAX_BYTES + cohort * row_json + preview_summary_json + 4_096)
 
 
 def _cohort_limit(run: EventProcessingRun) -> int:
     return _cohort_limit_from_configuration(run.configuration)
 
 
-def _max_attempts(run: EventProcessingRun) -> int:
-    return _max_attempts_from_configuration(run.configuration)
-
-
 def _cohort_limit_from_configuration(configuration: dict[str, Any]) -> int:
     return int(configuration.get("max_cohort_size", 20))
-
-
-def _max_attempts_from_configuration(configuration: dict[str, Any]) -> int:
-    return int(configuration.get("retry_policy", {}).get("max_attempts", 3))
 
 
 def _row_limits(configuration: dict[str, Any]) -> dict[str, int]:

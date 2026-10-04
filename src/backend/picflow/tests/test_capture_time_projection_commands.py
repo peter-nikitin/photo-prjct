@@ -754,7 +754,6 @@ class CaptureTimeProjectionConcurrencyTests(TransactionTestCase):
             contract_version=1,
             processor_type=CAPTURE_METADATA_PROCESSOR,
             processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
-            worker_build="projection-concurrency-worker",
         )
         assert isinstance(claimed, ClaimedJob)
         barrier = Barrier(3)

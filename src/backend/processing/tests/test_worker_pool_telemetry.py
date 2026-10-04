@@ -97,6 +97,16 @@ class TelemetryTests(TestCase):
             **headers,
         )
 
+    def test_runtime_replacement_uses_current_registration_not_launch_build(self):
+        replacement = lifecycle.MemberIdentity("selfie", "node-1", self.identity.boot_id, "b" * 40)
+        registered = lifecycle.register(replacement)
+        data = copy.deepcopy(self.data)
+        data["worker_build"] = "b" * 40
+        data["runtime"]["registration_generation"] = registered["registration_generation"]
+        self.assertEqual(self.submit(data).status_code, 200)
+        self.assertEqual(self.samples()["worker_runtime_observation_fresh"].value, 1)
+        self.assertEqual(self.submit().status_code, 503)
+
     def test_bulk_runtime_accepts_two_busy_slots_but_selfie_does_not(self):
         data = copy.deepcopy(self.data)
         data["pool"] = "bulk"
@@ -554,7 +564,6 @@ class TelemetryTests(TestCase):
             contract_version=1,
             processor_type="capture_metadata",
             processor_version=2,
-            worker_build=BUILD,
             lease_seconds=120,
         )
         assert isinstance(claimed, ClaimedJob)

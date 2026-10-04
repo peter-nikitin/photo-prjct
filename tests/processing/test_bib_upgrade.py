@@ -135,7 +135,11 @@ class BibSearchUpgradeTests(TransactionTestCase):
             )
             tracked_models = (Event, Photo, Run, Job, Attempt, State, Derivative)
             old_field_names = {
-                model._meta.label: tuple(field.attname for field in model._meta.concrete_fields)
+                model._meta.label: tuple(
+                    field.attname
+                    for field in model._meta.concrete_fields
+                    if field.attname != "worker_build"
+                )
                 for model in tracked_models
             }
             before = {

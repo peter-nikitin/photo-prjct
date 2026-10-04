@@ -1,6 +1,6 @@
 services:
   photo-worker:
-    container_name: findme-photo-worker
+    container_name: findme-photo-worker-${WORKER_SLOT:?Set local slot}
     image: ${WORKER_IMAGE:?Set immutable WORKER_IMAGE}
     environment:
       PHOTO_WORKER_TRANSPORT: remote
@@ -13,9 +13,9 @@ services:
       PHOTO_WORKER_PROCESSOR_IDENTITIES: ${PHOTO_WORKER_PROCESSOR_IDENTITIES:?Set exact pool identities}
       PHOTO_WORKER_LEASE_SECONDS: "120"
       PHOTO_WORKER_HTTP_TIMEOUT_SECONDS: "900"
-      PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED: ${PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED:-False}
+      PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED: "True"
     ports:
-      - "127.0.0.1:9101:9101"
+      - "127.0.0.1:${WORKER_PORT:?Set slot port}:9101"
     extra_hosts:
       - "findme-photo.ru:${WORKER_POOL_PRIVATE_API_IPV4:?Set private API IPv4}"
     volumes:

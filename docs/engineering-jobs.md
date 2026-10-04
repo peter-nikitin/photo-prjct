@@ -652,35 +652,31 @@ When event processing grows, I want separate queue-driven bulk and selfie worker
 work does not consume the public web/database host's resources and idle bulk capacity can stop.
 
 - Status: In progress
-- Evidence: [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md) and the
-  [remote-only plan](plans/2026-10-02-remote-only-photo-worker-operations.md) govern the current
-  release. Private transport, durable admission/retirement, demand publication, bounded fleet
-  templates and canonical remote release integration are implemented. The last production read
-  showed both remote pools serving under the initial `verified` receipt, with no local
-  photo/selfie containers; that receipt is not yet `committed`. The new repository package adds
-  an exact one-time finalizer and removes production local worker/recovery branches. Its finalizer
-  operation, cleanup, remote-only Deploy and fresh live acceptance remain pending. The main VM
-  continues to host web/DB, import and Commerce paths; historical backfill has not started.
-  The [capped activation plan](plans/2026-09-29-capped-worker-pool-activation.md) preserves native
-  workload scaling with bulk 0..1/selfie 1..1, rather than a fixed-capacity deployment. Serial
-  release/rollback restores the reviewed ceiling and fences expansion on complete provider
-  inventory and obsolete-disk absence. Fresh quota, lifecycle and actual scale-to-zero/return
-  remain live read-back gates.
-  The [phase-one telemetry plan](plans/2026-09-28-worker-telemetry-collection.md) adds default-off
-  runtime/host diagnostics through a private authenticated receiver and the existing canonical
-  Managed Prometheus channel. Actual local TLS/container, renewal-under-ingestion-failure and
-  isolated previous-snapshot additive migration rehearsals cover repository behavior only.
-  Missing/stale observations remain unknown, not healthy zeros. Fresh metric timestamps and
-  recipient notification evidence must be checked separately for the new release.
-  [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) and the
-  [approved folder specification](superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
-  add repository support for distinct worker/canonical folder ownership, scoped direct IAM
-  prerequisite checks, canonical native-metric publication, and two-folder immutable release
-  inputs. Local provision/observation/release fixtures exercise the cap-one disk and recovery
-  fences. The [dated handoff](operations/2026-09-30-worker-folder-operational-handoff.md)
-  is historical preparation; fresh group/claim/lease, provider/disk, collector and health reads
-  govern the pending production transition.
-- Last updated: 2026-10-02
+- Evidence: [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md),
+  [ADR 0050](adr/0050-decouple-processing-queue-from-worker-builds.md),
+  [ADR 0051](adr/0051-release-photo-worker-images-independently.md), and the
+  [independent-image deployment plan](plans/2026-10-03-independent-worker-image-deployment.md)
+  describe the current path. The repository implements remote private worker pools, durable
+  claim/lease handoff, a reusable model base, host-owned in-place image updates, and component-aware
+  Deploy. Documentation-only changes do not deploy; backend-only releases leave photo-worker
+  images and templates untouched; changed worker inputs publish `latest`. Pool bounds remain bulk
+  0..1 and selfie 1..1, with bulk at zero when idle.
+
+  On 2026-10-03 the initial remote-only fleet receipt was read back `committed`. This is evidence
+  for the prior remote-fleet acceptance, not for the new worker updater. The independent-image
+  migration, first `latest` publication and one-time existing-template transition have not been
+  live-verified. That transition pauses and drains claims, deploys the new web protocol/migration
+  with the worker image, patches the existing templates, and explicitly recreates the sole selfie
+  managed instance at cap one; it never adds a second VM or starts the idle bulk pool. See the
+  [worker-pool runbook](runbooks/worker-pools.md). The canonical web recovery guard blocks an
+  incompatible previous image after the processing column drop and retains candidate recovery
+  inputs for a paused forward fix; see the [deployment runbook](runbooks/deployment.md).
+
+  Fresh provider, claim/lease, updater/readiness, image digest and private/public health evidence
+  remain required after rollout. Missing or stale metrics are unknown, not healthy zeros, and rule
+  evaluation is not recipient-notification proof. Historical AdaFace enrollment and event
+  activation have not started.
+- Last updated: 2026-10-03
 
 ## Status log
 

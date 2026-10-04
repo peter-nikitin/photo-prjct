@@ -48,7 +48,6 @@ class BibPipelineEndToEndTests(TestCase):
             contract_version=1,
             processor_type="bib_recognition",
             processor_version=1,
-            worker_build="bib-e2e-worker",
         )
         assert isinstance(claimed, ClaimedJob)
         source_sha256 = "e" * 64
@@ -91,7 +90,6 @@ class BibPipelineEndToEndTests(TestCase):
                     "contract_version": 1,
                     "processor_type": "bib_recognition",
                     "processor_version": 1,
-                    "worker_build": "bib-e2e-worker",
                     "started_at": now,
                     "finished_at": now,
                     "download_ms": 1,

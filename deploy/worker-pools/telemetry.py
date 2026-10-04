@@ -9,13 +9,16 @@ import os
 import re
 import selectors
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import UUID, uuid4
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import psutil
+from host import SLOTS, active_slot  # noqa: E402
 from prometheus_client.parser import text_string_to_metric_families
 
 API = "https://findme-photo.ru:8443/internal/photo-processing/v1/members/telemetry"
@@ -134,12 +137,17 @@ def memory_bytes(text):
     )
 
 
-def collect_container(since, sampled_at, previous_id, *, command=bounded_command):
+def collect_container(
+    since,
+    sampled_at,
+    previous_id,
+    *,
+    command=bounded_command,
+    container_name="findme-photo-worker-a",
+):
     try:
         try:
-            state = json.loads(
-                command(["docker", "inspect", "--format", INSPECT, "findme-photo-worker"])
-            )
+            state = json.loads(command(["docker", "inspect", "--format", INSPECT, container_name]))
         except subprocess.CalledProcessError:
             # Empty exact-name listing distinguishes missing from a failed Docker connection.
             present = command(
@@ -148,7 +156,7 @@ def collect_container(since, sampled_at, previous_id, *, command=bounded_command
                     "ps",
                     "-a",
                     "--filter",
-                    "name=^/findme-photo-worker$",
+                    f"name=^/{container_name}$",
                     "--format",
                     "{{.ID}}",
                 ]
@@ -191,7 +199,7 @@ def collect_container(since, sampled_at, previous_id, *, command=bounded_command
                             "--no-trunc",
                             "--format",
                             "{{json .ID}}\t{{json .CPUPerc}}\t{{json .MemUsage}}",
-                            "findme-photo-worker",
+                            container_name,
                         ]
                     )
                     .strip()
@@ -220,7 +228,7 @@ def collect_container(since, sampled_at, previous_id, *, command=bounded_command
                     "--until",
                     sampled_at.isoformat(),
                     "--filter",
-                    "container=findme-photo-worker",
+                    f"container={container_name}",
                     "--filter",
                     "event=oom",
                     "--filter",
@@ -314,10 +322,10 @@ def parse_runtime(raw, generation, pool, sampled_at):
     }
 
 
-def scrape_runtime(pool, sampled_at):
+def scrape_runtime(pool, sampled_at, *, url=None):
     try:
         with build_opener(ProxyHandler({}), RejectRedirects()).open(
-            RUNTIME_URL, timeout=3
+            url or RUNTIME_URL, timeout=3
         ) as response:
             raw = response.read(MAX_RUNTIME_BODY + 1)
             generation = response.headers.get("X-Worker-Registration-Generation", "")
@@ -363,9 +371,10 @@ def valid_identity(identity):
 
 
 class Probe:
-    def __init__(self, identity, path=STATE_PATH, *, now=lambda: datetime.now(UTC)):
+    def __init__(self, identity, path=STATE_PATH, *, now=lambda: datetime.now(UTC), slot="a"):
         valid_identity(identity)
         self.identity, self.path, self.now = identity, path, now
+        self.slot = slot
         self.pending = None
         try:
             with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
@@ -399,8 +408,17 @@ class Probe:
         )
         return {
             "host": collect_host(),
-            "container": collect_container(since, now, container.get("container_id")),
-            "runtime": scrape_runtime(self.identity["pool"], self.now()),
+            "container": collect_container(
+                since,
+                now,
+                container.get("container_id"),
+                container_name=f"findme-photo-worker-{self.slot}",
+            ),
+            "runtime": scrape_runtime(
+                self.identity["pool"],
+                self.now(),
+                url=f"http://127.0.0.1:{SLOTS[self.slot]}/metrics",
+            ),
         }
 
     def save(self):
@@ -455,22 +473,27 @@ class Probe:
         return self.retry_pending(send)
 
 
-def own_identity():
+def own_identity(active):
     return {
         "pool": os.environ["PHOTO_WORKER_POOL"],
         "instance_id": Path("/etc/findme-worker/instance-id").read_text().strip(),
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-        "worker_build": os.environ["PHOTO_WORKER_BUILD"],
+        "worker_build": active["build"],
         "zone_id": os.environ["PHOTO_WORKER_ZONE"],
     }
 
 
 def main():
     try:
-        probe = Probe(own_identity())
-        success = probe.step(
-            lambda snapshot: submit(snapshot, os.environ["PHOTO_PROCESSING_FLEET_TOKEN"])
-        )
+        active = active_slot()
+        probe = Probe(own_identity(active), slot=active["slot"])
+
+        def send(snapshot):
+            if active_slot() != active:
+                raise ValueError("worker changed during diagnostic snapshot")
+            submit(snapshot, os.environ["PHOTO_PROCESSING_FLEET_TOKEN"])
+
+        success = probe.step(send)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         success = False
     print("worker_telemetry_sent" if success else "worker_telemetry_unavailable")

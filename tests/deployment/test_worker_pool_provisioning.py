@@ -124,7 +124,6 @@ def test_dry_run_is_deterministic_secretless_and_has_bounded_shapes(pool_max_siz
         assert set(bootstrap) == {
             "bootstrap_secret_id",
             "bootstrap_version_id",
-            "worker_build",
             "worker_image",
             "docker_version",
             "compose_version",
@@ -238,8 +237,6 @@ def test_prepared_bootstrap_projects_real_compose_environment_into_worker_config
     compose.write_text(files["/usr/local/lib/findme-worker/compose.yml"])
 
     def run(args, **kwargs):
-        if args[1:3] == ["image", "inspect"]:
-            return Mock(stdout=conf["worker_build"] + "\n")
         if args[1] == "version":
             return Mock(stdout="27.5.1\n")
         if args[1:3] == ["compose", "version"]:
@@ -255,12 +252,22 @@ def test_prepared_bootstrap_projects_real_compose_environment_into_worker_config
     )
     auth = json.loads((tmp_path / "etc/findme-worker/docker/config.json").read_text())
     assert auth == {"auths": {"ghcr.io": {"auth": "dXNlcjpwYXNz"}}}
+    slot_env = tmp_path / "slot.env"
+    slot_env.write_text(
+        "WORKER_IMAGE=ghcr.io/example/photo-prjct-worker@sha256:"
+        + "b" * 64
+        + "\nPHOTO_WORKER_BUILD="
+        + "b" * 40
+        + "\nWORKER_SLOT=b\nWORKER_PORT=9102\n"
+    )
     result = subprocess.run(
         [
             "docker",
             "compose",
             "--env-file",
             str(tmp_path / "etc/findme-worker/runtime.env"),
+            "--env-file",
+            str(slot_env),
             "-f",
             str(compose),
             "config",
@@ -271,11 +278,14 @@ def test_prepared_bootstrap_projects_real_compose_environment_into_worker_config
     )
     assert result.returncode == 0, result.stderr
     worker = yaml.safe_load(result.stdout)["services"]["photo-worker"]
-    assert worker["image"] == conf["worker_image"]
+    assert worker["image"] == "ghcr.io/example/photo-prjct-worker@sha256:" + "b" * 64
+    assert worker["container_name"] == "findme-photo-worker-b"
+    assert worker["ports"][0]["host_ip"] == "127.0.0.1"
+    assert worker["ports"][0]["published"] == "9102"
     for key, value in worker["environment"].items():
         monkeypatch.setenv(key, str(value))
     actual, _client = WorkerConfig.from_env()
-    assert actual.worker_build == conf["worker_build"]
+    assert actual.worker_build == "b" * 40
     assert actual.remote_pool == "selfie"
 
 
@@ -313,6 +323,113 @@ def test_checksum_mismatch_cannot_make_cloud_calls():
     cloud.assert_not_called()
 
 
+def updater_install_fixture():
+    provision = module("provision")
+    conf = config(1)
+    cloud = FakeCloud(provision, conf)
+    cloud.groups = [
+        body | {"id": f"{pool}-group", "status": "ACTIVE"}
+        for pool, body in provision.prepare(conf)["groups"].items()
+    ]
+    for group in cloud.groups:
+        group["instanceTemplate"]["metadata"]["ssh-keys"] = "preserved-nonsecret-key"
+    readback = provision.status(conf, cloud)
+    conf["groups"] = {
+        pool: {"id": row["id"], "baseline": row["baseline"]} for pool, row in readback.items()
+    }
+    return provision, conf, cloud
+
+
+def test_one_time_updater_install_only_patches_userdata_and_keeps_bulk_zero():
+    provision, conf, cloud = updater_install_fixture()
+    before = deepcopy(cloud.groups)
+    result = provision.install_updater(conf, cloud=cloud)
+    assert set(result) == {"bulk", "selfie"}
+    assert len(cloud.calls) == 2
+    for original, current, call in zip(before, cloud.groups, cloud.calls, strict=True):
+        assert call[0] == "PATCH"
+        assert call[2]["updateMask"] == "instanceTemplate.metadata"
+        original["instanceTemplate"]["metadata"]["user-data"] = current["instanceTemplate"][
+            "metadata"
+        ]["user-data"]
+        assert current == original
+        assert current["scalePolicy"]["autoScale"]["maxSize"] == "1"
+    assert cloud.groups[0]["scalePolicy"]["autoScale"]["minZoneSize"] == "0"
+
+
+def test_one_time_updater_install_rejects_non_cap_one_before_mutation():
+    provision, conf, cloud = updater_install_fixture()
+    cloud.groups[1]["scalePolicy"]["autoScale"]["maxSize"] = "2"
+    conf["groups"]["selfie"]["baseline"] = provision.managed_baseline(cloud.groups[1])
+    with pytest.raises(ValueError, match="cap one"):
+        provision.install_updater(conf, cloud=cloud)
+    assert cloud.calls == []
+
+
+def test_one_time_recreate_uses_exact_managed_id_and_never_starts_empty_bulk(monkeypatch):
+    provision, conf, cloud = updater_install_fixture()
+    monkeypatch.setattr(
+        cloud,
+        "pages",
+        lambda path, key, **kwargs: (
+            deepcopy(cloud.groups)
+            if path == "instanceGroups"
+            else [
+                {"id": "managed-selfie-1", "instanceId": "compute-vm-1", "status": "RUNNING_ACTUAL"}
+            ]
+            if path == "instanceGroups/selfie-group/instances"
+            else []
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        cloud,
+        "mutate",
+        lambda method, path, body: (
+            calls.append((method, path, body))
+            or {"id": "recreate-op", "done": False, "metadata": {"instanceGroupId": "selfie-group"}}
+        ),
+    )
+    result = provision.replace_selfie(conf, "managed-selfie-1", cloud=cloud)
+    assert calls == [
+        (
+            "POST",
+            "instanceGroups/selfie-group:rollingRecreate",
+            {"managedInstanceIds": ["managed-selfie-1"]},
+        )
+    ]
+    assert result["operation_id"] == "recreate-op"
+    assert result["operation_done"] is False
+    with pytest.raises(ValueError):
+        provision.replace_selfie(conf, "compute-vm-1", cloud=cloud)
+    assert len(calls) == 1
+
+
+def test_one_time_recreate_does_not_retry_uncertain_submission(monkeypatch):
+    provision, conf, cloud = updater_install_fixture()
+    monkeypatch.setattr(
+        cloud,
+        "pages",
+        lambda path, key, **kwargs: (
+            deepcopy(cloud.groups)
+            if path == "instanceGroups"
+            else [
+                {"id": "managed-selfie-1", "instanceId": "compute-vm-1", "status": "RUNNING_ACTUAL"}
+            ]
+        ),
+    )
+    calls = []
+
+    def uncertain(method, path, body):
+        calls.append(path)
+        raise TimeoutError("response lost")
+
+    monkeypatch.setattr(cloud, "mutate", uncertain)
+    with pytest.raises(TimeoutError):
+        provision.replace_selfie(conf, "managed-selfie-1", cloud=cloud)
+    assert calls == ["instanceGroups/selfie-group:rollingRecreate"]
+
+
 def test_bootstrap_rejects_unexpected_secret_payload_without_materializing_or_running(tmp_path):
     bootstrap = module("bootstrap")
     payload = {
@@ -328,50 +445,17 @@ def test_bootstrap_rejects_unexpected_secret_payload_without_materializing_or_ru
     assert list(tmp_path.iterdir()) == []
 
 
-def test_bootstrap_private_files_and_real_oci_revision_gate(tmp_path):
+def test_bootstrap_materializes_private_credentials_and_invokes_bounded_host_updater(tmp_path):
     bootstrap = module("bootstrap")
-    conf = config()
-    conf["pool"] = "bulk"
-    conf["identities"] = "1/capture_metadata/2"
-    calls = []
-
-    def run(args, **kwargs):
-        calls.append(args)
-        if args[1:3] == ["image", "inspect"]:
-            return Mock(stdout="b" * 40 + "\n")
-        if args[1] == "version":
-            return Mock(stdout="27.5.1\n")
-        if args[1:3] == ["compose", "version"]:
-            return Mock(stdout="2.32.4\n")
-        return Mock(stdout="")
-
-    with pytest.raises(ValueError):
-        bootstrap.activate(
-            conf,
-            {"PHOTO_PROCESSING_FLEET_TOKEN": "fleet-token", "IMAGE_PULL_AUTH": "pull-auth"},
-            "instance-1",
-            root=tmp_path,
-            run=run,
-        )
-    assert not any("up" in args for args in calls)
-    assert any(args[1:3] == ["image", "inspect"] for args in calls)
-    assert (tmp_path / "etc/findme-worker/runtime.env").stat().st_mode & 0o777 == 0o600
-    assert (tmp_path / "etc/findme-worker/docker/config.json").stat().st_mode & 0o777 == 0o600
-    assert (tmp_path / "etc/findme-worker/instance-id").stat().st_mode & 0o777 == 0o644
-    assert (tmp_path / "etc/findme-worker/instance-id").read_text() == "instance-1\n"
-
-
-def test_bootstrap_allows_slow_pull_and_keeps_other_commands_bounded(tmp_path):
-    bootstrap = module("bootstrap")
-    conf = config() | {"pool": "bulk", "identities": "1/capture_metadata/2"}
+    conf = config() | {
+        "pool": "bulk",
+        "identities": "1/capture_metadata/2",
+        "worker_image": "ghcr.io/example/photo-prjct-worker:latest",
+    }
     calls = []
 
     def run(args, **kwargs):
         calls.append((args, kwargs))
-        if args[1] == "pull" and kwargs["timeout"] < 301:
-            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
-        if args[1:3] == ["image", "inspect"]:
-            return Mock(stdout=conf["worker_build"] + "\n")
         if args[1] == "version":
             return Mock(stdout="27.5.1\n")
         if args[1:3] == ["compose", "version"]:
@@ -380,27 +464,31 @@ def test_bootstrap_allows_slow_pull_and_keeps_other_commands_bounded(tmp_path):
 
     bootstrap.activate(
         conf,
-        {"PHOTO_PROCESSING_FLEET_TOKEN": "fleet-token", "IMAGE_PULL_AUTH": "pull-auth"},
+        {"PHOTO_PROCESSING_FLEET_TOKEN": "fleet-token", "IMAGE_PULL_AUTH": "dXNlcjpwYXNz"},
         "instance-1",
         root=tmp_path,
         run=run,
     )
-
-    pull_calls = [call for call in calls if call[0][1] == "pull"]
-    assert len(pull_calls) == 1
-    assert pull_calls[0][1]["timeout"] == 900
-    assert any(args[1:3] == ["image", "inspect"] for args, _kwargs in calls)
-    assert any("up" in args for args, _kwargs in calls)
-    assert all(kwargs["timeout"] == 300 for args, kwargs in calls if args[1] != "pull")
+    base = tmp_path / "etc/findme-worker"
+    assert (base / "runtime.env").stat().st_mode & 0o777 == 0o600
+    assert (base / "docker/config.json").stat().st_mode & 0o777 == 0o600
+    assert (base / "instance-id").stat().st_mode & 0o777 == 0o644
+    assert (base / "instance-id").read_text() == "instance-1\n"
+    assert not any("fleet-token" in " ".join(args) for args, _ in calls)
+    update = next(
+        kwargs
+        for args, kwargs in calls
+        if args == ["systemctl", "start", "findme-worker-updater.service"]
+    )
+    assert update["timeout"] == 2700
+    assert all(kwargs["timeout"] == 300 for args, kwargs in calls if "start" not in args)
 
 
 @pytest.mark.parametrize(
     ("failure", "phase", "category"),
     [
-        ("pull-timeout", "docker-pull", "timeout"),
-        ("pull-exit", "docker-pull", "command-exit"),
-        ("image-mismatch", "image-identity", "invalid-data"),
-        ("compose-exit", "compose-start", "command-exit"),
+        ("update-timeout", "image-update", "timeout"),
+        ("update-exit", "image-update", "command-exit"),
     ],
 )
 def test_bootstrap_reports_safe_docker_failure_phase_and_category(
@@ -408,7 +496,11 @@ def test_bootstrap_reports_safe_docker_failure_phase_and_category(
 ):
     bootstrap = module("bootstrap")
     secret = "private-credential-must-not-appear"
-    conf = config() | {"pool": "bulk", "identities": "1/capture_metadata/2"}
+    conf = config() | {
+        "pool": "bulk",
+        "identities": "1/capture_metadata/2",
+        "worker_image": "ghcr.io/example/photo-prjct-worker:latest",
+    }
     config_path = tmp_path / "bootstrap.json"
     config_path.write_text(json.dumps(conf))
     monkeypatch.setattr(bootstrap, "metadata_token", lambda: "metadata-token")
@@ -429,16 +521,9 @@ def test_bootstrap_reports_safe_docker_failure_phase_and_category(
 
     def run(args, **kwargs):
         calls.append((args, kwargs))
-        if args[1] == "pull":
-            if failure == "pull-timeout":
-                raise subprocess.TimeoutExpired(args, 300, output=secret, stderr=secret)
-            if failure == "pull-exit":
-                raise subprocess.CalledProcessError(1, args, output=secret, stderr=secret)
-        if args[1:3] == ["image", "inspect"]:
-            return Mock(
-                stdout=("b" * 40 if failure == "image-mismatch" else conf["worker_build"]) + "\n"
-            )
-        if "up" in args and failure == "compose-exit":
+        if args == ["systemctl", "start", "findme-worker-updater.service"]:
+            if failure == "update-timeout":
+                raise subprocess.TimeoutExpired(args, 2700, output=secret, stderr=secret)
             raise subprocess.CalledProcessError(1, args, output=secret, stderr=secret)
         if args[1] == "version":
             return Mock(stdout="27.5.1\n")
@@ -461,11 +546,7 @@ def test_bootstrap_reports_safe_docker_failure_phase_and_category(
     assert output.out == f"worker bootstrap failed phase={phase} category={category}\n"
     assert output.err == ""
     assert secret not in output.out + output.err
-    pull_calls = [call for call in calls if call[0][1] == "pull"]
-    assert len(pull_calls) == 1
-    assert pull_calls[0][1]["timeout"] == 900
-    if failure.startswith("pull-"):
-        assert not any("up" in args for args, _kwargs in calls)
+    assert not any("enable" in args for args, _kwargs in calls)
 
 
 @pytest.mark.parametrize(
@@ -690,13 +771,23 @@ class FakeCloud:
 
     def mutate(self, method, path, body):
         self.calls.append((method, path, body))
-        pool = body["labels"]["pool"]
+        pool = (
+            body["labels"]["pool"]
+            if "labels" in body
+            else path.split("/")[-1].removesuffix("-group")
+        )
         if pool == "selfie" and self.fail_second:
             raise TimeoutError("lost response")
         resource = f"{pool}-group"
         if method == "PATCH":
             target = next(row for row in self.groups if row["id"] == resource)
-            target.update({key: value for key, value in body.items() if key != "updateMask"})
+            for key, value in body.items():
+                if key == "updateMask":
+                    continue
+                if key == "instanceTemplate" and body["updateMask"] == "instanceTemplate.metadata":
+                    target[key]["metadata"] = value["metadata"]
+                else:
+                    target[key] = value
         else:
             self.groups.append(body | {"id": resource, "status": "ACTIVE"})
         return {"id": f"{pool}-operation", "metadata": {"instanceGroupId": resource}}
@@ -1158,7 +1249,7 @@ def test_telemetry_packaging_opt_in_is_default_off_and_uses_reviewed_image_depen
     assert bool(telemetry_calls) is enabled
     assert not any(arg in {"pip", "apt", "curl"} for args in calls for arg in args)
     if enabled:
-        assert calls.index(next(args for args in calls if "up" in args)) < calls.index(
+        assert calls.index(["systemctl", "start", "findme-worker-updater.service"]) < calls.index(
             telemetry_calls[0]
         )
         assert ["systemctl", "enable", "--now", "findme-worker-telemetry.timer"] in calls
@@ -1167,7 +1258,6 @@ def test_telemetry_packaging_opt_in_is_default_off_and_uses_reviewed_image_depen
         values = dict(line.split("=", 1) for line in telemetry_env.read_text().splitlines())
         assert set(values) == {
             "PHOTO_WORKER_POOL",
-            "PHOTO_WORKER_BUILD",
             "PHOTO_WORKER_ZONE",
             "PHOTO_PROCESSING_FLEET_TOKEN",
         }
@@ -1212,7 +1302,7 @@ def test_failed_optional_probe_setup_preserves_started_worker_and_retirement(tmp
         root=tmp_path,
         run=run,
     )
-    assert any("up" in args for args in calls)
+    assert ["systemctl", "start", "findme-worker-updater.service"] in calls
     assert ["systemctl", "enable", "--now", "findme-worker-retire.timer"] in calls
     assert ["systemctl", "enable", "--now", "findme-worker-telemetry.timer"] not in calls
     assert capsys.readouterr().out == "worker_telemetry_setup_unavailable\n"

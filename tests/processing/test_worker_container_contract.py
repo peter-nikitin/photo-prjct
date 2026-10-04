@@ -61,10 +61,12 @@ WATERMARKED_PREVIEW_PROCESSOR_IDENTITY = "2/generate_watermarked_preview/1"
 
 def test_worker_container_is_minimal_and_starts_the_standalone_package() -> None:
     """A future image change must not accidentally package Django with the worker."""
-    dockerfile = (ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile.worker-base").read_text(encoding="utf-8") + (
+        ROOT / "Dockerfile.worker"
+    ).read_text(encoding="utf-8")
 
     assert "COPY src/worker/requirements.txt" in dockerfile
-    assert "COPY src/worker/photo_worker" in dockerfile
+    assert "COPY --chown=worker:worker src/worker/photo_worker" in dockerfile
     assert 'CMD ["python", "-m", "photo_worker"]' in dockerfile
     assert "USER worker" in dockerfile
     assert "src/backend" not in dockerfile
@@ -74,7 +76,9 @@ def test_worker_container_is_minimal_and_starts_the_standalone_package() -> None
 
 def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() -> None:
     """Both photo and selfie inference must run from the same immutable worker image."""
-    dockerfile = (ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile.worker-base").read_text(encoding="utf-8") + (
+        ROOT / "Dockerfile.worker"
+    ).read_text(encoding="utf-8")
     failures: list[str] = []
 
     archive_url, archive_checksum = BUFFALO_L_ARCHIVE
@@ -124,8 +128,8 @@ def test_worker_image_pins_shared_face_models_and_smokes_both_inference_paths() 
     if smoke_command not in dockerfile:
         failures.append("missing build-time face model smoke")
     else:
-        if "RUN chown -R worker:worker /worker" not in dockerfile:
-            failures.append("model artifacts are not readable by the worker user")
+        if "COPY --chown=worker:worker src/worker/photo_worker" not in dockerfile:
+            failures.append("worker code is not owned by the unprivileged user")
         if dockerfile.index("USER worker") > dockerfile.index(smoke_command):
             failures.append("face model smoke does not run as the worker user")
 
@@ -166,7 +170,9 @@ def test_worker_image_uses_cpu_only_torch_and_verifies_its_runtime_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The published worker must not accidentally acquire CUDA payloads."""
-    dockerfile = (ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile.worker-base").read_text(encoding="utf-8") + (
+        ROOT / "Dockerfile.worker"
+    ).read_text(encoding="utf-8")
     requirements = (ROOT / "src/worker/requirements.txt").read_text(encoding="utf-8")
     cpu_requirements = (ROOT / "src/worker/requirements.cpu.txt").read_text(encoding="utf-8")
 
@@ -370,7 +376,9 @@ def _dotenv_values(path: Path) -> dict[str, str]:
 
 
 def test_bib_image_pins_linux_runtime_and_runs_offline_smokes():
-    dockerfile = (ROOT / "Dockerfile.worker").read_text()
+    dockerfile = (ROOT / "Dockerfile.worker-base").read_text() + (
+        ROOT / "Dockerfile.worker"
+    ).read_text()
     for token in (
         "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
         "2de0d87eda4696e9f6bbd771d4c623267f4e95856cce6f99793f91522f993e43",
@@ -384,5 +392,7 @@ def test_bib_image_pins_linux_runtime_and_runs_offline_smokes():
 
 
 def test_bib_runtime_loader_finds_the_packaged_shared_libraries():
-    dockerfile = (ROOT / "Dockerfile.worker").read_text()
+    dockerfile = (ROOT / "Dockerfile.worker-base").read_text() + (
+        ROOT / "Dockerfile.worker"
+    ).read_text()
     assert "LD_LIBRARY_PATH=/worker/llama" in dockerfile

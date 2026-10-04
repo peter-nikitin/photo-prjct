@@ -119,6 +119,7 @@ def test_telemetry_upgrade_preserves_terminal_retryable_active_expired_and_unenr
             }
             for row in rows[("processing", "ProcessingAttempt")]:
                 row.pop("pool_member_id", None)
+                row.pop("worker_build", None)
             for row in rows[("processing", "WorkerPoolMember")]:
                 row.pop("active_processing_attempt_id", None)
             return rows

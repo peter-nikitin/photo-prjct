@@ -167,6 +167,8 @@ def test_previous_processing_and_search_rows_survive_vector_schema_expansion():
             "EventFaceClusterActivation",
         )
         before = {name: list(model(name).objects.order_by("pk").values()) for name in names}
+        for row in before["ProcessingAttempt"]:
+            row.pop("worker_build")
         before_search = list(Search.objects.order_by("pk").values())
         executor = MigrationExecutor(connection)
         executor.migrate(leaves)

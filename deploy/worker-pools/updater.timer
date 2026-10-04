@@ -1,0 +1,10 @@
+[Unit]
+Description=Check current FindMe worker image
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=60s
+Unit=findme-worker-updater.service
+
+[Install]
+WantedBy=timers.target

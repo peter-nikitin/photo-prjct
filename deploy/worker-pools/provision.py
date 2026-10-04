@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 from urllib.request import Request
 
@@ -27,6 +28,8 @@ from processing.services.worker_pool_cloud import (  # noqa: E402
     COMPUTE,
     CloudReader,
     identifier,
+    metadata_token,
+    request_bytes,
     request_json,
 )
 
@@ -172,13 +175,13 @@ def cloud_init(config, pool):
         for key in (
             "bootstrap_secret_id",
             "bootstrap_version_id",
-            "worker_build",
             "worker_image",
             "docker_version",
             "compose_version",
             "private_api_ipv4",
         )
     }
+    runtime["worker_image"] = config["worker_image"].split("@", 1)[0] + ":latest"
     contract = dict(
         line.split("=", 1)
         for line in (ROOT / "deploy/worker-pools/contract.env.example").read_text().splitlines()
@@ -223,6 +226,13 @@ def cloud_init(config, pool):
             ROOT / "deploy/worker-pools/telemetry.timer"
         ).read_text(),
     }
+    for name in ("host.py", "updater.py", "updater.service", "updater.timer"):
+        target = (
+            f"/etc/systemd/system/findme-worker-{name}"
+            if name.endswith((".service", ".timer"))
+            else f"/usr/local/lib/findme-worker/{name}"
+        )
+        files[target] = (ROOT / "deploy/worker-pools" / name).read_text()
     # Reviewed base image already contains Python, Docker and Compose. No apt/curl installs.
     return "#cloud-config\n" + json.dumps(
         {
@@ -695,6 +705,130 @@ def status(config, cloud):
     return result
 
 
+def install_updater(config, *, cloud):
+    """One-time cap-one install. Never used by ordinary worker image publication."""
+    inspect(config, cloud)
+    snapshots = {}
+    for pool, entry in config["groups"].items():
+        if entry["id"] is None:
+            raise ValueError("existing exact group IDs required")
+        group = cloud.get(f"instanceGroups/{entry['id']}", view="FULL")
+        policy = group.get("scalePolicy", {}).get("autoScale", {})
+        deploy = group.get("deployPolicy", {})
+        if (
+            str(policy.get("maxSize")) != "1"
+            or str(policy.get("minZoneSize")) != ("0" if pool == "bulk" else "1")
+            or str(deploy.get("maxExpansion")) != "0"
+        ):
+            raise ValueError("one-time install requires cap one without expansion")
+        if (
+            len(
+                [
+                    row
+                    for row in cloud.pages(f"instanceGroups/{entry['id']}/instances", "instances")
+                    if row.get("status") != "DELETED"
+                ]
+            )
+            > 1
+        ):
+            raise ValueError("one-time install requires cap one")
+        snapshots[pool] = group
+    result = {}
+    for pool, original in snapshots.items():
+        entry = config["groups"][pool]
+        if (
+            managed_baseline(cloud.get(f"instanceGroups/{entry['id']}", view="FULL"))
+            != entry["baseline"]
+        ):
+            raise ValueError("managed target drift before updater install")
+        metadata = deepcopy(original["instanceTemplate"]["metadata"])
+        metadata["user-data"] = cloud_init(config, pool)
+        # Only userdata changes. The old build/image metadata is inert; no group shape,
+        # disks, scale policy, labels, SSH access or deployment policy is reconstructed.
+        body = {
+            "updateMask": "instanceTemplate.metadata",
+            "instanceTemplate": {"metadata": metadata},
+        }
+        operation = cloud.mutate("PATCH", f"instanceGroups/{entry['id']}", body)
+        if operation.get("metadata", {}).get("instanceGroupId") != entry["id"]:
+            raise ValueError("updater install returned wrong target; inspect before retry")
+        expected = deepcopy(original)
+        expected["instanceTemplate"]["metadata"] = metadata
+        current = cloud.get(f"instanceGroups/{entry['id']}", view="FULL")
+        if managed_baseline(current) != managed_baseline(expected):
+            raise ValueError("updater install read-back differs; inspect before retry")
+        result[pool] = {
+            "id": entry["id"],
+            "operation_id": identifier(operation["id"]),
+            "baseline": managed_baseline(current),
+            "template_verified": True,
+        }
+    return result
+
+
+def canonical_token(config):
+    instance = (
+        request_bytes(
+            Request(
+                "http://169.254.169.254/computeMetadata/v1/instance/id",
+                headers={"Metadata-Flavor": "Google"},
+            ),
+            max_body=64,
+        )
+        .decode()
+        .strip()
+    )
+    if instance != config["canonical_vm_id"]:
+        raise ValueError("one-time install must run on exact canonical VM")
+    return metadata_token()
+
+
+def replace_selfie(config, managed_id, *, cloud):
+    """Explicit one-time pause: operator first pauses claims and verifies zero live work.
+
+    Recreate exactly the listed managed instance so cloud-init runs on a new boot disk.
+    The caller must inspect the returned operation before doing anything else; no retry.
+    """
+    identifier(managed_id)
+    inspect(config, cloud)
+    group_id = identifier(config["groups"]["selfie"]["id"])
+    group = cloud.get(f"instanceGroups/{group_id}", view="FULL")
+    if (
+        str(group.get("scalePolicy", {}).get("autoScale", {}).get("maxSize")) != "1"
+        or str(group.get("deployPolicy", {}).get("maxExpansion")) != "0"
+    ):
+        raise ValueError("one-time recreate requires cap one without expansion")
+    if group["instanceTemplate"]["metadata"].get("user-data") != cloud_init(config, "selfie"):
+        raise ValueError("install updater template before one-time recreate")
+    members = [
+        row
+        for row in cloud.pages(f"instanceGroups/{group_id}/instances", "instances")
+        if row.get("status") != "DELETED"
+    ]
+    if (
+        len(members) != 1
+        or members[0].get("id") != managed_id
+        or members[0].get("status") not in {"RUNNING_ACTUAL", "RUNNING_OUTDATED"}
+    ):
+        raise ValueError("exact running selfie managed instance required")
+    operation = cloud.mutate(
+        "POST", f"instanceGroups/{group_id}:rollingRecreate", {"managedInstanceIds": [managed_id]}
+    )
+    if operation.get("metadata", {}).get("instanceGroupId") != group_id or operation.get("error"):
+        raise ValueError("recreate operation unverified; inspect before retry")
+    readback = cloud.get(f"instanceGroups/{group_id}", view="FULL")
+    if managed_baseline(readback) != managed_baseline(group):
+        raise ValueError("group drift after recreate submission; inspect before retry")
+    return {
+        "id": group_id,
+        "managed_instance_id": managed_id,
+        "operation_id": identifier(operation["id"]),
+        "operation_done": operation.get("done") is True,
+        "group_status": readback.get("status"),
+        "runtime_verified": False,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -703,29 +837,58 @@ def main():
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--apply", metavar="REVIEWED_SHA256")
     parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--install-updater", action="store_true")
+    parser.add_argument("--canonical-identity", action="store_true")
+    parser.add_argument(
+        "--replace-selfie",
+        metavar="MANAGED_INSTANCE_ID",
+        help="one-time recreate after operator pauses claims and verifies zero live work",
+    )
     args = parser.parse_args()
     try:
         config = json.loads(args.config.read_text())
         plan = prepare(config)
-        if sum(bool(value) for value in (args.inspect, args.status, args.apply)) > 1:
+        if (
+            sum(
+                bool(value)
+                for value in (
+                    args.inspect,
+                    args.status,
+                    args.apply,
+                    args.install_updater,
+                    args.replace_selfie,
+                )
+            )
+            > 1
+        ):
             raise ValueError("one explicit operation required")
-        if not any((args.inspect, args.status, args.apply)):
+        if not any(
+            (args.inspect, args.status, args.apply, args.install_updater, args.replace_selfie)
+        ):
             result = plan
         else:
-            if not args.profile:
-                raise ValueError("explicit yc profile required")
-            token = subprocess.run(
-                ["yc", "--profile", args.profile, "iam", "create-token"],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=20,
-            ).stdout.strip()
+            if bool(args.profile) == bool(args.canonical_identity):
+                raise ValueError("one explicit cloud identity required")
+            token = (
+                canonical_token(config)
+                if args.canonical_identity
+                else subprocess.run(
+                    ["yc", "--profile", args.profile, "iam", "create-token"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                ).stdout.strip()
+            )
             if not token or any(c.isspace() for c in token):
                 raise ValueError("cloud identity unavailable")
             cloud = Cloud(token)
             result = (
-                apply(
+                replace_selfie(config, args.replace_selfie, cloud=cloud)
+                if args.replace_selfie
+                else install_updater(config, cloud=cloud)
+                if args.install_updater
+                else apply(
                     config,
                     args.apply,
                     cloud=cloud,

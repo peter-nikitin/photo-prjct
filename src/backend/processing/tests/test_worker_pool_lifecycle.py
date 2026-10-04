@@ -47,7 +47,7 @@ class LifecycleTests(TransactionTestCase):
         )
 
     @override_settings(PHOTO_PROCESSING_FLEET_TOKEN="fleet")
-    def test_actual_worker_main_recovers_transient_ready_heartbeat_on_same_boot(self):
+    def test_actual_worker_main_recovers_lost_warmed_registration_response(self):
         from photo_worker import __main__ as entrypoint
         from photo_worker.client import ApiError, HttpClient
         from photo_worker.lifecycle import HostIdentity
@@ -69,7 +69,7 @@ class LifecycleTests(TransactionTestCase):
                 HTTP_X_FINDME_WORKER_TRANSPORT="private-tls",
             )
             self.assertEqual(response.status_code, 200, response.content)
-            if path == "members/heartbeat" and payload.get("ready"):
+            if path == "members/register":
                 ready_calls.append(True)
                 if len(ready_calls) == 1:
                     # The canonical write committed, but its response was lost.
@@ -220,11 +220,10 @@ class LifecycleTests(TransactionTestCase):
                 )
                 lifecycle.set_claims_paused("selfie", paused=False)
 
-    def test_wrong_identity_build_boot_and_unregistered_member_fail_closed(self):
+    def test_wrong_identity_boot_and_unregistered_member_fail_closed(self):
         for envelope in (
             lifecycle.MemberIdentity("bulk", "instance-0", self.envelopes[0].boot_id, BUILD),
             lifecycle.MemberIdentity("selfie", "unknown", uuid4(), BUILD),
-            lifecycle.MemberIdentity("selfie", "instance-0", self.envelopes[0].boot_id, NEXT),
         ):
             with self.subTest(envelope=envelope), self.assertRaises(lifecycle.AdmissionDenied):
                 lifecycle.register(envelope)
@@ -259,7 +258,7 @@ class LifecycleTests(TransactionTestCase):
             )
         )
 
-    def test_candidate_warms_before_promotion_and_old_claims_are_fenced(self):
+    def test_build_promotion_does_not_gate_claims_and_explicit_retirement_drains_old(self):
         lifecycle.stage_build("selfie", active_build=BUILD, staged_build=NEXT)
         candidate = lifecycle.MemberIdentity("selfie", "instance-1", uuid4(), NEXT)
         self.observe(
@@ -273,7 +272,7 @@ class LifecycleTests(TransactionTestCase):
         candidate = self.register_session(candidate)
         lifecycle.heartbeat(candidate, ready=True, draining=False)
         with lifecycle.claim_admission((1, "selfie_query", 2), candidate) as admission:
-            self.assertFalse(admission.allowed)
+            self.assertTrue(admission.allowed)
         with lifecycle.claim_admission((1, "selfie_query", 2), self.envelopes[0]) as admission:
             attempt = self.make_attempt()
             admission.bind(attempt)
@@ -291,11 +290,14 @@ class LifecycleTests(TransactionTestCase):
         with lifecycle.claim_admission((1, "selfie_query", 2), candidate) as admission:
             self.assertTrue(admission.allowed)
         with lifecycle.claim_admission((1, "selfie_query", 2), self.envelopes[0]) as admission:
+            # The earlier explicit retirement request has already stopped old claims.
             self.assertFalse(admission.allowed)
         grant = lifecycle.reserve_release_retirement(
             self.envelopes[0], active_build=NEXT, staged_build=None
         )
         self.assertIsNotNone(grant)
+        with lifecycle.claim_admission((1, "selfie_query", 2), self.envelopes[0]) as admission:
+            self.assertFalse(admission.allowed)
         # Rollback is another staged transition; the granted old boot cannot be reused.
         lifecycle.stage_build("selfie", active_build=NEXT, staged_build=BUILD)
         with self.assertRaises(lifecycle.AdmissionDenied):
@@ -441,22 +443,87 @@ class LifecycleTests(TransactionTestCase):
             with lifecycle.claim_admission((1, "selfie_query", 2), None) as admission:
                 self.assertFalse(admission.allowed)
 
-    def test_same_boot_restart_is_cold_until_new_process_warms(self):
-        current = self.register_session(self.envelopes[0])
+    def test_warmed_same_boot_replacement_transfers_claims_without_build_gate(self):
+        old = self.envelopes[0]
+        current = self.register_session(replace(old, worker_build=NEXT))
         member = WorkerPoolMember.objects.get(instance_id="instance-0")
-        self.assertFalse(member.ready)
-        self.assertIsNone(member.heartbeat_at)
-        self.assertIsNone(member.idle_since)
-        self.assertIsNone(lifecycle.request_retirement(self.envelopes[1]))
+        self.assertTrue(member.ready)
+        self.assertIsNotNone(member.heartbeat_at)
+        self.assertEqual(member.worker_build, NEXT)
+        self.assertEqual(WorkerPool.objects.get(pk=self.pool.pk).active_build, BUILD)
         with self.assertRaises(lifecycle.RegistrationChanged):
-            lifecycle.heartbeat(self.envelopes[0], ready=True, draining=False)
+            lifecycle.heartbeat(old, ready=True, draining=False)
         with self.assertRaises(lifecycle.RegistrationChanged):
-            with lifecycle.claim_admission((1, "selfie_query", 2), self.envelopes[0]):
+            with lifecycle.claim_admission((1, "selfie_query", 2), old):
                 pass
+        with self.assertRaises(lifecycle.RegistrationChanged):
+            lifecycle.request_retirement(old)
         with lifecycle.claim_admission((1, "selfie_query", 2), current) as admission:
+            self.assertTrue(admission.allowed)
+
+    def test_same_build_restart_fences_stale_retirement_generation(self):
+        old = self.envelopes[0]
+        current = self.register_session(old)
+        with self.assertRaises(lifecycle.RegistrationChanged):
+            lifecycle.request_retirement(old)
+        with lifecycle.claim_admission((1, "selfie_query", 2), current) as admission:
+            self.assertTrue(admission.allowed)
+
+    def test_failed_candidate_warmup_leaves_old_process_claiming(self):
+        from photo_worker.client import HttpClient
+        from photo_worker.lifecycle import DrainController, FleetLifecycle, HostIdentity
+        from photo_worker.transport import REMOTE_API_URL
+
+        old = self.envelopes[0]
+        client = HttpClient(REMOTE_API_URL, "fleet", transport="remote")
+        candidate = FleetLifecycle(
+            client,
+            HostIdentity("selfie", old.instance_id, str(old.boot_id), NEXT),
+            DrainController(),
+            warmup=Mock(side_effect=ValueError("warmup failed")),
+        )
+        with self.assertRaises(ValueError), patch.object(client, "post_json") as post:
+            candidate.start()
+        candidate.close()
+        post.assert_not_called()
+        member = WorkerPoolMember.objects.get(instance_id=old.instance_id)
+        self.assertTrue(member.ready)
+        self.assertEqual(member.registration_generation, old.registration_generation)
+        with lifecycle.claim_admission((1, "selfie_query", 2), old) as admission:
+            self.assertTrue(admission.allowed)
+
+    def test_old_attempt_callbacks_survive_same_vm_handoff_and_duplicate_conflicts(self):
+        from selfie_search.services.jobs import SearchCompletionConflict
+
+        old = self.envelopes[0]
+        identity, path, storage = self.queued_claim("selfie")
+        body = {
+            "contract_version": identity[0],
+            "processor_type": identity[1],
+            "processor_version": identity[2],
+            "lease_seconds": 120,
+        }
+        with patch(path, return_value=storage):
+            payload = _claim_with_grant(body, member=old)
+        job = payload["job"]
+        assert isinstance(job, dict)
+        candidate = self.register_session(replace(old, worker_build=NEXT))
+        self.assertEqual(
+            str(WorkerPoolMember.objects.get(instance_id=old.instance_id).active_selfie_attempt_id),
+            job["attempt_id"],
+        )
+        with lifecycle.claim_admission(identity, candidate) as admission:
             self.assertFalse(admission.allowed)
-        lifecycle.heartbeat(current, ready=True, draining=False)
-        with lifecycle.claim_admission((1, "selfie_query", 2), current) as admission:
+        heartbeat_search_attempt(job["attempt_id"], lease_seconds=120)
+        result = fail_search_attempt(
+            job["attempt_id"], error_code="no_face_detected", retryable=False, storage=storage
+        )
+        self.assertEqual(result.attempt.status, "failed")
+        with self.assertRaises(SearchCompletionConflict):
+            fail_search_attempt(
+                job["attempt_id"], error_code="model_unavailable", retryable=True, storage=storage
+            )
+        with lifecycle.claim_admission(identity, candidate) as admission:
             self.assertTrue(admission.allowed)
 
     def test_old_process_heartbeat_waiting_behind_register_cannot_restore_readiness(self):
@@ -478,7 +545,7 @@ class LifecycleTests(TransactionTestCase):
                 self.assertFalse(late.done())
             with self.assertRaises(lifecycle.RegistrationChanged):
                 late.result(timeout=5)
-        self.assertFalse(WorkerPoolMember.objects.get(instance_id="instance-0").ready)
+        self.assertTrue(WorkerPoolMember.objects.get(instance_id="instance-0").ready)
 
     def make_attempt(self):
         event = Event.objects.create(
@@ -594,6 +661,14 @@ class LifecycleTests(TransactionTestCase):
             **headers,
         )
         self.assertEqual(response.status_code, 412)
+        response = self.client.post(
+            base + "members/retire", stale, content_type="application/json", **headers
+        )
+        self.assertEqual(response.status_code, 412)
+        response = self.client.post(
+            base + "members/retire", envelope, content_type="application/json", **headers
+        )
+        self.assertEqual(response.status_code, 400)
         response = self.client.post(
             base + "claim", body | stale, content_type="application/json", **headers
         )

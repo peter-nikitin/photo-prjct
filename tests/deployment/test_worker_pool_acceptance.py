@@ -104,7 +104,8 @@ def test_functional_entrypoint_runs_existing_policy_and_interrupted_release_fixt
                 "test",
                 "TESTS=-m operational tests/deployment/test_worker_pool_acceptance.py "
                 "tests/deployment/test_worker_pool_provisioning.py "
-                "tests/deployment/test_worker_pool_release.py "
+                "tests/deployment/test_component_release.py "
+                "tests/deployment/test_worker_image_updater.py "
                 "tests/deployment/test_worker_pool_retire.py",
             ],
             ROOT,
@@ -255,7 +256,6 @@ def terminal(claim, result):
         "contract_version": claim.job.contract_version,
         "processor_type": claim.job.processor_type,
         "processor_version": claim.job.processor_version,
-        "worker_build": BUILD,
         "started_at": timezone.now().isoformat().replace("+00:00", "Z"),
         "finished_at": timezone.now().isoformat().replace("+00:00", "Z"),
         "download_ms": 1,
@@ -307,7 +307,6 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
     )
     with patch("processing.views.ExactPreviewStorage.create_download_grant", return_value=grant):
         claim = client.claim_job(
-            worker_build=BUILD,
             lease_seconds=120,
             contract_version=3,
             processor_type="face_embedding",
@@ -381,7 +380,6 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
         ),
     ):
         selfie_claim = selfie.claim_job(
-            worker_build=BUILD,
             lease_seconds=120,
             processor_type="selfie_query",
             processor_version=2,

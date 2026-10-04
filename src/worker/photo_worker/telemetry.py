@@ -40,8 +40,11 @@ RUNTIME_PORT = 9101
 class RuntimeTelemetry:
     """One process with bounded in-flight execution counts and no arbitrary labels."""
 
-    def __init__(self, generation: Callable[[], str | None]) -> None:
+    def __init__(
+        self, generation: Callable[[], str | None], *, ready: Callable[[], bool] | None = None
+    ) -> None:
         self._generation = generation
+        self._ready = ready or (lambda: False)
         self._current_generation: str | None = None
         self._lock = threading.Lock()
         self._executing: dict[int, tuple[float, str | None]] = {}
@@ -108,6 +111,9 @@ class RuntimeTelemetry:
             generation = self._sync_generation()
             return generation, generate_latest(self._registry)
 
+    def ready(self) -> bool:
+        return self._ready()
+
 
 def start_runtime_server(
     telemetry: RuntimeTelemetry, *, port: int = RUNTIME_PORT, host: str = "127.0.0.1"
@@ -130,7 +136,9 @@ def start_runtime_server(
             body = (
                 metrics
                 if self.path == "/metrics"
-                else json.dumps({"registration_generation": generation}).encode()
+                else json.dumps(
+                    {"registration_generation": generation, "ready": telemetry.ready()}
+                ).encode()
             )
             self.send_response(200)
             self.send_header(

@@ -30,7 +30,7 @@ class CanonicalControlTests(TestCase):
             self.control("promote", pool="selfie", active_build="a" * 40, staged_build="b" * 40)
         self.assertEqual(WorkerPool.objects.get(name="selfie").active_build, "a" * 40)
 
-    def test_status_readiness_expires_and_same_boot_restart_is_not_warm(self):
+    def test_status_readiness_expires_and_warmed_replacement_stays_warm(self):
         lifecycle.configure_pool("selfie", group_id="selfie-group", active_build="a" * 40)
         now = timezone.now()
         lifecycle.record_cloud_snapshot(
@@ -52,7 +52,7 @@ class CanonicalControlTests(TestCase):
         lifecycle.heartbeat(identity, ready=True, draining=False)
         self.assertTrue(self.control("status")["selfie"]["members"][0]["warm"])
         lifecycle.register(identity)
-        self.assertFalse(self.control("status")["selfie"]["members"][0]["warm"])
+        self.assertTrue(self.control("status")["selfie"]["members"][0]["warm"])
         WorkerPool.objects.update(observation_completed_at=now - timedelta(seconds=91))
         self.assertFalse(self.control("status")["selfie"]["fresh"])
 

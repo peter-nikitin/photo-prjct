@@ -52,7 +52,8 @@ def main() -> None:
                             worker.fleet.registration_generation
                             if worker.fleet is not None
                             else None
-                        )
+                        ),
+                        ready=lambda: worker.fleet is not None and worker.fleet.can_claim,
                     )
                     # Container namespace only; compose publishes solely to host loopback.
                     runtime_server = start_runtime_server(worker.telemetry, host="0.0.0.0")

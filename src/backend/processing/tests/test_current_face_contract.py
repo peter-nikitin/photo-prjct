@@ -1,7 +1,7 @@
 from datetime import date
 from typing import cast
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from picflow.models import Event, Photo
 
 from processing import contracts
@@ -49,7 +49,6 @@ class CurrentFaceContractTests(TestCase):
         self.assertEqual({item["model"] for item in generations}, {"adaface-ir18-webface4m"})
         self.assertEqual(load_compatible_face_embeddings(self.event, generations, 512), ())
 
-    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_new_face_job_uses_pinned_adaface_v5(self) -> None:
         from django.contrib.auth import get_user_model
         from django.utils import timezone

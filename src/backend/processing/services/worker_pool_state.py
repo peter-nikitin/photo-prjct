@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from django.conf import settings
 from django.db.models import Count, Exists, Min, OuterRef, Q, QuerySet
 from django.utils import timezone
 from selfie_search.models import (
@@ -211,10 +210,6 @@ def build_worker_pool_state(
         "schema_version": 1,
         "observed_at": now.isoformat(),
         "endpoint_enabled": worker_endpoint_enabled(),
-        "enrollment_flags": {
-            "face_enabled": bool(settings.PHOTO_PROCESSING_FACE_ENABLED),
-            "preview_enabled": bool(settings.PHOTO_PROCESSING_PREVIEW_ENABLED),
-        },
         "empty": not ProcessingJob.objects.exists() and not SelfieSearchJob.objects.exists(),
         "pools": pools,
         "unassigned_processing_jobs": ProcessingJob.objects.exclude(assigned).count(),

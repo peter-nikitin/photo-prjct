@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
-from feature_flags.registry import BULK_PHOTO_DOWNLOAD
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
 from ingestion.storage import ObjectMissing, OpenedObject, StorageUnavailable
 from picflow.archive import ArchiveObservation, ArchiveSourceMissing, ArchiveSourceUnavailable
@@ -56,7 +55,6 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
     def setUp(self) -> None:
         super().setUp()
         self.enable(purchase=FEATURE_FLAG_ON)
-        self.feature_flag_states[BULK_PHOTO_DOWNLOAD] = FEATURE_FLAG_ON
         self.order = self.make_order(total_kopecks=60000)
         self.photo_ids = self.add_order_photos(self.order, count=1)
 
@@ -125,19 +123,27 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
                     },
                 )
             )
+            invalid_signature = self.client.get(
+                reverse(
+                    "commerce:grant_order_archive",
+                    kwargs={
+                        "public_number": self.order.public_number,
+                        "grant_identifier": grant.pk,
+                        "signature": f"{signature}wrong",
+                    },
+                )
+            )
 
         self.assertEqual(allowed.status_code, 200)
         self.assertEqual(denied.status_code, 404)
+        self.assertEqual(invalid_signature.status_code, 404)
         self.assertEqual(
             set(DownloadGrantAudit.objects.values_list("access_grant_id", flat=True)),
             {grant.pk},
         )
 
-    def test_direct_endpoint_fails_closed_for_gate_invalid_page_and_nonpaid_order(self) -> None:
+    def test_direct_endpoint_fails_closed_for_invalid_page_and_nonpaid_order(self) -> None:
         with patch("commerce.views._archive_storage") as storage:
-            self.feature_flag_states[BULK_PHOTO_DOWNLOAD] = FEATURE_FLAG_OFF
-            off = self.client.get(self.archive_url())
-            self.feature_flag_states[BULK_PHOTO_DOWNLOAD] = FEATURE_FLAG_ON
             invalid = self.client.get(self.archive_url(page=2))
             small_order = self.make_order(public_number="FM-JKLM2345")
             small = self.client.get(
@@ -152,9 +158,22 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
             pending = self.client.get(self.archive_url())
 
         self.assertEqual(
-            tuple(response.status_code for response in (off, invalid, small, pending)),
-            (404, 404, 404, 404),
+            tuple(response.status_code for response in (invalid, small, pending)),
+            (404, 404, 404),
         )
+        storage.assert_not_called()
+
+    def test_unrelated_browser_and_disabled_purchase_gate_cannot_archive(self) -> None:
+        with patch("commerce.views._archive_storage") as storage:
+            self.client.cookies["findme_purchase"] = "B" * 43
+            unrelated = self.client.get(self.archive_url())
+            self.client.cookies["findme_purchase"] = self.cart_token
+            self.enable(purchase=FEATURE_FLAG_OFF)
+            gated = self.client.get(self.archive_url())
+
+        self.assertEqual(unrelated.status_code, 404)
+        self.assertEqual(gated.status_code, 404)
+        self.assertFalse(DownloadGrantAudit.objects.exists())
         storage.assert_not_called()
 
     def test_first_missing_source_opens_attention_and_returns_private_503(self) -> None:

@@ -22,7 +22,6 @@ URL = "/internal/photo-processing/v1/members/telemetry"
 
 
 @override_settings(
-    PHOTO_PROCESSING_ENABLED=True,
     PHOTO_PROCESSING_WORKER_TOKEN="local",
     PHOTO_PROCESSING_FLEET_TOKEN="fleet",
     PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True,
@@ -269,7 +268,7 @@ class TelemetryTests(TestCase):
     def test_unavailable_queue_does_not_suppress_independent_fresh_node_diagnostics(self):
         with patch("django.utils.timezone.now", return_value=self.now):
             self.assertEqual(self.submit().status_code, 200)
-            with override_settings(PHOTO_PROCESSING_ENABLED=False):
+            with override_settings(PHOTO_PROCESSING_FLEET_TOKEN=""):
                 samples = self.samples()
         self.assertEqual(samples["worker_pool_queue_observation_available"].value, 0)
         self.assertNotIn("worker_pool_running_instances", samples)

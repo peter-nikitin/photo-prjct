@@ -10,8 +10,6 @@ from django.contrib.auth.models import Permission
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.models import FeatureFlag
-from feature_flags.registry import YANDEX_DISK_IMPORT
 from ingestion.models import ImportAttempt, ImportBatch, ImportItem, ImportScope
 from ingestion.services.import_publication import ImportCompletion
 from ingestion.services.imports import ImportConflict
@@ -21,8 +19,6 @@ from processing.models import PhotoProcessingState
 
 
 @override_settings(
-    PHOTO_UPLOAD_ENABLED=True,
-    PHOTO_IMPORT_ENABLED=True,
     PHOTO_IMPORT_WORKER_TOKEN="import-worker-secret",
     PHOTO_IMPORT_MAX_JSON_BYTES=1024 * 1024,
 )
@@ -45,11 +41,6 @@ class ImportApiTests(TestCase):
         cls.folder = EventFolder.objects.create(event=cls.event, name="Finish")
 
     def setUp(self) -> None:
-        FeatureFlag.objects.create(
-            key=YANDEX_DISK_IMPORT.key,
-            description=YANDEX_DISK_IMPORT.description,
-            state=FeatureFlag.State.ON,
-        )
         self.client.force_login(self.owner)
 
     def json_post(self, url: str, data: Mapping[str, object], **extra: object):
@@ -670,8 +661,6 @@ class ImportApiTests(TestCase):
 
 
 @override_settings(
-    PHOTO_UPLOAD_ENABLED=True,
-    PHOTO_IMPORT_ENABLED=True,
     PHOTO_IMPORT_WORKER_TOKEN="import-worker-secret",
     PHOTO_IMPORT_MAX_JSON_BYTES=1024 * 1024,
 )
@@ -691,11 +680,6 @@ class ImportBrowserCsrfTests(TestCase):
         )
 
     def test_browser_mutation_requires_csrf_while_worker_token_endpoint_does_not(self) -> None:
-        FeatureFlag.objects.create(
-            key=YANDEX_DISK_IMPORT.key,
-            description=YANDEX_DISK_IMPORT.description,
-            state=FeatureFlag.State.ON,
-        )
         client = self.client_class(enforce_csrf_checks=True)
         client.force_login(self.owner)
         browser = client.post(

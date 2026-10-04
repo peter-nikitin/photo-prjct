@@ -47,7 +47,6 @@ def selfie_upload() -> SimpleUploadedFile:
 
 
 @override_settings(
-    SELFIE_FEEDBACK_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class FeedbackSubmissionTests(TestCase):

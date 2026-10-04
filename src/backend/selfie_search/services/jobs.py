@@ -12,9 +12,11 @@ from datetime import timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
-from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.db import DatabaseError, transaction
 from django.utils import timezone
+from feature_flags import services as feature_flag_services
+from feature_flags.registry import SELFIE_SEARCH_CLUSTER_EXPANSION
 from ingestion.storage import StorageUnavailable
 from processing.contracts import SELFIE_ATTEMPT_PREFIX
 
@@ -738,7 +740,7 @@ def _expand_direct_ranking(
     *, search: SelfieSearch, ranked: tuple, query: tuple[float, ...]
 ) -> RankedPhotoExpansion:
     """Read optional immutable corpus evidence before the publication transaction."""
-    if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
+    if not feature_flag_services.is_enabled(SELFIE_SEARCH_CLUSTER_EXPANSION, AnonymousUser()):
         return direct_only_ranked_photos(ranked, outcome="disabled")
     try:
         with transaction.atomic():
@@ -953,7 +955,9 @@ def _emit_ranking_finished(
         cluster_expansion_ms = None
         cluster_expansion_outcome = (
             "disabled"
-            if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True
+            if not feature_flag_services.is_enabled(
+                SELFIE_SEARCH_CLUSTER_EXPANSION, AnonymousUser()
+            )
             else "corpus_unavailable"
         )
     else:

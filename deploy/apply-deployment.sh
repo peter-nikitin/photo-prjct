@@ -115,9 +115,8 @@ try:
                    'RECOVER_FORWARD': 'True', 'FINDME_FORWARD_ENV_LOADED': '1',
                    'COMPOSE_PROJECT_NAME': 'photo-prjct'}
     environment.pop('PREVIOUS_DEPLOYMENT_PACKAGE_ROOT', None)
-    if retained.get('PHOTO_IMPORT_ENABLED') == 'True':
-        environment['IMPORT_WORKER_IMAGE'] = f'{original[1]}-import-worker:{sha}'
-        environment['PHOTO_IMPORT_BUILD'] = sha
+    environment['IMPORT_WORKER_IMAGE'] = f'{original[1]}-import-worker:{sha}'
+    environment['PHOTO_IMPORT_BUILD'] = sha
 except (OSError, KeyError, ValueError):
     raise SystemExit('Invalid retained forward-recovery inputs') from None
 os.execve('/bin/sh', ['sh', *sys.argv[1:]], environment)
@@ -151,32 +150,20 @@ requested_gallery_cdn_token_secret="${GALLERY_CDN_TOKEN_SECRET:-}"
 requested_gallery_imgproxy_key="${GALLERY_IMGPROXY_KEY:-}"
 requested_gallery_imgproxy_salt="${GALLERY_IMGPROXY_SALT:-}"
 requested_image="$APP_IMAGE"
-requested_import_enabled="${PHOTO_IMPORT_ENABLED:-False}"
-case "$requested_import_enabled" in
-    True)
-        : "${IMPORT_WORKER_IMAGE:?Set IMPORT_WORKER_IMAGE}"
-        : "${PHOTO_IMPORT_WORKER_TOKEN:?Set PHOTO_IMPORT_WORKER_TOKEN}"
-        : "${PHOTO_IMPORT_BUILD:?Set PHOTO_IMPORT_BUILD}"
-        case "$IMPORT_WORKER_IMAGE" in
-            *:"${APP_IMAGE##*:}") ;;
-            *) echo "Import and web images must use the same release tag" >&2; exit 2 ;;
-        esac
-        ;;
-    False) ;;
-    *) echo "PHOTO_IMPORT_ENABLED must be True or False" >&2; exit 2 ;;
+: "${IMPORT_WORKER_IMAGE:?Set IMPORT_WORKER_IMAGE}"
+: "${PHOTO_IMPORT_WORKER_TOKEN:?Set PHOTO_IMPORT_WORKER_TOKEN}"
+: "${PHOTO_IMPORT_BUILD:?Set PHOTO_IMPORT_BUILD}"
+case "$IMPORT_WORKER_IMAGE" in
+    *:"${APP_IMAGE##*:}") ;;
+    *) echo "Import and web images must use the same release tag" >&2; exit 2 ;;
 esac
-requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
-if [ "$requested_processing_enabled" != True ] || \
-    [ -z "${PHOTO_PROCESSING_FLEET_TOKEN:-}" ] || \
+if [ -z "${PHOTO_PROCESSING_FLEET_TOKEN:-}" ] || \
     [ -z "${WORKER_POOL_PRIVATE_API_IPV4:-}" ]; then
-    echo "Remote deployment requires enabled API, fleet credential and private edge" >&2
+    echo "Remote deployment requires fleet credential and private edge" >&2
     exit 2
 fi
-requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
-requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
 requested_bulk_processor_identities="${PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,3/face_embedding/5,1/bib_recognition/1}"
 requested_selfie_processor_identities="${PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES:-1/selfie_query/2}"
-requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
 requested_bulk_processor_types="${PHOTO_WORKER_BULK_PROCESSOR_TYPES:-bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview}"
 requested_selfie_processor_types="${PHOTO_WORKER_SELFIE_PROCESSOR_TYPES:-selfie_query}"
 requested_bulk_http_timeout_seconds="${PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS:-180}"
@@ -436,48 +423,11 @@ while :; do
     [ "$more_identities" = False ] && break
 done
 
-case "${PHOTO_UPLOAD_ENABLED:-False}" in
-    True)
-        : "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
-        : "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
-        : "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
-        : "${PRIVATE_MEDIA_ALLOWED_ORIGINS:?Set PRIVATE_MEDIA_ALLOWED_ORIGINS}"
-        ;;
-    False)
-        ;;
-    *)
-        echo "PHOTO_UPLOAD_ENABLED must be True or False" >&2
-        exit 2
-        ;;
-esac
+: "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
+: "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
+: "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
+: "${PRIVATE_MEDIA_ALLOWED_ORIGINS:?Set PRIVATE_MEDIA_ALLOWED_ORIGINS}"
 
-case "$requested_preview_enabled" in
-    True|False)
-        ;;
-    *)
-        echo "PHOTO_PROCESSING_PREVIEW_ENABLED must be True or False" >&2
-        exit 2
-        ;;
-esac
-
-case "$requested_face_enabled" in
-    True|False)
-        ;;
-    *)
-        echo "PHOTO_PROCESSING_FACE_ENABLED must be True or False" >&2
-        exit 2
-        ;;
-esac
-
-if [ "$requested_preview_enabled" = True ]; then
-    if [ "$requested_processing_enabled" != True ]; then
-        echo "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_ENABLED=True" >&2
-        exit 2
-    fi
-    if [ "$requested_face_enabled" != True ]; then
-        echo "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_FACE_ENABLED=True" >&2
-        exit 2
-    fi
     for required_photo_identity in \
         1/capture_metadata/2 \
         2/generate_preview/1 \
@@ -491,68 +441,34 @@ if [ "$requested_preview_enabled" = True ]; then
                 echo "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must include $required_photo_identity" >&2
                 exit 2
                 ;;
-        esac
-    done
-fi
-
-if [ "$requested_processing_enabled" != True ] || [ "$requested_face_enabled" != True ]; then
-    echo "Selfie search requires enabled photo processing and face embeddings" >&2
-    exit 2
-fi
-: "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
-: "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
-: "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
+    esac
+done
 requested_selfie_search_max_upload_bytes=20971520
 requested_selfie_search_max_pixels=25000000
 requested_selfie_search_download_ttl_seconds=120
 requested_selfie_search_temporary_prefix=selfie-search/
 requested_selfie_search_lifecycle_max_age_hours=24
 
-case "$requested_selfie_feedback_enabled" in
-    True)
-        : "${SELFIE_FEEDBACK_S3_BUCKET:?Set SELFIE_FEEDBACK_S3_BUCKET}"
-        : "${SELFIE_FEEDBACK_S3_ACCESS_KEY_ID:?Set SELFIE_FEEDBACK_S3_ACCESS_KEY_ID}"
-        : "${SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY:?Set SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY}"
-        : "${SELFIE_FEEDBACK_KMS_KEY_ID:?Set SELFIE_FEEDBACK_KMS_KEY_ID}"
-        case "${SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED:-False}" in
-            True)
-                ;;
-            False)
-                echo "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED must be True before enabling feedback" >&2
-                exit 2
-                ;;
-            *)
-                echo "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED must be True or False" >&2
-                exit 2
-                ;;
-        esac
-        requested_selfie_feedback_endpoint_url="${SELFIE_FEEDBACK_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}"
-        requested_selfie_feedback_region="${SELFIE_FEEDBACK_S3_REGION:-ru-central1}"
-        if [ "$requested_selfie_feedback_endpoint_url" != https://storage.yandexcloud.net ] || \
-            [ "$requested_selfie_feedback_region" != ru-central1 ]; then
-            echo "SELFIE_FEEDBACK_S3 endpoint and region must use Yandex Object Storage" >&2
-            exit 2
-        fi
-        requested_selfie_feedback_bucket="$SELFIE_FEEDBACK_S3_BUCKET"
-        requested_selfie_feedback_access_key_id="$SELFIE_FEEDBACK_S3_ACCESS_KEY_ID"
-        requested_selfie_feedback_secret_access_key="$SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY"
-        requested_selfie_feedback_kms_key_id="$SELFIE_FEEDBACK_KMS_KEY_ID"
-        requested_selfie_feedback_preflight_confirmed=True
-        ;;
-    False)
-        requested_selfie_feedback_endpoint_url=https://storage.yandexcloud.net
-        requested_selfie_feedback_region=ru-central1
-        requested_selfie_feedback_bucket=""
-        requested_selfie_feedback_access_key_id=""
-        requested_selfie_feedback_secret_access_key=""
-        requested_selfie_feedback_kms_key_id=""
-        requested_selfie_feedback_preflight_confirmed=False
-        ;;
-    *)
-        echo "SELFIE_FEEDBACK_ENABLED must be True or False" >&2
-        exit 2
-        ;;
+: "${SELFIE_FEEDBACK_S3_BUCKET:?Set SELFIE_FEEDBACK_S3_BUCKET}"
+: "${SELFIE_FEEDBACK_S3_ACCESS_KEY_ID:?Set SELFIE_FEEDBACK_S3_ACCESS_KEY_ID}"
+: "${SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY:?Set SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY}"
+: "${SELFIE_FEEDBACK_KMS_KEY_ID:?Set SELFIE_FEEDBACK_KMS_KEY_ID}"
+case "${SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED:-False}" in
+    True) ;;
+    *) echo "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED must be True" >&2; exit 2 ;;
 esac
+requested_selfie_feedback_endpoint_url="${SELFIE_FEEDBACK_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}"
+requested_selfie_feedback_region="${SELFIE_FEEDBACK_S3_REGION:-ru-central1}"
+if [ "$requested_selfie_feedback_endpoint_url" != https://storage.yandexcloud.net ] || \
+    [ "$requested_selfie_feedback_region" != ru-central1 ]; then
+    echo "SELFIE_FEEDBACK_S3 endpoint and region must use Yandex Object Storage" >&2
+    exit 2
+fi
+requested_selfie_feedback_bucket="$SELFIE_FEEDBACK_S3_BUCKET"
+requested_selfie_feedback_access_key_id="$SELFIE_FEEDBACK_S3_ACCESS_KEY_ID"
+requested_selfie_feedback_secret_access_key="$SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY"
+requested_selfie_feedback_kms_key_id="$SELFIE_FEEDBACK_KMS_KEY_ID"
+requested_selfie_feedback_preflight_confirmed=True
 
 if [ "$requested_bulk_processor_types" != "bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview" ]; then
     echo "PHOTO_WORKER_BULK_PROCESSOR_TYPES must be bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview" >&2
@@ -719,7 +635,6 @@ clear_candidate_compose_interpolation() {
         MEDIA_S3_PUBLIC_BUCKET \
         MEDIA_S3_ACCESS_KEY_ID \
         MEDIA_S3_SECRET_ACCESS_KEY \
-        PHOTO_UPLOAD_ENABLED \
         PRIVATE_MEDIA_S3_BUCKET \
         PRIVATE_MEDIA_S3_ACCESS_KEY_ID \
         PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY \
@@ -727,9 +642,6 @@ clear_candidate_compose_interpolation() {
         PHOTO_WORKER_POOL_COORDINATOR_ENABLED \
         PHOTO_PROCESSING_FLEET_TOKEN \
         WORKER_POOL_PRIVATE_API_IPV4 \
-        PHOTO_PROCESSING_ENABLED \
-        PHOTO_PROCESSING_PREVIEW_ENABLED \
-        PHOTO_PROCESSING_FACE_ENABLED \
         PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS \
         PHOTO_PROCESSING_MAX_REQUEST_BYTES \
         PHOTO_WORKER_LEASE_SECONDS \
@@ -748,7 +660,6 @@ clear_candidate_compose_interpolation() {
         SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS \
         SELFIE_SEARCH_TEMPORARY_PREFIX \
         SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS \
-        SELFIE_FEEDBACK_ENABLED \
         SELFIE_FEEDBACK_S3_BUCKET \
         SELFIE_FEEDBACK_S3_ACCESS_KEY_ID \
         SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY \
@@ -779,7 +690,6 @@ clear_candidate_compose_interpolation() {
         COMMERCE_SUPPORT_CONTACT \
         COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS \
         COMMERCE_WORKER_ENABLED \
-        PHOTO_IMPORT_ENABLED \
         PHOTO_IMPORT_WORKER_TOKEN \
         PHOTO_IMPORT_BUILD \
         IMPORT_WORKER_IMAGE
@@ -838,17 +748,13 @@ import_lease_remaining_seconds() {
 }
 
 stop_import_before_web_change() {
-    import_enabled="$1"
-    # Container identity remains available even when disabled configuration has no image.
-    # Do not activate the import profile merely to remove an existing worker.
     import_containers="$(docker ps -aq \
         --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
         --filter "label=com.docker.compose.service=import-worker")" || return 1
     for import_container in $import_containers; do
         docker rm -f "$import_container" || return 1
     done
-    if [ "$import_enabled" = True ]; then
-        # The stopped worker cannot renew leases; API v1 bounds each lease to 300 seconds.
+    # The stopped worker cannot renew leases; API v1 bounds each lease to 300 seconds.
         import_lease_deadline=$(($(date +%s) + 300))
         while :; do
             import_lease_remaining="$(import_lease_remaining_seconds)" || return 1
@@ -870,7 +776,6 @@ stop_import_before_web_change() {
             fi
             sleep "$import_lease_sleep"
         done
-    fi
 }
 
 run_private_candidate_command() {
@@ -932,12 +837,7 @@ recover_previous_deployment() {
         echo "Candidate package and .deployment-recovery retained; keep claims paused and recover forward" >&2
         return 1
     fi
-    if [ "$previous_import_enabled" = True ] || \
-        [ "$candidate_import_worker_start_attempted" -eq 1 ]; then
-        stop_import_before_web_change True || return 1
-    else
-        stop_import_before_web_change False || return 1
-    fi
+    stop_import_before_web_change True || return 1
 
     if [ "$previous_env_exists" -eq 0 ]; then
         recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.recovery.XXXXXX")" || return 1
@@ -969,10 +869,8 @@ recover_previous_deployment() {
     else
         compose --profile commerce rm -sf commerce-worker || return 1
     fi
-    if [ "$previous_import_enabled" = True ]; then
-        compose_with_env_file "$DEPLOY_ROOT/.env" up -d --wait web || return 1
-        start_import_after_web_ready "$DEPLOY_ROOT/.env" || return 1
-    fi
+    compose_with_env_file "$DEPLOY_ROOT/.env" up -d --wait web || return 1
+    start_import_after_web_ready "$DEPLOY_ROOT/.env" || return 1
     echo "Previous application and worker profile reconciled" >&2
 }
 
@@ -1018,7 +916,7 @@ on_exit() {
                 if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
                     clear_deployment_recovery_snapshot || rollback_result=failed
                 fi
-                if [ "${previous_upload_enabled:-False}" = True ]; then
+                if [ "$previous_env_exists" -eq 1 ]; then
                     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
                 else
                     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
@@ -1084,9 +982,6 @@ if [ "$RECOVER_FORWARD" = True ]; then
 else
     [ ! -e "$DEPLOY_ROOT/.deployment-recovery" ] || fail "Canonical recovery remains unfinished"
 fi
-previous_import_enabled="False"
-previous_upload_enabled="False"
-previous_processing_enabled="False"
 previous_commerce_worker_enabled="False"
 previous_env_exists=0
 previous_deployed_image_exists=0
@@ -1104,24 +999,9 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     previous_env_exists=1
     previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not snapshot previous deployment environment"
     cp -p "$DEPLOY_ROOT/.env" "$previous_env_tmp" || fail "Could not snapshot previous deployment environment"
-    previous_import_enabled="$(sed -n 's/^PHOTO_IMPORT_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
-    case "$previous_import_enabled" in True|False) ;; *) previous_import_enabled=False ;; esac
-    previous_upload_enabled="$(
-        sed -n 's/^PHOTO_UPLOAD_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
-    )"
-    previous_processing_enabled="$(
-        sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
-    )"
     previous_commerce_worker_enabled="$(
         sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
     )"
-    case "$previous_processing_enabled" in
-        True|False)
-            ;;
-        *)
-            previous_processing_enabled="False"
-            ;;
-    esac
     case "$previous_commerce_worker_enabled" in
         True|False)
             ;;
@@ -1162,7 +1042,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
 {
     printf 'APP_IMAGE=%s\n' "$requested_image"
     printf 'IMPORT_WORKER_IMAGE=%s\n' "${IMPORT_WORKER_IMAGE:-}"
-    printf 'PHOTO_IMPORT_ENABLED=%s\n' "$requested_import_enabled"
     printf 'PHOTO_IMPORT_WORKER_TOKEN=%s\n' "${PHOTO_IMPORT_WORKER_TOKEN:-}"
     printf 'PHOTO_IMPORT_BUILD=%s\n' "${PHOTO_IMPORT_BUILD:-}"
 
@@ -1191,7 +1070,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'MEDIA_S3_PUBLIC_BUCKET=%s\n' "${MEDIA_S3_PUBLIC_BUCKET:-}"
     printf 'MEDIA_S3_ACCESS_KEY_ID=%s\n' "${MEDIA_S3_ACCESS_KEY_ID:-}"
     printf 'MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${MEDIA_S3_SECRET_ACCESS_KEY:-}"
-    printf 'PHOTO_UPLOAD_ENABLED=%s\n' "${PHOTO_UPLOAD_ENABLED:-False}"
     printf 'PRIVATE_MEDIA_S3_BUCKET=%s\n' "${PRIVATE_MEDIA_S3_BUCKET:-}"
     printf 'PRIVATE_MEDIA_S3_ACCESS_KEY_ID=%s\n' "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}"
     printf 'PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:-}"
@@ -1222,9 +1100,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True\n'
     write_literal_dotenv_value PHOTO_PROCESSING_FLEET_TOKEN "$PHOTO_PROCESSING_FLEET_TOKEN"
     printf 'WORKER_POOL_PRIVATE_API_IPV4=%s\n' "$WORKER_POOL_PRIVATE_API_IPV4"
-    printf 'PHOTO_PROCESSING_ENABLED=%s\n' "$requested_processing_enabled"
-    printf 'PHOTO_PROCESSING_PREVIEW_ENABLED=%s\n' "$requested_preview_enabled"
-    printf 'PHOTO_PROCESSING_FACE_ENABLED=%s\n' "$requested_face_enabled"
     printf 'PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=%s\n' "${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}"
     printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}"
     printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
@@ -1239,7 +1114,6 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
     printf 'SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS=%s\n' "$requested_selfie_search_download_ttl_seconds"
     printf 'SELFIE_SEARCH_TEMPORARY_PREFIX=%s\n' "$requested_selfie_search_temporary_prefix"
     printf 'SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS=%s\n' "$requested_selfie_search_lifecycle_max_age_hours"
-    printf 'SELFIE_FEEDBACK_ENABLED=%s\n' "$requested_selfie_feedback_enabled"
     printf 'SELFIE_FEEDBACK_S3_BUCKET=%s\n' "$requested_selfie_feedback_bucket"
     printf 'SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=%s\n' "$requested_selfie_feedback_access_key_id"
     printf 'SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY=%s\n' "$requested_selfie_feedback_secret_access_key"
@@ -1262,8 +1136,10 @@ if ! compose_with_env_file "$requested_env_tmp" pull web; then
     fail "Candidate application image pull failed"
 fi
 
-if [ "$requested_import_enabled" = True ]; then
-    compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
+compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
+if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+    --entrypoint python web manage.py check; then
+    fail "Candidate web configuration check failed"
 fi
 
 if [ "$RECOVER_FORWARD" = True ]; then
@@ -1356,7 +1232,7 @@ observability_installed=1
 mutation_started=1
 sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
 if [ "$previous_env_exists" -eq 1 ]; then
-    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker stop failed"
+    stop_import_before_web_change || fail "Import worker stop failed"
 fi
 
 phase vector-database-preflight
@@ -1431,7 +1307,7 @@ max_compose_attempts=3
 compose_wait_seconds=5
 while [ "$attempt" -le "$max_compose_attempts" ]; do
     compose_up_status=0
-    if [ "$previous_env_exists" -eq 0 ] && [ "$requested_processing_enabled" = False ] && \
+    if [ "$previous_env_exists" -eq 0 ] && \
         [ "$requested_commerce_worker_enabled" = False ]; then
         compose_up_command() {
             compose up -d --remove-orphans
@@ -1489,9 +1365,7 @@ if ! run_private_candidate_command compose exec -T web python manage.py \
     fail "Candidate gallery media smoke failed"
 fi
 
-if [ "$requested_import_enabled" = True ]; then
-    start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
-fi
+start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
 
 phase worker-health
 sudo -n /usr/local/sbin/findme-worker-pool-metrics verify || fail "Native collector is not active"
@@ -1547,11 +1421,7 @@ if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
 fi
 
 phase commit
-if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
-    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
-else
-    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove
-fi
+sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
 sh "$DEPLOY_ROOT/deploy/install-cart-cleanup-cron.sh" install
 
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.XXXXXX")"

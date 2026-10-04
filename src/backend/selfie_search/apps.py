@@ -11,45 +11,35 @@ SELFIE_SEARCH_CHECK_TAG = "selfie_search"
 def check_selfie_search_settings(**kwargs):  # noqa: ARG001
     """Fail closed on configuration that could widen temporary-data retention."""
     errors = []
-    for name in (
-        "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
-        "SELFIE_FEEDBACK_ENABLED",
-        "PHOTO_PROCESSING_ENABLED",
-        "PHOTO_PROCESSING_FACE_ENABLED",
+    if (
+        settings.SELFIE_FEEDBACK_MAX_UPLOAD_BYTES != 20 * 1024 * 1024
+        or settings.SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS != 60
+        or settings.SELFIE_FEEDBACK_S3_ENDPOINT_URL != "https://storage.yandexcloud.net"
+        or settings.SELFIE_FEEDBACK_S3_REGION != "ru-central1"
+        or settings.SELFIE_FEEDBACK_S3_BUCKET == settings.PRIVATE_MEDIA_S3_BUCKET
     ):
-        if not isinstance(getattr(settings, name), bool):
-            errors.append(Error(f"{name} must be a boolean.", id="selfie_search.E001"))
-
-    if settings.SELFIE_FEEDBACK_ENABLED is True:
-        if (
-            settings.SELFIE_FEEDBACK_MAX_UPLOAD_BYTES != 20 * 1024 * 1024
-            or settings.SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS != 60
-            or settings.SELFIE_FEEDBACK_S3_ENDPOINT_URL != "https://storage.yandexcloud.net"
-            or settings.SELFIE_FEEDBACK_S3_REGION != "ru-central1"
-            or settings.SELFIE_FEEDBACK_S3_BUCKET == settings.PRIVATE_MEDIA_S3_BUCKET
-        ):
-            errors.append(
-                Error(
-                    "Feedback storage must use the approved limits and a dedicated bucket.",
-                    id="selfie_search.E008",
-                )
+        errors.append(
+            Error(
+                "Feedback storage must use the approved limits and a dedicated bucket.",
+                id="selfie_search.E008",
             )
-        required_names = (
-            "SELFIE_FEEDBACK_S3_BUCKET",
-            "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
-            "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
-            "SELFIE_FEEDBACK_KMS_KEY_ID",
         )
-        if not all(
-            isinstance(getattr(settings, name), str) and getattr(settings, name).strip()
-            for name in required_names
-        ):
-            errors.append(
-                Error(
-                    "Feedback storage requires dedicated bucket credentials and KMS key.",
-                    id="selfie_search.E009",
-                )
+    required_names = (
+        "SELFIE_FEEDBACK_S3_BUCKET",
+        "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
+        "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
+        "SELFIE_FEEDBACK_KMS_KEY_ID",
+    )
+    if not all(
+        isinstance(getattr(settings, name), str) and getattr(settings, name).strip()
+        for name in required_names
+    ):
+        errors.append(
+            Error(
+                "Feedback storage requires dedicated bucket credentials and KMS key.",
+                id="selfie_search.E009",
             )
+        )
 
     expected_values = {
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
@@ -85,13 +75,6 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
             Error(
                 "SELFIE_SEARCH_TEMPORARY_PREFIX must be 'selfie-search/'.",
                 id="selfie_search.E005",
-            )
-        )
-    if not settings.PHOTO_PROCESSING_ENABLED or not settings.PHOTO_PROCESSING_FACE_ENABLED:
-        errors.append(
-            Error(
-                "Selfie search requires enabled photo processing and face embeddings.",
-                id="selfie_search.E006",
             )
         )
     return errors

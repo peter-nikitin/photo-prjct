@@ -6,15 +6,10 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.test import TestCase, override_settings
 from django.urls import reverse
-from feature_flags.models import FeatureFlag
-from feature_flags.registry import YANDEX_DISK_IMPORT
-from ingestion.models import ImportBatch
 from picflow.models import Event, EventFolder
 
 
 @override_settings(
-    PHOTO_UPLOAD_ENABLED=True,
-    PHOTO_IMPORT_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class ImportTemplateTests(TestCase):
@@ -37,13 +32,7 @@ class ImportTemplateTests(TestCase):
     def setUp(self) -> None:
         self.client.force_login(self.user)
 
-    def test_enabled_import_form_uses_event_folders_and_real_browser_api(self) -> None:
-        FeatureFlag.objects.create(
-            key=YANDEX_DISK_IMPORT.key,
-            description=YANDEX_DISK_IMPORT.description,
-            state=FeatureFlag.State.ON,
-        )
-
+    def test_import_form_uses_event_folders_and_real_browser_api(self) -> None:
         response = self.client.get(reverse("event_management", args=[self.event.pk]))
         html = response.content.decode()
 
@@ -62,21 +51,6 @@ class ImportTemplateTests(TestCase):
         self.assertIn("/photographer/uploads/imports/{batch}/items/", html)
         self.assertIn("/photographer/uploads/imports/{batch}/retry/", html)
         self.assertContains(response, 'src="/static/ui/import-coordinator.js"')
-
-    def test_gate_off_hides_new_import_controls_but_keeps_owned_history_readable(self) -> None:
-        ImportBatch.objects.create(
-            owner=self.user,
-            event=self.event,
-            folder=None,
-            submitted_source_key="public-key",
-            submission_key="submission-1",
-        )
-
-        response = self.client.get(reverse("event_management", args=[self.event.pk]))
-
-        self.assertNotContains(response, "data-import-form")
-        self.assertContains(response, 'data-import-history-enabled="true"')
-        self.assertContains(response, 'data-import-enabled="false"')
 
     def test_import_shell_contains_durable_progress_and_exact_alerts(self) -> None:
         response = self.client.get(reverse("event_management", args=[self.event.pk]))

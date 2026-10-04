@@ -10,7 +10,6 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from config.metrics import observe_accepted_preview
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from ingestion.storage import ObjectChanged, ObjectMismatch, ObjectMissing
@@ -375,7 +374,7 @@ def _prelock_preview_face_enrollment(attempt_id: UUID) -> None:
     if generation in {
         Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
         Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1,
-    } and bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)):
+    }:
         from processing.services.enrollment import (
             FACE_EMBEDDING_CONFIGURATION,
             QUALITY_FACE_CONTRACT_VERSION,

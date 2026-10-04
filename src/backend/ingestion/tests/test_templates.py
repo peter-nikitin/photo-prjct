@@ -14,7 +14,6 @@ from picflow.models import Event, EventFolder
 
 
 @override_settings(
-    PHOTO_UPLOAD_ENABLED=True,
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
 )
 class UploadTemplateTests(TestCase):
@@ -267,9 +266,8 @@ class UploadTemplateTests(TestCase):
         self.user.user_permissions.add(
             Permission.objects.get(content_type__app_label="ingestion", codename="upload_photos")
         )
-        with override_settings(PHOTO_UPLOAD_ENABLED=False):
-            response = self.client.get(reverse("event_catalog"))
-        self.assertNotContains(response, reverse("upload_page"))
+        response = self.client.get(reverse("event_catalog"))
+        self.assertContains(response, reverse("upload_page"))
 
     def test_photographer_login_uses_production_template(self) -> None:
         self.client.logout()

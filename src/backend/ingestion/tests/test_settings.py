@@ -12,7 +12,6 @@ PHOTO_UPLOAD_CHECK_TAG = "photo_upload"
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 VALID_PRIVATE_SETTINGS = {
-    "PHOTO_UPLOAD_ENABLED": True,
     "PRIVATE_MEDIA_S3_BUCKET": "private-originals",
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "test-access-key",
     "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "test-secret-key",
@@ -23,14 +22,12 @@ VALID_PRIVATE_SETTINGS = {
 
 INGESTION_SETTING_NAMES = (
     "PRIVATE_MEDIA_ALLOWED_ORIGINS",
-    "PHOTO_UPLOAD_ENABLED",
     "PHOTO_UPLOAD_MAX_FILES",
     "PHOTO_UPLOAD_MAX_FILE_BYTES",
     "PHOTO_UPLOAD_REGISTRATION_CHUNK",
     "PHOTO_UPLOAD_CONCURRENCY",
     "PHOTO_UPLOAD_GRANT_TTL_SECONDS",
     "PHOTO_UPLOAD_STALE_AFTER_SECONDS",
-    "PHOTO_IMPORT_ENABLED",
     "PHOTO_IMPORT_WORKER_TOKEN",
     "PHOTO_IMPORT_MAX_JSON_BYTES",
 )
@@ -40,14 +37,12 @@ INGESTION_ENVIRONMENT_NAMES = (
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
     "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
     "PRIVATE_MEDIA_ALLOWED_ORIGINS",
-    "PHOTO_UPLOAD_ENABLED",
     "PHOTO_UPLOAD_MAX_FILES",
     "PHOTO_UPLOAD_MAX_FILE_BYTES",
     "PHOTO_UPLOAD_REGISTRATION_CHUNK",
     "PHOTO_UPLOAD_CONCURRENCY",
     "PHOTO_UPLOAD_GRANT_TTL_SECONDS",
     "PHOTO_UPLOAD_STALE_AFTER_SECONDS",
-    "PHOTO_IMPORT_ENABLED",
     "PHOTO_IMPORT_WORKER_TOKEN",
     "PHOTO_IMPORT_MAX_JSON_BYTES",
 )
@@ -99,28 +94,24 @@ print(json.dumps({name: getattr(settings, name) for name in names}))
 def test_photo_upload_defaults_are_approved_security_caps() -> None:
     isolated_settings = load_isolated_ingestion_settings()
 
-    assert isolated_settings["PHOTO_UPLOAD_ENABLED"] is False
     assert isolated_settings["PHOTO_UPLOAD_MAX_FILES"] == 10_000
     assert isolated_settings["PHOTO_UPLOAD_MAX_FILE_BYTES"] == 50 * 1024 * 1024
     assert isolated_settings["PHOTO_UPLOAD_REGISTRATION_CHUNK"] == 100
     assert isolated_settings["PHOTO_UPLOAD_CONCURRENCY"] == 4
     assert isolated_settings["PHOTO_UPLOAD_GRANT_TTL_SECONDS"] == 600
     assert isolated_settings["PHOTO_UPLOAD_STALE_AFTER_SECONDS"] == 86_400
-    assert isolated_settings["PHOTO_IMPORT_ENABLED"] is False
     assert isolated_settings["PHOTO_IMPORT_WORKER_TOKEN"] == ""
     assert isolated_settings["PHOTO_IMPORT_MAX_JSON_BYTES"] == 1024 * 1024
 
 
-def test_photo_import_capability_uses_exact_boolean_and_bounded_envelope() -> None:
-    enabled = load_isolated_ingestion_settings(
-        PHOTO_IMPORT_ENABLED="True",
+def test_photo_import_worker_token_and_bounded_envelope() -> None:
+    configured = load_isolated_ingestion_settings(
         PHOTO_IMPORT_WORKER_TOKEN="dedicated-token",
         PHOTO_IMPORT_MAX_JSON_BYTES="524288",
     )
 
-    assert enabled["PHOTO_IMPORT_ENABLED"] is True
-    assert enabled["PHOTO_IMPORT_WORKER_TOKEN"] == "dedicated-token"
-    assert enabled["PHOTO_IMPORT_MAX_JSON_BYTES"] == 512 * 1024
+    assert configured["PHOTO_IMPORT_WORKER_TOKEN"] == "dedicated-token"
+    assert configured["PHOTO_IMPORT_MAX_JSON_BYTES"] == 512 * 1024
 
 
 def test_photo_import_envelope_rejects_a_limit_smaller_than_its_error_contract() -> None:
@@ -142,7 +133,7 @@ def test_private_media_origins_are_trimmed_when_parsed_from_environment() -> Non
     ]
 
 
-def test_enabled_uploads_reject_blank_origin_members() -> None:
+def test_uploads_reject_blank_origin_members() -> None:
     isolated_settings = load_isolated_ingestion_settings(
         PRIVATE_MEDIA_ALLOWED_ORIGINS="https://one.example.test, "
     )
@@ -165,7 +156,7 @@ def test_enabled_uploads_reject_blank_origin_members() -> None:
         ("PRIVATE_MEDIA_ALLOWED_ORIGINS", [], "ingestion.E006"),
     ],
 )
-def test_enabled_uploads_require_non_empty_private_storage_settings(
+def test_uploads_require_non_empty_private_storage_settings(
     setting_name: str,
     missing_value: str | list[str],
     expected_id: str,
@@ -192,7 +183,7 @@ def test_enabled_uploads_require_non_empty_private_storage_settings(
         ("PHOTO_UPLOAD_STALE_AFTER_SECONDS", 86_399, "ingestion.E106"),
     ],
 )
-def test_enabled_uploads_reject_values_outside_approved_bounds(
+def test_uploads_reject_values_outside_approved_bounds(
     setting_name: str,
     invalid_value: int,
     expected_id: str,
@@ -224,13 +215,12 @@ def test_enabled_uploads_reject_values_outside_approved_bounds(
         },
     ],
 )
-def test_enabled_uploads_accept_values_within_approved_bounds(limits: dict[str, int]) -> None:
+def test_uploads_accept_values_within_approved_bounds(limits: dict[str, int]) -> None:
     assert photo_upload_errors(**limits) == []
 
 
-def test_disabled_uploads_do_not_require_private_storage_configuration() -> None:
+def test_private_storage_configuration_is_always_required() -> None:
     with override_settings(
-        PHOTO_UPLOAD_ENABLED=False,
         PRIVATE_MEDIA_S3_BUCKET="",
         PRIVATE_MEDIA_S3_ACCESS_KEY_ID="",
         PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY="",
@@ -238,12 +228,18 @@ def test_disabled_uploads_do_not_require_private_storage_configuration() -> None
         PRIVATE_MEDIA_S3_REGION="",
         PRIVATE_MEDIA_ALLOWED_ORIGINS=[],
     ):
-        assert run_checks(tags=[PHOTO_UPLOAD_CHECK_TAG]) == []
+        assert [error.id for error in run_checks(tags=[PHOTO_UPLOAD_CHECK_TAG])] == [
+            "ingestion.E001",
+            "ingestion.E002",
+            "ingestion.E003",
+            "ingestion.E004",
+            "ingestion.E005",
+            "ingestion.E006",
+        ]
 
 
-def test_security_caps_are_validated_while_uploads_are_disabled() -> None:
-    with override_settings(PHOTO_UPLOAD_ENABLED=False, PHOTO_UPLOAD_CONCURRENCY=5):
-        errors = run_checks(tags=[PHOTO_UPLOAD_CHECK_TAG])
+def test_security_caps_are_validated_for_uploads() -> None:
+    errors = photo_upload_errors(PHOTO_UPLOAD_CONCURRENCY=5)
 
     assert [error.id for error in errors] == ["ingestion.E104"]
     assert "PHOTO_UPLOAD_CONCURRENCY" in errors[0].msg

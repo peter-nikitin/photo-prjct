@@ -25,8 +25,9 @@ root-owned daily summary. PostgreSQL остаётся источником ис�
 Этот раздел описывает только поставленные интерфейсы репозитория. Все corpus/benchmark/index/media
 пути ниже должны указывать на заранее разрешённый локальный или host-owned каталог вне Git; не
 сохраняйте в репозитории селфи, crops, vectors, labels или JSON-отчёты. Не source-ьте `.env` и не
-передавайте секреты в эти команды. `SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False` остаётся
-default: успешная сборка или evaluation не включает expansion и не доказывает customer outcome.
+передавайте секреты в эти команды. `sync_feature_flags` создаёт
+`selfie-search-cluster-expansion` в состоянии `off`: успешная сборка или evaluation не включает
+expansion и не доказывает customer outcome.
 
 ### 1. Build one immutable event corpus
 
@@ -128,21 +129,18 @@ compose exec -T web python manage.py activate_face_cluster_corpus "$EVENT_REF" \
   --confirm-numeric-gates-reviewed
 ```
 
-This command changes only the event's guarded corpus pointer. It does not set
-`SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED`; this branch performs no activation, canonical deployment,
-cloud mutation, or customer rollout. A normal reviewed deployment must separately approve any
-future environment flag change.
+This command changes only the event's guarded corpus pointer. It does not change the
+`selfie-search-cluster-expansion` database flag; this branch performs no activation, canonical deployment,
+cloud mutation, or customer rollout. A separately approved Admin change to `on` is required for
+new searches to expand.
 
 ### 5. Direct-only rollback
 
-The supported immediate rollback is the fail-closed environment gate. Set it to the exact boolean
-value and redeploy through the normal reviewed deployment path:
+The supported immediate rollback is to set `selfie-search-cluster-expansion` to `off` in Django
+Admin. A missing row and `staff` also keep every new search direct-only, regardless of requester
+staff status. No redeployment or worker configuration change is needed.
 
-```bash
-SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=False
-```
-
-With the gate false, new searches use unchanged direct-only ranking even when a corpus pointer
+With the gate `off`, new searches use unchanged direct-only ranking even when a corpus pointer
 exists. Existing expanded bearer snapshots, provenance, feedback, and corpora remain immutable and
 readable; do not delete them or reverse migrations destructively. To use a replacement corpus later,
 run the guarded activation command again with a newly reviewed report and matching configuration.

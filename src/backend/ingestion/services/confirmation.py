@@ -5,7 +5,6 @@ from io import BytesIO
 from typing import Protocol
 from uuid import UUID
 
-from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
 from django.utils import timezone
@@ -133,16 +132,11 @@ def confirm_upload_item(
         final = storage.inspect(key=item.final_key)
         _require_final_identity(item=item, identity=final, checkpoint=checkpoint)
         _run_failpoint(failpoint, "after_final_head")
-        preview_first = bool(getattr(settings, "PHOTO_PROCESSING_PREVIEW_ENABLED", False))
-        preview_geometry = (
-            _oriented_jpeg_geometry(
-                storage=storage,
-                key=item.final_key,
-                etag_wire=final.etag_wire,
-                byte_size=final.size,
-            )
-            if preview_first
-            else None
+        preview_geometry = _oriented_jpeg_geometry(
+            storage=storage,
+            key=item.final_key,
+            etag_wire=final.etag_wire,
+            byte_size=final.size,
         )
         original = VerifiedOriginal(
             key=item.final_key,

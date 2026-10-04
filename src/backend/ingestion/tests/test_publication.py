@@ -1,9 +1,8 @@
 from datetime import date
-from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.test import TransactionTestCase, override_settings
+from django.test import TransactionTestCase
 from feature_flags.registry import PAID_WATERMARKED_PREVIEWS
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
@@ -37,7 +36,6 @@ class PublicationTests(TransactionTestCase):
             oriented_geometry=(1_200, 800),
         )
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_publish_photo_applies_shared_policy_and_standard_enrollment(self) -> None:
         with transaction.atomic():
             photo = publish_photo(
@@ -99,15 +97,16 @@ class PublicationTests(TransactionTestCase):
             )
 
         self.assertEqual(photo.bib_processing_policy, Photo.BibProcessingPolicy.ORIGINAL_V1)
-        bib = PhotoProcessingState.objects.get(photo=photo, processor_type="bib_recognition")
-        self.assertEqual(bib.status, PhotoProcessingState.Status.QUEUED)
-        self.assertEqual(bib.current_job.processor_version, 1)
+        self.assertFalse(
+            PhotoProcessingState.objects.filter(
+                photo=photo, processor_type="bib_recognition"
+            ).exists()
+        )
         self.event.bib_search_enabled = False
         self.event.save(update_fields=["bib_search_enabled"])
         photo.refresh_from_db()
-        bib.refresh_from_db()
         self.assertEqual(photo.bib_processing_policy, Photo.BibProcessingPolicy.ORIGINAL_V1)
-        self.assertEqual(bib.status, PhotoProcessingState.Status.QUEUED)
+        self.assertEqual(photo.gallery_media_policy, Photo.GalleryMediaPolicy.PREVIEW_REQUIRED)
 
     def test_publish_photo_snapshots_disabled_event_bib_policy(self) -> None:
         with transaction.atomic():
@@ -130,13 +129,7 @@ class PublicationTests(TransactionTestCase):
             ).exists()
         )
 
-    @patch(
-        "processing.services.enrollment.request_bib_recognition",
-        side_effect=RuntimeError("queue unavailable"),
-    )
-    def test_bib_enqueue_failure_does_not_roll_back_immediate_publication(
-        self, request_bib
-    ) -> None:
+    def test_bib_enrollment_waits_for_preview_without_delaying_publication(self) -> None:
         self.event.bib_search_enabled = True
         self.event.save(update_fields=["bib_search_enabled"])
 
@@ -152,11 +145,18 @@ class PublicationTests(TransactionTestCase):
         self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
         self.assertEqual(
             Photo.objects.get(pk=photo.pk).gallery_media_policy,
-            Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED,
+            Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
         )
-        request_bib.assert_called_once()
+        self.assertFalse(
+            PhotoProcessingState.objects.filter(
+                photo=photo, processor_type="bib_recognition"
+            ).exists()
+        )
+        self.assertEqual(
+            PhotoProcessingState.objects.get(photo=photo, processor_type="generate_preview").status,
+            PhotoProcessingState.Status.QUEUED,
+        )
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_publish_photo_uses_paid_policy_without_changing_enrollment_identity(self) -> None:
         Event.objects.filter(pk=self.event.pk).update(
             access_type=Event.AccessType.PAID,

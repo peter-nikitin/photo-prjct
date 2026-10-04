@@ -40,17 +40,15 @@ PAID_PHOTO_PURCHASE: Final = FeatureDefinition(
 PAID_PHOTO_PAYMENT_SIMULATOR: Final = FeatureDefinition(
     "paid-photo-payment-simulator", "Use the feature-gated test payment screen"
 )
-BULK_PHOTO_DOWNLOAD: Final = FeatureDefinition(
-    "bulk-photo-download", "Allow page-scoped photo archive downloads"
-)
-YANDEX_DISK_IMPORT: Final = FeatureDefinition(
-    "yandex-disk-import", "Allow server-side photo import from Yandex Disk"
-)
 GALLERY_CDN_IMAGES: Final = FeatureDefinition(
     "gallery-cdn-images", "Deliver gallery grid images through CDN"
 )
 EVENT_COVER_CDN_IMAGES: Final = FeatureDefinition(
     "event-cover-cdn-images", "Deliver event catalog covers through CDN"
+)
+SELFIE_SEARCH_CLUSTER_EXPANSION: Final = FeatureDefinition(
+    "selfie-search-cluster-expansion",
+    "Expand selfie search through event face clusters (staff acts as off)",
 )
 
 FEATURE_DEFINITIONS: Final = (
@@ -59,10 +57,9 @@ FEATURE_DEFINITIONS: Final = (
     PAID_PHOTO_CART,
     PAID_PHOTO_PURCHASE,
     PAID_PHOTO_PAYMENT_SIMULATOR,
-    BULK_PHOTO_DOWNLOAD,
-    YANDEX_DISK_IMPORT,
     GALLERY_CDN_IMAGES,
     EVENT_COVER_CDN_IMAGES,
+    SELFIE_SEARCH_CLUSTER_EXPANSION,
 )
 
 validate_feature_definitions(FEATURE_DEFINITIONS)

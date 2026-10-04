@@ -12,7 +12,6 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import render
-from django.test import override_settings
 from django.urls import reverse
 from feature_flags.registry import PAID_PHOTO_PURCHASE
 from feature_flags.states import FEATURE_FLAG_ON
@@ -1218,6 +1217,14 @@ def reference_events(request: HttpRequest) -> HttpResponse:
     return _reference(request, "events", events=EVENTS)
 
 
+VISUAL_IMPORT_URLS = {
+    "collection": "/__visual__/upload/imports-api/",
+    "detail": "/__visual__/upload/imports-api/{batch}/",
+    "items": "/__visual__/upload/imports-api/{batch}/items/",
+    "retry": "/__visual__/upload/imports-api/{batch}/retry/",
+}
+
+
 def _upload(
     request: HttpRequest,
     *,
@@ -1225,34 +1232,28 @@ def _upload(
     summary: dict[str, int | str],
     queue: tuple[MappingProxyType[str, Any], ...] = (),
     batch_history: tuple[FixtureUploadBatch, ...] = (),
-    photo_import_enabled: bool = False,
-    photo_import_history_enabled: bool = False,
-    photo_import_urls: dict[str, str] | None = None,
 ) -> HttpResponse:
     request.user = FixtureUser("Анна Смирнова")
-    with override_settings(PHOTO_UPLOAD_ENABLED=True):
-        return _render(
-            request,
-            "picflow/event_management.html",
-            {
-                "event": SimpleNamespace(**vars(EVENTS[0]), pk=42),
-                "folders": EVENTS[0].folders.all(),
-                "can_upload": True,
-                "can_inspect": False,
-                "batch_page": Paginator(batch_history, 20).page(1),
-                "resumable_batch_ids": tuple(row.id for row in batch_history if not row.can_close),
-                "upload_limits": UPLOAD_LIMITS,
-                "upload_state": state,
-                "upload_summary": summary,
-                "upload_queue_groups": _upload_queue_groups(queue),
-                "unfinished_batches": batch_history,
-                "photo_import_enabled": photo_import_enabled,
-                "photo_import_history_enabled": photo_import_history_enabled,
-                "photo_import_urls": photo_import_urls or {},
-                "status_url": "/__visual__/workspace/status-api/?role=upload",
-                "batch_history_url": "/__visual__/workspace/batch-history-api/",
-            },
-        )
+    return _render(
+        request,
+        "picflow/event_management.html",
+        {
+            "event": SimpleNamespace(**vars(EVENTS[0]), pk=42),
+            "folders": EVENTS[0].folders.all(),
+            "can_upload": True,
+            "can_inspect": False,
+            "batch_page": Paginator(batch_history, 20).page(1),
+            "resumable_batch_ids": tuple(row.id for row in batch_history if not row.can_close),
+            "upload_limits": UPLOAD_LIMITS,
+            "upload_state": state,
+            "upload_summary": summary,
+            "upload_queue_groups": _upload_queue_groups(queue),
+            "unfinished_batches": batch_history,
+            "photo_import_urls": VISUAL_IMPORT_URLS,
+            "status_url": "/__visual__/workspace/status-api/?role=upload",
+            "batch_history_url": "/__visual__/workspace/batch-history-api/",
+        },
+    )
 
 
 def _upload_queue_groups(
@@ -1376,14 +1377,6 @@ def upload_imports(request: HttpRequest) -> HttpResponse:
         request,
         state="empty",
         summary={"progress": 0, "total": 0, "uploaded": 0, "failed": 0, "bytes": "0 Б"},
-        photo_import_enabled=True,
-        photo_import_history_enabled=True,
-        photo_import_urls={
-            "collection": "/__visual__/upload/imports-api/",
-            "detail": "/__visual__/upload/imports-api/{batch}/",
-            "items": "/__visual__/upload/imports-api/{batch}/items/",
-            "retry": "/__visual__/upload/imports-api/{batch}/retry/",
-        },
     )
 
 
@@ -1733,9 +1726,7 @@ def _event_photo_context(
                 },
                 "upload_queue_groups": _upload_queue_groups(ACTIVE_UPLOAD_QUEUE),
                 "unfinished_batches": ACTIVE_UPLOADS,
-                "photo_import_enabled": False,
-                "photo_import_history_enabled": False,
-                "photo_import_urls": {},
+                "photo_import_urls": VISUAL_IMPORT_URLS,
             }
         )
     return context
@@ -1774,14 +1765,7 @@ def event_photo_workspace(request: HttpRequest) -> HttpResponse:
                 },
                 "upload_queue_groups": (),
                 "unfinished_batches": (),
-                "photo_import_enabled": status_integration == "1",
-                "photo_import_history_enabled": status_integration == "1",
-                "photo_import_urls": {
-                    "collection": "/__visual__/upload/imports-api/",
-                    "detail": "/__visual__/upload/imports-api/{batch}/",
-                    "items": "/__visual__/upload/imports-api/{batch}/items/",
-                    "retry": "/__visual__/upload/imports-api/{batch}/retry/",
-                },
+                "photo_import_urls": VISUAL_IMPORT_URLS,
                 "status_url": "/__visual__/workspace/status-api/?role=both",
             }
         )

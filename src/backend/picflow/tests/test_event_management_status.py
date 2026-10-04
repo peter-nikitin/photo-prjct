@@ -26,7 +26,6 @@ ADMIN_PERMISSIONS = ("picflow.view_event", "picflow.view_photo")
 
 @override_settings(
     ROOT_URLCONF="picflow.tests.event_management_urlconf",
-    PHOTO_UPLOAD_ENABLED=True,
 )
 class EventManagementStatusTests(TestCase):
     def setUp(self) -> None:
@@ -227,8 +226,11 @@ class EventManagementStatusTests(TestCase):
         batch = self.batch(both)
         self.client.force_login(both)
 
-        with self.settings(PHOTO_UPLOAD_ENABLED=False):
-            admin_only = self.client.get(self.url, {"batch_id": str(batch.pk)}).json()
+        upload_permission = Permission.objects.get(
+            content_type__app_label="ingestion", codename="upload_photos"
+        )
+        both.user_permissions.remove(upload_permission)
+        admin_only = self.client.get(self.url, {"batch_id": str(batch.pk)}).json()
         self.assertEqual(
             admin_only["capabilities"],
             {"can_inspect": True, "can_upload": False},
@@ -236,6 +238,7 @@ class EventManagementStatusTests(TestCase):
         self.assertIn("admin", admin_only)
         self.assertNotIn("batches", admin_only)
 
+        both.user_permissions.add(upload_permission)
         for permission_name in ADMIN_PERMISSIONS:
             app_label, codename = permission_name.split(".")
             both.user_permissions.remove(

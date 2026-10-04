@@ -15,8 +15,6 @@ from django.contrib.auth.models import Permission
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.models import FeatureFlag
-from feature_flags.registry import YANDEX_DISK_IMPORT
 from import_worker.client import APIClient
 from import_worker.contracts import Config
 from import_worker.runner import Runner
@@ -127,10 +125,7 @@ class FixtureHTTP(Transport):
 
 
 @override_settings(
-    PHOTO_UPLOAD_ENABLED=True,
-    PHOTO_IMPORT_ENABLED=True,
     PHOTO_IMPORT_WORKER_TOKEN="fixture-token",
-    PHOTO_PROCESSING_PREVIEW_ENABLED=False,
 )
 class ImportFlowTests(TestCase):
     def test_disconnected_browser_imports_real_jpeg_and_dedupes_without_local_upload_rows(self):
@@ -146,11 +141,6 @@ class ImportFlowTests(TestCase):
         )
         event = Event.objects.create(
             name="Flow", slug="flow", city="Moscow", start_date="2026-09-07", end_date="2026-09-07"
-        )
-        FeatureFlag.objects.create(
-            key=YANDEX_DISK_IMPORT.key,
-            description=YANDEX_DISK_IMPORT.description,
-            state=FeatureFlag.State.ON,
         )
         image = io.BytesIO()
         Image.new("RGB", (12, 8), "red").save(image, "JPEG")
@@ -216,7 +206,7 @@ class ImportFlowTests(TestCase):
                     "processor_type", flat=True
                 )
             ),
-            {"capture_metadata", "generate_preview"},
+            {"capture_metadata", "generate_preview", "face_embedding"},
         )
         self.assertEqual(transport.uploads, 1)
         self.assertEqual(len(transport.downloads), 4)
@@ -251,7 +241,6 @@ class ImportFlowTests(TestCase):
         from ingestion.services.imports import create_import
 
         owner = get_user_model().objects.create_superuser("revisit", password="password")
-        FeatureFlag.objects.create(key=YANDEX_DISK_IMPORT.key, state="on")
         image = io.BytesIO()
         Image.new("RGB", (12, 8), "blue").save(image, "JPEG")
         jpeg = image.getvalue()
@@ -259,11 +248,9 @@ class ImportFlowTests(TestCase):
         for paid in (False, True):
             with (
                 self.subTest(paid=paid),
-                override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True),
                 override_feature_flags(
                     {
                         PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
-                        YANDEX_DISK_IMPORT: FEATURE_FLAG_ON,
                     }
                 ),
             ):

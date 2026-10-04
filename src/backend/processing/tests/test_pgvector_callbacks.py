@@ -83,8 +83,6 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
     )
     from processing.tests import test_views
 
-    settings.PHOTO_PROCESSING_ENABLED = True
-    settings.PHOTO_PROCESSING_FACE_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "worker-secret"
     settings.DEBUG = True
     settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = False
@@ -204,8 +202,6 @@ def test_remote_selfie_callback_uses_native_reader_with_gate_off_and_keeps_resul
     from processing.models import WorkerPoolMember
     from processing.tests.test_views import SelfieWorkerApiTests, SelfieWorkerStorage
 
-    settings.PHOTO_PROCESSING_ENABLED = True
-    settings.PHOTO_PROCESSING_FACE_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "local-secret"
     fixture = SearchJobTests()
     fixture.setUp()
@@ -250,7 +246,6 @@ def test_maximum_selfie_callback_cleanup_and_wire(client, settings):
 
     from processing.tests import test_views
 
-    settings.PHOTO_PROCESSING_ENABLED = True
     settings.PHOTO_PROCESSING_WORKER_TOKEN = "worker-secret"
     settings.DEBUG = True
     settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED = False

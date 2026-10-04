@@ -2,23 +2,24 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from io import BytesIO
 from typing import Any
 from unittest.mock import Mock, patch
 from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.models import UploadItem
 from ingestion.storage import ObjectIdentity, ObjectMissing, StorageUnavailable, UploadGrant
 from picflow.models import Event, EventFolder, Photo
+from PIL import Image
 from processing.models import PhotoProcessingState, ProcessingJob
 from processing.services.enrollment import reconcile_capture_metadata
 
 
-@override_settings(PHOTO_UPLOAD_ENABLED=True)
 class UploadViewTests(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
@@ -248,7 +249,14 @@ class UploadViewTests(TestCase):
         self.event.timezone_name = None
         self.event.save(update_fields=["timezone_name"])
         batch_id, _ = self.create_batch()
-        _, registered = self.register_item(batch_id)
+        image_bytes = BytesIO()
+        image = Image.new("RGB", (12, 8), "white")
+        try:
+            image.save(image_bytes, "JPEG")
+        finally:
+            image.close()
+        jpeg = image_bytes.getvalue()
+        _, registered = self.register_item(batch_id, size=len(jpeg))
         item_id = UUID(registered.json()["items"][0]["id"])
         item = UploadItem.objects.get(pk=item_id)
         UploadItem.objects.filter(pk=item_id).update(
@@ -256,7 +264,7 @@ class UploadViewTests(TestCase):
             upload_attempts=1,
             authorization_expires_at=timezone.now() + timedelta(minutes=10),
         )
-        objects = {item.incoming_key: (b"\xff\xd8\xff\xd9", '"draft-etag"')}
+        objects = {item.incoming_key: (jpeg, '"draft-etag"')}
 
         def inspect(*, key: str) -> ObjectIdentity:
             try:
@@ -294,7 +302,7 @@ class UploadViewTests(TestCase):
         state = PhotoProcessingState.objects.get(photo=photo, processor_type="capture_metadata")
         self.assertEqual(state.status, PhotoProcessingState.Status.NOT_REQUESTED)
         self.assertIsNone(state.current_job)
-        self.assertEqual(ProcessingJob.objects.count(), 0)
+        self.assertFalse(ProcessingJob.objects.filter(processor_type="capture_metadata").exists())
 
         Event.objects.filter(pk=self.event.pk).update(timezone_name="Europe/Moscow")
         reconciled = reconcile_capture_metadata(limit=1)

@@ -46,8 +46,6 @@ from processing.services.enrollment import (
 
 
 @override_settings(
-    PHOTO_PROCESSING_ENABLED=True,
-    PHOTO_PROCESSING_FACE_ENABLED=True,
     DEBUG=True,
     PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False,
     PHOTO_PROCESSING_WORKER_TOKEN="worker-secret",
@@ -1725,7 +1723,6 @@ class SelfieWorkerStorage:
 
 
 @override_settings(
-    PHOTO_PROCESSING_ENABLED=True,
     PHOTO_PROCESSING_WORKER_TOKEN="worker-secret",
     DEBUG=True,
     PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False,

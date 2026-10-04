@@ -16,7 +16,7 @@ from picflow.tests.event_management_helpers import (
 )
 
 
-@override_settings(ROOT_URLCONF="picflow.tests.event_management_urlconf", PHOTO_UPLOAD_ENABLED=True)
+@override_settings(ROOT_URLCONF="picflow.tests.event_management_urlconf")
 class EventManagementMediaTests(TestCase):
     def setUp(self):
         self.event = event()
@@ -54,7 +54,7 @@ class EventManagementMediaTests(TestCase):
             access_type=Event.AccessType.PAID, price_per_photo_kopecks=100
         )
         self.client.force_login(self.admin)
-        with self.settings(PHOTO_UPLOAD_ENABLED=False), self.factory:
+        with self.factory:
             response = self.client.get(self.url())
         self.assertEqual(response.status_code, 302)
         self.assertEqual(

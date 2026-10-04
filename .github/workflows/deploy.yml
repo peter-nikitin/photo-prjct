@@ -352,7 +352,6 @@ jobs:
           RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
           WORKER_POOL_PRIVATE_API_IPV4: ${{ vars.WORKER_POOL_PRIVATE_API_IPV4 }}
           IMPORT_WORKER_IMAGE: ${{ needs.build.outputs.import_worker_image }}
-          PHOTO_IMPORT_ENABLED: ${{ vars.PHOTO_IMPORT_ENABLED || 'False' }}
           PHOTO_IMPORT_BUILD: ${{ needs.classify-release.outputs.release_sha }}
           DEBUG: "False"
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
@@ -370,12 +369,8 @@ jobs:
           MEDIA_S3_ENDPOINT_URL: ${{ vars.MEDIA_S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
           MEDIA_S3_REGION: ${{ vars.MEDIA_S3_REGION || 'ru-central1' }}
           MEDIA_S3_PUBLIC_BUCKET: ${{ vars.MEDIA_S3_PUBLIC_BUCKET }}
-          PHOTO_UPLOAD_ENABLED: ${{ vars.PHOTO_UPLOAD_ENABLED || 'False' }}
           PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}
           PRIVATE_MEDIA_ALLOWED_ORIGINS: ${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}
-          PHOTO_PROCESSING_ENABLED: ${{ vars.PHOTO_PROCESSING_ENABLED || 'True' }}
-          PHOTO_PROCESSING_PREVIEW_ENABLED: ${{ vars.PHOTO_PROCESSING_PREVIEW_ENABLED || 'True' }}
-          PHOTO_PROCESSING_FACE_ENABLED: ${{ vars.PHOTO_PROCESSING_FACE_ENABLED || 'True' }}
           PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS: ${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}
           PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '393216' }}
           PHOTO_WORKER_LEASE_SECONDS: ${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}
@@ -390,7 +385,6 @@ jobs:
           SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS: ${{ vars.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS || '120' }}
           SELFIE_SEARCH_TEMPORARY_PREFIX: ${{ vars.SELFIE_SEARCH_TEMPORARY_PREFIX || 'selfie-search/' }}
           SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS: ${{ vars.SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS || '24' }}
-          SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}
           SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}
           SELFIE_FEEDBACK_S3_ENDPOINT_URL: ${{ vars.SELFIE_FEEDBACK_S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
           SELFIE_FEEDBACK_S3_REGION: ${{ vars.SELFIE_FEEDBACK_S3_REGION || 'ru-central1' }}
@@ -449,7 +443,6 @@ jobs:
           VM_HOST: ${{ vars.VM_HOST }}
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}
           SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}
           SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}
         run: |

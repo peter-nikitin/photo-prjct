@@ -12,18 +12,23 @@ WORKTREE_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 LOCAL_ENV_OVERRIDES = {
     "SECRET_KEY": "test-not-a-secret",
     "DB_HOST": "localhost",
+    "PRIVATE_MEDIA_S3_BUCKET": "test-private-media",
+    "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "test-private-access",
+    "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "test-private-secret",
+    "PRIVATE_MEDIA_ALLOWED_ORIGINS": "https://photos.example.test",
+    "SELFIE_FEEDBACK_S3_BUCKET": "test-feedback-media",
+    "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "test-feedback-access",
+    "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "test-feedback-secret",
+    "SELFIE_FEEDBACK_KMS_KEY_ID": "test-feedback-kms",
 }
 TEST_ENVIRONMENT = {
-    "SECRET_KEY": "test-not-a-secret",
+    **LOCAL_ENV_OVERRIDES,
     "DEBUG": "False",
     "ALLOWED_HOSTS": "localhost,127.0.0.1",
     "DB_NAME": "app",
     "DB_USER": "app",
     "DB_PASSWORD": "app",
-    "DB_HOST": "localhost",
     "DB_PORT": "5432",
-    "PHOTO_PROCESSING_ENABLED": "True",
-    "PHOTO_PROCESSING_FACE_ENABLED": "True",
 }
 
 

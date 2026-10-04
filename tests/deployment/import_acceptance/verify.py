@@ -1,4 +1,4 @@
-"""Verify real private object, enrollment and bounded manifest persistence; close gate."""
+"""Verify real private object, enrollment and bounded manifest persistence."""
 
 import json
 import os
@@ -12,7 +12,6 @@ django.setup()
 
 def verify():
     from django.utils import timezone
-    from feature_flags.models import FeatureFlag
     from ingestion.models import ImportAttempt, ImportBatch
     from ingestion.storage import PrivateUploadStorage
 
@@ -26,8 +25,8 @@ def verify():
     assert set(photo.processing_states.values_list("processor_type", flat=True)) == {
         "capture_metadata",
         "generate_preview",
+        "face_embedding",
     }
-    FeatureFlag.objects.filter(key="yandex-disk-import").update(state="off")
     pending = batch.items.filter(status="pending").first()
     now = timezone.now()
     ImportAttempt.objects.create(
@@ -46,7 +45,6 @@ def verify():
                 imported_photos=1,
                 private_original_bytes=photo.original_size,
                 processing_enrolled=True,
-                gate="off",
                 interrupted_attempt_retained=True,
             )
         )

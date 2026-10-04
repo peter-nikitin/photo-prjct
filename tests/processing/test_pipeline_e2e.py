@@ -157,9 +157,6 @@ class _PreviewStorage:
 @override_settings(
     DEBUG=True,
     PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False,
-    PHOTO_PROCESSING_ENABLED=True,
-    PHOTO_PROCESSING_FACE_ENABLED=True,
-    PHOTO_PROCESSING_PREVIEW_ENABLED=True,
     PHOTO_PROCESSING_WORKER_TOKEN="e2e-worker-token",
 )
 class PipelineEndToEndTests(TestCase):

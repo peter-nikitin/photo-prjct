@@ -14,7 +14,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 def load_isolated_selfie_settings(**environment_overrides: str) -> dict[str, object]:
     environment = os.environ.copy()
     for name in (
-        "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES",
         "SELFIE_SEARCH_MAX_PIXELS",
         "SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS",
@@ -24,7 +23,6 @@ def load_isolated_selfie_settings(**environment_overrides: str) -> dict[str, obj
         "DEBUG",
         "SELFIE_SEARCH_TEMPORARY_PREFIX",
         "SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS",
-        "SELFIE_FEEDBACK_ENABLED",
         "SELFIE_FEEDBACK_S3_BUCKET",
         "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
         "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
@@ -45,6 +43,10 @@ def load_isolated_selfie_settings(**environment_overrides: str) -> dict[str, obj
             "MEDIA_STORAGE_BACKEND": "filesystem",
             "PYTHONPATH": str(BACKEND_DIR),
             "SECRET_KEY": "test-secret-key",
+            "SELFIE_FEEDBACK_S3_BUCKET": "test-feedback",
+            "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "test-feedback-access",
+            "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "test-feedback-secret",
+            "SELFIE_FEEDBACK_KMS_KEY_ID": "test-feedback-kms",
         }
     )
     environment.update(environment_overrides)
@@ -52,18 +54,22 @@ def load_isolated_selfie_settings(**environment_overrides: str) -> dict[str, obj
 import json
 from unittest.mock import patch
 with patch("environ.Env.read_env"):
+    import django
+    django.setup()
     from config import settings
+from django.core.checks import run_checks
+errors = run_checks(tags=["selfie_search"])
+if errors:
+    raise SystemExit(", ".join(error.id for error in errors))
 print(json.dumps({name: getattr(settings, name) for name in json.loads(__import__("sys").argv[1])}))
 """
     names = [
-        "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED",
         "SELFIE_SEARCH_MAX_UPLOAD_BYTES",
         "SELFIE_SEARCH_MAX_PIXELS",
         "SELFIE_SEARCH_EMBEDDING_MODEL",
         "SELFIE_SEARCH_EMBEDDING_DIMENSIONS",
         "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD",
         "SELFIE_SEARCH_TEMPORARY_PREFIX",
-        "SELFIE_FEEDBACK_ENABLED",
         "SELFIE_FEEDBACK_S3_BUCKET",
         "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
         "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
@@ -101,7 +107,6 @@ class SelfieSearchSettingsTests(SimpleTestCase):
     def test_defaults_are_the_approved_bounded_contract(self) -> None:
         from django.conf import settings
 
-        self.assertIs(settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED, False)
         self.assertEqual(settings.SELFIE_SEARCH_MAX_UPLOAD_BYTES, 20 * 1024 * 1024)
         self.assertEqual(settings.SELFIE_SEARCH_MAX_PIXELS, 25_000_000)
         self.assertEqual(settings.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS, 120)
@@ -110,11 +115,6 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         self.assertEqual(settings.SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD, 0.42)
         self.assertEqual(settings.SELFIE_SEARCH_TEMPORARY_PREFIX, "selfie-search/")
         self.assertEqual(settings.SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS, 24)
-        self.assertIs(settings.SELFIE_FEEDBACK_ENABLED, False)
-        self.assertEqual(settings.SELFIE_FEEDBACK_S3_BUCKET, "")
-        self.assertEqual(settings.SELFIE_FEEDBACK_S3_ACCESS_KEY_ID, "")
-        self.assertEqual(settings.SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY, "")
-        self.assertEqual(settings.SELFIE_FEEDBACK_KMS_KEY_ID, "")
         self.assertEqual(settings.SELFIE_FEEDBACK_MAX_UPLOAD_BYTES, 20 * 1024 * 1024)
         self.assertEqual(settings.SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS, 60)
 
@@ -128,77 +128,33 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         self.assertEqual(values["SELFIE_SEARCH_EMBEDDING_DIMENSIONS"], 512)
         self.assertEqual(values["SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD"], 0.42)
 
-    def test_disabled_feedback_uses_safe_defaults_without_parsing_dormant_overrides(self) -> None:
-        values = load_isolated_selfie_settings(
-            SELFIE_FEEDBACK_ENABLED="False",
-            SELFIE_FEEDBACK_MAX_UPLOAD_BYTES="not-a-number",
-            SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS="also-not-a-number",
-        )
-
-        self.assertEqual(
-            values,
-            {
-                "SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED": False,
-                "SELFIE_SEARCH_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
-                "SELFIE_SEARCH_MAX_PIXELS": 25_000_000,
-                "SELFIE_SEARCH_EMBEDDING_MODEL": "adaface-ir18-webface4m",
-                "SELFIE_SEARCH_EMBEDDING_DIMENSIONS": 512,
-                "SELFIE_SEARCH_COSINE_DISTANCE_THRESHOLD": 0.42,
-                "SELFIE_SEARCH_TEMPORARY_PREFIX": "selfie-search/",
-                "SELFIE_FEEDBACK_ENABLED": False,
-                "SELFIE_FEEDBACK_S3_BUCKET": "",
-                "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "",
-                "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "",
-                "SELFIE_FEEDBACK_KMS_KEY_ID": "",
-                "SELFIE_FEEDBACK_MAX_UPLOAD_BYTES": 20 * 1024 * 1024,
-                "SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS": 60,
-            },
-        )
-
-    def test_enabled_feedback_requires_complete_safe_configuration(self) -> None:
-        with self.assertRaises(subprocess.CalledProcessError):
-            load_isolated_selfie_settings(SELFIE_FEEDBACK_ENABLED="True")
-        with self.assertRaises(subprocess.CalledProcessError):
-            load_isolated_selfie_settings(
-                SELFIE_FEEDBACK_ENABLED="True",
-                SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
-                SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",
-                SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY="secret-key",
-                SELFIE_FEEDBACK_KMS_KEY_ID="kms-key",
-                SELFIE_FEEDBACK_MAX_UPLOAD_BYTES="1",
-            )
-        with self.assertRaises(subprocess.CalledProcessError):
-            load_isolated_selfie_settings(
-                SELFIE_FEEDBACK_ENABLED="True",
-                PRIVATE_MEDIA_S3_BUCKET="feedback-bucket",
-                SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
-                SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",
-                SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY="secret-key",
-                SELFIE_FEEDBACK_KMS_KEY_ID="kms-key",
-            )
+    def test_feedback_requires_complete_safe_configuration(self) -> None:
         for unsafe_override in (
+            {"SELFIE_FEEDBACK_S3_BUCKET": ""},
+            {"SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": ""},
+            {"SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": " "},
+            {"SELFIE_FEEDBACK_KMS_KEY_ID": ""},
+            {"PRIVATE_MEDIA_S3_BUCKET": "test-feedback"},
             {"SELFIE_FEEDBACK_S3_ENDPOINT_URL": "https://storage.attacker.example"},
             {"SELFIE_FEEDBACK_S3_REGION": "us-east-1"},
+            {"SELFIE_FEEDBACK_MAX_UPLOAD_BYTES": "1"},
+            {"SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS": "61"},
+            {"SELFIE_FEEDBACK_MAX_UPLOAD_BYTES": "not-a-number"},
+            {"SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS": "not-a-number"},
         ):
             with self.subTest(unsafe_override=unsafe_override):
                 with self.assertRaises(subprocess.CalledProcessError):
-                    load_isolated_selfie_settings(
-                        SELFIE_FEEDBACK_ENABLED="True",
-                        SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
-                        SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",
-                        SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY="secret-key",
-                        SELFIE_FEEDBACK_KMS_KEY_ID="kms-key",
-                        **unsafe_override,
-                    )
+                    load_isolated_selfie_settings(**unsafe_override)
 
-    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
-    def test_cluster_expansion_is_independent_of_feedback_storage(self) -> None:
-        errors = run_checks(tags=[SELFIE_SEARCH_CHECK_TAG])
+    def test_feedback_accepts_dedicated_storage_with_the_approved_limits(self) -> None:
+        values = load_isolated_selfie_settings()
 
-        self.assertNotIn("selfie_search.E010", [error.id for error in errors])
+        self.assertEqual(values["SELFIE_FEEDBACK_S3_BUCKET"], "test-feedback")
+        self.assertEqual(values["SELFIE_FEEDBACK_KMS_KEY_ID"], "test-feedback-kms")
+        self.assertEqual(values["SELFIE_FEEDBACK_MAX_UPLOAD_BYTES"], 20 * 1024 * 1024)
+        self.assertEqual(values["SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS"], 60)
 
     @override_settings(
-        SELFIE_FEEDBACK_ENABLED=True,
         SELFIE_FEEDBACK_S3_BUCKET="private-selfies",
         PRIVATE_MEDIA_S3_BUCKET="private-selfies",
         SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=" ",
@@ -207,7 +163,7 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         SELFIE_FEEDBACK_MAX_UPLOAD_BYTES=20 * 1024 * 1024,
         SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS=60,
     )
-    def test_enabled_feedback_rejects_shared_bucket_and_blank_credentials(self) -> None:
+    def test_feedback_rejects_shared_bucket_and_blank_credentials(self) -> None:
         errors = run_checks(tags=[SELFIE_SEARCH_CHECK_TAG])
 
         self.assertEqual(
@@ -216,9 +172,6 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         )
 
     @override_settings(
-        PHOTO_PROCESSING_ENABLED=True,
-        PHOTO_PROCESSING_FACE_ENABLED=True,
-        SELFIE_FEEDBACK_ENABLED=True,
         SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
         PRIVATE_MEDIA_S3_BUCKET="private-media-bucket",
         SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",

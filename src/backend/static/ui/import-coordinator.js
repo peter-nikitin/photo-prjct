@@ -35,7 +35,6 @@
     manifest_too_large: 'В папке слишком много файлов. Разделите исходную папку.',
     manifest_changed: 'Содержимое папки изменилось во время проверки. Повторите импорт.',
     permission_denied: 'Право загрузки отозвано. Обратитесь к администратору.',
-    feature_paused: 'Импорт временно приостановлен.',
   };
 
   function interpolate(template, values) {
@@ -270,7 +269,7 @@
   }
 
   function bindImportPage(root, environment = globalScope) {
-    if (!root || root.dataset.importHistoryEnabled !== 'true') return null;
+    if (!root) return null;
     if (root.importCoordinator) return root.importCoordinator;
     const eventId = Number(root.dataset.eventId);
     if (!Number.isSafeInteger(eventId) || eventId <= 0) return null;
@@ -298,14 +297,12 @@
         }
         if (change.type === 'list') {
           list.replaceChildren(...change.records.map((record) => renderCard(root, record)));
-          section.hidden = change.records.length === 0 && root.dataset.importEnabled !== 'true';
           setText(root, '[data-import-list-status]', change.records.length ? '' : 'Сохранённых импортов пока нет.');
           pagination(root.querySelector('[data-import-list-pagination]'), change.pagination, '[data-import-list-page-status]', '[data-import-list-previous]', '[data-import-list-next]');
         } else if (change.type === 'updated') {
           const current = list.querySelector(`[data-import-id="${change.record.id}"]`);
           if (current) updateCard(current, change.record);
         } else if (change.type === 'created') {
-          section.hidden = false;
           setText(root, '[data-import-form-message]', 'Задача принята. Можно закрыть страницу — загрузка продолжится на сервере');
         } else if (change.type === 'submit-error') {
           setText(root, '[data-import-form-message]', safeErrorMessage(change.error, 'Не удалось отправить задачу. Попробуйте ещё раз.'));
@@ -340,7 +337,7 @@
       },
     });
     root.importCoordinator = coordinator;
-    section.hidden = root.dataset.importEnabled !== 'true';
+    section.hidden = false;
 
     const form = root.querySelector('[data-import-form]');
     const folderSelect = root.querySelector('[data-import-folder]');
@@ -412,7 +409,6 @@
     environment.addEventListener('pagehide', () => coordinator.stop(), { once: true });
     coordinator.loadPage(1).catch(() => {
       setText(root, '[data-import-list-status]', 'Не удалось загрузить сохранённый прогресс. Обновите страницу.');
-      section.hidden = root.dataset.importEnabled !== 'true';
     });
     return coordinator;
   }

@@ -564,7 +564,7 @@ def _service_error(exc: Exception) -> HttpResponse:
         )
     if code == "stale_attempt":
         return _error("lease_not_current", "The import lease is no longer current.", status=409)
-    if code in {"feature_paused", "permission_denied"}:
+    if code == "permission_denied":
         return _error(code, "The import is paused.", status=409)
     safe_codes = {
         "attempt_kind_mismatch",

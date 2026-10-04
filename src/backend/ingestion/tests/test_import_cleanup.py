@@ -156,9 +156,6 @@ class ImportCleanupTests(TransactionTestCase):
         self.assertIsNotNone(self.attempt.final_key)
 
     def test_restart_after_cleanup_allocates_fresh_keys(self):
-        from feature_flags.registry import YANDEX_DISK_IMPORT
-        from feature_flags.states import FEATURE_FLAG_ON
-        from feature_flags.testing import override_feature_flags
         from ingestion.models import ImportScope
         from ingestion.services.imports import claim_import_work, prepare_import_upload
 
@@ -172,24 +169,23 @@ class ImportCleanupTests(TransactionTestCase):
         self.batch.save()
         previous = (self.attempt.incoming_key, self.attempt.final_key)
         self.command("--apply")
-        with override_feature_flags({YANDEX_DISK_IMPORT: FEATURE_FLAG_ON}):
-            claimed = claim_import_work()
-            assert claimed.attempt_id is not None
-            with patch(
-                "ingestion.management.commands.cleanup_stale_imports.PrivateUploadStorage"
-            ) as storage:
-                from ingestion.storage import UploadGrant
+        claimed = claim_import_work()
+        assert claimed.attempt_id is not None
+        with patch(
+            "ingestion.management.commands.cleanup_stale_imports.PrivateUploadStorage"
+        ) as storage:
+            from ingestion.storage import UploadGrant
 
-                storage.return_value.create_presigned_post.return_value = UploadGrant(
-                    "https://storage.example", {}, self.now
-                )
-                prepare_import_upload(
-                    attempt_id=claimed.attempt_id,
-                    item_id=self.item.pk,
-                    content_sha256="a" * 64,
-                    byte_size=100,
-                    storage=storage.return_value,
-                )
+            storage.return_value.create_presigned_post.return_value = UploadGrant(
+                "https://storage.example", {}, self.now
+            )
+            prepare_import_upload(
+                attempt_id=claimed.attempt_id,
+                item_id=self.item.pk,
+                content_sha256="a" * 64,
+                byte_size=100,
+                storage=storage.return_value,
+            )
         current = ImportAttempt.objects.get(pk=claimed.attempt_id)
         self.assertNotEqual(current.incoming_key, previous[0])
         self.assertNotEqual(current.final_key, previous[1])

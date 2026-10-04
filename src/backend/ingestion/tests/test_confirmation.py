@@ -112,9 +112,14 @@ class ConfirmationStorage:
 
 
 class ConfirmationTests(TransactionTestCase):
-    jpeg = b"\xff\xd8photo payload\xff\xd9"
-
     def setUp(self) -> None:
+        encoded = BytesIO()
+        image = Image.new("RGB", (40, 20), "white")
+        try:
+            image.save(encoded, "JPEG")
+        finally:
+            image.close()
+        self.jpeg = encoded.getvalue()
         self.user = get_user_model().objects.create_user(username="photographer")
         self.other = get_user_model().objects.create_user(username="other")
         self.event = Event.objects.create(
@@ -237,7 +242,7 @@ class ConfirmationTests(TransactionTestCase):
         self.assertEqual(self.storage.objects[item.final_key][0], self.jpeg)
         self.assertEqual(
             (second.processing_generation, second.gallery_media_policy),
-            ("legacy_original_v1", "legacy_original_allowed"),
+            ("preview_first_v1", "preview_required"),
         )
 
     def test_confirmation_copies_the_registered_folder_to_photo(self) -> None:
@@ -286,7 +291,6 @@ class ConfirmationTests(TransactionTestCase):
             },
         )
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_preview_activation_persists_the_preview_first_pair_and_only_queues_preview(
         self,
     ) -> None:
@@ -325,7 +329,6 @@ class ConfirmationTests(TransactionTestCase):
         self.assertIsNone(face.current_job)
         self.assertEqual(self.storage.geometry_read_atomic_states, [False])
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_enabled_paid_confirmation_persists_the_watermarked_pair(self) -> None:
         self.set_preview_payload()
         Event.objects.filter(pk=self.event.pk).update(
@@ -341,7 +344,6 @@ class ConfirmationTests(TransactionTestCase):
         )
 
     @override_settings(
-        PHOTO_PROCESSING_PREVIEW_ENABLED=True,
         STORAGES={
             "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
             "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
@@ -421,7 +423,6 @@ class ConfirmationTests(TransactionTestCase):
         self.assertEqual(self.event.access_type, Event.AccessType.PAID)
 
     @override_settings(
-        PHOTO_PROCESSING_PREVIEW_ENABLED=True,
         STORAGES={
             "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
             "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
@@ -494,7 +495,6 @@ class ConfirmationTests(TransactionTestCase):
         self.event.refresh_from_db()
         self.assertEqual(self.event.access_type, Event.AccessType.FREE)
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_checkpoint_change_after_geometry_inspection_prevents_preview_first_persistence(
         self,
     ) -> None:
@@ -519,7 +519,6 @@ class ConfirmationTests(TransactionTestCase):
         self.assertIsNone(self.confirm(change_checkpoint))
         self.assertFalse(Photo.objects.filter(pk=self.item_id.hex).exists())
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_preview_geometry_rejects_images_over_the_shared_pixel_cap(self) -> None:
         from io import BytesIO
 
@@ -543,7 +542,6 @@ class ConfirmationTests(TransactionTestCase):
         self.assertEqual(item.error_code, "invalid_jpeg")
         self.assertFalse(Photo.objects.filter(pk=self.item_id.hex).exists())
 
-    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
     def test_pillow_decompression_bomb_is_a_sanitized_terminal_invalid_jpeg(self) -> None:
         from io import BytesIO
 

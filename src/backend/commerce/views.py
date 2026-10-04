@@ -18,7 +18,6 @@ from django.views.decorators.debug import sensitive_post_parameters, sensitive_v
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from feature_flags import services as feature_flag_services
 from feature_flags.registry import (
-    BULK_PHOTO_DOWNLOAD,
     GALLERY_CDN_IMAGES,
     PAID_PHOTO_CART,
     PAID_PHOTO_PAYMENT_SIMULATOR,
@@ -212,10 +211,6 @@ def paid_cart_enabled(request: HttpRequest) -> bool:
 
 def paid_purchase_enabled(request: HttpRequest) -> bool:
     return feature_flag_services.is_enabled(PAID_PHOTO_PURCHASE, request.user)
-
-
-def bulk_photo_download_enabled(request: HttpRequest) -> bool:
-    return feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user)
 
 
 def _commerce_media_url_builder(
@@ -836,7 +831,6 @@ def _render_order(
                 items_page=items_page,
             ),
             "archive_action": _order_archive_action(
-                request=request,
                 order=order_instance,
                 items_page=items_page,
             ),
@@ -866,7 +860,7 @@ def _archive_order(
     grant_identifier: str | None = None,
     grant_signature: str | None = None,
 ) -> HttpResponse:
-    if not paid_purchase_enabled(request) or not bulk_photo_download_enabled(request):
+    if not paid_purchase_enabled(request):
         return _purchase_not_found()
     order_instance = Order.objects.filter(public_number=public_number).first()
     if order_instance is None:
@@ -909,8 +903,8 @@ def _archive_order(
     return private_purchase_response(response)
 
 
-def _order_archive_action(*, request: HttpRequest, order: Order, items_page):
-    if order.status != Order.Status.PAID or not bulk_photo_download_enabled(request):
+def _order_archive_action(*, order: Order, items_page):
+    if order.status != Order.Status.PAID:
         return None
     return archive_page_action(
         item_count=len(items_page.object_list),

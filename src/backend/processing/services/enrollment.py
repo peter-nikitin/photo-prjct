@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import TypedDict, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.db.models import Q
@@ -519,7 +518,7 @@ def request_bib_recognition(
 def request_face_embedding_enqueue(
     photo: Photo, *, verified_source_etag: str | None = None
 ) -> PhotoProcessingState:
-    """Queue a face-embedding job if the feature flag is enabled."""
+    """Queue face embedding for accepted preview evidence."""
     photo.event = Event.objects.select_for_update().get(pk=photo.event_id)
     preview = _accepted_preview(photo)
     from processing.services.face_quality import current_face_embedding_generation
@@ -532,8 +531,7 @@ def request_face_embedding_enqueue(
         processor_version=cast(int, generation["processor_version"]),
         configuration=cast(dict[str, object], generation["configuration"]),
         input_fingerprint=_derivative_fingerprint(preview) if preview is not None else None,
-        enabled=bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False))
-        and preview is not None,
+        enabled=preview is not None,
     )
 
 
@@ -786,8 +784,6 @@ def reconcile_face_embedding(
     *, limit: int = DEFAULT_RECONCILIATION_LIMIT
 ) -> list[PhotoProcessingState]:
     """Enroll one bounded, idempotent batch of eligible photos for face embeddings."""
-    if not bool(getattr(settings, "PHOTO_PROCESSING_FACE_ENABLED", False)):
-        return []
     if not 1 <= limit <= MAX_RECONCILIATION_LIMIT:
         raise ValueError(f"limit must be between 1 and {MAX_RECONCILIATION_LIMIT}")
     reconciled: list[PhotoProcessingState] = []

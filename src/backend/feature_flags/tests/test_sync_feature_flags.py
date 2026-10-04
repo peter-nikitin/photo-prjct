@@ -26,7 +26,7 @@ class SyncFeatureFlagsTests(TestCase):
         )
         self.assertEqual(
             output,
-            "Feature flags synchronized: created=9 updated=0 preserved=0 deleted=0.\n",
+            "Feature flags synchronized: created=8 updated=0 preserved=0 deleted=0.\n",
         )
 
     def test_preserves_registered_states_and_creation_timestamp(self) -> None:
@@ -56,7 +56,7 @@ class SyncFeatureFlagsTests(TestCase):
         )
         self.assertEqual(
             output,
-            "Feature flags synchronized: created=6 updated=0 preserved=3 deleted=0.\n",
+            "Feature flags synchronized: created=5 updated=0 preserved=3 deleted=0.\n",
         )
 
     def test_refreshes_description_without_changing_state_or_creation_timestamp(self) -> None:
@@ -76,24 +76,84 @@ class SyncFeatureFlagsTests(TestCase):
         self.assertEqual(flag.created_at, created_at)
         self.assertEqual(
             output,
-            "Feature flags synchronized: created=8 updated=1 preserved=0 deleted=0.\n",
+            "Feature flags synchronized: created=7 updated=1 preserved=0 deleted=0.\n",
         )
 
     def test_deletes_stale_rows_and_is_idempotent(self) -> None:
+        retained_rows = (
+            ("paid-events", "Show paid events", FeatureFlag.State.OFF),
+            (
+                "paid-watermarked-previews",
+                "Show accepted paid watermarked previews",
+                FeatureFlag.State.STAFF,
+            ),
+            ("paid-photo-cart", "Allow paid photo cart selection", FeatureFlag.State.ON),
+            (
+                "paid-photo-purchase",
+                "Allow paid photo checkout and fulfillment",
+                FeatureFlag.State.OFF,
+            ),
+            (
+                "paid-photo-payment-simulator",
+                "Use the feature-gated test payment screen",
+                FeatureFlag.State.STAFF,
+            ),
+            (
+                "gallery-cdn-images",
+                "Deliver gallery grid images through CDN",
+                FeatureFlag.State.ON,
+            ),
+            (
+                "event-cover-cdn-images",
+                "Deliver event catalog covers through CDN",
+                FeatureFlag.State.OFF,
+            ),
+            (
+                "selfie-search-cluster-expansion",
+                "Expand selfie search through event face clusters (staff acts as off)",
+                FeatureFlag.State.OFF,
+            ),
+        )
+        for key, description, state in retained_rows:
+            FeatureFlag.objects.create(
+                key=key,
+                description=description,
+                state=state,
+            )
         FeatureFlag.objects.create(
-            key="pgvector-face-search-read",
-            description="Remove this stale definition",
+            key="bulk-photo-download",
+            description="Retired archive gate",
             state=FeatureFlag.State.ON,
         )
+        FeatureFlag.objects.create(
+            key="yandex-disk-import",
+            description="Retired import gate",
+            state=FeatureFlag.State.ON,
+        )
+        expected_retained_states = [
+            ("event-cover-cdn-images", FeatureFlag.State.OFF),
+            ("gallery-cdn-images", FeatureFlag.State.ON),
+            ("paid-events", FeatureFlag.State.OFF),
+            ("paid-photo-cart", FeatureFlag.State.ON),
+            ("paid-photo-payment-simulator", FeatureFlag.State.STAFF),
+            ("paid-photo-purchase", FeatureFlag.State.OFF),
+            ("paid-watermarked-previews", FeatureFlag.State.STAFF),
+            ("selfie-search-cluster-expansion", FeatureFlag.State.OFF),
+        ]
 
         self.assertEqual(
             self.sync(),
-            "Feature flags synchronized: created=9 updated=0 preserved=0 deleted=1.\n",
+            "Feature flags synchronized: created=0 updated=0 preserved=8 deleted=2.\n",
         )
-        self.assertFalse(FeatureFlag.objects.filter(key="pgvector-face-search-read").exists())
+        self.assertFalse(FeatureFlag.objects.filter(key="bulk-photo-download").exists())
+        self.assertFalse(FeatureFlag.objects.filter(key="yandex-disk-import").exists())
+        self.assertEqual(
+            list(FeatureFlag.objects.values_list("key", "state")),
+            expected_retained_states,
+        )
         self.assertEqual(
             self.sync(),
-            "Feature flags synchronized: created=0 updated=0 preserved=9 deleted=0.\n",
+            "Feature flags synchronized: created=0 updated=0 preserved=8 deleted=0.\n",
         )
 
     def test_invalid_registry_aborts_before_mutating_existing_rows(self) -> None:

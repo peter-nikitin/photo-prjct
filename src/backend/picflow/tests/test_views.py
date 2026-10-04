@@ -452,7 +452,6 @@ class PageTests(TestCase):
                 self.assertContains(response, f'href="{reverse("legal")}"')
                 self.assertNotContains(response, f'href="{reverse("admin:index")}"')
 
-    @override_settings(PHOTO_UPLOAD_ENABLED=True)
     def test_service_navigation_matches_user_capabilities(self) -> None:
         upload_permission = Permission.objects.get(
             content_type__app_label="ingestion", codename="upload_photos"

@@ -22,9 +22,9 @@ unresolved decisions are documented rather than assumed to be implemented.
 Requirements: Git, Docker, Docker Compose, Python 3.12+, NVM, and Node 22. Python is required for
 the clone helper and for running management commands and quality checks directly on the host.
 
-For the opt-in worker's local, real-Object-Storage verification, follow
-[Local photo-processing worker check](docs/local-photo-processing-check.md). It leaves the worker
-disabled until explicitly started with its Compose profile.
+For the worker's local, real-Object-Storage verification, follow
+[Local photo-processing worker check](docs/local-photo-processing-check.md). The local Compose
+profile starts the worker only for the finite check.
 
 The `main` checkout and a feature worktree use separate source directories and Compose projects, so
 each directory needs its own ignored `.env` file. Both configurations expose PostgreSQL on port
@@ -108,43 +108,35 @@ real-model evidence.
 
 This host-process test does not activate Docker Compose or prove the rollout image. The existing
 worker image packages pinned official SCRFD and OpenCV Zoo SFace files at immutable container paths and
-runs `photo_worker.model_smoke` during its build. Before enabling `selfie_query`, run the same smoke
+runs `photo_worker.model_smoke` during its build. For release-image verification, run the same smoke
 against the exact rollout image digest:
 
 ```bash
 docker run --rm --network none --entrypoint python "$WORKER_IMAGE" -m photo_worker.model_smoke
 ```
 
-Then apply and verify the exact `selfie-search/` lifecycle, run the explicit scratch-object
-preflight, and execute the canonical-deployment smoke and capacity measurements in the
-[public selfie-search rollout](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout).
+The original rollout's lifecycle, scratch-object preflight, smoke, and capacity requirements are
+recorded in the [public selfie-search plan](docs/plans/2026-07-30-public-selfie-search.md#operational-impact-and-rollout).
 
 ### Verify selfie-search feedback storage on the canonical deployment
 
-Selfie-search feedback is implemented but remains disabled by default. After the dedicated private
-bucket, KMS key, and web-only credentials have been provisioned, run the explicit preflight while
-the deployed `.env` still has `SELFIE_FEEDBACK_ENABLED=False`; export the bucket, access-key,
-secret-key, and KMS-key variables for the command as the deployment workflow does:
+Selfie-search feedback is part of the terminal eligible result flow. The canonical web service
+requires the dedicated private bucket, KMS key, and web-only credentials at startup. After these
+are provisioned, run the explicit storage preflight with the deployed configuration:
 
 ```bash
 cd /opt/photo-prjct
-test "$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)" = False
 docker compose --project-name photo-prjct \
   --env-file .env \
   -f docker-compose.deployment.yml \
   -f docker-compose.https.yml \
   exec -T \
-  -e SELFIE_FEEDBACK_ENABLED=True \
-  -e SELFIE_FEEDBACK_S3_BUCKET \
-  -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID \
-  -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY \
-  -e SELFIE_FEEDBACK_KMS_KEY_ID \
   web python manage.py verify_selfie_feedback_storage --confirm-real-storage
 ```
 
 The command checks the dedicated bucket contract and removes its generated scratch object. It is
-covered by the repository's automated storage/deployment tests; passing it does not enable feedback
-or replace the separate policy, lifecycle-mutation, canonical-deployment smoke, and activation gates.
+covered by the repository's automated storage/deployment tests. It does not replace lifecycle
+verification, the separate personal-data-policy reconciliation, or a canonical customer-path smoke.
 
 ### Operate selfie-search observability
 
@@ -216,10 +208,35 @@ containerized visual-test environment.
 Use the repository's main checkout for the latest merged version:
 
 ```bash
-cd /Users/petrnikitin/Documents/Sites/photo-prjct
+cd /Users/petrnikitin/Documents/Projects/photo-prjct
 git switch main
 git pull --ff-only
 test -f .env || cp .env.example .env
+```
+
+Before starting a fresh local web process, set the following values in that checkout's ignored
+`.env`. These distinct bucket names and credentials are local test-only placeholders: they satisfy
+configuration checks but cannot access Object Storage. Replace them with real, separately scoped
+credentials before testing uploads or submitting feedback. The canonical deployment requires real
+private-media and feedback storage configuration and a successful storage preflight. Keep the
+approved feedback endpoint, region, 20 MiB upload limit, and 60-second download TTL defaults.
+
+```dotenv
+DEBUG=True
+ALLOWED_HOSTS=localhost,127.0.0.1,web
+PRIVATE_MEDIA_S3_BUCKET=test-private-media
+PRIVATE_MEDIA_S3_ACCESS_KEY_ID=test-private-access
+PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=test-private-secret
+PRIVATE_MEDIA_ALLOWED_ORIGINS=http://localhost:8000
+SELFIE_FEEDBACK_S3_BUCKET=test-feedback-media
+SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=test-feedback-access
+SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY=test-feedback-secret
+SELFIE_FEEDBACK_KMS_KEY_ID=test-feedback-kms
+```
+
+Then start the stack:
+
+```bash
 docker compose up --build -d
 docker compose logs -f web
 ```
@@ -235,26 +252,7 @@ docker compose exec web python manage.py createsuperuser
 Open the application at `http://localhost:8000/` and Django Admin at
 `http://localhost:8000/admin/`.
 
-### Run the photographer-upload worktree version
-
-The in-progress photographer-upload implementation lives in a separate worktree. If it already
-exists, enter it directly:
-
-```bash
-cd /Users/petrnikitin/Documents/Sites/photo-prjct/.worktrees/stage-2-photographer-upload
-git status --short --branch
-```
-
-To create that worktree from the pull-request branch when it does not exist, run from the main
-checkout:
-
-```bash
-cd /Users/petrnikitin/Documents/Sites/photo-prjct
-git fetch origin stage-2-implementation-plan
-git worktree add -b stage-2-photographer-upload \
-  .worktrees/stage-2-photographer-upload origin/stage-2-implementation-plan
-cd .worktrees/stage-2-photographer-upload
-```
+### Verify photographer uploads locally
 
 Create a worktree-local configuration without overwriting an existing one:
 
@@ -262,25 +260,28 @@ Create a worktree-local configuration without overwriting an existing one:
 test -f .env || cp .env.example .env
 ```
 
-The upload feature is disabled by default. To test real browser-to-storage uploads, set these values
-in the worktree's `.env`:
+To test real browser-to-storage uploads, set these values in the current checkout's `.env`:
 
 ```dotenv
 DEBUG=True
 ALLOWED_HOSTS=localhost,127.0.0.1
-PHOTO_UPLOAD_ENABLED=True
 PRIVATE_MEDIA_S3_BUCKET=<private-bucket>
 PRIVATE_MEDIA_S3_ACCESS_KEY_ID=<access-key>
 PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=<secret-key>
 PRIVATE_MEDIA_ALLOWED_ORIGINS=http://localhost:8000
+SELFIE_FEEDBACK_S3_BUCKET=test-feedback-media
+SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=test-feedback-access
+SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY=test-feedback-secret
+SELFIE_FEEDBACK_KMS_KEY_ID=test-feedback-kms
 ```
 
 The bucket and credentials must be real, and its CORS policy must allow the exact
-`http://localhost:8000` origin. With the feature disabled, the rest of the application still runs,
-but `/photographer/uploads/` returns 404. With placeholder storage values, the page may render but a
-real upload will not complete.
+`http://localhost:8000` origin. The upload page requires an authenticated user with
+`ingestion.upload_photos`; placeholder storage values cannot complete a real upload. The feedback
+values above are local test-only placeholders for this upload check. A real feedback submission
+requires its own dedicated bucket, credentials, KMS key, and storage preflight.
 
-Start the worktree version:
+Start the local stack:
 
 ```bash
 docker compose up --build -d
@@ -451,10 +452,9 @@ Changing `PUBLIC_DOMAIN` or `PUBLIC_DOMAIN_ALIAS` does not automatically replace
 certificate. Treat such a change as maintenance: back up the environment certificate volume,
 remove the named certificate explicitly, and rerun deployment once to issue the new name set.
 
-### Enable photographer uploads on the canonical deployment
+### Verify photographer upload storage on the canonical deployment
 
-Keep `PHOTO_UPLOAD_ENABLED=False` for the first deployment of an ingestion-capable image. Configure
-these reviewed repository variables before that deployment:
+Configure these reviewed repository variables before deployment:
 
 - variable `PRIVATE_MEDIA_S3_BUCKET` with the separate private bucket name;
 - variable `PRIVATE_MEDIA_ALLOWED_ORIGINS` with the exact public origin, currently
@@ -462,9 +462,9 @@ these reviewed repository variables before that deployment:
 - secrets `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` and `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY` for the
   least-privilege service account.
 
-After the disabled deployment is healthy, run the opt-in storage contract inside the deployed web
-container. The one-process override keeps the public upload routes disabled while the probe creates
-and removes its temporary objects:
+The canonical web startup validates private storage configuration. After deployment, run the
+storage contract inside the deployed web container; the probe creates and removes only its
+temporary objects:
 
 ```bash
 cd /opt/photo-prjct
@@ -472,14 +472,14 @@ docker compose --project-name photo-prjct \
   --env-file .env \
   -f docker-compose.deployment.yml \
   -f docker-compose.https.yml \
-  exec -T -e PHOTO_UPLOAD_ENABLED=True web \
+  exec -T web \
   sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin "$PRIVATE_MEDIA_ALLOWED_ORIGINS"'
 ```
 
-Only after this command succeeds, set `PHOTO_UPLOAD_ENABLED=True` and redeploy the same reviewed
-revision. Enabled deployment validates private configuration and host `crontab`/`flock`, then
-installs one daily 03:17 host-time cleanup entry. Disable and redeploy to hide all upload routes and
-remove only that managed cron block; confirmed database rows and private originals remain intact.
+Deployment validates private configuration and host `crontab`/`flock`, then installs one daily
+03:17 host-time cleanup entry. Upload access continues to depend on Django permission, batch
+ownership, and the exact private-storage grant and confirmation checks. For an application failure,
+redeploy the prior successful image; preserve confirmed rows and private originals.
 
 The web container runs migrations and `collectstatic` before starting Gunicorn. Host `.env` files,
 GitHub secrets, and cloud credentials must never be committed. Use the project

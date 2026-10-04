@@ -13,10 +13,14 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
+from feature_flags.models import FeatureFlag
+from feature_flags.registry import SELFIE_SEARCH_CLUSTER_EXPANSION
+from feature_flags.states import FEATURE_FLAG_ON
+from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from processing.contracts import ClaimedJob
@@ -92,6 +96,38 @@ class SearchJobTests(TestCase):
             city="Moscow",
         )
         self.storage = RecordingStorage()
+
+    def test_callback_expansion_gate_uses_only_global_on_state(self) -> None:
+        for state, expected in (
+            (None, "disabled"),
+            (FeatureFlag.State.OFF, "disabled"),
+            (FeatureFlag.State.STAFF, "disabled"),
+            (FeatureFlag.State.ON, "corpus_unavailable"),
+        ):
+            with self.subTest(state=state):
+                FeatureFlag.objects.filter(key="selfie-search-cluster-expansion").delete()
+                if state is not None:
+                    FeatureFlag.objects.create(
+                        key="selfie-search-cluster-expansion",
+                        description="Expand selfie results through face clusters",
+                        state=state,
+                    )
+                search = self.make_search()
+                claimed = self.claim(search)
+                with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+                    complete_search_attempt(
+                        claimed.attempt.id, result=self.result(), storage=self.storage
+                    )
+                search.refresh_from_db()
+                ranking = next(
+                    json.loads(line.split(":", 2)[2])
+                    for line in logs.output
+                    if "selfie_ranking_finished" in line
+                )
+                self.assertEqual(search.status, SelfieSearch.Status.READY)
+                self.assertEqual(search.cluster_expansion_outcome, expected)
+                self.assertEqual(ranking["cluster_expansion_outcome"], expected)
+                self.assertEqual(search.cluster_expanded_photo_count, 0)
 
     def test_native_callback_publishes_after_cleanup_and_never_uses_legacy(self) -> None:
         search = self.make_search()
@@ -439,7 +475,7 @@ class SearchJobTests(TestCase):
         self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 0)
         self.assertEqual(self.storage.deleted, [])
 
-    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    @override_feature_flags({SELFIE_SEARCH_CLUSTER_EXPANSION: FEATURE_FLAG_ON})
     def test_enabled_completion_persists_direct_and_cluster_provenance_before_cleanup(self) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="integration-anchor", distance=0.1)
@@ -542,7 +578,7 @@ class SearchJobTests(TestCase):
         evidence_count = SelfieSearchClusterEvidence.objects.filter(result__search=search).count()
         self.assertEqual(evidence_count, 2)
 
-    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    @override_feature_flags({SELFIE_SEARCH_CLUSTER_EXPANSION: FEATURE_FLAG_ON})
     def test_empty_direct_cohort_clears_identity_for_non_ready_observability(self) -> None:
         search = self.make_search(with_candidate=False)
         generations = search.configuration["gallery_face_embedding_generations"]
@@ -607,7 +643,7 @@ class SearchJobTests(TestCase):
         self.assertIsNone(terminal["cluster_corpus_version"])
         self.assertIsNone(terminal["cluster_configuration_hash"])
 
-    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    @override_feature_flags({SELFIE_SEARCH_CLUSTER_EXPANSION: FEATURE_FLAG_ON})
     def test_member_read_database_error_keeps_outer_completion_transaction_usable(self) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="member-error-anchor", distance=0.1)
@@ -698,7 +734,7 @@ class SearchJobTests(TestCase):
         )
         self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])
 
-    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    @override_feature_flags({SELFIE_SEARCH_CLUSTER_EXPANSION: FEATURE_FLAG_ON})
     def test_cluster_evidence_persistence_failure_rolls_back_accepted_callback(self) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="rollback-anchor", distance=0.1)

@@ -34,8 +34,6 @@ class Command(BaseCommand):
         parser.add_argument("--origin", required=True)
 
     def handle(self, *args, **options) -> None:  # noqa: ANN002, ANN003
-        if not settings.PHOTO_UPLOAD_ENABLED:
-            raise CommandError("PHOTO_UPLOAD_ENABLED must be True for the storage probe")
         if not options["confirm_real_storage"]:
             raise CommandError("Pass --confirm-real-storage to permit temporary object writes")
 

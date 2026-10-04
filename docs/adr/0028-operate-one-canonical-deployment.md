@@ -5,7 +5,8 @@
 - Deciders: project maintainers
 - Supersedes: [0005](0005-promote-images-through-staging.md),
   [0026](0026-use-lockbox-for-environment-secrets.md)
-- Superseded by: [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md) for photo-worker placement only
+- Superseded by: [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md) for photo-worker placement only;
+  [ADR 0051](0051-release-photo-worker-images-independently.md) for shared web/photo-worker SHA only
 
 ## Context
 

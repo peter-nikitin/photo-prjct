@@ -26,9 +26,12 @@ Review the **Deploy** workflow result and run the acceptance checks below. Do no
 `deploy/apply-deployment.sh` directly or use a mutable checkout as a deployment source.
 
 The first updater installation is a separate one-time operation at the current cap one after
-claims are paused/drained and the new web protocol/migration is deployed. Ordinary Deploy does not
-install templates or recreate worker VMs. Follow [worker-pool operations](worker-pools.md).
-The historical fleet receipt and shared web/worker SHA are no longer deployment gates.
+claims are paused/drained and the new web protocol/migration is deployed with the worker image.
+Ordinary Deploy does not install templates or recreate worker VMs. The
+[worker-pool runbook](worker-pools.md#one-time-updater-installation-at-cap-one) is the operational
+path; its exact managed-instance `rollingRecreate` is required because the current
+`OPPORTUNISTIC` policy does not restart the live selfie VM after a template patch. The historical
+fleet receipt and shared web/worker SHA are not deployment gates.
 
 After a release commits, the apply script removes Docker images unused by any container
 from the canonical VM. It skips this cleanup on failed deployments. The workflow prints
@@ -116,13 +119,37 @@ Treat a migration-preflight failure as a stopped release. Do not use `--fake`, d
 renumbering, editing, or squashing migrations merely to retry. Inspect the deployed VM's recorded
 migration ledger and follow the [Django migration-conflict runbook](django-migration-conflicts.md).
 
-`deploy/apply-deployment.sh` preserves the previous profile and attempts rollback after a
-post-mutation failure only after the previous web's bounded, read-only `ProcessingAttempt` query
-succeeds against the current database. A failed or uncertain probe blocks recovery, stops web,
-retains the installed candidate package and `.deployment-recovery`, and saves the candidate inputs
-as `.deployment-recovery/candidate.env` (mode 0600). Keep claims paused and recover forward with a
-schema-compatible candidate; do not restore the pre-0016 web after its column was dropped, even
-when the overall migration command failed. Preserve the snapshot until explicit recovery is verified.
+`deploy/apply-deployment.sh` permits automatic web recovery only when the previous web's bounded,
+read-only `ProcessingAttempt` query succeeds against the current database. Before
+`processing.0016` drops `ProcessingAttempt.worker_build`, a schema-compatible previous web can be
+restored after that probe. Once the drop has committed, the old web is incompatible even if the
+overall migration command reports failure; the same probe blocks its restoration. A failed or
+uncertain probe stops web, retains the candidate package and `.deployment-recovery`, and saves the
+candidate inputs as `.deployment-recovery/candidate.env` (mode 0600). Keep claims paused and recover
+forward with a compatible new-protocol candidate or code fix. Do not claim that an old SHA is a safe
+rollback after the column drop, and preserve the snapshot until forward recovery is verified.
+
+Use the explicit canonical forward-recovery dispatch, never delete/rename the recovery gate or
+invoke the application script manually. After reviewing the exact compatible new-protocol SHA,
+run (replace the placeholder with its complete 40-character commit SHA):
+
+```sh
+gh workflow run deploy.yml --ref main -f deployment_sha=<EXACT_COMPATIBLE_SHA> -f recover_forward=true
+```
+
+This mode publishes web/import images only, acquires the canonical deployment lock, and consumes
+the retained private `candidate.env`. It keeps the candidate's configuration and secrets; only
+the approved web/import release identity and transient registry credential come from the dispatch.
+The original candidate SHA can be retried, or a reviewed compatible forward-fix SHA can be selected.
+Before package replacement, recovery validates the image's OCI SHA, build-independent model/claim
+interface, current DB compatibility and both pools' paused claims. Native AdaFace capability and
+normal migration, import, Commerce, public health and observability checks still apply.
+Any failed/uncertain recovery retains the original snapshot and installed compatible candidate;
+post-mutation failure stops web and never restores the pre-cutover image. Only verified commit
+removes `candidate.env`, the recovery gate and retained predecessor package. Leave all unrelated
+dispatch options disabled. Read back the recovered image/health with the acceptance commands below
+before continuing the one-time worker cutover and explicitly unpausing claims.
+
 A red workflow is not proof that the VM is unavailable, and a green rollback
 is not proof that the candidate was applied. Preserve the workflow URL and named failed phase,
 then verify the previous state before a corrected retry.

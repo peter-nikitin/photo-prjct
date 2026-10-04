@@ -266,6 +266,21 @@ def test_production_manifest_reserves_operational_and_product_flow_test_boundari
     )
 
 
+@pytest.mark.parametrize("path", ["Dockerfile.worker", "Dockerfile.worker-base"])
+def test_worker_image_dockerfiles_select_only_operational_suite(path: str) -> None:
+    config = select_test_suites.load_config(ROOT / "tests" / "suite-selection.toml")
+
+    selection = select_test_suites.select_suites(config, [path])
+
+    assert selection.core is True
+    assert selection.operational is True
+    assert selection.migrations is False
+    assert selection.visual is False
+    assert selection.reasons["operational"] == (path,)
+    assert selection.reasons["migrations"] == ()
+    assert selection.reasons["visual"] == ()
+
+
 def init_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
     repository.mkdir()

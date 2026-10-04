@@ -3,9 +3,9 @@
 Bulk processing and selfie inference run in the existing isolated Yandex Instance Groups. The
 canonical VM retains Django, PostgreSQL, Nginx, private worker API, queue/coordinator, collector,
 imports and Commerce. [ADR 0051](../adr/0051-release-photo-worker-images-independently.md) defines
-independent publication and host-owned container replacement. The historical initial fleet receipt
-was read back as `committed` on 2026-10-03; its finalizer and coupled rollout commands are retired.
-That observation does not prove the updater is installed.
+independent publication and host-owned container replacement. The initial remote-only fleet receipt
+was read back `committed` on 2026-10-03; that earlier acceptance does not prove the new updater is
+installed.
 
 ## Fresh inventory
 
@@ -47,9 +47,23 @@ notification-delivery proof.
 ## One-time updater installation at cap one
 
 Follow the [accepted plan](../plans/2026-10-03-independent-worker-image-deployment.md). Re-read
-live inventory and scoped config/baselines immediately before each cloud mutation. Pause claims
-and drain the sole selfie worker, proving zero live work before the new web protocol/migration.
-Publish the new worker pointer and deploy web through canonical Deploy while claims remain paused.
+live inventory and scoped config/baselines immediately before each cloud mutation. Pause both
+remote claim pools and verify zero live attempts before the new web protocol/migration:
+
+```sh
+printf '%s\n' '{"operation":"pause","pool":"bulk","paused":true,"local":false}' | sudo docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+  -f /opt/photo-prjct/docker-compose.deployment.yml \
+  -f /opt/photo-prjct/docker-compose.https.yml \
+  exec -T web python manage.py control_worker_pools
+printf '%s\n' '{"operation":"pause","pool":"selfie","paused":true,"local":false}' | sudo docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+  -f /opt/photo-prjct/docker-compose.deployment.yml \
+  -f /opt/photo-prjct/docker-compose.https.yml \
+  exec -T web python manage.py control_worker_pools
+```
+
+Read status and `report_worker_pool_state --json` again. Stop if claims are not paused, any live
+attempt remains, or bulk is not idle at target zero. Merge the approved package so canonical Deploy
+publishes worker `latest` and deploys the new web protocol/migration while claims remain paused.
 The old worker may lack the updater and must not speak the removed claim protocol.
 
 After web commits, use the reviewed installed package and exact existing group/config identities:
@@ -61,8 +75,10 @@ PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
 ```
 
 This patches only existing template metadata to install updater/bootstrap. It preserves scale/deploy
-policies, resources, networking and cap one; bulk zero stays zero. Read back the operation and full
-group baselines. Template installation does not prove the running selfie host ran cloud-init.
+policies, resources, networking and cap one; bulk remains zero. The current
+`OPPORTUNISTIC` deployment policy does not restart an already-running VM after a template change.
+Read back the operation and full group baselines. Template installation does not prove the running
+selfie host ran cloud-init.
 With a fresh reviewed baseline and the exact sole **managed instance ID**:
 
 ```sh
@@ -72,10 +88,23 @@ PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
   --replace-selfie EXACT_MANAGED_INSTANCE_ID
 ```
 
-This separate one-time command recreates only that selfie member without adding capacity; bulk is
-not recreated. Inspect uncertain submission before retrying. Wait for settled cloud state, new
-updater boot, exactly one warm serving selfie member, private API health and fresh metrics before
-unpausing claims. The command deliberately does not assert runtime verification.
+This separate one-time command issues `POST instanceGroups/{group_id}:rollingRecreate` with only
+that exact `managedInstanceId`. It recreates the sole selfie VM at cap one; it does not create a
+second VM or recreate bulk. Inspect an uncertain submission before retrying. Wait for settled cloud
+state, the new updater boot, exactly one warm serving selfie member, private API health and fresh
+metrics before unpausing. The command deliberately does not assert runtime verification.
+Unpause only after those checks:
+
+```sh
+printf '%s\n' '{"operation":"pause","pool":"bulk","paused":false,"local":false}' | sudo docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+  -f /opt/photo-prjct/docker-compose.deployment.yml \
+  -f /opt/photo-prjct/docker-compose.https.yml \
+  exec -T web python manage.py control_worker_pools
+printf '%s\n' '{"operation":"pause","pool":"selfie","paused":false,"local":false}' | sudo docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+  -f /opt/photo-prjct/docker-compose.deployment.yml \
+  -f /opt/photo-prjct/docker-compose.https.yml \
+  exec -T web python manage.py control_worker_pools
+```
 
 ## Ordinary releases and compatible recovery
 
@@ -107,8 +136,9 @@ sudo python3 -B /usr/local/lib/findme-worker/updater.py \
 
 If the result is `recovered`, rerun the override after admitted journal reconciliation. Read back
 active image, readiness, serving generation and lease behavior. Keep the timer stopped while
-latest differs from the intended recovery image; restarting it follows latest. Web rollback remains
-an exact compatible SHA through canonical Deploy. Active native AdaFace requires selected images
+latest differs from the intended recovery image; restarting it follows latest. Web recovery follows
+the [schema compatibility boundary](deployment.md#migration-preflight-or-deployment-failure): an
+old web SHA is not safe after `processing.0016` drops `ProcessingAttempt.worker_build`. Active native AdaFace requires selected images
 to carry `ru.findme-photo.historical-adaface-contract=vector-only-v1`; the web guard checks DB and
 candidate web without fetching workers. Protocol-breaking rollback needs explicit pause/drain and
 compatible sequencing. Never rewrite durable work or restore queue-side build checks.

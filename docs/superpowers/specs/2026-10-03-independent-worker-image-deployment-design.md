@@ -1,6 +1,6 @@
 # Independent worker-image deployment
 
-- **Status:** Draft for maintainer review
+- **Status:** Approved for implementation planning on 2026-10-03
 - **Date:** 2026-10-03
 - **Owner:** FindMe Photo
 - **Related architecture:** [Current worker placement](../../architecture.md#current-architecture--implemented),
@@ -8,12 +8,13 @@
 - **Related ADRs:** [0028](../../adr/0028-operate-one-canonical-deployment.md),
   [0042](../../adr/0042-isolate-autoscaled-photo-worker-pools.md),
   [0049](../../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md),
-  [0050](../../adr/0050-decouple-processing-queue-from-worker-builds.md)
+  [0050](../../adr/0050-decouple-processing-queue-from-worker-builds.md),
+  [0051](../../adr/0051-release-photo-worker-images-independently.md)
 - **Related work:** [Remote-only photo-worker operations](2026-10-02-remote-only-photo-worker-operations-design.md)
-- **ADR impact:** Requires a new ADR superseding ADRs 0028, 0042 and 0049 only where
-  they require one web/worker SHA or one coupled image rollout. Conforms to ADR 0050's
+- **ADR impact:** ADR 0051 is accepted and supersedes ADRs 0028, 0042 and 0049 only where
+  they require one web/worker SHA or one coupled image rollout. This design conforms to ADR 0050's
   separation of processing work from worker release identity. The canonical deployment,
-  remote-only placement, private worker API and compatible rollback constraints remain.
+  remote-only placement, private worker API and compatible recovery constraints remain.
 
 ## Outcome and boundary
 
@@ -23,9 +24,9 @@ recreating a VM merely to change its container. A documentation-only change does
 anything. This design changes image publication and container replacement, not the durable
 processing queue, model-generation semantics, pool size limits, VM shapes or cloud folders.
 
-The current release path builds the worker on every `main` push, embeds the shared commit SHA
-in its OCI revision label, and expects the web and worker to share that SHA. These are current
-implementation facts, not requirements retained by this design.
+Before this change, Deploy built the worker on every `main` push, embedded that commit SHA in its
+OCI revision label, and expected web and worker to share it. Those former implementation facts
+are not requirements retained by this design.
 
 ## Selected design
 
@@ -70,6 +71,27 @@ group retains its existing warm VM. Container replacement neither changes the gr
 nor creates or deletes a VM. The temporary overlap must fit the approved VM shape; if it
 cannot, the release must not claim zero-downtime replacement or silently increase capacity.
 
+The first migration to this host-owned updater may change the existing VM template to install
+it. The maintainer accepted a one-time selfie-processing pause at the current one-VM ceiling
+while that VM restarts or is replaced; the bulk group remains at zero if idle. This is not
+the normal behavior of subsequent worker-image releases, and it does not raise the ceiling.
+For this one-time transition, pause claims in both pools, drain the sole selfie worker, and verify
+zero live attempts. Merge/publish the worker image to `latest` and deploy the new web protocol and
+migration while claims remain paused. Then patch the existing bulk and selfie templates to install
+the updater. Because the groups use `OPPORTUNISTIC`, a template update does not restart the live
+selfie VM; invoke `rollingRecreate` for its exact existing managed-instance ID at cap one. Keep bulk
+at zero and do not add a second VM. Wait for the recreated selfie VM's updater, warm serving worker,
+private API health, and fresh observations before unpausing claims. No legacy build field is retained
+in the processing protocol solely to bridge this cutover.
+
+Before `processing.0016` removes `ProcessingAttempt.worker_build`, canonical recovery may restore a
+previous web image only when its read-only schema probe succeeds. After the column is dropped, an
+incompatible previous web image is not a safe rollback, including when the migration command itself
+reports failure after committing the drop. Recovery preserves the candidate package and
+`.deployment-recovery/candidate.env` (mode 0600), leaves claims paused, and proceeds with a
+compatible new-protocol candidate or forward fix; no reverse migration or compatibility column
+is added.
+
 Web and worker may advance at different times. Both sides of an overlapping release must
 implement the active claim/lease/result and semantic processor contracts. A breaking contract
 change requires an explicit compatible transition; the queue does not become a release router.
@@ -96,10 +118,12 @@ change requires an explicit compatible transition; the queue does not become a r
    release failure. Existing jobs, attempts and accepted evidence are not rewritten.
 5. Worker replacement and web-only deployment succeed without a shared web/worker SHA or a
    queue-side worker-build check, while active semantic processing contracts remain valid.
+6. A post-migration deployment failure cannot restore an incompatible previous web image; it
+   retains candidate recovery inputs and leaves recovery paused for a compatible forward fix.
 
 ## Out of scope
 
-This specification does not authorize an immediate production rollout, extra VMs, a larger
-VM shape, removal of model warm-up, or changing autoscaling bounds. It does not choose a
+This specification does not authorize extra VMs, a larger VM shape, removal of model
+warm-up, or changing autoscaling bounds. It does not choose a
 new queue implementation or weaken private transport, caller authentication, lease fencing,
 result validation, or model-generation provenance.

@@ -31,6 +31,8 @@ patterns = [
   "tests/processing/test_worker_container_contract.py",
   "tests/processing/test_import_worker_container_contract.py",
   "Dockerfile.import-worker",
+  "Dockerfile.worker",
+  "Dockerfile.worker-base",
 ]
 suites = ["operational"]
 layer = "operational"

@@ -413,10 +413,15 @@ and repository skill-structure tests.
 
 ## Deployment
 
-The customer-serving Yandex Cloud VM is the one unqualified canonical deployment. A push to `main`
-runs **Deploy**, builds `ghcr.io/peter-nikitin/photo-prjct:<commit-sha>`, and applies it with Compose
-project `photo-prjct` using `docker-compose.deployment.yml` plus `docker-compose.https.yml`. The
-workflow verifies the immutable image and `https://findme-photo.ru/health/`.
+The customer-serving Yandex Cloud VM is the one unqualified canonical deployment. **Deploy**
+classifies each `main` change: documentation-only changes do nothing; backend changes publish and
+deploy the SHA-tagged web/import images without touching photo workers; worker changes publish a
+worker image and advance its `latest` pointer after image smoke. The reusable worker base contains
+the pinned models and heavy dependencies. Running worker hosts warm and switch containers in place;
+new VMs start from `latest`. Mixed changes publish both components. The workflow verifies the
+immutable web image and `https://findme-photo.ru/health/`. See the
+[deployment runbook](docs/runbooks/deployment.md) and
+[worker-pool runbook](docs/runbooks/worker-pools.md) for operations and recovery.
 
 The worker alert profile in [`deploy/monitoring/prometheus/environment.json`](deploy/monitoring/prometheus/environment.json)
 is enabled in Git to prepare the next worker launch. This change has not applied those rules to

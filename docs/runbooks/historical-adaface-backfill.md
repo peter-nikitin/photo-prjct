@@ -2,28 +2,23 @@
 
 This is the operator path for the [approved specification](../superpowers/specs/2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md)
 and [ADR 0049](../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md).
-The [remote-only transition](worker-pools.md) must be committed, deployed and read back before
-historical enrollment. The code package is preparation; no production enrollment, event
-activation or recovery rehearsal is authorized by merging it. Each live step below needs
-its own explicit approval of the exact release, scope, impact, evidence, and recovery method.
-Keep five evidence states separate: **code-ready** means the reviewed package passed local/CI
-checks; **committed** means the initial fleet receipt and exact marker were read back after
-cleanup; **deployed** means the new SHA and compatible images are read back from the canonical
-application and both remote pools; **backfill-not-started** remains true until a separately
-approved first bounded enrollment; **live-verified** needs actual historical processing,
-activation and sustained remote recovery evidence. None implies the next.
+The [independent-image release](../plans/2026-10-03-independent-worker-image-deployment.md)
+must be deployed and read back before historical enrollment. Merging readiness code does not
+authorize enrollment, event activation or a recovery rehearsal. Each live step still needs its
+own approval of the exact release, scope, impact, evidence and recovery method. Keep four states
+separate: **code-ready** means reviewed code and required CI checks; **deployed** means current web
+and worker images are independently identified and live readiness is verified; **backfill-not-started**
+remains true until a separately approved bounded enrollment; **live-verified** needs actual
+historical processing, activation and sustained remote recovery evidence. None implies the next.
 
 ## Starting state and responsibilities
 
-The last 2026-10-02 observation found the initial fleet receipt `verified`, not
-`committed`. Its original recovery inputs and package remain until the exact one-time
-finalizer commits and cleans them. The recorded
-13 photos missing original metadata and 116 photos without accepted previews are unresolved
-source gaps, not accepted omissions; these counts may overlap and must be refreshed.
-Push/merge to `main` automatically triggers normal Deploy. While the initial receipt remains
-`verified`, do not merge this readiness PR or trigger that automatic deployment; finish the
-separately approved pinned finalizer in Gate 1a first. Local/CI readiness is not permission to bypass this
-pending-acceptance fence.
+The initial remote-only fleet receipt was read back `committed` on 2026-10-03. That records the
+earlier fleet acceptance; it does not prove the independent updater, new claim protocol or current
+worker image is deployed. Verify those through Gate 1 and the [worker-pool runbook](worker-pools.md).
+The recorded 13 photos missing original metadata and 116 photos without accepted previews are
+unresolved source gaps, not accepted omissions; counts may overlap and must be refreshed. The
+historical enrollment has not started.
 
 What the operator does manually: approve the concrete live scope and cost, resolve/disposition
 source blockers, review recognition quality, and approve each event switch.
@@ -38,12 +33,15 @@ Store any private quality examples in the existing authorized private review bou
 
 ## Fresh read-only inventory
 
-Use the established canonical VM access (`ssh -l petrnikitin 111.88.151.64`). On the host,
-read the deployed revision/image receipts and scalar fleet state. Do not edit receipts:
+Use the established canonical VM access (`ssh -l petrnikitin 111.88.151.64`). Read the deployed
+web marker and scalar pool state:
 
 ```sh
-PYTHONPATH=/opt/photo-prjct/deploy/worker-pools/_canonical \
-  python3 -B /opt/photo-prjct/deploy/worker-pools/release.py status --root /opt/photo-prjct
+sudo cat /opt/photo-prjct/deployed-image
+printf '%s\n' '{"operation":"status"}' | sudo docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+  -f /opt/photo-prjct/docker-compose.deployment.yml \
+  -f /opt/photo-prjct/docker-compose.https.yml \
+  exec -T web python manage.py control_worker_pools
 sudo docker compose --env-file /opt/photo-prjct/.env \
   -f /opt/photo-prjct/docker-compose.deployment.yml \
   -f /opt/photo-prjct/docker-compose.https.yml \
@@ -55,56 +53,46 @@ sudo docker compose --env-file /opt/photo-prjct/.env \
   "import json; from picflow.models import Event; print(json.dumps(list(Event.objects.filter(face_search_generation=Event.FaceSearchGeneration.SFACE_V3).order_by('id').values('id','slug','publication_status'))))"
 ```
 
-Refresh actual provider membership, worker build/digest and complete boot-disk inventory using
-the supported read-only interfaces in [worker-pools](worker-pools.md); retain observation times
-and exact selectors for fresh metrics. Inspect claims, live/expired leases, queued searches,
-attempts, collector freshness, existing recovery gate and database backup/restore evidence.
-Include published and unavailable events and hidden photos. A prior count, zero queue,
-`RUNNING` VM, or human waiver is not acceptance telemetry.
+Refresh actual provider membership, the worker updater's active immutable image digest and complete
+boot-disk inventory using the supported read-only interfaces in [worker-pools](worker-pools.md);
+retain observation times and exact selectors for fresh metrics. Inspect claims, live/expired leases,
+queued searches, attempts, collector freshness, the deployment recovery gate and database backup/
+restore evidence. Include published and unavailable events and hidden photos. A prior count, zero
+queue, `RUNNING` VM, or human waiver is not acceptance telemetry.
 
-## Gate 1a: finalize the initial remote receipt
+## Gate 1: deploy and prove the readiness code
 
-Before historical enrollment or native event publication, refresh the exact receipt, web SHA,
-worker digest, both group IDs and serving health. Obtain separate operator approval for the
-reviewed branch dispatch in [one-time finalization](worker-pools.md#one-time-initial-receipt-finalization).
-The workflow's `finalize_initial_workers=true` input invokes the checksum-bound finalizer
-without deploying the old package. A pre-commit failure retains `verified` and the original
-recovery inputs. A post-commit cleanup interruption is reconciled by the same exact finalizer;
-never restore an old package. Read back `committed`, the current fleet marker, both claims and
-leases, public/private health, fresh metrics and absence of the original recovery inputs.
-Only then may normal Deploy proceed. This commit proves the old remote release, not the new
-historical command or image capability; it grants no enrollment.
+Refresh the exact web revision, worker digest, both group IDs and serving health. If the one-time
+updater transition is still pending, use the [cap-one procedure](worker-pools.md#one-time-updater-installation-at-cap-one):
+pause both claim pools, drain the sole selfie worker, merge/publish the worker image and deploy the
+new web migration, patch the existing templates, then invoke `rollingRecreate` for the exact sole
+selfie managed-instance ID. The `OPPORTUNISTIC` policy does not restart that live VM after a
+template patch. Keep bulk at zero and do not add a VM. Unpause only after the recreated worker is
+warm and serving with fresh private API and metric evidence.
 
-## Gate 1b: deploy and prove the readiness code
-
-After Gate 1a is read back `committed` with exact cleanup, separately approve a canonical ordinary Deploy of the
-exact new 40-character `<APPROVED_READINESS_SHA>` containing this reviewed package. Record its
-GREEN CI, expected web digest and worker digest. Prepare the reviewed matching remote manifest
-and checksum through the existing worker-pool release configuration, with the same fixed group
-identities and caps. Do not reuse the old initial SHA, old worker digest/manifest or arbitrary
-moving `main` as the release.
-Normal dispatch builds both images for the explicit SHA and performs the established remote
-rollout under canonical Deploy. After completion and the reviewed manifest/checksum update,
-the approved merge/push trigger can deploy the readiness release through the existing procedure;
-record its exact resulting release SHA and build outputs. Alternatively, use this exact manual
-dispatch, never a second concurrent Deploy:
+Separately approve canonical Deploy of the exact reviewed commit containing this package. A merge
+to `main` runs Deploy; for an exact retry, use this dispatch and do not run a concurrent Deploy:
 
 ```sh
 gh workflow run deploy.yml --ref main -f deployment_sha=<APPROVED_READINESS_SHA>
 ```
 
-Wait for this exact Deploy run to finish all public/private/application health and remote
-cap-one rollout gates. This is a readiness-code deployment with **no enrollment** or event
-switch. It may replace remote workers and incur their existing bounded VM/disk uptime; use
-the existing deployment lease drain, disk fences and compatible remote recovery on failure.
-If it fails or rolls back, stop here: healthy old workers do not satisfy this gate.
+For a worker-input change, Deploy builds the worker image and advances `latest` only after image
+smoke; a backend-only retry leaves worker images and hosts alone. There is no worker manifest,
+checksum/receipt workflow or shared web/worker SHA gate. Record the web revision and active worker
+digest independently. Wait for this exact run and the host updater to finish; this gate does not
+enroll or activate an event. If the first updater transition is in scope, keep both pools paused
+until the separate template and sole-selfie recreation steps above complete.
 
-On the canonical host, read back only release/image identities, not full manifests or secrets:
+On the canonical host, read back the web marker and pool state, not secrets:
 
 ```sh
 cat /opt/photo-prjct/deployed-image
-python3 -c 'import json; from pathlib import Path; r=json.loads(Path("/opt/photo-prjct/worker-pools-current.json").read_text()); c=r["manifest"]["configuration"]; print(json.dumps({"worker_build":c["worker_build"],"worker_image":c["worker_image"],"web_image":r["proof"]["web_image"],"web_id":r["proof"]["web_id"],"worker_id":r["proof"]["worker_id"]}))'
-sudo docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "ru.findme-photo.historical-adaface-contract"}}' <READ_BACK_WEB_DIGEST> <READ_BACK_WORKER_DIGEST>
+printf '%s\n' '{"operation":"status"}' | sudo docker compose --project-name photo-prjct --env-file /opt/photo-prjct/.env \
+  -f /opt/photo-prjct/docker-compose.deployment.yml \
+  -f /opt/photo-prjct/docker-compose.https.yml \
+  exec -T web python manage.py control_worker_pools
+sudo docker image inspect <READ_BACK_WEB_IMAGE> --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "ru.findme-photo.historical-adaface-contract"}}'
 sudo docker compose --env-file /opt/photo-prjct/.env \
   -f /opt/photo-prjct/docker-compose.deployment.yml \
   -f /opt/photo-prjct/docker-compose.https.yml ps -q web
@@ -115,25 +103,29 @@ sudo docker compose --env-file /opt/photo-prjct/.env \
   exec -T web python manage.py backfill_historical_adaface --help
 ```
 
-Require the deployed web tag/revision and fleet `worker_build` to equal the approved readiness
-SHA, both immutable digest references to equal the approved build outputs, the running web's
-image ID to equal `web_id`, and both actual image labels to show that SHA and `vector-only-v1`.
-The command help must expose the deployed dry-run, bounded enrollment and activation options.
-Through the existing approved `remote-check` secret wrapper with its configured VM target and
-known-hosts values, obtain fresh rollout verification (the commands below are the underlying
-calls after that projection is materialized):
+Require the deployed web marker and running web image revision to match the approved web commit,
+and the web image to carry `vector-only-v1`. Independently read the active worker's immutable
+digest and inspect that actual image's revision and `vector-only-v1` label on its worker host. The
+worker revision need not equal the web SHA. Verify both pools are fresh, selfie is warm/serving,
+bulk is zero while idle, no live attempts remain, and public/private health succeeds. The canonical
+web guard checks the database and candidate web label; it does not fetch or validate the worker
+image. Confirm the deployed command exposes the dry-run, bounded enrollment and activation options:
 
 ```sh
-WORKER_POOL_OPERATION=status deploy/run-remote.sh worker-pools
-WORKER_POOL_OPERATION=verify deploy/run-remote.sh worker-pools
+sudo docker compose --env-file /opt/photo-prjct/.env \
+  -f /opt/photo-prjct/docker-compose.deployment.yml \
+  -f /opt/photo-prjct/docker-compose.https.yml \
+  exec -T web python manage.py report_worker_pool_state --json
+sudo docker compose --env-file /opt/photo-prjct/.env \
+  -f /opt/photo-prjct/docker-compose.deployment.yml \
+  -f /opt/photo-prjct/docker-compose.https.yml \
+  exec -T web python manage.py backfill_historical_adaface --help
 ```
 
-Read back the release receipt `committed`, the matching `worker-pools-current.json`, settled
-provider/disk operations and fresh coordinator/collector evidence for **both** pools at the
-new worker build/digest. Retain the existing verify proof for paused/warm bulk and warm selfie,
-healthy claims/private API and cap-one replacement; a local cached image or marker alone is not
-remote rollout proof. No historical job may be enrolled yet. Only this evidence establishes
-**deployed** readiness; historical live verification remains Gates 2–4.
+Read back settled provider operations, the active worker digest and fresh coordinator/collector
+evidence for **both** pools; a local cached image or marker alone is not live proof. No historical
+job may be enrolled yet. Only this evidence establishes **deployed** readiness; historical live
+verification remains Gates 2–4.
 
 Now, for each explicit event, run the supported dry-run without mutation flags:
 
@@ -221,46 +213,32 @@ Across the complete fresh SFace inventory, require reconciled terminal outcomes 
 activation for every event. Record sustained bulk processing with foreground progress, a real
 bulk zero-to-one wake, idle return to zero and complete provider proof that the associated boot
 disk was deleted. Prove a new warm selfie result under the accepted AdaFace cohort. Relate
-provider timestamps, fresh metrics, worker build and durable attempts/results; graphs missing
+provider timestamps, fresh metrics, active worker digest and durable attempts/results; graphs missing
 the first counter sample are not absence-of-work proof.
 
-Separately approve a compatible remote recovery rehearsal, including
-loss/replacement of the only warm selfie worker and bulk wake with preserved jobs/leases. Use
-existing capped release tooling, fixed group identities and complete disk/uncertain-operation
-receipts. Through the existing approved secret wrapper:
-
-```sh
-WORKER_POOL_OPERATION=status deploy/run-remote.sh worker-pools
-WORKER_POOL_OPERATION=verify deploy/run-remote.sh worker-pools
-# Mutating examples: execute only after approval of the exact durable release receipt.
-WORKER_POOL_OPERATION=rollout deploy/run-remote.sh worker-pools
-WORKER_POOL_OPERATION=rollback deploy/run-remote.sh worker-pools
-```
-
-`rollout` resumes an established remote candidate; it does not select arbitrary new images.
-`rollback` uses the receipt's previous compatible remote release and the existing serial
-cap-one replacement/disk fences. It does not commit the
-application marker independently. A prior release without native capability is rejected once
-any active event depends on vector-only evidence. Use canonical Deploy with a reviewed new
-manifest and matching app/worker SHA for repair forward; do not relabel an old image.
-
-On uncertain response, first inspect status, pending provider operation and disk inventories.
-Resume only the same recorded candidate. Fence uncertain members, stop new enrollment and let
-durable lease recovery run through existing commands; never reset jobs/vectors or expand caps.
-A fleet/private-network failure can pause processing. Record the measured recovery and service
-impact; a planning assertion is not a completed rehearsal.
+Separately approve a compatible remote recovery rehearsal, including loss/replacement of the only
+warm selfie worker and bulk wake with preserved jobs/leases. Use current group/member operations
+and the [worker-pool runbook](worker-pools.md) for status and digest recovery; the old
+`release.py`, manifest, initial-finalizer and receipt-based rollout/rollback commands are retired.
+For a worker image, pause the updater timer and select an explicitly compatible immutable digest.
+For web recovery, use the [canonical deployment path](deployment.md); after `processing.0016`
+drops `ProcessingAttempt.worker_build`, an incompatible previous web SHA cannot be restored.
+Preserve caps, durable work and artifacts. On uncertain provider response, inspect the exact
+operation and full group/disk state before retrying; stop enrollment and allow normal lease
+recovery. Record actual recovery and service impact; a plan is not a completed rehearsal.
 
 ## Remaining model-data boundary
 
-This repository package removes the production local photo/selfie placement and recovery
-branches. The one-time finalizer cleans only the original recovery snapshot after the initial
-remote receipt is committed. Verify the new package through ordinary Deploy and fresh live
-read-back before Gate 2; code readiness alone does not prove production cleanup.
+The repository removes local photo/selfie execution and implements the independent worker-image
+path. The initial remote-only receipt being committed proves the earlier fleet acceptance, not
+that the updater or new processing protocol is live. Verify the new package through canonical
+Deploy and fresh web/worker read-back before Gate 2; code readiness alone does not prove rollout.
 
-Both images declare `ru.findme-photo.historical-adaface-contract=vector-only-v1`. The canonical
-guard reads native-generation state before package mutation and checks actual candidate web
-and worker labels; digest/revision checks still bind release identity. A failed DB probe fails
-closed. After event activation, an older image without native capability is not a compatible
-rollback candidate. SFace support, historical JSON rows, Python readers, old-generation
-evidence and the temporary reader gate remain for a later coordinated model-data retirement;
-this runbook does not authorize their deletion.
+Both Docker images declare `ru.findme-photo.historical-adaface-contract=vector-only-v1`. Before
+web deployment, the canonical guard reads active native-generation state and checks the candidate
+web image; it does not fetch or validate the worker. Separately inspect the active worker digest
+and its label on the worker host. Web revision and worker revision are independent and need not
+match. A failed database probe fails closed. After event activation, an image without native
+capability is not a compatible recovery candidate. SFace support, historical JSON rows, Python
+readers, old-generation evidence and the temporary reader gate remain for later coordinated
+model-data retirement; this runbook does not authorize their deletion.

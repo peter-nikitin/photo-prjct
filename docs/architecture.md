@@ -96,32 +96,24 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
 - PostgreSQL is configured entirely through environment variables.
 - Local development uses Docker Compose for Django and PostgreSQL.
 - The repository implements the isolated photo-worker boundary accepted by
-  [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md): private verified TLS and separate
-  fleet authorization, additive pool/member admission and boot-fenced retirement, aggregate
-  queue metrics, and dry-run-first bounded fleet templates. Existing processing attempts and
-  artifacts remain authoritative. The last production observation found serving remote pools,
-  with the initial receipt still `verified`; the new remote-only package has not been deployed.
-  The [capped activation amendment](superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md)
-  selects bulk 0..1 and selfie 1..1 before quota expansion, preserving workload-driven bulk-zero
-  behavior. Repository tooling implements a checksum-bound ceiling and serial release
-  replacement with policy restoration and provider disk-absence fences. The existing groups use
-  the approved cap-one policy; fresh provider and disk read-back remains required before a release.
-  [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) now has
-  repository support for distinct worker and canonical folder inputs: worker-owned group,
-  instance and disk inventory, immutable release/receipt binding and canonical-native
-  WORKLOAD metric selection and publication. Repository evidence does not establish current
-  effective organization policy or recipient alert delivery. Canonical Deploy now supports a
-  checksum-bound, branch-dispatched one-time finalizer for the already serving initial fleet;
-  the ordinary deployment and recovery path then uses only remote photo/selfie pools. The
-  finalizer must read back `committed` and clean its exact original recovery inputs before
-  ordinary Deploy of the new package. See the [operator runbook](runbooks/worker-pools.md).
-  [ADR 0049](adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
-  accepts remote-only photo/selfie recovery before historical AdaFace enrollment. This branch
-  removes the production local photo/selfie worker and recovery path, and prepares bounded
-  vector-only AdaFace enrollment, per-event reconciliation/activation, foreground scheduling,
-  and release guards. The initial receipt remains last-observed `verified`; its commitment,
-  original recovery cleanup, deployment of the new SHA and live remote-only read-back are
-  separate pending operations. No historical backfill or event activation is claimed.
+  [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md): private verified TLS, separate
+  fleet authorization, durable pool/member admission, boot-fenced retirement, queue metrics, and
+  bounded worker-group provisioning. Bulk remains 0..1 and demand-driven; selfie remains 1..1.
+  [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) defines separate
+  worker/canonical folder ownership and scoped metrics. On 2026-10-03 the initial remote-only
+  fleet receipt was read back `committed`; that records the earlier fleet acceptance, not the
+  independent image updater or this branch's migration. Historical enrollment and event
+  activation have not started.
+
+  The implementation of [ADR 0051](adr/0051-release-photo-worker-images-independently.md) is in
+  the repository: Deploy classifies changed components, worker images use a reusable model base,
+  and a host updater warms and switches worker containers without VM replacement. Documentation-
+  only changes do not deploy; backend-only releases leave worker images and groups alone; worker
+  changes publish `latest`. These changes have not been deployed or published to GHCR. The
+  one-time live transition remains: pause and drain claims, deploy the new web protocol/migration
+  with the worker image, patch the existing templates, then explicitly recreate the sole selfie
+  managed instance at cap one. Bulk remains zero; no second VM is added. See the
+  [worker-pool runbook](runbooks/worker-pools.md).
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
   PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
   event-scoped reports. The shipped preview-first path persists explicit legacy or preview-first
@@ -366,12 +358,18 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   functional acceptance and charged provisioning remain pending; this is not an implemented
   topology, database HA or approval to execute new-only model backfill.
 
-- [ADR 0050](adr/0050-decouple-processing-queue-from-worker-builds.md) accepts a narrow
-  processing interface: jobs and attempts carry semantic processor/model generations and lease
-  state, never worker image, release build, container or VM identity. The queue does not use fleet
-  release or cloud membership to admit work; private caller authentication and lease/result
-  validation remain mandatory. This is an accepted change to the processing boundary, not an
-  implemented migration or approval of a new image-deployment mechanism.
+- [ADR 0050](adr/0050-decouple-processing-queue-from-worker-builds.md) keeps image identity out of
+  processing jobs and attempts. The repository removes `ProcessingAttempt.worker_build` and its
+  claim/result protocol fields in `processing.0016`; semantic processor/model generations, private
+  caller authentication, lease fencing and result validation remain. The migration has not been
+  applied to canonical production as part of this package.
+
+- [ADR 0051](adr/0051-release-photo-worker-images-independently.md) supersedes only the shared
+  web/worker SHA and coupled image rollout in ADRs 0028, 0042 and 0049. One canonical Deploy
+  authority remains. After `processing.0016` drops the old column, automatic web recovery is
+  allowed only if the previous image passes the live schema probe; otherwise the candidate package
+  and recovery environment are retained and recovery proceeds forward with claims paused. The
+  [deployment runbook](runbooks/deployment.md) records this boundary.
 
 - [ADR 0035](adr/0035-use-django-polled-yandex-disk-import.md) accepts public Yandex Disk import
   through a dedicated ingestion worker polling a private Django API backed by PostgreSQL.

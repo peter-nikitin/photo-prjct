@@ -51,8 +51,11 @@ AdaFace evidence. These figures are a dated observation, not a hard-coded migrat
 substitute for a fresh release inventory.
 
 The pgvector storage is one shared `processing_faceembeddingvector` table with a `model_version`
-column, not separate tables per model. Its SFace rows are legacy data; its AdaFace rows are the
-current search data. The earlier JSON table `processing_faceembedding` has already been dropped.
+column, not separate tables per model. Its `vector` column has no fixed dimension so it could
+store SFace 128D and AdaFace 512D side by side. A model/dimension check permits both, and the
+database trigger rejects ordinary updates and deletes of vector evidence. The SFace rows are
+legacy data; the AdaFace rows are current search data. The earlier JSON table
+`processing_faceembedding` has already been dropped.
 
 The code still has an event-level SFace/AdaFace selector, SFace worker inference and image
 artifact, multiple backend/worker contract branches, SFace-capable vector constraints, local
@@ -108,11 +111,13 @@ membership and current media authorization without rerunning recognition.
   a request to run SFace. The activation receipt may retain a generic read-only model for audit;
   it is not an input to the current cohort selector.
 - Delete every SFace row from `processing_faceembeddingvector` after active references and old
-  processes are gone. Keep this shared table and its pgvector extension for AdaFace; remove its
-  SFace dimension/model allowance so new SFace rows cannot be inserted. There is no separate
-  old-model pgvector table to drop. Also redact any raw SFace embedding arrays retained inside
-  historical `ProcessingAttempt.result`, `ProcessingLateReceipt.payload` or other persisted
-  legacy JSON.
+  processes are gone. The one-time database transition must handle the existing immutable-vector
+  trigger deliberately, remove only old-model rows, and restore the guard for current vectors.
+  Keep the shared table and pgvector extension for AdaFace; change the unconstrained `vector`
+  column to fixed `vector(512)` and replace the two-model check with an AdaFace-only model
+  constraint. There is no separate old-model pgvector table to drop. Also redact any raw SFace
+  embedding arrays retained inside historical `ProcessingAttempt.result`,
+  `ProcessingLateReceipt.payload` or other persisted legacy JSON.
   Preserve non-vector outcome, timing, geometry, quality, status, attempt identity and the
   original `result_hash` as an audit receipt of the submitted payload; the hash is no longer a
   checksum of the redacted JSON. This bounded historical redaction must not erase an attempt,
@@ -173,8 +178,9 @@ exact before/after aggregates without listing biometric identities.
    file or environment path. Active source, configuration and build manifests have no SFace or
    YuNet implementation, branch or model artifact. The obsolete experiment code and its tests
    are removed; historical migrations, research documents and ADRs remain historical.
-3. `processing_faceembeddingvector` contains no SFace rows and rejects a new 128D or SFace row;
-   its AdaFace rows remain searchable. The final schema has no separate SFace pgvector table.
+3. `processing_faceembeddingvector` contains no SFace rows; its `vector` column is fixed at 512D,
+   its model constraint accepts only AdaFace, and its insert/update/delete guard still protects
+   current evidence. AdaFace rows remain searchable, and there is no separate SFace pgvector table.
    Historical attempt JSON and other live database payloads contain no raw SFace embedding
    arrays, while their non-vector history and original result hashes remain available. Every
    current AdaFace vector still has the correct accepted detection/projection identity; missing

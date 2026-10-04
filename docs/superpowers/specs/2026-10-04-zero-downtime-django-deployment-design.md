@@ -1,7 +1,7 @@
 # Zero-downtime Django releases on the canonical VM
 
 - Date: 2026-10-04
-- Status: Proposed for maintainer review
+- Status: Approved by maintainer on 2026-10-04
 - Related architecture: [Current architecture — implemented](../../architecture.md#current-architecture--implemented), especially canonical Compose deployment, HTTPS edge, PostgreSQL, and isolated worker pools
 - Related ADRs: [0003](../../adr/0003-docker-compose-yandex-cloud.md), [0007](../../adr/0007-nginx-certbot-https-edge.md), [0011](../../adr/0011-use-minimal-shared-https-rollout.md), [0028](../../adr/0028-operate-one-canonical-deployment.md), [0051](../../adr/0051-release-photo-worker-images-independently.md), [0053](../../adr/0053-reconcile-observability-independently-on-main.md)
 - ADR impact: Conforms to ADRs 0003, 0007, 0011, 0028, 0051, and 0053. Two transient web slots are releases within the one canonical Compose deployment, not two environments or two durable release authorities.

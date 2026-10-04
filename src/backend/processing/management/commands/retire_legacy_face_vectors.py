@@ -121,17 +121,26 @@ class Command(BaseCommand):
             self.stdout.write(json.dumps({"published_cohort": published_cohort}, sort_keys=True))
             raise CommandError("Inconsistent published current cohort; retirement refused")
         inventory_ms = (monotonic() - inventory_started) * 1000
+        after_ids: dict[str, Any] = {
+            "legacy_vectors": None,
+            "attempt_payloads": None,
+            "late_payloads": None,
+        }
         for batch in range(max_batches if options["execute"] else 1):
             discovery_started = monotonic()
             with connection.cursor() as cursor:
                 candidates = (
-                    self._discover(cursor, batch_size, before) if options["execute"] else {}
+                    self._discover(cursor, batch_size, before, after_ids)
+                    if options["execute"]
+                    else {}
                 )
             discovery_ms = (monotonic() - discovery_started) * 1000
             planned = {
                 key: len(candidates.get(key, []))
                 for key in ("legacy_vectors", "attempt_payloads", "late_payloads")
             }
+            if options["execute"] and any(before[key] and not planned[key] for key in planned):
+                raise CommandError("Discovery exhausted before inventory reached zero")
             after = {key: value - planned.get(key, 0) for key, value in before.items()}
             remaining = any(after[key] for key in planned)
             if (
@@ -201,6 +210,10 @@ class Command(BaseCommand):
             }
             self.stdout.write(json.dumps(receipt, sort_keys=True))
             before = after
+            if options["execute"]:
+                for key, rows in candidates.items():
+                    if rows:
+                        after_ids[key] = rows[-1][0] if key != "legacy_vectors" else rows[-1]
             inventory_ms = 0.0
             if not remaining:
                 break
@@ -295,13 +308,21 @@ class Command(BaseCommand):
         if monotonic() >= deadline:
             raise CommandError("Mutation transaction deadline exceeded; batch rolled back")
 
-    def _discover(self, cursor, batch_size: int, counts: dict[str, int]) -> dict[str, list]:
+    def _discover(
+        self, cursor, batch_size: int, counts: dict[str, int], after_ids: dict[str, Any]
+    ) -> dict[str, list]:
         # All scans, JSON parsing/redaction and bulk parameter construction happen
         # before any exclusive lock. Historical payloads are immutable; SQL below
         # rechecks their exact original value before changing them.
+        vector_after = after_ids["legacy_vectors"]
+        vector_cursor = " AND id > %s" if vector_after is not None else ""
+        vector_parameters = [LEGACY_MODEL]
+        if vector_after is not None:
+            vector_parameters.append(vector_after)
         cursor.execute(
-            f"SELECT id FROM {VECTOR_TABLE} WHERE model_version=%s ORDER BY id LIMIT %s",
-            [LEGACY_MODEL, batch_size],
+            f"SELECT id FROM {VECTOR_TABLE} WHERE model_version=%s"
+            f"{vector_cursor} ORDER BY id LIMIT %s",
+            [*vector_parameters, batch_size],
         )
         candidates: dict[str, list] = {"legacy_vectors": [row[0] for row in cursor.fetchall()]}
         for (table, field, _), key in zip(
@@ -311,12 +332,18 @@ class Command(BaseCommand):
             if not counts[key]:
                 continue
             configuration = "row.configuration" if field == "result" else "attempt.configuration"
+            payload_after = after_ids[key]
+            payload_cursor = " AND row.id > %s" if payload_after is not None else ""
+            parameters = [LEGACY_PATH, ARRAY_PATH, LEGACY_PATH, LEGACY_PATH]
+            if payload_after is not None:
+                parameters.append(payload_after)
             cursor.execute(
                 f"SELECT row.id, row.{field}, jsonb_path_exists({configuration}, "
                 f"%s::jsonpath, '{{}}'::jsonb, true) FROM "
                 f"{self._payload_source(table, field)} WHERE "
-                f"{self._payload_predicate(table, field)} ORDER BY row.id LIMIT %s",
-                [LEGACY_PATH, ARRAY_PATH, LEGACY_PATH, LEGACY_PATH, batch_size],
+                f"{self._payload_predicate(table, field)}{payload_cursor} "
+                f"ORDER BY row.id LIMIT %s",
+                [*parameters, batch_size],
             )
             candidates[key] = []
             for row_id, payload, legacy in cursor.fetchall():

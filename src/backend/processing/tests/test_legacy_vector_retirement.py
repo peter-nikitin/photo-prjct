@@ -284,6 +284,44 @@ def test_batch_bound_is_restartable_and_finalization_refuses_remaining_material(
     assert second["contracted"] is True
 
 
+def test_batched_payload_discovery_advances_past_committed_rows(history):
+    from processing.management.commands.retire_legacy_face_vectors import Command
+
+    original = history[0][0]
+    another = ProcessingAttempt.objects.create(
+        event=original.event,
+        run=original.run,
+        job=original.job,
+        photo=original.photo,
+        contract_version=original.contract_version,
+        processor_type=original.processor_type,
+        processor_version=original.processor_version,
+        configuration=original.configuration,
+        input_fingerprint=original.input_fingerprint,
+        status="succeeded",
+        terminal_at=timezone.now(),
+        result=original.result,
+        result_hash=original.result_hash,
+    )
+    seen_after_ids = []
+    original_discover = Command._discover
+
+    def discover(command, cursor, batch_size, counts, after_ids):
+        seen_after_ids.append(after_ids.copy())
+        return original_discover(command, cursor, batch_size, counts, after_ids)
+
+    with patch.object(Command, "_discover", discover):
+        receipts = execute(batch_size=1, max_batches=2)
+
+    assert len(receipts) == 2
+    assert seen_after_ids[0]["attempt_payloads"] is None
+    assert seen_after_ids[1]["attempt_payloads"] is not None
+    original.refresh_from_db()
+    another.refresh_from_db()
+    assert "embedding" not in original.result["faces"][0]
+    assert "embedding" not in another.result["faces"][0]
+
+
 def test_migration_cannot_purge_or_contract_before_activation():
     from importlib import import_module
 
@@ -311,9 +349,9 @@ def test_inventory_and_discovery_do_not_run_under_mutation_locks(history):
         phases.append(command._holding_mutation_locks)
         return original_counts(command, cursor)
 
-    def discover(command, cursor, batch_size, counts):
+    def discover(command, cursor, batch_size, counts, after_ids):
         phases.append(command._holding_mutation_locks)
-        return original_discover(command, cursor, batch_size, counts)
+        return original_discover(command, cursor, batch_size, counts, after_ids)
 
     with patch.object(Command, "_counts", counts), patch.object(Command, "_discover", discover):
         receipt = execute()[0]

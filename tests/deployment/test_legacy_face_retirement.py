@@ -11,9 +11,10 @@ def test_retirement_order_and_failed_postcommit_guard(tmp_path):
     source = (ROOT / "deploy/apply-deployment.sh").read_text()
     commit = source.index("deployment_committed=1")
     drop = source.index("retire_json_face_embeddings --execute")
-    assert source.index("retire_json_face_embeddings;") < source.index(
+    assert source.index("manage.py migrate --noinput") < source.index(
         'mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"'
     )
+    assert "retire_json_face_embeddings;" not in source
     assert source.index("phase local-health") < commit < drop
     assert '"$deployment_committed" -eq 0' in source
     tail = source[source.index("# Physical contraction is deliberately") :]
@@ -57,7 +58,7 @@ def test_native_only_activation_establishes_forward_recovery_boundary(tmp_path):
     source = (ROOT / "deploy/apply-deployment.sh").read_text()
     boundary = source.index("native_only_activation_started=1")
     assert (
-        source.index("retire_json_face_embeddings;")
+        source.index('mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"')
         < boundary
         < source.index("if compose_up_command;")
     )

@@ -323,7 +323,7 @@ def test_checksum_mismatch_cannot_make_cloud_calls():
     cloud.assert_not_called()
 
 
-def updater_install_fixture(*, omit_max_expansion=False):
+def updater_install_fixture(*, omit_max_expansion=False, omit_bulk_min_zone_size=False):
     provision = module("provision")
     conf = config(1)
     cloud = FakeCloud(provision, conf)
@@ -331,9 +331,11 @@ def updater_install_fixture(*, omit_max_expansion=False):
         body | {"id": f"{pool}-group", "status": "ACTIVE"}
         for pool, body in provision.prepare(conf)["groups"].items()
     ]
-    for group in cloud.groups:
+    for pool, group in zip(("bulk", "selfie"), cloud.groups, strict=True):
         if omit_max_expansion:
             group["deployPolicy"].pop("maxExpansion")
+        if omit_bulk_min_zone_size and pool == "bulk":
+            group["scalePolicy"]["autoScale"].pop("minZoneSize")
         group["instanceTemplate"]["metadata"]["ssh-keys"] = "preserved-nonsecret-key"
     readback = provision.status(conf, cloud)
     conf["groups"] = {
@@ -364,6 +366,38 @@ def test_one_time_updater_install_accepts_omitted_max_expansion():
     result = provision.install_updater(conf, cloud=cloud)
     assert set(result) == {"bulk", "selfie"}
     assert len(cloud.calls) == 2
+
+
+def test_one_time_updater_install_accepts_live_omitted_bulk_min_zone_size_and_max_expansion():
+    provision, conf, cloud = updater_install_fixture(
+        omit_max_expansion=True, omit_bulk_min_zone_size=True
+    )
+    result = provision.install_updater(conf, cloud=cloud)
+    assert set(result) == {"bulk", "selfie"}
+    assert len(cloud.calls) == 2
+    assert cloud.groups[0]["scalePolicy"]["autoScale"]["maxSize"] == "1"
+    assert cloud.groups[0]["scalePolicy"]["autoScale"].get("minZoneSize") is None
+    assert cloud.groups[0]["deployPolicy"]["maxUnavailable"] == "1"
+    assert "maxExpansion" not in cloud.groups[0]["deployPolicy"]
+    assert cloud.groups[1]["scalePolicy"]["autoScale"]["minZoneSize"] == "1"
+
+
+@pytest.mark.parametrize(("pool", "min_zone_size"), [("bulk", "1"), ("selfie", None)])
+def test_one_time_updater_install_rejects_invalid_min_zone_size_shapes_before_mutation(
+    pool, min_zone_size
+):
+    provision, conf, cloud = updater_install_fixture()
+    auto_scale = cloud.groups[0 if pool == "bulk" else 1]["scalePolicy"]["autoScale"]
+    if min_zone_size is None:
+        auto_scale.pop("minZoneSize")
+    else:
+        auto_scale["minZoneSize"] = min_zone_size
+    conf["groups"][pool]["baseline"] = provision.managed_baseline(
+        cloud.groups[0 if pool == "bulk" else 1]
+    )
+    with pytest.raises(ValueError, match="cap one"):
+        provision.install_updater(conf, cloud=cloud)
+    assert cloud.calls == []
 
 
 def test_one_time_updater_install_rejects_non_cap_one_before_mutation():

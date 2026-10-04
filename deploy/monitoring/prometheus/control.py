@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -27,6 +27,7 @@ API = "https://monitoring.api.cloud.yandex.net"
 PROMETHEUS_VERSION = "3.5.0"
 WORKER_POOLS = ("bulk", "selfie")
 WORKER_SOURCE_MAX_AGE = 90
+IMAGE_SOURCE_MAX_AGE = 180
 WORKER_POOL_METRICS = {
     "queue_available": "worker_pool_queue_observation_available",
     "queue_timestamp": "worker_pool_queue_observation_timestamp_seconds",
@@ -570,9 +571,9 @@ def preflight(config: dict[str, Any], transport: Any, *, now: float | None = Non
         ):
             _fresh_matrix(
                 transport,
-                f"{image_s[key]}[120s]",
+                f"{image_s[key]}[{IMAGE_SOURCE_MAX_AGE}s]",
                 key=key,
-                max_age=120,
+                max_age=IMAGE_SOURCE_MAX_AGE,
                 now=now,
             )
     if config["worker_alerts_enabled"]:
@@ -778,24 +779,34 @@ class CloudTransport:
             data=json.dumps(body).encode() if body else None,
             headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"},
         )
-        try:
-            with urlopen(request, timeout=30) as response:
-                raw = response.read()
-                return json.loads(raw) if raw else {}
-        except HTTPError as error:
-            if (
-                error.code == 404
-                and method == "GET"
-                and path
-                in {
-                    "/extensions/v1/rules/" + OWNED_RULES,
-                    "/extensions/v1/rules/findme-worker-activation-drill.yml",
-                }
-            ):
-                return {"content": "", "absent": True}
-            raise ControlError(f"Monitoring {method} failed (HTTP {error.code})") from None
-        except Exception:
-            raise ControlError(f"Monitoring {method} failed") from None
+        for attempt in range(3 if method == "GET" else 1):
+            try:
+                with urlopen(request, timeout=30) as response:
+                    raw = response.read()
+                    return json.loads(raw) if raw else {}
+            except HTTPError as error:
+                if (
+                    error.code == 404
+                    and method == "GET"
+                    and path
+                    in {
+                        "/extensions/v1/rules/" + OWNED_RULES,
+                        "/extensions/v1/rules/findme-worker-activation-drill.yml",
+                    }
+                ):
+                    return {"content": "", "absent": True}
+                raise ControlError(f"Monitoring {method} failed (HTTP {error.code})") from None
+            except (TimeoutError, URLError) as error:
+                timed_out = isinstance(error, TimeoutError) or isinstance(
+                    error.reason, TimeoutError
+                )
+                if timed_out and method == "GET" and attempt < 2:
+                    time.sleep(1)
+                    continue
+                raise ControlError(f"Monitoring {method} failed") from None
+            except Exception:
+                raise ControlError(f"Monitoring {method} failed") from None
+        raise AssertionError("unreachable Monitoring request retry state")
 
     def wait_rules_evaluation(
         self, name: str, *, expected: dict[str, list[str]], earliest: float

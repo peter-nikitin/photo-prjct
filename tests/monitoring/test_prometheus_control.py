@@ -471,6 +471,19 @@ def test_image_origin_activation_requires_fresh_workspace_samples(control):
         control.preflight(cfg, MissingImageTransport(control, cfg), now=1000)
 
 
+def test_image_origin_preflight_allows_bounded_ingestion_lag(control):
+    cfg = config(control)
+    cfg["image_origin_alerts_enabled"] = True
+    transport = FakeTransport(control, cfg)
+    control.preflight(cfg, transport, now=1000)
+    queries = [
+        parse_qs(urlsplit(path).query)["query"][0]
+        for method, path, _body in transport.events
+        if method == "GET" and path.startswith("/api/v1/query?")
+    ]
+    assert control.image_selectors()["image_cpu_useful"] + "[180s]" in queries
+
+
 def test_apply_preflights_routes_then_owned_rules_and_preserves_dashboard(control, tmp_path):
     cfg = config(control)
     transport = FakeTransport(control, cfg)
@@ -887,6 +900,52 @@ def test_owned_rule_404_is_absence_but_other_http_errors_fail_closed(control, mo
     ]
     with pytest.raises(control.ControlError) as error:
         transport.request("PUT", "/extensions/v1/rules", {"content": "anything"})
+    assert "secret-never-print" not in str(error.value)
+
+
+def test_monitoring_get_retries_bounded_timeout_without_repeating_put(control, monkeypatch):
+    transport = control.CloudTransport.__new__(control.CloudTransport)
+    transport.config = config(control)
+    transport.token = "secret-never-print"
+    attempts = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"files": []}'
+
+    def timed_out_once(request, timeout):
+        attempts.append(request.get_method())
+        if len(attempts) == 1:
+            raise TimeoutError("secret-never-print")
+        return Response()
+
+    monkeypatch.setattr(control, "urlopen", timed_out_once)
+    monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
+    assert transport.request("GET", "/extensions/v1/rules") == {"files": []}
+    assert attempts == ["GET", "GET"]
+
+    attempts.clear()
+    with pytest.raises(control.ControlError) as error:
+        transport.request("PUT", "/extensions/v1/rules", {"content": "anything"})
+    assert attempts == ["PUT"]
+    assert "secret-never-print" not in str(error.value)
+
+    attempts.clear()
+
+    def always_timeout(request, timeout):
+        attempts.append(request.get_method())
+        raise TimeoutError("secret-never-print")
+
+    monkeypatch.setattr(control, "urlopen", always_timeout)
+    with pytest.raises(control.ControlError) as error:
+        transport.request("GET", "/extensions/v1/rules")
+    assert attempts == ["GET", "GET", "GET"]
     assert "secret-never-print" not in str(error.value)
 
 

@@ -71,6 +71,8 @@ place, and add the new record to this index.
 | 0049 | [Retire local photo-worker recovery after remote acceptance](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md) | Accepted |
 | 0050 | [Decouple processing jobs and attempts from worker builds](0050-decouple-processing-queue-from-worker-builds.md) | Accepted |
 | 0051 | [Release photo-worker images independently](0051-release-photo-worker-images-independently.md) | Accepted |
+| 0052 | [Notify only on actionable service degradation](0052-notify-only-on-actionable-service-degradation.md) | Accepted |
+| 0053 | [Reconcile observability independently on main](0053-reconcile-observability-independently-on-main.md) | Accepted |
 
 ## Public selfie-search outcome
 

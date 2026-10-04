@@ -253,16 +253,18 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   with `curl`, restores the prior application image in process on failure, and records the successful
   image only after all checks pass. DNS is an activation preflight, and hostname changes require an
   operator-controlled certificate reissue.
-- A merge to `main` builds an immutable image in GHCR and deploys it with Docker Compose to the
-  canonical Yandex Cloud VM through **Deploy**. There is no promotion workflow or GitHub Environment
-  deployment boundary.
+- A merge to `main` that changes Django or photo-worker image inputs builds the affected immutable
+  image in GHCR; a Django release deploys it with Docker Compose to the canonical Yandex Cloud VM
+  through **Deploy**. Observability-only and documentation-only merges do not build those images.
+  There is no promotion workflow or GitHub Environment boundary for application deployment.
 - Pull-request CI treats every numbered migration already present on the base revision as an
   immutable identity: modifications, deletions, and renames fail the identity check, while new
-  leaves and explicit merge migrations remain allowed. The deployment workflow classifies changes
-  to the privileged selfie-observability package before building; such a push ends in a named,
-  successful controlled pause with image build and application deployment skipped until the
-  existing operator bootstrap and a manual deployment dispatch. Ordinary pushes retain the
-  automatic SHA-image path.
+  leaves and explicit merge migrations remain allowed. The deployment workflow selects application
+  images from effective application inputs. Observability-only inputs select independent host/cloud
+  reconciliation instead; changes to the workflow or SSH transport alone do not publish application
+  images. The privileged selfie-observability host package uses a root-owned, exact-main reconciler
+  and a one-time foundation install before automatic activation. Ordinary application pushes retain
+  the automatic SHA-image path.
 - Before `mutation_started=1`, the candidate image performs read-only migration-history validation
   and prints its migration plan. Deployment emits a bounded `DEPLOY_PHASE` marker sequence and one
   sanitized `DEPLOY_RESULT`; automatic push failures reconcile one exact-title GitHub issue using a
@@ -319,6 +321,20 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
 
 ## Accepted constraints
 
+- [ADR 0052](adr/0052-notify-only-on-actionable-service-degradation.md) limits operator
+  notifications to sustained, measured service degradation or imminent actionable capacity loss.
+  Git-owned diagnostic rules retain missing telemetry as unknown state; only explicitly labelled
+  actionable rules route to email and Telegram. Customer-route HTTP 5xx exclude worker-control
+  routes, and processing pages require fresh queue/capacity evidence. The Git-owned dashboard has
+  eight collapsible system groups, with impact before diagnostics. [ADR 0053](adr/0053-reconcile-observability-independently-on-main.md)
+  is implemented in repository workflows: selected cloud and host packages reconcile at the merged
+  `main` SHA without publishing unrelated Django or worker images. Live automatic operation still
+  requires the one-time root-owned host foundation and removal of the existing GitHub Monitoring
+  environment reviewer gate. A rule/dashboard read-back is distinct from notification delivery;
+  existing UI alerts remain until both-channel firing and recovery are verified.
+  A combined host-and-cloud merge waits for selected host jobs at the same SHA and fresh metric
+  samples before applying cloud rules; a failed prerequisite leaves the cloud job visibly failed.
+
 - [ADR 0046](adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) requires worker
   Instance Groups and their manager's Compute authority to reside in a dedicated folder in the
   existing cloud. The new worker subnet extends the existing VPC; canonical resources stay in
@@ -342,8 +358,8 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   worker queue/capacity and diagnostic alerts. The worker alert profile is enabled in Git
   for reviewed activation, but still requires separate Monitoring apply and live acceptance;
   source timestamps distinguish retained stale data from fresh observations.
-  The Git-owned dashboard separates queue/capacity, runtime operation throughput and duration
-  distributions from backend-accepted clean-preview throughput. The latter is a label-free,
+  The Git-owned dashboard groups queue/capacity, runtime operation throughput and duration
+  distributions with backend-accepted clean-preview throughput in a worker section. The latter is a label-free,
   commit-only application counter, not a count of all completed processing stages or an accounting
   ledger. Missing source evidence is not rendered as zero; runtime charts require current members.
   Rule read-back and known-Git-revision routing rollback follow the existing monitoring contract;

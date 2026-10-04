@@ -124,7 +124,10 @@ def test_service_and_workflow_contract():
     assert "type: choice" in workflow
     for action in ("install", "disable", "rollback"):
         assert f"- {action}" in workflow
-    assert "PUBLIC_PROBE_ACTION: ${{ inputs.action }}" in workflow
+    assert (
+        "PUBLIC_PROBE_ACTION: ${{ github.event_name == 'push' && 'install' || inputs.action }}"
+        in workflow
+    )
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "--consumer public-probe-deploy" in workflow
     manifest = json.loads((ROOT / "deploy/environment-secrets.json").read_text())
@@ -263,3 +266,71 @@ def test_transport_rejects_invalid_action_before_ssh():
     )
     assert result.returncode == 2
     assert result.stderr.strip() == "PUBLIC_PROBE_DEPLOY=error code=invalid_action"
+
+
+def test_public_reconcile_bootstraps_only_exact_main_push_with_pinned_transport(tmp_path):
+    import os
+
+    release = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    key = tmp_path / "key"
+    key.write_text("not-a-real-key")
+    key.chmod(0o600)
+    environment = tmp_path / "env"
+    environment.write_text(f'VM_SSH_KEY_FILE="{key}"\n')
+    environment.chmod(0o600)
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    git = binaries / "git"
+    git.write_text(
+        '#!/bin/sh\ncase "$*" in *rev-parse*) printf "%s\\n" "$PUBLIC_PROBE_RELEASE" ;;\n'
+        '*ls-tree*) printf "100644 blob %s\\t%s\\n" "$PUBLIC_PROBE_RELEASE" "${6}" ;;\n'
+        '*bootstrap.py*) printf "reviewed-bootstrap" ;;\n'
+        '*reconcile.py*) printf "reviewed-helper" ;; *) exit 1 ;; esac\n'
+    )
+    ssh = binaries / "ssh"
+    ssh.write_text(
+        '#!/bin/sh\ncp "$2" "$CAPTURE/config"\n'
+        'printf "%s\\n" "$*" >> "$CAPTURE/commands"\n'
+        'case "$*" in *python3*) cat > "$CAPTURE/bootstrap"; '
+        'printf "OBSERVABILITY_HOST_SHA=%s status=green\\n" "$PUBLIC_PROBE_RELEASE" ;;\n'
+        '*) printf "OBSERVABILITY_HOST_SHA=%s status=green\\n" "$PUBLIC_PROBE_RELEASE" ;; esac\n'
+    )
+    for binary in (git, ssh):
+        binary.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{binaries}:{os.environ['PATH']}",
+        "CAPTURE": str(tmp_path),
+        "PUBLIC_PROBE_RELEASE": release,
+        "PUBLIC_PROBE_ACTION": "reconcile-prometheus",
+        "FINDME_ENV_FILE": str(environment),
+        "VM_HOST": "192.0.2.1",
+        "VM_USER": "deploy",
+        "VM_SSH_KNOWN_HOSTS": "bastion",
+        "IMAGE_ORIGIN_VM_HOST": "10.129.0.21",
+        "IMAGE_ORIGIN_VM_USER": "yc-user",
+        "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "public",
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_SHA": release,
+    }
+    result = subprocess.run(
+        ["sh", str(PACKAGE / "run-remote.sh")], env=env, text=True, capture_output=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "bootstrap").read_text() == "reviewed-bootstrap"
+    commands = (tmp_path / "commands").read_text().splitlines()
+    assert len(commands) >= 1
+    assert "sudo -n python3 - public" in "\n".join(commands)
+    assert f"release={release}" in commands[0]
+    assert 'if [ ! -e "$helper" ] && [ ! -L "$helper" ]' in "\n".join(commands)
+    assert (tmp_path / "config").read_text().count("StrictHostKeyChecking yes") == 2
+    assert "not-a-real-key" not in result.stdout + result.stderr
+    (tmp_path / "commands").unlink()
+    env["GITHUB_REF"] = "refs/heads/feature"
+    denied = subprocess.run(
+        ["sh", str(PACKAGE / "run-remote.sh")], env=env, text=True, capture_output=True
+    )
+    assert denied.returncode == 2
+    assert "bootstrap_requires_main_push" in denied.stderr
+    assert not (tmp_path / "commands").exists()

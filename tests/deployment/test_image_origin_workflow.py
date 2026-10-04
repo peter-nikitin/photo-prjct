@@ -68,7 +68,8 @@ def test_origin_deploy_agent_keeps_public_prometheus_route() -> None:
 
 def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     workflow = _workflow()
-    assert workflow[True] == {
+    assert workflow[True]["push"]["branches"] == ["main"]
+    assert {"workflow_dispatch": workflow[True]["workflow_dispatch"]} == {
         "workflow_dispatch": {
             "inputs": {
                 "deployment_sha": {
@@ -92,25 +93,28 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     assert job["concurrency"] == {
         "group": "deploy-image-origin",
         "cancel-in-progress": False,
+        "queue": "max",
     }
     checkout = _step(job, "Check out reviewed commit")
     assert checkout["with"] == {
-        "ref": "${{ inputs.deployment_sha }}",
+        "ref": "${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}",
         "fetch-depth": 1,
         "persist-credentials": False,
     }
     deploy = _step(job, "Deploy isolated image origin")
     command = deploy["run"]
+    release = "${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}"
+    monitoring = "${{ github.event_name == 'push' && 'true' || inputs.monitoring_only }}"
     assert deploy["env"] | {
-        "IMAGE_ORIGIN_RELEASE": "${{ inputs.deployment_sha }}",
-        "IMAGE_ORIGIN_MONITORING_ONLY": "${{ inputs.monitoring_only }}",
+        "IMAGE_ORIGIN_RELEASE": release,
+        "IMAGE_ORIGIN_MONITORING_ONLY": monitoring,
         "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
         "MEDIA_S3_PUBLIC_BUCKET": "${{ vars.MEDIA_S3_PUBLIC_BUCKET }}",
         "IMAGE_ORIGIN_PROBE_PATH": "${{ vars.IMAGE_ORIGIN_PROBE_PATH }}",
         "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
     } == {
-        "IMAGE_ORIGIN_RELEASE": "${{ inputs.deployment_sha }}",
-        "IMAGE_ORIGIN_MONITORING_ONLY": "${{ inputs.monitoring_only }}",
+        "IMAGE_ORIGIN_RELEASE": release,
+        "IMAGE_ORIGIN_MONITORING_ONLY": monitoring,
         "VM_HOST": "${{ vars.VM_HOST }}",
         "VM_USER": "${{ vars.VM_USER }}",
         "VM_SSH_KNOWN_HOSTS": "${{ vars.VM_SSH_KNOWN_HOSTS }}",
@@ -125,8 +129,13 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     assert "--consumer image-origin" in command
     assert "--identity github-oidc" in command
     assert "deploy/image-origin/run-remote.sh" in command
-    assert _step(job, "Record deployed commit")["if"] == "${{ !inputs.monitoring_only }}"
-    assert _step(job, "Record monitoring repair")["if"] == "${{ inputs.monitoring_only }}"
+    assert _step(job, "Record deployed commit")["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && !inputs.monitoring_only }}"
+    )
+    assert (
+        _step(job, "Record monitoring repair")["if"]
+        == "${{ github.event_name == 'push' || inputs.monitoring_only }}"
+    )
     assert "${{ secrets." not in json.dumps(workflow)
     assert "deploy.yml" not in json.dumps(job)
     forbidden = ("docker-compose.deployment.yml", "apply-deployment.sh", "worker", "postgres")

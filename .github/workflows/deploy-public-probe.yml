@@ -1,6 +1,20 @@
 name: Deploy public health probe
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - deploy/monitoring/probe-vm/**
+      - deploy/monitoring/prometheus/exporter.py
+      - deploy/monitoring/prometheus/install.py
+      - deploy/monitoring/prometheus/render_agent.py
+      - deploy/monitoring/prometheus/units/findme-prometheus-public.service
+      - deploy/observability/**
+      - scripts/monitor_public_health.py
+      - scripts/monitor_commerce.py
+      - deploy/classify-release.py
+      - .github/workflows/deploy-public-probe.yml
+      - "!**/*.md"
   workflow_dispatch:
     inputs:
       action:
@@ -18,27 +32,42 @@ on:
         type: string
 
 jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      public_changed: ${{ steps.select.outputs.public_changed }}
+      probe_changed: ${{ steps.select.outputs.probe_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: select
+        if: github.event_name == 'push'
+        run: python deploy/classify-release.py --observability --base "${{ github.event.before }}" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
   deploy-public-probe:
     name: Deploy public health probe
-    if: github.ref == 'refs/heads/main'
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || needs.classify.outputs.probe_changed == 'true') }}
+    needs: [classify]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     concurrency:
-      group: deploy-public-probe
+      group: deploy-image-origin
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Check out reviewed commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.deployment_sha }}
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Bind checkout to exact commit
         env:
-          PUBLIC_PROBE_RELEASE: ${{ inputs.deployment_sha }}
-          PUBLIC_PROBE_ACTION: ${{ inputs.action }}
+          PUBLIC_PROBE_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: ${{ github.event_name == 'push' && 'install' || inputs.action }}
         run: |
           set -eu
           case "$PUBLIC_PROBE_RELEASE" in
@@ -48,8 +77,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$PUBLIC_PROBE_RELEASE"
       - name: Deploy public health probe
         env:
-          PUBLIC_PROBE_RELEASE: ${{ inputs.deployment_sha }}
-          PUBLIC_PROBE_ACTION: ${{ inputs.action }}
+          PUBLIC_PROBE_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: ${{ github.event_name == 'push' && 'install' || inputs.action }}
           VM_HOST: ${{ vars.VM_HOST }}
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
@@ -63,7 +92,58 @@ jobs:
             -- sh deploy/monitoring/probe-vm/run-remote.sh
       - name: Record completed action
         env:
-          PUBLIC_PROBE_RELEASE: ${{ inputs.deployment_sha }}
-          PUBLIC_PROBE_ACTION: ${{ inputs.action }}
+          PUBLIC_PROBE_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: ${{ github.event_name == 'push' && 'install' || inputs.action }}
+        run: |
+          printf 'Completed public probe action `%s` using tools from repository SHA `%s`\n' "$PUBLIC_PROBE_ACTION" "$PUBLIC_PROBE_RELEASE" >> "$GITHUB_STEP_SUMMARY"
+  reconcile-public-observability:
+    name: Reconcile public observability
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.classify.outputs.public_changed == 'true' }}
+    needs: [classify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-image-origin
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Check out reviewed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Bind checkout to exact commit
+        env:
+          PUBLIC_PROBE_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: reconcile-prometheus
+        run: |
+          set -eu
+          case "$PUBLIC_PROBE_RELEASE" in
+            *[!0-9a-f]*|'') echo 'deployment_sha must be a lowercase 40-character SHA' >&2; exit 2 ;;
+          esac
+          test "${#PUBLIC_PROBE_RELEASE}" -eq 40
+          test "$(git rev-parse HEAD)" = "$PUBLIC_PROBE_RELEASE"
+      - name: Reconcile public observability
+        env:
+          PUBLIC_PROBE_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: reconcile-prometheus
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+          IMAGE_ORIGIN_VM_HOST: ${{ vars.IMAGE_ORIGIN_VM_HOST }}
+          IMAGE_ORIGIN_VM_USER: ${{ vars.IMAGE_ORIGIN_VM_USER }}
+          IMAGE_ORIGIN_SSH_KNOWN_HOSTS: ${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --consumer public-probe-deploy \
+            --identity github-oidc \
+            -- sh deploy/monitoring/probe-vm/run-remote.sh
+      - name: Record completed action
+        env:
+          PUBLIC_PROBE_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
+          PUBLIC_PROBE_ACTION: reconcile-prometheus
         run: |
           printf 'Completed public probe action `%s` using tools from repository SHA `%s`\n' "$PUBLIC_PROBE_ACTION" "$PUBLIC_PROBE_RELEASE" >> "$GITHUB_STEP_SUMMARY"

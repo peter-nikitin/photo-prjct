@@ -103,6 +103,7 @@ def test_drill_clones_exact_worker_rules_with_synthetic_finite_inputs(modules):
         assert target.get("for") == source.get("for")
         assert target["labels"]["project"] == source["labels"]["project"]
         assert target["labels"]["severity"] == source["labels"]["severity"]
+        assert target["labels"].get("notification") != "actionable"
         assert target["labels"]["drill"] == "worker-activation"
         assert target["labels"]["drill_run"] == "123456"
         assert target["annotations"]["summary"].startswith("SYNTHETIC DRILL")
@@ -159,13 +160,13 @@ def test_promtool_fixture_pins_both_pool_saturation_source_and_node_cases(module
     )
     assert any(
         item["alertname"] == "WorkerHostDiagnosticsMissing"
-        and item["eval_time"] == "15m"
+        and item["eval_time"] == "19m"
         and {alert["exp_labels"]["pool"] for alert in item["exp_alerts"]} == {"selfie"}
         for item in checks
     )
     assert any(
         item["alertname"] == "WorkerHostDiagnosticsMissing"
-        and item["eval_time"] == "19m"
+        and item["eval_time"] == "27m"
         and {alert["exp_labels"]["pool"] for alert in item["exp_alerts"]} == {"bulk"}
         for item in checks
     )
@@ -342,7 +343,7 @@ def test_status_requires_fresh_exact_evaluation_and_never_claims_delivery(
 def test_status_audits_complete_captured_trace_with_effective_predicate_clock(
     modules, tmp_path, monkeypatch
 ):
-    # Complete elapsed timestamps/active states from cleaned-up live drill 36956138231.
+    # Synthetic elapsed timestamps cover the revised five-minute diagnostic persistence.
     start = 1790908473
     control, drill, cfg, transport, path, _, _ = alert_status_fixture(
         modules, tmp_path, monkeypatch, start=start
@@ -354,11 +355,15 @@ def test_status_audits_complete_captured_trace_with_effective_predicate_clock(
         "WorkerNativePublisherMissing",
         "WorkerQueueObservationMissing",
     )
-    diagnostics = ("WorkerHostDiagnosticsMissing", "WorkerRuntimeDiagnosticsMissing")
+    diagnostics = ("WorkerHostDiagnosticsMissing",)
     patterns = (
         [],
-        ready,
-        [("WorkerPoolSaturated", pool, "pending") for pool in pools] + ready,
+        [("WorkerReadyWorkOverdue", pool, "pending") for pool in pools],
+        [
+            (alert, pool, "pending")
+            for alert in ("WorkerReadyWorkOverdue", "WorkerPoolSaturated")
+            for pool in pools
+        ],
         [("WorkerPoolSaturated", pool, "firing") for pool in pools] + ready,
         [(alert, "bulk", "firing") for alert in source]
         + [(alert, "selfie", "firing") for alert in diagnostics],
@@ -373,7 +378,7 @@ def test_status_audits_complete_captured_trace_with_effective_predicate_clock(
         (184, 0),
         (245, 0),
         (302, 0),
-        (381, 1),
+        (381, 2),
         (425, 2),
         (484, 2),
         (541, 2),
@@ -381,21 +386,21 @@ def test_status_audits_complete_captured_trace_with_effective_predicate_clock(
         (694, 3),
         (721, 3),
         (783, 3),
-        (842, 3),
-        (903, 4),
-        (961, 4),
-        (1021, 4),
-        (1082, 4),
-        (1144, 5),
-        (1212, 5),
-        (1263, 6),
-        (1325, 6),
-        (1384, 0),
-        (1442, 0),
-        (1503, 0),
+        (842, 0),
+        (1144, 0),
+        (1203, 0),
+        (1264, 4),
+        (1323, 0),
         (1564, 0),
-        (1622, 0),
-        (1681, 0),
+        (1623, 0),
+        (1684, 6),
+        (1743, 6),
+        (1803, 0),
+        (1924, 0),
+        (1984, 0),
+        (2043, 0),
+        (2103, 0),
+        (2223, 0),
     )
     labels = transport.alerts["data"]["result"][0]["metric"]
     seen, first, observations = set(), {}, []
@@ -424,9 +429,9 @@ def test_status_audits_complete_captured_trace_with_effective_predicate_clock(
         "healthy": 245,
         "saturation-pending": 425,
         "saturation-firing": 721,
-        "source-missing": 1021,
-        "retained-stale": 1263,
-        "recovered": 1503,
+        "source-missing": 1264,
+        "retained-stale": 1684,
+        "recovered": 1924,
     }
     for observed in observations:
         assert observed["predicate_at"] == observed["evaluated_at"] - 120
@@ -468,7 +473,7 @@ def test_finite_audit_requires_both_pool_pending_firing_missing_stale_and_recove
         ),
         seen,
     )
-    for minute, source_pool, node_pool in ((15, "bulk", "selfie"), (19, "selfie", "bulk")):
+    for minute, source_pool, node_pool in ((19, "bulk", "selfie"), (27, "selfie", "bulk")):
         drill.audit_observation(
             1_000_000_000,
             observed(
@@ -478,13 +483,13 @@ def test_finite_audit_requires_both_pool_pending_firing_missing_stale_and_recove
             ),
             seen,
         )
-    drill.audit_observation(1_000_000_000, observed(24, []), seen)
+    drill.audit_observation(1_000_000_000, observed(31, []), seen)
     assert seen == drill.REQUIRED_EVIDENCE
 
 
 @pytest.mark.parametrize(
     "elapsed,problem",
-    [(1139, "stale"), (1260, "stale"), (1143, "pool"), (1143, "pending"), (1379, "recovery")],
+    [(1499, "stale"), (1680, "stale"), (1563, "pool"), (1563, "pending"), (1799, "recovery")],
 )
 def test_effective_clock_does_not_credit_early_or_wrong_state_evidence(modules, elapsed, problem):
     _, drill = modules
@@ -577,7 +582,7 @@ def test_status_reads_inactive_pending_and_active_firing_without_false_phase_evi
 
 def test_status_all_zero_states_are_inactive_recovery_not_delivery(modules, tmp_path, monkeypatch):
     control, drill, cfg, transport, path, start, evaluation = alert_status_fixture(
-        modules, tmp_path, monkeypatch, minute=24
+        modules, tmp_path, monkeypatch, minute=31
     )
     labels = transport.alerts["data"]["result"][0]["metric"]
     transport.alerts["data"]["result"] = [

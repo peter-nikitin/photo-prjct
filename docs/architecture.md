@@ -681,30 +681,21 @@ broker, vector engine, and ML implementations shown for later processing require
 
 ### Search
 
-[ADR 0040](adr/0040-use-pgvector-for-exact-face-search.md) accepts a parallel pgvector table
-and exact full-cohort database ranking behind a temporary `off` / `staff` / `on` reader gate.
+[ADR 0040](adr/0040-use-pgvector-for-exact-face-search.md) established the pgvector cutover and
 [ADR 0041](adr/0041-accept-pgvector-numerical-boundaries.md) accepts very borderline numerical
-changes while retaining native SQL-only ranking and strict eligibility/privacy.
-The [implementation plan](plans/2026-09-27-pgvector-exact-face-search.md) preserves the legacy
-reader during historical population and numerical comparison. The repository implements parallel
-immutable embedding publication, bounded population/reconciliation commands, and current-state
-reader selection for both query sources. `off` reads legacy, `staff` reads pgvector for validated
-active staff, and `on` reads pgvector for all otherwise eligible searches. The new reader computes
-full-cohort cosine distances, best detections, fixed-threshold membership and order in SQL without
-gallery-vector hydration. A scored/window stream avoids repeatedly scanning best-face reduction
-for every eligible detection. Missing or divergent evidence fails closed without reader fallback.
-An explicit active-staff comparison request uses the same transient query and repeatable database
-snapshot for both readers, publishes only the selected result, and emits aggregate diagnostics.
-The bounded private `review_pgvector_face_search` command separates production-equivalent reader
-timing from diagnostic passes. Unexplained differences or incomplete evidence block acceptance;
-classified numerical anchor effects and resulting expansion changes require operator review.
-Base and deployed PostgreSQL use a `256m` Docker shared-memory ceiling for concurrent native
-searches; this is a ceiling, not a memory reservation or an accepted production concurrency target.
-Deployment, public activation, later
-SFace-to-AdaFace reprocessing, and old-reader removal are separate delivery states.
-Before later new-only publication, that worker migration must replace transitional legacy identity
-and gallery-source dependencies with independent vector eligibility and establish its recovery
-boundary; current parallel validation deliberately expects matching old evidence.
+changes while retaining exact SQL ranking and strict eligibility/privacy. The
+[retirement plan](plans/2026-10-04-complete-pgvector-face-read-cutover.md) removes the temporary
+reader gate, the Python/JSON ranking path and the JSON embedding table. The current application
+reads and writes `FaceEmbeddingVector` for both SFace (128D) and AdaFace (512D). Both selfie and
+gallery-face searches compute full-cohort cosine distances, best detections, fixed-threshold
+membership and order in PostgreSQL without gallery-vector hydration. Missing or invalid native
+evidence fails closed; saved results remain in the shared search-history tables. A scored/window
+stream avoids repeatedly scanning best-face reduction for every eligible detection. Base and
+deployed PostgreSQL use a `256m` Docker shared-memory ceiling for concurrent native searches; this
+is a ceiling, not a memory reservation or an accepted production concurrency target. The table
+contraction runs after deployment commit because the canonical deployment applies migrations
+before replacing the old web process. SFace-to-AdaFace reprocessing and SFace-model retirement
+remain separate work.
 
 1. The customer selects an event before searching.
 2. A bib query is a separate GET request using `?bib=<1-16 ASCII digits>` and matches current

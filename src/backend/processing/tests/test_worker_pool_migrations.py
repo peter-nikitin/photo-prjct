@@ -8,7 +8,6 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 from feature_flags.models import FeatureFlag
-from feature_flags.registry import PGVECTOR_FACE_SEARCH_READ
 
 pytestmark = [pytest.mark.migration, pytest.mark.django_db(transaction=True)]
 
@@ -22,7 +21,7 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
     leaves = executor.loader.graph.leaf_nodes()
     assert executor.loader.detect_conflicts() == {}
     assert [node for node in leaves if node[0] == "processing"] == [
-        ("processing", "0016_remove_processingattempt_worker_build")
+        ("processing", "0017_retire_json_face_embedding")
     ]
     try:
         executor.migrate(baseline)
@@ -110,7 +109,7 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
             detection=detection,
             cosine_distance=0.0,
         )
-        flag = FeatureFlag.objects.create(key=PGVECTOR_FACE_SEARCH_READ.key, state="on")
+        flag = FeatureFlag.objects.create(key="pgvector-face-search-read", state="on")
         names = [
             ("processing", name)
             for name in (
@@ -142,6 +141,10 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
             if name == "FaceEmbeddingVector":
                 for row in rows:
                     row["vector"] = list(row["vector"])
+            if name == "SelfieSearch":
+                for row in rows:
+                    row.pop("reader_staff_eligible", None)
+                    row.pop("reader_comparison_requested", None)
             return rows
 
         before = {pair: snapshot(apps, *pair) for pair in names}
@@ -149,11 +152,15 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
         executor.migrate(leaves)
         current = executor.loader.project_state(leaves).apps
         for pair in names:
+            if pair == ("processing", "FaceEmbedding"):
+                assert snapshot(apps, *pair) == before[pair]
+                continue
             assert snapshot(current, *pair) == before[pair]
+        with pytest.raises(LookupError):
+            current.get_model("processing", "FaceEmbedding")
         assert current.get_model("processing", "WorkerPool").objects.count() == 0
         assert current.get_model("processing", "WorkerPoolMember").objects.count() == 0
         call_command("sync_feature_flags")
-        flag.refresh_from_db()
-        assert flag.state == "on"
+        assert not FeatureFlag.objects.filter(pk=flag.pk).exists()
     finally:
         MigrationExecutor(connection).migrate(leaves)

@@ -1332,9 +1332,10 @@ def test_apply_markers_include_elapsed_seconds(tmp_path: Path, fake_bin: Path) -
     markers = [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_")]
     assert markers
     assert all(
-        re.fullmatch(r"DEPLOY_PHASE=[a-z-]+ elapsed_seconds=\d+", line) for line in markers[:-2]
+        re.fullmatch(r"DEPLOY_PHASE=[a-z-]+ elapsed_seconds=\d+", line) for line in markers[:-3]
     )
-    assert markers[-2] == "DEPLOY_IMAGE_PRUNE_RESULT=success"
+    assert markers[-3] == "DEPLOY_IMAGE_PRUNE_RESULT=success"
+    assert markers[-2] == "DEPLOY_JSON_RETIREMENT_RESULT=retained"
     assert re.fullmatch(
         r"DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=\d+",
         markers[-1],
@@ -1526,7 +1527,7 @@ def test_apply_and_recovery_preserve_literal_gallery_values_without_disclosure(
     rollback_bin = tmp_path / "rollback-bin"
     rollback_bin.mkdir()
     previous_env = (candidate_root / ".env").read_bytes()
-    rollback_env = _apply_env(rollback_root, rollback_bin, scenario="compose-failure")
+    rollback_env = _apply_env(rollback_root, rollback_bin, scenario="certificate-failure")
     (rollback_root / ".env").write_bytes(previous_env)
     (rollback_root / "previous-env.expected").write_bytes(previous_env)
     rollback_env.update(
@@ -1544,7 +1545,7 @@ def test_apply_and_recovery_preserve_literal_gallery_values_without_disclosure(
     rollback = _run("deploy/apply-deployment.sh", env=rollback_env)
 
     assert rollback.returncode != 0
-    assert "DEPLOY_RESULT=failure phase=compose-reconcile rollback=succeeded" in rollback.stdout
+    assert "DEPLOY_RESULT=failure phase=certificate rollback=succeeded" in rollback.stdout
     assert (rollback_root / ".env").read_bytes() == previous_env
     recovery_environment = dict(
         line.split("=", 1)
@@ -1997,7 +1998,7 @@ def test_enabled_commerce_worker_retries_readiness_until_its_lock_is_live(
     assert commands.count("commerce-worker-health-attempt=") == 3
 
 
-def test_enabled_commerce_worker_readiness_exhaustion_restores_previous_profile(
+def test_enabled_commerce_worker_readiness_exhaustion_requires_forward_recovery(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     previous_env = PREVIOUS_ENV + b"".join(
@@ -2012,12 +2013,16 @@ def test_enabled_commerce_worker_readiness_exhaustion_restores_previous_profile(
 
     assert result.returncode != 0
     assert "Commerce worker readiness exhausted after 6 attempts" in result.stderr
-    assert (tmp_path / ".env").read_bytes() == previous_env
+    assert (tmp_path / ".env").read_bytes() != previous_env
+    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
+        tmp_path / ".env"
+    ).read_bytes()
     assert (tmp_path / "commerce-health-attempts").read_text(encoding="utf-8") == "6\n"
     commands = "\n".join(_apply_log(tmp_path))
-    assert "APP_IMAGE=unset docker compose --project-name photo-prjct --env-file" in commands
+    assert "previous-web-processing-schema-probe" not in commands
+    assert " stop web" in commands
     assert "--profile commerce up -d --no-deps commerce-worker" in commands
-    assert "DEPLOY_RESULT=failure phase=worker-health rollback=succeeded" in result.stdout
+    assert "DEPLOY_RESULT=failure phase=worker-health rollback=failed" in result.stdout
 
 
 def test_missing_face_embedding_prerequisite_preserves_existing_deployment(
@@ -2331,7 +2336,7 @@ def test_successful_deployment_installs_cart_cleanup_only_after_the_candidate_co
     assert "paid-photo-cart" not in "\n".join(commands)
 
 
-def test_failed_candidate_without_prior_cart_cleanup_removes_schedule_after_recovery(
+def test_failed_candidate_without_prior_cart_cleanup_leaves_schedule_absent(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     result = _run(
@@ -2340,7 +2345,7 @@ def test_failed_candidate_without_prior_cart_cleanup_removes_schedule_after_reco
     )
 
     assert result.returncode != 0
-    assert "Removed cart cleanup schedule." in result.stdout
+    assert not (tmp_path / "crontab").exists()
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
 
 
@@ -2354,11 +2359,10 @@ def test_failed_candidate_keeps_a_preexisting_cart_cleanup_schedule(
     result = _run("deploy/apply-deployment.sh", env=env)
 
     assert result.returncode != 0
-    assert "Installed daily cart cleanup" in result.stdout
     restored_schedule = crontab_state.read_text(encoding="utf-8")
     assert restored_schedule.count("# BEGIN photo-prjct-cart-cleanup") == 1
     assert _cart_cleanup_block(tmp_path) in restored_schedule
-    assert "# BEGIN photo-prjct-upload-cleanup" in restored_schedule
+    assert restored_schedule == _cart_cleanup_block(tmp_path)
 
 
 @pytest.mark.parametrize("missing_command", ["crontab", "flock"])
@@ -2393,6 +2397,7 @@ def test_candidate_private_media_preflight_skips_when_no_eligible_photo(
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
         "DEPLOY_IMAGE_PRUNE_RESULT=success",
+        "DEPLOY_JSON_RETIREMENT_RESULT=retained",
         "DEPLOY_RESULT=success phase=commit rollback=not-needed",
     ]
     assert result.stderr == "docker compose up exit status: 0\n"
@@ -2417,6 +2422,7 @@ def test_deployment_avoids_full_corpus_projection_work_on_the_live_database(
     assert _deployment_markers(result) == [
         *(f"DEPLOY_PHASE={phase}" for phase in SUCCESS_PHASES),
         "DEPLOY_IMAGE_PRUNE_RESULT=success",
+        "DEPLOY_JSON_RETIREMENT_RESULT=retained",
         "DEPLOY_RESULT=success phase=commit rollback=not-needed",
     ]
     commands = _apply_log(tmp_path)
@@ -2545,14 +2551,16 @@ def test_gallery_projection_cutover_failures_recover_previous_worker_topology_wi
     )
 
     assert result.returncode != 0
-    assert f"DEPLOY_RESULT=failure phase={expected_phase} rollback=succeeded" in result.stdout
+    rollback = "failed" if expected_phase == "gallery-media-smoke" else "succeeded"
+    assert f"DEPLOY_RESULT=failure phase={expected_phase} rollback={rollback}" in result.stdout
     commands = _apply_log(tmp_path)
     if last_pre_failure_command is not None:
         assert last_pre_failure_command in commands
-    assert any(
+    old_restarted = any(
         "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
         for command in commands
     )
+    assert old_restarted is (expected_phase != "gallery-media-smoke")
     if scenario == "gallery-projection-verification-failure":
         assert not any(
             " up -d --no-deps web nginx" in command and "APP_IMAGE=new-image" in command
@@ -2876,7 +2884,7 @@ def test_each_durable_deployment_signal_alone_requires_migration_preflight(
 
 @pytest.mark.parametrize(
     ("scenario", "rollback"),
-    [("compose-failure", "succeeded"), ("recovery-failure", "failed")],
+    [("compose-failure", "failed"), ("recovery-failure", "failed")],
 )
 def test_post_mutation_compose_failure_reports_the_recovery_outcome(
     tmp_path: Path, fake_bin: Path, scenario: str, rollback: str
@@ -2897,14 +2905,16 @@ def test_post_mutation_compose_failure_reports_the_recovery_outcome(
         rf"DEPLOY_RESULT=failure phase=compose-reconcile rollback={rollback} elapsed_seconds=\d+",
         [line for line in result.stdout.splitlines() if line.startswith("DEPLOY_RESULT=")][-1],
     )
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
+    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
+        tmp_path / ".env"
+    ).read_bytes()
     commands = _apply_log(tmp_path)
     assert "observability-install" in commands
     assert "observability-rollback" in commands
-    if rollback == "succeeded":
-        assert "Previous application and worker profile reconciled" in result.stderr
-    else:
-        assert "Previous deployment recovery failed" in result.stderr
+    assert "original snapshot retained" in result.stderr
+    assert "previous-web-processing-schema-probe" not in commands
+    assert any(" stop web" in command for command in commands)
 
 
 @pytest.mark.parametrize(
@@ -2932,12 +2942,13 @@ def test_dropped_processing_column_blocks_old_web_recovery_and_preserves_candida
 
     assert result.returncode != 0
     assert "rollback=failed" in result.stdout
-    assert (
-        "Previous web is incompatible with the current processing schema; "
-        "automatic recovery blocked" in result.stderr
-    )
     commands = _apply_log(tmp_path)
-    assert "previous-web-processing-schema-probe" in commands
+    if scenario == "processing-schema-health-failure":
+        assert "original snapshot retained" in result.stderr
+        assert "previous-web-processing-schema-probe" not in commands
+    else:
+        assert "Previous web is incompatible with the current processing schema" in result.stderr
+        assert "previous-web-processing-schema-probe" in commands
     assert any(" stop web" in command for command in commands)
     assert not any(
         "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
@@ -2966,7 +2977,8 @@ def test_schema_compatible_web_recovers_only_after_read_only_probe(
     tmp_path: Path, fake_bin: Path
 ) -> None:
     result = _run(
-        "deploy/apply-deployment.sh", env=_apply_env(tmp_path, fake_bin, scenario="compose-failure")
+        "deploy/apply-deployment.sh",
+        env=_apply_env(tmp_path, fake_bin, scenario="certificate-failure"),
     )
     assert result.returncode != 0
     assert "rollback=succeeded" in result.stdout
@@ -3255,7 +3267,7 @@ def test_apply_success_commits_deployed_image_only_after_checks(
 
 
 @pytest.mark.parametrize("scenario", ["health-failure", "public-failure"])
-def test_apply_failure_restores_previous_image_and_overlay_without_marker_change(
+def test_post_activation_failure_retains_candidate_without_committing_image_marker(
     tmp_path: Path, fake_bin: Path, scenario: str
 ) -> None:
     result = _run(
@@ -3265,9 +3277,13 @@ def test_apply_failure_restores_previous_image_and_overlay_without_marker_change
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
+    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
+        tmp_path / ".env"
+    ).read_bytes()
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
-    assert commands.count("up -d --no-deps web nginx") >= 2
+    assert commands.count("up -d --no-deps web nginx") == 1
+    assert "previous-web-processing-schema-probe" not in commands
 
 
 def test_certificate_bootstrap_failure_reconciles_previous_https_edge(
@@ -3341,7 +3357,7 @@ def test_failed_env_promotion_removes_secret_bearing_requested_temp(
 
 @pytest.mark.parametrize(
     ("scenario", "expected_reconciliations"),
-    [("marker-failure", 2)],
+    [("marker-failure", 1)],
 )
 def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
     tmp_path: Path,
@@ -3356,9 +3372,13 @@ def test_unexpected_failure_after_env_mutation_triggers_exit_recovery(
 
     assert result.returncode != 0
     assert (tmp_path / "deployed-image").read_text(encoding="utf-8") == "old-image\n"
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
+    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
+        tmp_path / ".env"
+    ).read_bytes()
     commands = (tmp_path / "apply.log").read_text(encoding="utf-8")
     assert commands.count("up -d --no-deps web nginx") == expected_reconciliations
+    assert "previous-web-processing-schema-probe" not in commands
 
 
 def test_failed_certificate_renewal_waits_before_next_attempt(
@@ -3996,7 +4016,9 @@ def test_apply_rolls_back_observability_when_post_install_verification_fails(
     commands = _apply_log(tmp_path)
     assert commands.index("observability-install") < commands.index("verify-selfie-observability")
     assert "observability-rollback" in commands
-    assert (tmp_path / ".env").read_bytes() == PREVIOUS_ENV
+    assert (tmp_path / ".env").read_bytes() != PREVIOUS_ENV
+    assert "previous-web-processing-schema-probe" not in commands
+    assert any(" stop web" in command for command in commands)
     sudo_commands = [command for command in commands if command.startswith("sudo ")]
     assert sudo_commands
     assert all("sudo -n " in command and " -E " not in f" {command} " for command in sudo_commands)
@@ -4413,3 +4435,25 @@ def test_database_collation_mismatch_refuses_extension_and_retains_previous_data
     assert "candidate-migrate" not in commands
     assert "image: postgres:16" in (tmp_path / "docker-compose.deployment.yml").read_text()
     assert "pgvector/pgvector" not in (tmp_path / "docker-compose.deployment.yml").read_text()
+
+
+def test_native_only_health_failure_preserves_candidate_for_forward_recovery(
+    tmp_path: Path, fake_bin: Path
+) -> None:
+    result = _run(
+        "deploy/apply-deployment.sh", env=_apply_env(tmp_path, fake_bin, scenario="health-failure")
+    )
+    assert result.returncode != 0
+    assert "DEPLOY_RESULT=failure phase=local-health rollback=failed" in result.stdout
+    commands = _apply_log(tmp_path)
+    assert any("up -d --no-deps web nginx" in command for command in commands)
+    assert any(" stop web" in command for command in commands)
+    assert "previous-web-processing-schema-probe" not in commands
+    assert not any(
+        "up -d --no-deps web nginx" in command and "APP_IMAGE=unset" in command
+        for command in commands
+    )
+    recovery = tmp_path / ".deployment-recovery"
+    assert (recovery / "previous.env").read_bytes() == PREVIOUS_ENV
+    assert (recovery / "candidate.env").read_bytes() == (tmp_path / ".env").read_bytes()
+    assert (tmp_path / "deployed-image").read_text().strip() == "old-image"

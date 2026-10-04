@@ -19,7 +19,7 @@ from processing.models import (
     JSON_MAX_BYTES,
     PROCESSING_ATTEMPT_RESULT_MAX_BYTES,
     EventProcessingRun,
-    FaceEmbedding,
+    FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
     PhotoFaceDetection,
@@ -1083,7 +1083,7 @@ class ProcessingModelTests(TestCase):
             detection.geometry = {"payload": "x" * 16_385}
             detection.full_clean()
 
-        embedding = FaceEmbedding(
+        embedding = FaceEmbeddingVector(
             detection=PhotoFaceDetection.objects.create(
                 attempt=terminal_attempt,
                 artifact=artifact,
@@ -1092,9 +1092,9 @@ class ProcessingModelTests(TestCase):
                 geometry={"payload": "ok"},
                 features={"payload": "ok"},
             ),
-            model_version="v1",
-            vector=["x" * 16_385],
-            metadata={"payload": "ok"},
+            model_version="sface",
+            vector=[1.0] + [0.0] * 127,
+            metadata={"payload": "x" * 16_385},
         )
         with self.assertRaises(ValidationError):
             embedding.full_clean()
@@ -1142,21 +1142,22 @@ class ProcessingModelTests(TestCase):
                 )
 
     def test_face_feature_layer_connects_artifact_and_embedding_to_attempt(self) -> None:
-        run = self.make_run()
-        job = self.make_job(run=run)
+        run = self.make_run(processor_type="face_embedding")
+        job = self.make_job(run=run, processor_type="face_embedding")
         attempt = ProcessingAttempt.objects.create(
             event=self.event,
             run=run,
             job=job,
             photo=self.photo,
             contract_version=1,
-            processor_type="capture_metadata",
+            processor_type="face_embedding",
             processor_version=1,
             configuration={},
             input_fingerprint={},
             status=ProcessingAttempt.Status.SUCCEEDED,
             terminal_at="2026-07-29T00:00:00Z",
             result={"capture_time": None},
+            accepted=True,
         )
         artifact = FaceProcessingAttemptArtifact.objects.create(
             attempt=attempt,
@@ -1172,10 +1173,10 @@ class ProcessingModelTests(TestCase):
             geometry={"x": 1, "y": 1, "w": 2, "h": 2},
             features={"source": "link"},
         )
-        embedding = FaceEmbedding.objects.create(
+        embedding = FaceEmbeddingVector.objects.create(
             detection=detection,
-            model_version="v1",
-            vector=[0.1, 0.2],
+            model_version="sface",
+            vector=[1.0] + [0.0] * 127,
             metadata={"norm": 1.0},
         )
 
@@ -1245,12 +1246,6 @@ class ProcessingModelTests(TestCase):
             geometry={"x": 0, "y": 0, "w": 1, "h": 1},
             features={"source": "blocked"},
         )
-        embedding = FaceEmbedding.objects.create(
-            detection=detection,
-            model_version="v1",
-            vector=[0.1],
-            metadata={},
-        )
         with transaction.atomic():
             with self.assertRaises(IntegrityError):
                 FaceProcessingAttemptArtifact.objects.filter(pk=artifact.pk).delete()
@@ -1259,9 +1254,6 @@ class ProcessingModelTests(TestCase):
                 PhotoFaceDetection.objects.filter(pk=detection.pk).update(
                     status=PhotoFaceDetection.Status.DETECTED
                 )
-        with transaction.atomic():
-            with self.assertRaises(IntegrityError):
-                FaceEmbedding.objects.filter(pk=embedding.pk).update(vector=[0.1, 0.2])
 
     def test_quality_rejected_detection_is_immutable_and_cannot_own_embedding(self) -> None:
         run = self.make_run(processor_type="face_embedding", processor_version=3)
@@ -1297,10 +1289,10 @@ class ProcessingModelTests(TestCase):
 
         with transaction.atomic():
             with self.assertRaises(IntegrityError):
-                FaceEmbedding.objects.create(
+                FaceEmbeddingVector.objects.create(
                     detection=detection,
                     model_version="sface",
-                    vector=[0.0] * 128,
+                    vector=[1.0] + [0.0] * 127,
                     metadata={},
                 )
         with transaction.atomic():

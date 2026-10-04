@@ -2,7 +2,7 @@ import logging
 import re
 from functools import wraps
 from time import monotonic
-from typing import Literal, TypedDict, cast
+from typing import Literal, cast
 from urllib.parse import urlencode
 
 from commerce.views import (
@@ -76,10 +76,6 @@ def _validated_feedback_correlation(value: str) -> str:
     return value if _FEEDBACK_CORRELATION_RE.fullmatch(value) else ""
 
 
-class _ComparisonOptions(TypedDict, total=False):
-    compare_readers: bool
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -94,16 +90,12 @@ def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id): 
         ),
         pk=photo_id,
     )
-    comparison_options: _ComparisonOptions = {}
-    if request.POST.get("compare_readers") == "1":
-        comparison_options["compare_readers"] = True
     try:
         created = submit_gallery_photo_search(
             event=event,
             photo=photo,
             detection_id=detection_id,
             user=request.user,
-            **comparison_options,
             paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
         )
     except GallerySearchUnavailable:
@@ -140,16 +132,12 @@ def submit(request, event_slug: str):
         )
         return _event_page(request, event_slug, form, status=422)
     selfie = form.cleaned_data["selfie"]
-    comparison_options: _ComparisonOptions = {}
-    if request.POST.get("compare_readers") == "1":
-        comparison_options["compare_readers"] = True
     try:
         created = submit_selfie_search(
             event=event,
             selfie=selfie,
             storage=TemporarySelfieStorage(),
             user=request.user,
-            **comparison_options,
         )
     except StorageUnavailable:
         _emit_submission_finished(

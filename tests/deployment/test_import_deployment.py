@@ -55,7 +55,14 @@ def test_enabled_import_checks_protocol_after_web_then_starts(tmp_path, fake_bin
     assert "import-secret" not in result.stdout + result.stderr
 
 
-def test_failed_candidate_stops_import_before_restoring_web(tmp_path, fake_bin):
+@pytest.mark.parametrize(
+    "lease_result", ["6\n0\n", "error\n"], ids=["lease-expiry", "probe-failure"]
+)
+def test_failed_candidate_stops_import_before_stopping_web_for_forward_recovery(
+    tmp_path, fake_bin, lease_result
+):
+    from tests.deployment.test_deployment_scripts import _write_executable
+
     env = _apply_env(tmp_path, fake_bin, scenario="public-failure")
     env.update(
         PHOTO_IMPORT_ENABLED="True",
@@ -63,13 +70,40 @@ def test_failed_candidate_stops_import_before_restoring_web(tmp_path, fake_bin):
         PHOTO_IMPORT_BUILD="release",
         PHOTO_IMPORT_WORKER_TOKEN="import-secret",
     )
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            'set -eu\ncase "$*" in *"label=com.docker.compose.service=import-worker"*) '
+            'printf "import-fixture-id\\n" ;; esac',
+            1,
+        )
+    )
+    _write_executable(fake_bin / "sleep", 'printf "sleep %s\\n" "$*" >> "$COMMAND_LOG"')
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text(lease_result)
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode != 0
     commands = "\n".join(_apply_log(tmp_path))
-    assert commands.rindex("label=com.docker.compose.service=import-worker") < commands.rindex(
-        "up -d --no-deps web nginx"
-    )
-    assert commands.rindex("import-lease-probe") < commands.rindex("up -d --no-deps web nginx")
+    started = commands.index("up -d --no-deps import-worker")
+    stopped_import = commands.rindex("rm -f import-fixture-id")
+    lease_probe = commands.rindex("import-lease-probe")
+    stopped_web = commands.rindex(" stop web")
+    assert started < stopped_import < lease_probe < stopped_web
+    assert commands.count("up -d --no-deps import-worker") == 1
+    assert commands.count("up -d --no-deps web nginx") == 1
+    assert "previous-web-processing-schema-probe" not in commands
+    assert "phase=public-health rollback=failed" in result.stdout
+    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
+        tmp_path / ".env"
+    ).read_bytes()
+    assert (tmp_path / ".deployment-recovery/previous.env").is_file()
+    if lease_result.startswith("error"):
+        assert "Forward recovery could not drain candidate import leases" in result.stderr
+    else:
+        assert _apply_log(tmp_path).count("import-lease-probe") == 2
+        assert commands.index("sleep 5", stopped_import) < lease_probe
 
 
 def test_import_token_projection_is_optional_and_edge_denies_internal_api():
@@ -86,9 +120,7 @@ def test_import_token_projection_is_optional_and_edge_denies_internal_api():
     )
 
 
-def test_protocol_readiness_failure_restores_previous_images_without_starting_import(
-    tmp_path, fake_bin
-):
+def test_protocol_readiness_failure_keeps_candidate_without_starting_import(tmp_path, fake_bin):
     env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
     env.update(
         PHOTO_IMPORT_ENABLED="True",
@@ -110,7 +142,14 @@ def test_protocol_readiness_failure_restores_previous_images_without_starting_im
     assert "Import API protocol readiness failed" in result.stderr
     assert "up -d --no-deps import-worker" not in "\n".join(_apply_log(tmp_path))
     assert "import-lease-probe" not in "\n".join(_apply_log(tmp_path))
-    assert (tmp_path / ".env").read_bytes() == (tmp_path / "previous-env.expected").read_bytes()
+    commands = "\n".join(_apply_log(tmp_path))
+    assert commands.count("up -d --no-deps web nginx") == 1
+    assert " stop web" in commands
+    assert "previous-web-processing-schema-probe" not in commands
+    assert (tmp_path / ".env").read_bytes() != (tmp_path / "previous-env.expected").read_bytes()
+    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
+        tmp_path / ".env"
+    ).read_bytes()
 
 
 def test_disabled_import_without_image_uses_valid_compose_configuration(tmp_path, fake_bin):

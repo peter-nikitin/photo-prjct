@@ -907,7 +907,7 @@ class SelfieSubmissionFeedbackTests(TestCase):
         self.assertContains(response, 'role="alert"', status_code=503)
         self.assertContains(response, ">Найти мои фото</button>", status_code=503)
 
-    def test_untrusted_post_cannot_set_server_reader_context(self) -> None:
+    def test_untrusted_post_cannot_claim_staff_status(self) -> None:
         created = SimpleNamespace(search=SimpleNamespace(pk=uuid4()), public_token="opaque-token")
         with patch(
             "selfie_search.views.submit_selfie_search", return_value=created
@@ -916,13 +916,11 @@ class SelfieSubmissionFeedbackTests(TestCase):
                 reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug}),
                 {
                     "selfie": _view_jpeg_upload(),
-                    "reader_staff_eligible": "true",
-                    "reader_comparison_requested": "true",
+                    "is_staff": "true",
                 },
             )
         self.assertEqual(response.status_code, 302)
-        self.assertNotIn("reader_staff_eligible", submit_search.call_args.kwargs)
-        self.assertNotIn("reader_comparison_requested", submit_search.call_args.kwargs)
+        self.assertNotIn("is_staff", submit_search.call_args.kwargs)
         self.assertFalse(submit_search.call_args.kwargs["user"].is_staff)
 
     def test_accepted_submission_emits_after_success_with_created_search_id(self) -> None:

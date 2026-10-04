@@ -9,7 +9,6 @@ from typing import Any
 from django.db import transaction
 
 from processing.models import (
-    FaceEmbedding,
     FaceEmbeddingVector,
     PhotoFaceDetection,
     ProcessingAttempt,
@@ -73,12 +72,9 @@ def persist_accepted_embedding(
     model_version: str,
     vector: list[float],
     metadata: dict[str, Any],
-) -> FaceEmbedding | FaceEmbeddingVector:
+) -> FaceEmbeddingVector:
     """Choose publication from accepted attempt identity, never mutable event selection."""
-    if not _attempt_uses_vector_only_storage(detection.attempt, model_version):
-        return persist_parallel_embedding(
-            detection=detection, model_version=model_version, vector=vector, metadata=metadata
-        )
+    _attempt_uses_vector_only_storage(detection.attempt, model_version)
     values = validate_embedding(vector, model_version=model_version)
     _require_accepted_kept_face(detection)
     return FaceEmbeddingVector.objects.create(
@@ -117,28 +113,6 @@ def validate_embedding(value: Iterable[float], *, model_version: str) -> list[fl
 def non_vector_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """Retain evidence metadata without copying the legacy embedding payload."""
     return {key: value for key, value in metadata.items() if key != "embedding"}
-
-
-@transaction.atomic
-def persist_parallel_embedding(
-    *,
-    detection: PhotoFaceDetection,
-    model_version: str,
-    vector: list[float],
-    metadata: dict[str, Any],
-) -> FaceEmbedding:
-    values = validate_embedding(vector, model_version=model_version)
-    _require_accepted_kept_face(detection)
-    legacy = FaceEmbedding.objects.create(
-        detection=detection, model_version=model_version, vector=values, metadata=metadata
-    )
-    FaceEmbeddingVector.objects.create(
-        detection=detection,
-        model_version=model_version,
-        vector=values,
-        metadata=non_vector_metadata(metadata),
-    )
-    return legacy
 
 
 def _require_accepted_kept_face(detection: PhotoFaceDetection) -> None:

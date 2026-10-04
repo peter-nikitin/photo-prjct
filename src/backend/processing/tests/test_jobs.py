@@ -16,7 +16,6 @@ from picflow.models import Event, Photo
 from processing.contracts import ClaimedJob, CompletionConflict, EmptyClaim
 from processing.models import (
     EventProcessingRun,
-    FaceEmbedding,
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
@@ -855,15 +854,13 @@ class ProcessingJobServiceTests(TestCase):
         )
 
         detection = PhotoFaceDetection.objects.get(attempt=claimed.attempt)
-        legacy = FaceEmbedding.objects.get(detection=detection)
         parallel = FaceEmbeddingVector.objects.get(detection=detection)
         self.assertEqual(
-            legacy.metadata,
+            parallel.metadata,
             {
                 "index": 0,
                 "bbox": [10.0, 20.0, 30.0, 40.0],
                 "quality": 0.9,
-                "embedding": [1.0] + [0.0] * 127,
                 "landmarks": [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
                 "quality_flags": [],
                 "source": "face_embedding",
@@ -871,10 +868,6 @@ class ProcessingJobServiceTests(TestCase):
             },
         )
         self.assertNotIn("embedding", parallel.metadata)
-        self.assertEqual(
-            parallel.metadata,
-            {key: value for key, value in legacy.metadata.items() if key != "embedding"},
-        )
         self.assertEqual(
             detection.geometry,
             {
@@ -949,12 +942,11 @@ class ProcessingJobServiceTests(TestCase):
                 PhotoFaceDetection.Status.FAILED,
             ],
         )
-        self.assertEqual(FaceEmbedding.objects.filter(detection__in=detections).count(), 1)
         self.assertEqual(FaceEmbeddingVector.objects.filter(detection__in=detections).count(), 1)
         self.assertFalse(hasattr(detections[1], "embedding"))
         self.assertFalse(hasattr(detections[2], "embedding"))
         self.assertFalse(hasattr(detections[3], "embedding"))
-        embedding = FaceEmbedding.objects.get(detection=detections[0])
+        embedding = FaceEmbeddingVector.objects.get(detection=detections[0])
         self.assertNotIn("embedding", embedding.metadata)
         self.assertEqual(detections[1].features["quality"]["decision"], "quality_rejected")
         self.assertEqual(detections[2].features["error_code"], "model_inference_error")
@@ -962,7 +954,7 @@ class ProcessingJobServiceTests(TestCase):
 
     def test_both_callback_producers_roll_back_when_parallel_store_fails(self) -> None:
         for quality in (False, True):
-            for store in ("FaceEmbedding", "FaceEmbeddingVector"):
+            for store in ("FaceEmbeddingVector",):
                 with self.subTest(quality=quality, store=store):
                     suffix = f"parallel-{int(quality)}-{int(store == 'FaceEmbeddingVector')}"
                     if quality:
@@ -1007,9 +999,6 @@ class ProcessingJobServiceTests(TestCase):
                     self.assertFalse(claimed.attempt.accepted)
                     self.assertFalse(
                         PhotoFaceDetection.objects.filter(attempt=claimed.attempt).exists()
-                    )
-                    self.assertFalse(
-                        FaceEmbedding.objects.filter(detection__attempt=claimed.attempt).exists()
                     )
                     self.assertFalse(
                         FaceEmbeddingVector.objects.filter(
@@ -1206,9 +1195,6 @@ class ProcessingJobServiceTests(TestCase):
                 FaceProcessingAttemptArtifact.objects.filter(attempt=claimed.attempt).exists()
             )
             self.assertFalse(PhotoFaceDetection.objects.filter(attempt=claimed.attempt).exists())
-            self.assertFalse(
-                FaceEmbedding.objects.filter(detection__attempt=claimed.attempt).exists()
-            )
             self.assertFalse(
                 PhotoFaceEmbeddingProjection.objects.filter(
                     accepted_attempt=claimed.attempt

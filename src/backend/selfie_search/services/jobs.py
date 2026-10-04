@@ -43,8 +43,7 @@ from selfie_search.services.ranking import (
     RankingError,
     validate_query_vector,
 )
-from selfie_search.services.read_selection import Reader, rank_selected_direct, select_reader
-from selfie_search.services.reader_comparison import comparison_snapshot, review_other_reader
+from selfie_search.services.read_selection import rank_selected_direct
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +224,7 @@ def complete_search_attempt(
     )
     snapshot_job = snapshot_attempt.job
     snapshot_search = snapshot_job.search
-    reader: Reader = "legacy"
+    reader = "pgvector"
     prepared: (
         tuple[
             str,
@@ -242,33 +241,15 @@ def complete_search_attempt(
         eligible_face_count = 0
         try:
             query = _query_from_result(snapshot_search, result)
-            reader = select_reader(snapshot_search)
-            with comparison_snapshot(snapshot_search) as comparing:
-                cohort_lookup = rank_selected_direct(
-                    snapshot_search,
-                    query,
-                    reader=reader,
-                    **({"comparison_evidence": True} if comparing else {}),
-                )
-                eligible_photo_count = cohort_lookup.eligible_photo_count
-                eligible_face_count = cohort_lookup.eligible_face_count
-                shortlist_count = cohort_lookup.shortlist_count
-                expansion = _expand_direct_ranking(
-                    search=snapshot_search,
-                    ranked=cohort_lookup.photos,
-                    query=query,
-                )
-                if comparing:
-                    review_other_reader(
-                        search=snapshot_search,
-                        query=query,
-                        reader=reader,
-                        selected=cohort_lookup,
-                        expansion=expansion,
-                        expand=lambda rows: _expand_direct_ranking(
-                            search=snapshot_search, ranked=rows, query=query
-                        ),
-                    )
+            cohort_lookup = rank_selected_direct(snapshot_search, query)
+            eligible_photo_count = cohort_lookup.eligible_photo_count
+            eligible_face_count = cohort_lookup.eligible_face_count
+            shortlist_count = cohort_lookup.shortlist_count
+            expansion = _expand_direct_ranking(
+                search=snapshot_search,
+                ranked=cohort_lookup.photos,
+                query=query,
+            )
             prepared = (
                 "succeeded",
                 eligible_photo_count,
@@ -427,8 +408,6 @@ def _completion_snapshot_matches(
         and search.event_id == snapshot_search.event_id
         and search.configuration_hash == snapshot_search.configuration_hash
         and search.configuration == snapshot_search.configuration
-        and search.reader_staff_eligible == snapshot_search.reader_staff_eligible
-        and search.reader_comparison_requested == snapshot_search.reader_comparison_requested
         and job.id == snapshot_job.id
         and job.search_id == snapshot_job.search_id
         and job.configuration == snapshot_job.configuration
@@ -1017,16 +996,8 @@ def _emit_ranking_finished(
         load_ms=load_ms,
         rank_ms=rank_ms,
         reader=reader,
-        native_sql_ms=(rank_ms if reader == "pgvector" else None),
-        cache_outcome=(
-            "unavailable"
-            if cohort_lookup is None
-            else "native"
-            if reader == "pgvector"
-            else "hit"
-            if cohort_lookup.cache_hit
-            else "miss"
-        ),
+        native_sql_ms=rank_ms,
+        cache_outcome="unavailable" if cohort_lookup is None else "native",
         identity_ms=(
             None
             if cohort_lookup is None

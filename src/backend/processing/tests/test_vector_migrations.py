@@ -174,16 +174,19 @@ def test_previous_processing_and_search_rows_survive_vector_schema_expansion():
         executor.migrate(leaves)
         current = executor.loader.project_state(leaves).apps
         for name in names:
-            rows = list(current.get_model("processing", name).objects.order_by("pk").values())
+            if name == "FaceEmbedding":
+                # State retirement leaves historical rows physically intact until post-commit.
+                rows = list(model(name).objects.order_by("pk").values())
+            else:
+                rows = list(current.get_model("processing", name).objects.order_by("pk").values())
             if name == "ProcessingAttempt":
                 assert all(row.pop("pool_member_id") is None for row in rows)
             assert rows == before[name]
+        with pytest.raises(LookupError):
+            current.get_model("processing", "FaceEmbedding")
         rows = list(
             current.get_model("selfie_search", "SelfieSearch").objects.order_by("pk").values()
         )
-        for row in rows:
-            assert row.pop("reader_staff_eligible") is False
-            assert row.pop("reader_comparison_requested") is False
         assert rows == before_search
         for name, values in saved.items():
             assert (

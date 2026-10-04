@@ -12,7 +12,6 @@ from picflow.models import Event, Photo
 
 from processing.models import (
     EventProcessingRun,
-    FaceEmbedding,
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
@@ -21,7 +20,6 @@ from processing.models import (
 )
 from processing.services.vector_embeddings import (
     persist_accepted_embedding,
-    persist_parallel_embedding,
     vector_values,
 )
 
@@ -85,7 +83,6 @@ def test_vector_only_publication_retains_metadata_without_json_embedding(detecti
     assert isinstance(native, FaceEmbeddingVector)
     assert vector_values(native.vector) == vector
     assert native.metadata == {"quality": 0.9}
-    assert not FaceEmbedding.objects.exists()
 
 
 @pytest.mark.parametrize("detection", ["vector_only"], indirect=True)
@@ -101,24 +98,22 @@ def test_vector_only_publication_rejects_non_kept_faces(detection, status):
             vector=[1.0] + [0.0] * 511,
             metadata={},
         )
-    assert not FaceEmbedding.objects.exists()
     assert not FaceEmbeddingVector.objects.exists()
 
 
 @pytest.mark.parametrize(("model", "dimensions"), [("sface", 128), ("adaface-ir18-webface4m", 512)])
-def test_parallel_publication_keeps_independent_identity_metadata_and_values(
-    detection, model, dimensions
-):
+def test_native_publication_keeps_identity_metadata_and_values(detection, model, dimensions):
     values = [1.0] + [0.0] * (dimensions - 1)
-    legacy = persist_parallel_embedding(
-        detection=detection, model_version=model, vector=values, metadata={"quality": 0.9}
+    row = persist_accepted_embedding(
+        detection=detection,
+        model_version=model,
+        vector=values,
+        metadata={"quality": 0.9, "embedding": values},
     )
-    row = FaceEmbeddingVector.objects.get(detection=detection)
-    assert row.pk != legacy.pk
+    assert isinstance(row, FaceEmbeddingVector)
     assert row.model_version == model
-    assert row.metadata == legacy.metadata == {"quality": 0.9}
-    assert vector_values(row.vector) == legacy.vector == values
-    assert all(type(value) is float for value in vector_values(row.vector))
+    assert row.metadata == {"quality": 0.9}
+    assert vector_values(row.vector) == values
 
 
 @pytest.mark.parametrize(
@@ -137,10 +132,9 @@ def test_parallel_publication_keeps_independent_identity_metadata_and_values(
 )
 def test_invalid_input_writes_neither_representation(detection, model, values):
     with pytest.raises(ValueError):
-        persist_parallel_embedding(
+        persist_accepted_embedding(
             detection=detection, model_version=model, vector=values, metadata={}
         )
-    assert not FaceEmbedding.objects.exists()
     assert not FaceEmbeddingVector.objects.exists()
 
 
@@ -152,28 +146,27 @@ def test_rejected_detection_cannot_publish_vector(detection):
         status="quality_rejected",
     )
     with pytest.raises(ValueError):
-        persist_parallel_embedding(
+        persist_accepted_embedding(
             detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
         )
     assert not FaceEmbeddingVector.objects.exists()
 
 
-@pytest.mark.parametrize("store", ["FaceEmbedding", "FaceEmbeddingVector"])
+@pytest.mark.parametrize("store", ["FaceEmbeddingVector"])
 def test_either_write_failure_rolls_back_both_stores(detection, store):
     with patch(
         f"processing.services.vector_embeddings.{store}.objects.create",
         side_effect=IntegrityError("write failed"),
     ):
         with pytest.raises(IntegrityError):
-            persist_parallel_embedding(
+            persist_accepted_embedding(
                 detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
             )
-    assert not FaceEmbedding.objects.exists()
     assert not FaceEmbeddingVector.objects.exists()
 
 
 def test_detection_is_unique_and_terminal_vector_is_immutable(detection):
-    persist_parallel_embedding(
+    persist_accepted_embedding(
         detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
     )
     row = FaceEmbeddingVector.objects.get(detection=detection)
@@ -198,7 +191,7 @@ def test_database_constraints_protect_bulk_writes(detection, model, values):
 
 
 def test_database_blocks_mutating_or_deleting_accepted_vector_evidence(detection):
-    persist_parallel_embedding(
+    persist_accepted_embedding(
         detection=detection, model_version="sface", vector=[1.0] + [0.0] * 127, metadata={}
     )
     with pytest.raises(IntegrityError), transaction.atomic():

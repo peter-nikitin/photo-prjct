@@ -25,7 +25,6 @@ from processing.models import (
     EventFaceEmbeddingActivation,
     EventProcessingRun,
     FaceClusterCorpus,
-    FaceEmbedding,
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
@@ -76,6 +75,7 @@ class FaceClusterCorpusTests(TestCase):
             end_date=date(2026, 8, 5),
             city="Moscow",
             publication_status=Event.PublicationStatus.PUBLISHED,
+            face_search_generation=Event.FaceSearchGeneration.SFACE_V3,
         )
 
     def generation(self, *, contract_version: int, processor_version: int) -> dict[str, object]:
@@ -101,7 +101,7 @@ class FaceClusterCorpusTests(TestCase):
         processor_version: int = 1,
         model: str = "sface",
         native: bool = False,
-    ) -> FaceEmbedding | FaceEmbeddingVector:
+    ) -> FaceEmbeddingVector:
         generation = (
             historical_adaface_face_embedding_generations()[0]
             if native
@@ -174,11 +174,11 @@ class FaceClusterCorpusTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        embedding_model = FaceEmbeddingVector if native else FaceEmbedding
+        embedding_model = FaceEmbeddingVector
         embedding = embedding_model.objects.create(
             detection=detection,
             model_version=model,
-            vector=vector,
+            vector=vector + [0.0] * (128 - len(vector)),
             metadata={},
         )
         PhotoFaceEmbeddingProjection.objects.create(
@@ -216,7 +216,7 @@ class FaceClusterCorpusTests(TestCase):
             list(corpus.members.values_list("detection_id", flat=True)), [native.detection_id]
         )
         self.assertNotIn(old.detection_id, corpus.members.values_list("detection_id", flat=True))
-        self.assertFalse(FaceEmbedding.objects.filter(detection=native.detection).exists())
+        self.assertEqual(FaceEmbeddingVector.objects.filter(detection=native.detection).count(), 1)
 
     def test_native_corpus_fails_closed_on_missing_or_wrong_vector(self) -> None:
         self.make_embedding(
@@ -437,7 +437,7 @@ class FaceClusterCorpusTests(TestCase):
             processor_version=2,
         )
         foreign = self.make_embedding(event=self.other_event, photo_id="foreign", vector=[1.0, 0.0])
-        rows = load_compatible_face_embeddings(self.event, self.generations, 2)
+        rows = load_compatible_face_embeddings(self.event, self.generations, 128)
         self.assertEqual(
             {row.photo_id for row in rows},
             {
@@ -457,7 +457,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=1,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -546,7 +546,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=1,
             generations=self.candidate_generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -576,7 +576,7 @@ class FaceClusterCorpusTests(TestCase):
                         event=self.event,
                         version=offset,
                         generations=generations,
-                        dimensions=2,
+                        dimensions=128,
                         edge_threshold=0.1,
                         representative_threshold=0.1,
                         distance_block_size=2,
@@ -593,7 +593,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=1,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -603,7 +603,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=2,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -618,7 +618,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=1,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -629,7 +629,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=2,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -683,7 +683,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=1,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=float(thresholds["cluster_threshold"]),
             representative_threshold=float(thresholds["representative_threshold"]),
             distance_block_size=int(thresholds["distance_block_size"]),
@@ -709,7 +709,7 @@ class FaceClusterCorpusTests(TestCase):
                     ),
                 ),
             ),
-            np.asarray([[1.0, 0.0]], dtype=np.float32),
+            np.asarray([[1.0] + [0.0] * 127], dtype=np.float32),
             face_index_manifest_type(
                 "a" * 64,
                 "b" * 64,
@@ -718,7 +718,7 @@ class FaceClusterCorpusTests(TestCase):
                 thresholds,
                 {"numpy": "test"},
                 1,
-                2,
+                128,
                 "2026-08-05T00:00:00Z",
             ),
         )
@@ -740,7 +740,7 @@ class FaceClusterCorpusTests(TestCase):
                 event=self.event,
                 version=1,
                 generations=self.generations,
-                dimensions=2,
+                dimensions=128,
                 edge_threshold=0.0,
                 representative_threshold=0.1,
                 distance_block_size=2,
@@ -761,7 +761,7 @@ class FaceClusterCorpusTests(TestCase):
                     event=self.event,
                     version=1,
                     generations=self.generations,
-                    dimensions=2,
+                    dimensions=128,
                     edge_threshold=0.1,
                     representative_threshold=0.1,
                     distance_block_size=2,
@@ -778,7 +778,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=1,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -788,7 +788,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=2,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -841,7 +841,7 @@ class FaceClusterCorpusTests(TestCase):
                 event=self.event,
                 version=1,
                 generations=self.generations,
-                dimensions=2,
+                dimensions=128,
                 edge_threshold=0.1,
                 representative_threshold=0.1,
                 distance_block_size=2,
@@ -879,7 +879,7 @@ class FaceClusterCorpusTests(TestCase):
             event=self.event,
             version=1,
             generations=self.generations,
-            dimensions=2,
+            dimensions=128,
             edge_threshold=0.1,
             representative_threshold=0.1,
             distance_block_size=2,
@@ -942,3 +942,18 @@ class FaceClusterCorpusTests(TestCase):
                 evaluation_report_hash="a" * 64,
                 numeric_gates_reviewed=True,
             )
+
+    def test_ordinary_adaface_native_corpus_defaults_to_model_dimensions(self) -> None:
+        from processing.services.face_quality import local_adaface_face_embedding_generations
+
+        with self.settings(ADAFACE_LOCAL_EXPERIMENT_ENABLED=True, DEBUG=True):
+            corpus = build_face_cluster_corpus(
+                event=self.event,
+                version=1,
+                generations=local_adaface_face_embedding_generations(),
+                edge_threshold=0.1,
+                representative_threshold=0.1,
+                distance_block_size=2,
+                max_candidate_edges=100,
+            )
+        self.assertEqual(corpus.embedding_dimensions, 512)

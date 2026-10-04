@@ -269,7 +269,7 @@ def _face_embedding_counts(attempt: ProcessingAttempt | None) -> dict[str, Any]:
     detections = list(
         PhotoFaceDetection.objects.filter(attempt=attempt)
         .order_by("face_index")
-        .values("status", "features", "embedding__id")
+        .values("status", "features", "embedding_vector__id")
     )
     rejection_reasons: Counter[str] = Counter()
     technical_failure_reasons: Counter[str] = Counter()
@@ -299,7 +299,7 @@ def _face_embedding_counts(attempt: ProcessingAttempt | None) -> dict[str, Any]:
             detection["status"] == PhotoFaceDetection.Status.QUALITY_REJECTED
             for detection in detections
         ),
-        "embedded": sum(detection["embedding__id"] is not None for detection in detections),
+        "embedded": sum(detection["embedding_vector__id"] is not None for detection in detections),
         "technical_failed": sum(
             detection["status"] == PhotoFaceDetection.Status.FAILED for detection in detections
         ),

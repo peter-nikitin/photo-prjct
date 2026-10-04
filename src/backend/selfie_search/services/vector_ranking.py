@@ -11,11 +11,7 @@ from processing.services.face_cohort import eligible_face_detections
 from processing.services.vector_reconciliation import vector_identity_gap_predicates
 
 from selfie_search.models import SelfieSearch
-from selfie_search.services.direct_ranking import (
-    DirectFaceIdentity,
-    DirectRankingOutcome,
-    frozen_generations,
-)
+from selfie_search.services.direct_ranking import DirectRankingOutcome, frozen_generations
 from selfie_search.services.ranking import (
     RankedPhoto,
     RankingError,
@@ -24,9 +20,7 @@ from selfie_search.services.ranking import (
 )
 
 
-def rank_vector_direct(
-    search: SelfieSearch, query_vector: object, *, comparison_evidence: bool = False
-) -> DirectRankingOutcome:
+def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRankingOutcome:
     """Scan all eligible faces, fail closed on gaps, return scalar evidence only.
 
     PostgreSQL READ COMMITTED supplies a consistent snapshot for this one statement even
@@ -89,13 +83,10 @@ def rank_vector_direct(
             FROM scored
         )
         SELECT c.face_count, c.photo_count, c.missing_count, c.divergent_count,
-            e.detection_id, e.photo_id, e.attempt_id, e.contract_version,
-            e.processor_version, e.configuration_hash, e.model_version,
-            CASE WHEN e.photo_rank = 1 AND (e.distance <= %s OR %s)
-                THEN e.distance END,
-            e.photo_rank = 1 AND e.distance <= %s AS matched
-        FROM counts c LEFT JOIN ranked e ON TRUE
-        ORDER BY CASE WHEN e.photo_rank = 1 THEN e.distance END, e.photo_id, e.detection_id
+            e.detection_id, e.photo_id, e.distance
+        FROM counts c LEFT JOIN ranked e
+            ON e.photo_rank = 1 AND e.distance <= %s
+        ORDER BY e.distance, e.photo_id, e.detection_id
     """
     # Only the validated query travels into PostgreSQL. Gallery vector values never leave it.
     query_literal = "[" + ",".join(str(value) for value in query) + "]"
@@ -109,8 +100,6 @@ def rank_vector_direct(
                 configuration.dimensions,
                 query_literal,
                 configuration.threshold,
-                comparison_evidence,
-                configuration.threshold,
             ),
         )
         rows = cursor.fetchall()
@@ -118,26 +107,16 @@ def rank_vector_direct(
     face_count, photo_count, missing_count, divergent_count = rows[0][:4]
     if missing_count or divergent_count:
         raise RankingError("native face cohort is incomplete or divergent")
-    snapshot = []
-    best_candidates = []
     photos = []
     for row in rows:
         if row[4] is None:
             continue
-        snapshot.append(DirectFaceIdentity(*row[4:11]))
-        if row[11] is not None:
-            ranked = RankedPhoto(photo_id=row[5], detection_id=row[4], cosine_distance=row[11])
-            if comparison_evidence:
-                best_candidates.append(ranked)
-            if row[12]:
-                photos.append(ranked)
+        photos.append(RankedPhoto(photo_id=row[5], detection_id=row[4], cosine_distance=row[6]))
     return DirectRankingOutcome(
         photos=tuple(photos),
         eligible_face_count=face_count,
         eligible_photo_count=photo_count,
-        snapshot=tuple(sorted(snapshot)),
         identity_ms=0.0,
         build_ms=0.0,
         ranking_ms=ranking_ms,
-        best_candidates=tuple(best_candidates),
     )

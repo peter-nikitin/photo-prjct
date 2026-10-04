@@ -17,8 +17,6 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
-from feature_flags.registry import PGVECTOR_FACE_SEARCH_READ
-from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from processing.contracts import ClaimedJob
@@ -28,7 +26,6 @@ from processing.models import (
     FaceCluster,
     FaceClusterCorpus,
     FaceClusterMember,
-    FaceEmbedding,
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoFaceDetection,
@@ -53,7 +50,6 @@ from selfie_search.models import (
     SelfieSearchJob,
     SelfieSearchResult,
 )
-from selfie_search.services.direct_ranking import rank_legacy_direct
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
     CleanupPending,
@@ -68,6 +64,7 @@ from selfie_search.services.jobs import (
     selfie_worker_configuration,
 )
 from selfie_search.services.submission import _configuration as submission_configuration
+from selfie_search.services.vector_ranking import rank_vector_direct
 
 
 class RecordingStorage:
@@ -98,19 +95,16 @@ class SearchJobTests(TestCase):
 
     def test_native_callback_publishes_after_cleanup_and_never_uses_legacy(self) -> None:
         search = self.make_search()
-        for embedding in FaceEmbedding.objects.all():
-            FaceEmbeddingVector.objects.create(
-                detection=embedding.detection,
-                model_version=embedding.model_version,
-                vector=embedding.vector,
-            )
         claimed = self.claim(search)
+        from selfie_search.services.vector_ranking import rank_vector_direct
+
         with (
-            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "on"}),
-            patch("selfie_search.services.read_selection.rank_legacy_direct") as legacy,
+            patch(
+                "selfie_search.services.read_selection.rank_vector_direct", wraps=rank_vector_direct
+            ) as native,
         ):
             complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
-        legacy.assert_not_called()
+        native.assert_called_once()
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertIsNotNone(search.cleanup_confirmed_at)
@@ -120,15 +114,12 @@ class SearchJobTests(TestCase):
         search = self.make_search()
         claimed = self.claim(search)
         with (
-            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "on"}),
             patch(
                 "selfie_search.services.read_selection.rank_vector_direct",
                 side_effect=DatabaseError("secret query"),
             ),
-            patch("selfie_search.services.read_selection.rank_legacy_direct") as legacy,
         ):
             complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
-        legacy.assert_not_called()
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.FAILED)
         self.assertEqual(search.results.count(), 0)
@@ -239,11 +230,10 @@ class SearchJobTests(TestCase):
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
         )
-        FaceEmbedding.objects.create(
+        FaceEmbeddingVector.objects.create(
             detection=detection,
             model_version="sface",
             vector=[1.0 - distance, sqrt(1 - (1.0 - distance) ** 2)] + [0.0] * 126,
-            metadata={},
         )
         PhotoFaceEmbeddingProjection.objects.create(
             photo=photo,
@@ -403,9 +393,9 @@ class SearchJobTests(TestCase):
         publication_time = claimed_at + timedelta(seconds=121)
         clock = [claimed_at]
 
-        def advance_past_expiry(_search: SelfieSearch, query, *, reader):
+        def advance_past_expiry(_search: SelfieSearch, query):
             clock[0] = publication_time
-            return rank_legacy_direct(_search, query)
+            return rank_vector_direct(_search, query)
 
         with (
             patch("selfie_search.services.jobs.timezone.now", side_effect=lambda: clock[0]),
@@ -898,10 +888,10 @@ class SearchJobTests(TestCase):
             for line in logs.output
             if "selfie_ranking_finished" in line
         )
-        self.assertEqual(event["cache_outcome"], "hit")
+        self.assertEqual(event["cache_outcome"], "native")
         self.assertEqual(event["build_ms"], 0)
         self.assertEqual(event["validated_face_count"], 1)
-        self.assertEqual(event["shortlist_count"], 1)
+        self.assertEqual(event["shortlist_count"], 0)
 
     def test_terminal_observability_query_failure_cannot_change_the_committed_result(self) -> None:
         search = self.make_search()
@@ -1065,11 +1055,11 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
         allow_cohort = ThreadEvent()
         errors: Queue[BaseException] = Queue()
 
-        def paused_candidates(_search: SelfieSearch, query, *, reader):
+        def paused_candidates(_search: SelfieSearch, query):
             cohort_started.set()
             if not allow_cohort.wait(timeout=10):
                 raise TimeoutError("test did not release cohort load")
-            return rank_legacy_direct(_search, query)
+            return rank_vector_direct(_search, query)
 
         def complete_first() -> None:
             close_old_connections()

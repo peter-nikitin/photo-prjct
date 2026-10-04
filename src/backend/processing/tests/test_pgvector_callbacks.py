@@ -11,7 +11,6 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pytest
-from django.core.management import call_command
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -76,7 +75,7 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
     from photo_worker.contracts import Claim
     from photo_worker.runner import _success_payload
 
-    from processing.models import FaceEmbedding, FaceEmbeddingVector, ProcessingAttempt
+    from processing.models import FaceEmbeddingVector, ProcessingAttempt
     from processing.services.enrollment import (
         FACE_EMBEDDING_QUALITY_CONFIGURATION,
         LOCAL_ADAFACE_FACE_EMBEDDING_CONFIGURATION,
@@ -171,7 +170,7 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
         f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", invalid
     )
     assert rejected.status_code == 400
-    assert FaceEmbedding.objects.count() == FaceEmbeddingVector.objects.count() == 0
+    assert FaceEmbeddingVector.objects.count() == 0
     assert ProcessingAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease
 
     def opener(request, *, timeout):
@@ -189,25 +188,21 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
     )
     complete = worker_client.complete(job["attempt_id"], body)
     assert complete.status == "succeeded" and not complete.stale
-    assert FaceEmbedding.objects.count() == (0 if vector_only else 32)
     assert FaceEmbeddingVector.objects.count() == 32
     assert ProcessingAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease
     replay = h.post(f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body)
     assert replay.status_code == 200 and replay.json()["idempotent"]
-    assert FaceEmbedding.objects.count() == (0 if vector_only else 32)
     assert FaceEmbeddingVector.objects.count() == 32
 
 
 @pytest.mark.django_db
-def test_remote_selfie_callback_uses_enabled_vector_reader_and_keeps_results_immutable(
+def test_remote_selfie_callback_uses_native_reader_with_gate_off_and_keeps_results_immutable(
     client, settings
 ):
-    from feature_flags.models import FeatureFlag
-    from feature_flags.registry import PGVECTOR_FACE_SEARCH_READ
     from selfie_search.models import SelfieSearch, SelfieSearchAttempt
     from selfie_search.tests.test_jobs import SearchJobTests
 
-    from processing.models import FaceEmbedding, FaceEmbeddingVector, WorkerPoolMember
+    from processing.models import WorkerPoolMember
     from processing.tests.test_views import SelfieWorkerApiTests, SelfieWorkerStorage
 
     settings.PHOTO_PROCESSING_ENABLED = True
@@ -216,16 +211,6 @@ def test_remote_selfie_callback_uses_enabled_vector_reader_and_keeps_results_imm
     fixture = SearchJobTests()
     fixture.setUp()
     search = fixture.make_search()
-    for embedding in FaceEmbedding.objects.all():
-        FaceEmbeddingVector.objects.create(
-            detection=embedding.detection,
-            model_version=embedding.model_version,
-            vector=embedding.vector,
-        )
-    flag = FeatureFlag.objects.create(key=PGVECTOR_FACE_SEARCH_READ.key, state="on")
-    call_command("sync_feature_flags")
-    flag.refresh_from_db()
-    assert flag.state == "on"
     wire = SelfieWorkerApiTests()
     wire.client = client
     envelope, wire.headers = _remote_session(client, settings, "selfie")
@@ -257,8 +242,6 @@ def test_remote_selfie_callback_uses_enabled_vector_reader_and_keeps_results_imm
         assert replay.status_code == 200 and replay.json()["idempotent"]
         assert list(search.results.values()) == saved
         assert len(storage.deleted) == 1
-        flag.refresh_from_db()
-        assert flag.state == "on"
 
 
 @pytest.mark.django_db
@@ -288,7 +271,6 @@ def test_maximum_selfie_callback_cleanup_and_wire(client, settings):
         claim = h.post("/internal/photo-processing/v1/claim", h.claim_body())
         assert claim.status_code == 200
         job = claim.json()["job"]
-        assert "reader_staff_eligible" not in job and "reader_comparison_requested" not in job
         lease = SelfieSearchAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at
         body = h.success_body(job)
         result = cast(dict[str, object], body["result"])

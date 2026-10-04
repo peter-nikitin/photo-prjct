@@ -7,7 +7,6 @@ from queue import Queue
 from struct import pack
 from threading import Event as ThreadEvent
 from threading import Thread
-from typing import cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
 from zlib import crc32
@@ -20,7 +19,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.registry import PAID_EVENTS, PGVECTOR_FACE_SEARCH_READ
+from feature_flags.registry import PAID_EVENTS
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
@@ -31,7 +30,6 @@ from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventFaceEmbeddingActivation,
     EventProcessingRun,
-    FaceEmbedding,
     FaceEmbeddingVector,
     FaceProcessingAttemptArtifact,
     PhotoDerivative,
@@ -54,7 +52,6 @@ from processing.services.enrollment import (
     accepted_preview_cohort_hash,
     request_processor,
 )
-from processing.services.face_cohort import load_compatible_face_embeddings
 from processing.services.face_quality import (
     activate_face_embedding_generation,
     candidate_face_embedding_generations,
@@ -71,11 +68,11 @@ from selfie_search.services.jobs import (
     claim_search_job,
     complete_search_attempt,
 )
-from selfie_search.services.ranking import RankingError, rank_cached_embeddings
+from selfie_search.services.ranking import RankingError
+from selfie_search.services.read_selection import rank_selected_direct
 from selfie_search.services.submission import (
     GallerySearchFailed,
     GallerySearchUnavailable,
-    compatible_search_candidates,
     gallery_search_faces_by_photo,
     process_gallery_photo_search,
     resolve_public_search,
@@ -146,48 +143,6 @@ class SubmissionTests(TestCase):
         self.paid_event = self.make_event("paid", "paid")
         self.draft = self.make_event("draft", "free", published=False)
 
-    def test_comparison_optin_is_authorized_and_separate_from_frozen_worker_configuration(
-        self,
-    ) -> None:
-        for staff, active, expected in (
-            (False, True, False),
-            (True, False, False),
-            (True, True, True),
-        ):
-            self.user.is_staff, self.user.is_active = staff, active
-            created = submit_selfie_search(
-                event=self.event,
-                selfie=valid_selfie(),
-                storage=RecordingStorage(),
-                user=self.user,
-                compare_readers=True,
-            )
-            self.assertEqual(created.search.reader_comparison_requested, expected)
-            self.assertNotIn("compare_readers", created.search.configuration)
-            self.assertEqual(created.search.configuration, created.search.job.configuration)
-
-    def test_explicit_comparison_post_is_staff_only_and_csrf_protected(self) -> None:
-        from django.test import Client
-
-        url = reverse("selfie_search:submit", kwargs={"event_slug": self.event.slug})
-        csrf_response = Client(enforce_csrf_checks=True).post(
-            url, {"compare_readers": "1", "selfie": valid_upload()}
-        )
-        self.assertEqual(csrf_response.status_code, 403)
-        self.assertEqual(SelfieSearch.objects.count(), 0)
-        for staff in (False, True):
-            self.user.is_staff = staff
-            self.user.save(update_fields=["is_staff"])
-            self.client.force_login(self.user)
-            with patch(
-                "selfie_search.views.TemporarySelfieStorage", return_value=RecordingStorage()
-            ):
-                response = self.client.post(url, {"compare_readers": "1", "selfie": valid_upload()})
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(
-                SelfieSearch.objects.latest("created_at").reader_comparison_requested, staff
-            )
-
     def make_event(self, suffix: str, access_type: str, *, published: bool = True) -> Event:
         values: dict[str, object] = {
             "name": f"Event {suffix}",
@@ -222,8 +177,7 @@ class SubmissionTests(TestCase):
         detection_id: UUID | None = None,
         geometry: dict[str, object] | None = None,
         input_fingerprint: dict[str, int | str | None] | None = None,
-        vector_only: bool = False,
-    ) -> FaceEmbedding | FaceEmbeddingVector:
+    ) -> FaceEmbeddingVector:
         configuration = configuration if configuration is not None else FACE_EMBEDDING_CONFIGURATION
         configuration_hash = (
             configuration_hash
@@ -302,11 +256,10 @@ class SubmissionTests(TestCase):
                 }
             ),
         )
-        store = FaceEmbeddingVector if vector_only else FaceEmbedding
-        embedding = store.objects.create(
+        embedding = FaceEmbeddingVector.objects.create(
             detection=detection,
             model_version=model,
-            vector=vector if vector is not None else [0.0] * dimensions,
+            vector=vector if vector is not None else [1.0] + [0.0] * (dimensions - 1),
             metadata={},
         )
         if accepted:
@@ -341,7 +294,6 @@ class SubmissionTests(TestCase):
             processor_version=5,
             configuration=configuration,
             configuration_hash=configuration_hash,
-            vector_only=True,
         )
         photo = native.detection.attempt.photo
         with patch(
@@ -358,9 +310,10 @@ class SubmissionTests(TestCase):
             result = process_gallery_photo_search(search=created.search)
         self.assertEqual(result.status, SelfieSearch.Status.READY)
         self.assertEqual(result.results.get().photo_id, photo.pk)
-        self.assertFalse(FaceEmbedding.objects.exists())
 
-    def test_staff_context_is_server_only_frozen_and_callback_uses_current_gate(self) -> None:
+    def test_staff_context_is_server_only_frozen_and_callback_uses_native_reader(self) -> None:
+        from selfie_search.services.vector_ranking import rank_vector_direct
+
         self.user.is_staff = True
         selfie = PreparedSelfie(
             content=b"prepared", content_type="image/jpeg", source_size=8, source_format="jpeg"
@@ -368,8 +321,6 @@ class SubmissionTests(TestCase):
         search = submit_selfie_search(
             event=self.event, selfie=selfie, storage=RecordingStorage(), user=self.user
         ).search
-        self.assertTrue(search.reader_staff_eligible)
-        self.assertNotIn("reader_staff_eligible", search.configuration)
         self.assertEqual(search.job.configuration, search.configuration)
         self.assertEqual(
             search.configuration_hash,
@@ -377,10 +328,6 @@ class SubmissionTests(TestCase):
                 json.dumps(search.configuration, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),
         )
-        search.reader_staff_eligible = False
-        with self.assertRaises(ValidationError):
-            search.save()
-        search.refresh_from_db()
         claimed = claim_search_job(
             contract_version=1,
             processor_type="selfie_query",
@@ -388,15 +335,16 @@ class SubmissionTests(TestCase):
         )
         assert isinstance(claimed, ClaimedSearchJob)
         with (
-            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "off"}),
-            patch("selfie_search.services.read_selection.rank_vector_direct") as native,
+            patch(
+                "selfie_search.services.read_selection.rank_vector_direct", wraps=rank_vector_direct
+            ) as native,
         ):
             complete_search_attempt(
                 claimed.attempt.id,
                 result={"model": "sface", "embedding": [1.0] + [0.0] * 127},
                 storage=RecordingStorage(),
             )
-        native.assert_not_called()
+        native.assert_called_once()
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
 
@@ -419,7 +367,6 @@ class SubmissionTests(TestCase):
         )
         assert isinstance(claimed, ClaimedSearchJob)
         with (
-            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "staff"}),
             patch(
                 "selfie_search.services.read_selection.rank_vector_direct", wraps=rank_vector_direct
             ) as native,
@@ -430,8 +377,6 @@ class SubmissionTests(TestCase):
                 storage=RecordingStorage(),
             )
         native.assert_called_once()
-        self.assertNotIn("reader_staff_eligible", claimed.job.configuration)
-        self.assertNotIn("reader_comparison_requested", claimed.job.configuration)
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
 
@@ -439,14 +384,7 @@ class SubmissionTests(TestCase):
         embedding = self.make_eligible_embedding(
             event=self.event, photo_id="source", vector=[1.0] + [0.0] * 127
         )
-        FaceEmbeddingVector.objects.create(
-            detection=embedding.detection, model_version="sface", vector=embedding.vector
-        )
-        with (
-            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "on"}),
-            patch("selfie_search.services.read_selection.rank_legacy_direct") as legacy,
-            CaptureQueriesContext(connection) as queries,
-        ):
+        with CaptureQueriesContext(connection) as queries:
             search = submit_gallery_photo_search(
                 event=self.event,
                 photo=embedding.detection.attempt.photo,
@@ -454,13 +392,7 @@ class SubmissionTests(TestCase):
                 user=self.user,
             ).search
             process_gallery_photo_search(search=search)
-        legacy.assert_not_called()
-        self.assertFalse(
-            any(
-                '"processing_faceembedding"."vector"' in row["sql"].split(" FROM ")[0]
-                for row in queries
-            )
-        )
+        self.assertTrue(any("processing_faceembeddingvector" in row["sql"] for row in queries))
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertEqual(search.results.get().photo_id, "source")
@@ -479,11 +411,7 @@ class SubmissionTests(TestCase):
             detection_id=embedding.detection_id,
             user=self.user,
         ).search
-        FaceEmbeddingVector.objects.create(
-            detection=embedding.detection, model_version="sface", vector=embedding.vector
-        )
         with (
-            override_feature_flags({PGVECTOR_FACE_SEARCH_READ: "on"}),
             patch(
                 "selfie_search.services.read_selection.rank_vector_direct",
                 side_effect=DatabaseError,
@@ -507,9 +435,6 @@ class SubmissionTests(TestCase):
         PhotoProcessingState.objects.filter(
             photo_id="stale", processor_type="face_embedding"
         ).update(accepted_attempt=None)
-        self.make_eligible_embedding(event=self.event, photo_id="b", model="other")
-        self.make_eligible_embedding(event=self.event, photo_id="c", dimensions=127)
-        self.make_eligible_embedding(event=self.event, photo_id="d", accepted=False)
         self.make_eligible_embedding(
             event=self.event,
             photo_id="gen-version",
@@ -812,7 +737,11 @@ class SubmissionTests(TestCase):
         self.assertEqual(search.eligible_photo_count, 1)
         self.assertEqual(search.eligible_face_count, 1)
         self.assertEqual(
-            list(search.results.values_list("direct_evidence__detection__embedding", flat=True)),
+            list(
+                search.results.values_list(
+                    "direct_evidence__detection__embedding_vector", flat=True
+                )
+            ),
             [embedding.id],
         )
         self.assertEqual(search.matched_photo_count, 1)
@@ -839,131 +768,6 @@ class SubmissionTests(TestCase):
         self.assertNotIn("source_format", configuration)
         self.assertNotIn("source_size", configuration)
         self.assertNotIn("image/heic", configuration)
-
-    def test_compatible_cohort_selects_only_fields_needed_for_ranking(self) -> None:
-        self.make_eligible_embedding(
-            event=self.event,
-            photo_id="lightweight-candidate",
-            vector=[1.0] + [0.0] * 127,
-        )
-        search = SelfieSearch.objects.create(
-            event=self.event,
-            public_token_digest="f" * 64,
-            temporary_object_key="selfie-search/lightweight",
-            configuration=submission_configuration(
-                event=self.event, content_type="image/jpeg", content_size=1
-            ),
-            configuration_hash="f" * 64,
-        )
-
-        with CaptureQueriesContext(connection) as queries:
-            candidates = compatible_search_candidates(search)
-
-        cohort_sql = next(
-            query["sql"]
-            for query in queries
-            if 'FROM "processing_photofaceembeddingprojection"' in query["sql"]
-        )
-        self.assertNotIn('"processing_faceembedding"."metadata"', cohort_sql)
-        self.assertNotIn('"processing_photofacedetection"."geometry"', cohort_sql)
-        self.assertNotIn('"processing_processingattempt"."input_fingerprint"', cohort_sql)
-        self.assertEqual(candidates.entry.faces[0].photo_id, "lightweight-candidate")
-
-    def test_warm_gallery_search_reads_identity_without_loading_gallery_vectors(self) -> None:
-        embedding = self.make_eligible_embedding(
-            event=self.event, photo_id="warm-source", vector=[1.0] + [0.0] * 127
-        )
-        searches = [
-            submit_gallery_photo_search(
-                event=self.event,
-                photo=embedding.detection.attempt.photo,
-                detection_id=embedding.detection_id,
-                user=self.user,
-            ).search
-            for _ in range(2)
-        ]
-        process_gallery_photo_search(search=searches[0])
-        with CaptureQueriesContext(connection) as queries:
-            process_gallery_photo_search(search=searches[1])
-        selects = [
-            item["sql"]
-            for item in queries
-            if 'FROM "processing_photofaceembeddingprojection"' in item["sql"]
-        ]
-        self.assertTrue(selects)
-        self.assertFalse(any('"vector"' in sql.split(" FROM ")[0] for sql in selects))
-        self.assertEqual(
-            list(
-                searches[0].results.values_list(
-                    "photo_id", "direct_evidence__detection_id", "direct_evidence__cosine_distance"
-                )
-            ),
-            list(
-                searches[1].results.values_list(
-                    "photo_id", "direct_evidence__detection_id", "direct_evidence__cosine_distance"
-                )
-            ),
-        )
-
-    def test_direct_cohort_uses_the_shared_processing_eligibility_loader(self) -> None:
-        self.make_eligible_embedding(
-            event=self.event,
-            photo_id="shared-loader-candidate",
-            vector=[1.0] + [0.0] * 127,
-        )
-        search = SelfieSearch.objects.create(
-            event=self.event,
-            public_token_digest="g" * 64,
-            temporary_object_key="selfie-search/shared-loader",
-            configuration=submission_configuration(
-                event=self.event, content_type="image/jpeg", content_size=1
-            ),
-            configuration_hash="g" * 64,
-        )
-
-        expected = load_compatible_face_embeddings(
-            self.event,
-            search.configuration["gallery_face_embedding_generations"],
-            128,
-        )
-
-        candidates = compatible_search_candidates(search)
-
-        self.assertEqual(
-            [candidate.detection_id for candidate in candidates.entry.faces],
-            [row.detection_id for row in expected],
-        )
-
-    def test_hidden_photo_is_excluded_from_new_direct_search_candidates(self) -> None:
-        visible = self.make_eligible_embedding(
-            event=self.event,
-            photo_id="visible-search-candidate",
-            vector=[1.0] + [0.0] * 127,
-        )
-        hidden = self.make_eligible_embedding(
-            event=self.event,
-            photo_id="hidden-search-candidate",
-            vector=[1.0] + [0.0] * 127,
-        )
-        Photo.objects.filter(pk="hidden-search-candidate").update(is_hidden=True)
-        search = SelfieSearch.objects.create(
-            event=self.event,
-            public_token_digest="h" * 64,
-            temporary_object_key="selfie-search/hidden-candidate",
-            configuration=submission_configuration(
-                event=self.event, content_type="image/jpeg", content_size=1
-            ),
-            configuration_hash="h" * 64,
-        )
-
-        candidates = compatible_search_candidates(search)
-
-        self.assertEqual(
-            [candidate.detection_id for candidate in candidates.entry.faces], [visible.detection_id]
-        )
-        self.assertNotIn(
-            hidden.detection_id, [candidate.detection_id for candidate in candidates.entry.faces]
-        )
 
     def test_draft_event_is_rejected_without_upload_or_search(self) -> None:
         storage = RecordingStorage()
@@ -1177,11 +981,11 @@ class GalleryPhotoSubmissionTests(TestCase):
     def make_additional_face(
         self,
         *,
-        embedding: FaceEmbedding,
+        embedding: FaceEmbeddingVector,
         vector: list[float],
         detection_id: UUID | None = None,
         geometry: dict[str, object] | None = None,
-    ) -> FaceEmbedding:
+    ) -> FaceEmbeddingVector:
         detection_kwargs = {"id": detection_id} if detection_id is not None else {}
         detection = PhotoFaceDetection.objects.create(
             **detection_kwargs,
@@ -1200,12 +1004,13 @@ class GalleryPhotoSubmissionTests(TestCase):
                 }
             ),
         )
-        return FaceEmbedding.objects.create(
+        embedding = FaceEmbeddingVector.objects.create(
             detection=detection,
             model_version=embedding.model_version,
             vector=vector,
             metadata={},
         )
+        return embedding
 
     def publish_watermark(self, photo: Photo) -> None:
         configuration = {"generate_watermarked_preview": {"variant": "preview-watermarked-v1"}}
@@ -1286,10 +1091,6 @@ class GalleryPhotoSubmissionTests(TestCase):
             vector=[1.0] + [0.0] * 127,
         )
         second = self.make_additional_face(embedding=two_embedding, vector=[1.0] + [0.0] * 127)
-        rejected_embedding = self.make_eligible_embedding(
-            event=self.event, photo_id="rejected", accepted=False
-        )
-        rejected = rejected_embedding.detection.attempt.photo
         stale_embedding = self.make_eligible_embedding(event=self.event, photo_id="stale")
         stale = stale_embedding.detection.attempt.photo
         PhotoProcessingState.objects.filter(photo=stale).update(accepted_attempt=None)
@@ -1323,26 +1124,6 @@ class GalleryPhotoSubmissionTests(TestCase):
         malformed = malformed_embedding.detection.attempt.photo
         foreign_embedding = self.make_eligible_embedding(event=self.other_event, photo_id="foreign")
         foreign = foreign_embedding.detection.attempt.photo
-        wrong_length = self.make_eligible_embedding(
-            event=self.event,
-            photo_id="wrong-length",
-            vector=[1.0] + [0.0] * 126,
-        ).detection.attempt.photo
-        nonnumeric = self.make_eligible_embedding(
-            event=self.event,
-            photo_id="nonnumeric",
-            vector=cast(list[float], ["not-a-number"] + [0.0] * 127),
-        ).detection.attempt.photo
-        non_normalized = self.make_eligible_embedding(
-            event=self.event,
-            photo_id="non-normalized",
-            vector=[0.5] + [0.0] * 127,
-        ).detection.attempt.photo
-        zero_vector = self.make_eligible_embedding(
-            event=self.event,
-            photo_id="zero-vector",
-            vector=[0.0] * 128,
-        ).detection.attempt.photo
         off_page = self.make_eligible_embedding(event=self.event, photo_id="off-page")
 
         with CaptureQueriesContext(connection) as queries:
@@ -1352,22 +1133,19 @@ class GalleryPhotoSubmissionTests(TestCase):
                     zero,
                     one,
                     two,
-                    rejected,
                     stale,
                     stale_generation,
                     legacy,
                     malformed,
                     foreign,
-                    wrong_length,
-                    nonnumeric,
-                    non_normalized,
-                    zero_vector,
                 ),
             )
 
         self.assertEqual(len(queries), 2)
         cohort_query = next(
-            query["sql"] for query in queries if 'FROM "processing_faceembedding"' in query["sql"]
+            query["sql"]
+            for query in queries
+            if 'FROM "processing_faceembeddingvector"' in query["sql"]
         )
         select_clause = cohort_query.lower().split(" from ", maxsplit=1)[0]
         self.assertNotIn('"vector"', select_clause)
@@ -1386,10 +1164,6 @@ class GalleryPhotoSubmissionTests(TestCase):
             event=self.event, photo_id="selected", vector=[1.0] + [0.0] * 127
         )
         source = selected.detection.attempt.photo
-        rejected_embedding = self.make_eligible_embedding(
-            event=self.event, photo_id="rejected", accepted=False
-        )
-        rejected = rejected_embedding.detection.attempt.photo
         stale_embedding = self.make_eligible_embedding(event=self.event, photo_id="stale")
         stale = stale_embedding.detection.attempt.photo
         PhotoProcessingState.objects.filter(photo=stale).update(accepted_attempt=None)
@@ -1421,20 +1195,14 @@ class GalleryPhotoSubmissionTests(TestCase):
             },
         )
         malformed_geometry = malformed_geometry_embedding.detection.attempt.photo
-        malformed_embedding = self.make_eligible_embedding(
-            event=self.event, photo_id="malformed", vector=[0.0] * 128
-        )
-        malformed = malformed_embedding.detection.attempt.photo
         foreign_embedding = self.make_eligible_embedding(event=self.other_event, photo_id="foreign")
 
         for invalid_source, detection_id in (
             (zero, uuid4()),
-            (rejected, rejected_embedding.detection_id),
             (stale, stale_embedding.detection_id),
             (stale_generation, stale_generation_embedding.detection_id),
             (legacy, legacy_embedding.detection_id),
             (malformed_geometry, malformed_geometry_embedding.detection_id),
-            (malformed, malformed_embedding.detection_id),
             (source, foreign_embedding.detection_id),
         ):
             with self.subTest(source=invalid_source.id, detection_id=detection_id):
@@ -1649,15 +1417,10 @@ class GalleryPhotoSubmissionTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             processed = process_gallery_photo_search(search=search)
         cohort = next(
-            item["sql"]
-            for item in queries
-            if "processing_faceembedding" in item["sql"]
-            and '"vector"' in item["sql"].split(" FROM ")[0]
-            and "LIMIT 1" not in item["sql"]
+            item["sql"] for item in queries if "WITH eligible AS MATERIALIZED" in item["sql"]
         )
         self.assertEqual(processed.status, SelfieSearch.Status.READY)
         self.assertIn('FROM "processing_photofaceembeddingprojection"', cohort)
-        self.assertNotIn("ORDER BY", cohort.upper())
 
     def test_each_selected_face_uses_its_own_query_embedding(self) -> None:
         first = self.make_eligible_embedding(
@@ -1744,7 +1507,7 @@ class GalleryPhotoSubmissionTests(TestCase):
         source = source_embedding.detection.attempt.photo
 
         with patch(
-            "selfie_search.services.direct_ranking.rank_cached_embeddings",
+            "selfie_search.services.submission.rank_selected_direct",
             side_effect=RankingError("broken ranking"),
         ):
             search = submit_gallery_photo_search(
@@ -1848,16 +1611,16 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
 
         def query_wrapper(execute, sql, params, many, context):
             if (
-                "processing_faceembedding" in sql
+                "processing_faceembeddingvector" in sql
                 and '"vector"' in sql.split(" FROM ")[0]
-                and "LIMIT 1" not in sql
+                and "LIMIT 1" in sql
             ):
                 pause()
             return execute(sql, params, many, context)
 
         def paused_rank(*args, **kwargs):
             pause()
-            return rank_cached_embeddings(*args, **kwargs)
+            return rank_selected_direct(*args, **kwargs)
 
         def complete() -> None:
             close_old_connections()
@@ -1867,7 +1630,7 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
                         process_gallery_photo_search(search=search)
                 else:
                     with patch(
-                        "selfie_search.services.direct_ranking.rank_cached_embeddings", paused_rank
+                        "selfie_search.services.submission.rank_selected_direct", paused_rank
                     ):
                         process_gallery_photo_search(search=search)
             except BaseException as error:

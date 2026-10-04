@@ -281,18 +281,15 @@ class SubmissionTests(TestCase):
             configuration_hash=configuration_hash,
         )
         photo = native.detection.attempt.photo
-        with patch(
-            "selfie_search.services.submission._face_embedding_generations",
-            return_value=(generation,),
-        ):
-            faces = gallery_search_faces_by_photo(event=self.event, photos=(photo,))
-            self.assertEqual(
-                [crop.detection_id for crop in faces.get(photo.pk, ())], [str(native.detection_id)]
-            )
-            created = submit_gallery_photo_search(
-                event=self.event, photo=photo, detection_id=native.detection_id, user=self.user
-            )
-            result = process_gallery_photo_search(search=created.search)
+        # Exercise the real event generation selector through presentation and submission.
+        faces = gallery_search_faces_by_photo(event=self.event, photos=(photo,))
+        self.assertEqual(
+            [crop.detection_id for crop in faces.get(photo.pk, ())], [str(native.detection_id)]
+        )
+        created = submit_gallery_photo_search(
+            event=self.event, photo=photo, detection_id=native.detection_id, user=self.user
+        )
+        result = process_gallery_photo_search(search=created.search)
         self.assertEqual(result.status, SelfieSearch.Status.READY)
         self.assertEqual(result.results.get().photo_id, photo.pk)
 

@@ -59,8 +59,8 @@ Require tests proving correct ownership, metric namespace and release configurat
 
 ## References
 
-- [Approved specification](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
-- [Implementation plan](../plans/2026-09-30-isolated-worker-folder-support.md)
+- [Approved specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
+- [Implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-30-isolated-worker-folder-support.md)
 - [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md)
 - [ADR 0043](0043-observe-isolated-workers-with-git-managed-alerts.md)
 - [Dated preflight](../operations/2026-09-30-worker-folder-activation-preflight.md)

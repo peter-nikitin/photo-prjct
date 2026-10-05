@@ -104,7 +104,7 @@ results on rollback. No benchmark or measurement tooling is a prerequisite of th
 
 ## References
 
-- [Worker pool design](../superpowers/specs/2026-09-23-autoscaled-photo-worker-pools-design.md)
+- [Worker pool design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-23-autoscaled-photo-worker-pools-design.md)
 - [Current architecture](../architecture.md#current-architecture--implemented)
 - [ADR 0003](0003-docker-compose-yandex-cloud.md)
 - [ADR 0017](0017-use-django-polled-photo-processing-jobs.md)

@@ -79,7 +79,7 @@ Reconsider the decision if parity cannot be established or PostgreSQL contention
 
 ## References
 
-- [Approved specification](../superpowers/specs/2026-09-25-pgvector-exact-face-search-design.md)
+- [Approved specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-25-pgvector-exact-face-search-design.md)
 - [Architecture: Search](../architecture.md#search)
 - [ADR 0002](0002-postgresql-system-of-record.md)
 - [ADR 0028](0028-operate-one-canonical-deployment.md)

@@ -35,6 +35,11 @@ src/backend/staticfiles/
 # === Git worktrees ===
 .worktrees/
 
+# Temporary specifications and plans; accepted decisions stay in ADRs.
+/docs/plans/
+/docs/superpowers/plans/
+/docs/superpowers/specs/
+
 # === logs ===
 *.log
 

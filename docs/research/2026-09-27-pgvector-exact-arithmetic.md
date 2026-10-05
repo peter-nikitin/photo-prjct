@@ -2,7 +2,7 @@
 
 - Date: 2026-09-27
 - Status: resolved by [accepted ADR 0041](../adr/0041-accept-pgvector-numerical-boundaries.md)
-- Related plan: [pgvector exact search](../plans/2026-09-27-pgvector-exact-face-search.md)
+- Related plan: [pgvector exact search](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-27-pgvector-exact-face-search.md)
 
 ## Observed contract
 

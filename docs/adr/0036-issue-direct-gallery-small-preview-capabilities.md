@@ -96,7 +96,7 @@ the residual access.
 
 ## References
 
-- [Direct Gallery Preview Links Design](../superpowers/specs/2026-09-14-direct-gallery-preview-links-design.md)
+- [Direct Gallery Preview Links Design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-14-direct-gallery-preview-links-design.md)
 - [Architecture](../architecture.md)
 - [ADR 0006: Use Yandex Object Storage for media](0006-yandex-object-storage-media.md)
 - [ADR 0020: Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md)

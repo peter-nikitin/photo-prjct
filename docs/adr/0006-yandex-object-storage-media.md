@@ -60,4 +60,4 @@ media remains in Object Storage.
 ## References
 
 - [Architecture: target MVP](../architecture.md#target-mvp-architecture--proposed)
-- [MVP roadmap](../plans/2026-07-11-mvp-product-roadmap.md)
+- [MVP roadmap](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-11-mvp-product-roadmap.md)

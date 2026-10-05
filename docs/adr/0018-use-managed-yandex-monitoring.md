@@ -120,4 +120,4 @@ incident response.
 - [ADR 0003](0003-docker-compose-yandex-cloud.md)
 - [ADR 0007](0007-nginx-certbot-https-edge.md)
 - [ADR 0011](0011-use-minimal-shared-https-rollout.md)
-- [Minimal service monitoring design](../superpowers/specs/2026-07-30-minimal-service-monitoring-design.md)
+- [Minimal service monitoring design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-30-minimal-service-monitoring-design.md)

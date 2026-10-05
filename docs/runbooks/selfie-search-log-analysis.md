@@ -484,10 +484,10 @@ rm -rf "$ANALYSIS_DIR"
 
 ## Ссылки на контракты
 
-- [Selfie Search Observability Design](../superpowers/specs/2026-08-04-selfie-search-observability-design.md)
+- [Selfie Search Observability Design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-04-selfie-search-observability-design.md)
 - [`run-daily-summary.sh`](../../deploy/selfie-observability/run-daily-summary.sh)
 - [`summarize.py`](../../deploy/selfie-observability/summarize.py)
 - [`root-helper.sh`](../../deploy/selfie-observability/root-helper.sh)
 - [`docker-compose.deployment.yml`](../../docker-compose.deployment.yml) и [`docker-compose.https.yml`](../../docker-compose.https.yml)
 - [`https.conf.template`](../../deploy/nginx/https.conf.template)
-- [Краткий раздел эксплуатации в README](../../README.md#operate-selfie-search-observability)
+- [Указатель операционных процедур](../operations.md)

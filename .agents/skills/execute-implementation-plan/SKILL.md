@@ -71,3 +71,7 @@ Do not run overlapping full Django or visual suites in the shared repository env
 Record these independently: implementation complete, review approved, committed, pull request
 opened, CI passed, merged, deployed, and live verified. Never infer a later state from an earlier
 one.
+
+Before the final commit and pull-request merge, remove temporary specifications and plans from
+the Git index; retain accepted durable decisions with rationale in ADRs and implemented facts in
+architecture and runbooks.

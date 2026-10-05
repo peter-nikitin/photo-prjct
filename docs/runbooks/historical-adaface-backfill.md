@@ -2,9 +2,8 @@
 
 # Historical AdaFace backfill (completed rollout record)
 
-This is the operator path for the [approved specification](../superpowers/specs/2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md)
-and [ADR 0049](../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md).
-The [independent-image release](../plans/2026-10-03-independent-worker-image-deployment.md)
+This is the operator path governed by [ADR 0049](../adr/0049-retire-local-photo-worker-recovery-after-remote-acceptance.md).
+The independent-image release under [ADR 0051](../adr/0051-release-photo-worker-images-independently.md)
 must be deployed and read back before historical enrollment. Merging readiness code does not
 authorize enrollment, event activation or a recovery rehearsal. Each live step still needs its
 own approval of the exact release, scope, impact, evidence and recovery method. Keep four states

@@ -100,4 +100,4 @@ or paid-original exposure is no longer acceptable.
 - [Architecture](../architecture.md)
 - [ADR 0019: Use public event-scoped selfie search](0019-use-public-event-selfie-search.md)
 - [ADR 0020: Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md)
-- [One-click original download design](../superpowers/specs/2026-08-01-one-click-original-download-design.md)
+- [One-click original download design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-01-one-click-original-download-design.md)

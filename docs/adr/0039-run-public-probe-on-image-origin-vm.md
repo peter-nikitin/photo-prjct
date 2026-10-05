@@ -67,5 +67,5 @@ restart the image-origin containers.
 ## References
 
 - [ADR 0018](0018-use-managed-yandex-monitoring.md)
-- [Minimal monitoring design](../superpowers/specs/2026-07-30-minimal-service-monitoring-design.md)
+- [Minimal monitoring design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-30-minimal-service-monitoring-design.md)
 - [Image-origin deployment](../runbooks/gallery-image-delivery.md)

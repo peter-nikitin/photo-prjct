@@ -111,8 +111,8 @@ evidence, objects, database volumes, or certificate volumes.
 
 ## References
 
-- [Gallery media projection design](../superpowers/specs/2026-09-15-gallery-media-projection-design.md)
-- [Gallery media projection implementation plan](../plans/2026-09-15-gallery-media-projection.md)
+- [Gallery media projection design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-15-gallery-media-projection-design.md)
+- [Gallery media projection implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-15-gallery-media-projection.md)
 - [Architecture](../architecture.md)
 - [ADR 0002](0002-postgresql-system-of-record.md)
 - [ADR 0003](0003-docker-compose-yandex-cloud.md)

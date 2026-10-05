@@ -9,12 +9,12 @@ same-folder предпосылками не являются актуальны�
 В этой проверке выполнены только read-only запросы. Новые ресурсы, квоты, IAM,
 секреты и production-конфигурация не изменялись.
 
-Основание: [утверждённый план](../plans/2026-09-27-autoscaled-worker-isolation.md),
+Основание: [утверждённый план](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-27-autoscaled-worker-isolation.md),
 [runbook](../runbooks/worker-pools.md), ADR 0042/0043 и
 [проверенные тарифы](../research/2026-09-28-worker-pool-activation-cost.md).
 Это пакет операционного согласования существующего решения, не новая архитектура.
 
-Дополнение 2026-09-29: утверждён [autoscaled этап с потолком один](../superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md):
+Дополнение 2026-09-29: утверждён [autoscaled этап с потолком один](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md):
 bulk 0..1, selfie 1..1, required `pool_max_size=1` в checksum-bound конфигурации.
 Начальная warm-проверка создаёт 1+1; backlog не разрешает вторую VM. Последовательная
 замена/rollback временно расширяет только текущий пул до двух, затем восстанавливает

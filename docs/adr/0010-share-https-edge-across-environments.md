@@ -93,4 +93,4 @@ production.
 - [Current architecture](../architecture.md#current-architecture--implemented)
 - [Deployment domain assignment](../architecture.md#deployment-domain-assignment--accepted)
 - [ADR 0007](0007-nginx-certbot-https-edge.md)
-- [Canonical domain HTTPS edge design](../superpowers/specs/2026-07-13-canonical-domain-https-edge-design.md)
+- [Canonical domain HTTPS edge design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-13-canonical-domain-https-edge-design.md)

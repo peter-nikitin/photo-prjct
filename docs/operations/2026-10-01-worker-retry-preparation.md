@@ -2,8 +2,8 @@
 
 - Date: 2026-10-01.
 - Status: repository preparation; live execution requires separate approval of the final PR/head and command ledger. No VM creation, live rules or cutover performed by this preparation.
-- Implements [unified activation plan Task 2](../plans/2026-10-01-unified-worker-activation.md#task-2-complete-the-one-window-operational-package).
-- Specifications: [folder isolation](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [cap one](../superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md).
+- Implements [unified activation plan Task 2](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-10-01-unified-worker-activation.md#task-2-complete-the-one-window-operational-package).
+- Specifications: [folder isolation](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [cap one](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md).
 - ADR impact: conforms to ADRs [0042](../adr/0042-isolate-autoscaled-photo-worker-pools.md), [0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md), [0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md). No new architecture decision.
 - Exact proposed actions: [retry command ledger](2026-10-01-worker-retry-command-ledger.md); [nonsecret configuration template](2026-10-01-worker-retry-config.template.json).
 

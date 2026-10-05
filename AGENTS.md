@@ -41,8 +41,19 @@ photographers and operators publish and manage event photos.
   their evidence-backed status.
 - [Architecture](docs/architecture.md) describes the system architecture and its current boundaries.
 - [Architecture decision records](docs/adr/) contain durable architecture decisions.
-- [Implementation plans](docs/plans/) contain decision-complete plans for multi-step work.
 - [Agent skills](.agents/skills/) contain reusable project-specific guidance.
+
+## Язык и жизненный цикл документов
+
+- Все новые и существенно изменяемые проектные документы пишите на русском. Идентификаторы кода,
+  команды, поля API, имена файлов и точные названия внешних систем сохраняйте. Существующие ADR и
+  проектные навыки пока могут оставаться на английском; новые ADR пишите на русском.
+- Спецификации и планы реализации — временные рабочие материалы. При необходимости создавайте их
+  в игнорируемых каталогах `docs/superpowers/specs/`, `docs/superpowers/plans/` или `docs/plans/`.
+  До слияния PR удаляйте их из индекса Git и итогового коммита. Принятые долговременные решения и
+  мотивы оставляйте в ADR, реализованные факты отражайте в `docs/architecture.md`, а операционные
+  доказательства — в runbook или реестрах задач. Итоговые документы и проверки не должны зависеть
+  от локального плана или спецификации, которые исчезнут после слияния.
 
 ## Delivery focus and test scope
 

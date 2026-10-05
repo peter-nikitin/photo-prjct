@@ -46,7 +46,7 @@ notification-delivery proof.
 
 ## One-time updater installation at cap one
 
-Follow the [accepted plan](../plans/2026-10-03-independent-worker-image-deployment.md). Re-read
+Follow [ADR 0051](../adr/0051-release-photo-worker-images-independently.md) and the steps below. Re-read
 live inventory and scoped config/baselines immediately before each cloud mutation. Pause both
 remote claim pools and verify zero live attempts before the new web protocol/migration:
 

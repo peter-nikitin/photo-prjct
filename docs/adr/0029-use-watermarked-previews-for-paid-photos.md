@@ -137,7 +137,7 @@ approved artwork requires a materially different composition contract.
 ## References
 
 - [Paid watermarked previews
-  design](../superpowers/specs/2026-08-20-paid-watermarked-previews-design.md)
+  design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-20-paid-watermarked-previews-design.md)
 - [Architecture: purchase and download](../architecture.md#purchase-and-download)
 - [Architecture: security, privacy, and legal
   boundaries](../architecture.md#security-privacy-and-legal-boundaries)

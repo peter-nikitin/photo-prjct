@@ -1,17 +1,15 @@
-# Future Work
+# Отложенные задачи
 
-This directory records concrete improvements discovered during scoped work that should not delay
-the current critical path.
+Здесь хранятся конкретные улучшения, обнаруженные во время другой работы, если они не блокируют
+её критический путь. Один файл описывает одну связанную проблему и содержит:
 
-Create one Markdown file per coherent finding, named `YYYY-MM-DD-short-slug.md`, with:
+- **Наблюдаемый пробел** — что сейчас отсутствует или ограничено.
+- **Почему не блокирует** — почему это не нарушает принятое требование и реалистичный действующий путь.
+- **Условие возврата** — событие в продукте, архитектуре, эксплуатации или инциденте, при котором
+  вопрос снова становится актуальным.
+- **Вероятный объём** — затронутые компоненты и нужная проверка.
 
-- **Observed gap:** the behavior or limitation found.
-- **Why it is non-blocking:** why it does not affect an accepted requirement or realistic current
-  production path.
-- **Revisit trigger:** the concrete product, architecture, operational, or incident condition that
-  makes the finding relevant.
-- **Likely scope:** the components and validation expected when the trigger occurs.
-
-These artifacts are not accepted requirements or implementation plans. When a revisit trigger
-occurs, reassess the finding against the current system and promote it into the appropriate
-specification, ADR, plan, or issue.
+Такой файл не является принятым требованием или планом реализации. Когда условие возврата
+наступит, сравните его с текущей системой и оформите решение в ADR, если выбор долговременный.
+После завершения работы обновите реализованные факты в архитектуре и состояние в реестрах задач.
+Новые записи пишутся на русском и называются `YYYY-MM-DD-short-slug.md`.

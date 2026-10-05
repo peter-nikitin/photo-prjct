@@ -120,8 +120,8 @@ precedence.
 
 ## References
 
-- [Photo capture-time projection design](../superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
-- [Event gallery time filter design](../superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
+- [Photo capture-time projection design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
+- [Event gallery time filter design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
 - [Failed local-clone benchmark](../performance/2026-08-08-event-gallery-time-filter-local-clone.json)
 - [ADR 0002: Use PostgreSQL as the system of record](0002-postgresql-system-of-record.md)
 - [ADR 0017: Use Django-polled photo-processing jobs](0017-use-django-polled-photo-processing-jobs.md)

@@ -103,7 +103,7 @@ worker placement requires public API exposure.
 
 ## References
 
-- [Event photo processing worker design](../superpowers/specs/2026-07-29-event-photo-processing-worker-design.md)
+- [Event photo processing worker design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-29-event-photo-processing-worker-design.md)
 - [Architecture: photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing)
 - [Architecture: evolution stages](../architecture.md#evolution-stages)
 - [ADR 0014: Keep Stage 2 ingestion request-driven](0014-keep-stage-2-ingestion-request-driven.md)

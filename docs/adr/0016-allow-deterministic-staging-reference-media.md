@@ -89,8 +89,8 @@ require a separate decision and fresh destructive confirmation before deletion.
 
 ## References
 
-- [Staging seed photo media design](../superpowers/specs/2026-07-18-staging-seed-photo-media-design.md)
-- [Staging seed photo media implementation plan](../plans/2026-07-18-staging-seed-photo-media.md)
+- [Staging seed photo media design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-18-staging-seed-photo-media-design.md)
+- [Staging seed photo media implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-18-staging-seed-photo-media.md)
 - [Architecture: accepted constraints](../architecture.md#accepted-constraints)
 - [Architecture: photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing)
 - [Architecture: open decisions](../architecture.md#open-decisions)

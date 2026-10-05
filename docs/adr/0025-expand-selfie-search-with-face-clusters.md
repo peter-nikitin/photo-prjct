@@ -133,7 +133,7 @@ be preserved, or the derived biometric relationship requires a broader consent o
 
 ## References
 
-- [Selfie Search Face-Cluster Expansion Design](../superpowers/specs/2026-08-05-selfie-search-face-cluster-expansion-design.md)
+- [Selfie Search Face-Cluster Expansion Design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-05-selfie-search-face-cluster-expansion-design.md)
 - [Architecture: Search](../architecture.md#search)
 - [Architecture: security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)
 - [ADR 0001: Use a Django modular monolith](0001-django-modular-monolith.md)

@@ -77,7 +77,7 @@ not a rollback candidate. See the [worker-pool runbook](../runbooks/worker-pools
 
 ## References
 
-- [Independent worker-image deployment specification](../superpowers/specs/2026-10-03-independent-worker-image-deployment-design.md)
+- [Independent worker-image deployment specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-10-03-independent-worker-image-deployment-design.md)
 - [ADR 0050: Decouple processing jobs and attempts from worker builds](0050-decouple-processing-queue-from-worker-builds.md)
 - [ADR 0028: One canonical deployment](0028-operate-one-canonical-deployment.md)
 - [ADR 0042: Isolated worker pools](0042-isolate-autoscaled-photo-worker-pools.md)

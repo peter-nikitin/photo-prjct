@@ -166,7 +166,7 @@ quickly.
   limitation: `65` printed in event-shirt artwork is searchable on three photos. This adds extra
   results without hiding exact race-bib matches; improvement hypotheses and revisit triggers are
   recorded in [future work](future-work/2026-09-25-bib-apparel-number-filtering.md). See also the
-  [approved design](superpowers/specs/2026-09-12-bib-number-production-search-design.md),
+  [approved design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-12-bib-number-production-search-design.md),
   [local acceptance contract](../experiments/bib_search/README.md), and
   [activation runbook](runbooks/bib-number-recognition.md). The repository now also includes local
   private-workspace editing of current bib numbers, append-only change evidence for later analytics,
@@ -182,7 +182,7 @@ search within that event, so I can review probable matches.
 
 - Status: In progress
 - Evidence: [ADR 0019](adr/0019-use-public-event-selfie-search.md), the
-  [public selfie-search implementation plan](plans/2026-07-30-public-selfie-search.md), and
+  [public selfie-search implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-30-public-selfie-search.md), and
   [`tests/processing/test_selfie_search_e2e.py`](../tests/processing/test_selfie_search_e2e.py)
   provide repository evidence plus local real YuNet/SFace inference for the selfie query; accepted
   deterministic gallery fixtures cover both face generations, including a verified preview
@@ -208,7 +208,7 @@ search within that event, so I can review probable matches.
   This is dated former-topology evidence for the existing selfie-upload path only; the current
   activation boundary is the canonical deployment and its feature gate.
 
-  The [pgvector migration plan](plans/2026-09-27-pgvector-exact-face-search.md) adds native exact
+  The [pgvector migration plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-27-pgvector-exact-face-search.md) adds native exact
   SQL ranking behind a separate `off` / `staff` / `on` reader gate for both query sources.
   [ADR 0041](adr/0041-accept-pgvector-numerical-boundaries.md) accepts very borderline numerical
   changes without changing recognition models or thresholds. Local reader/routing tests and
@@ -216,7 +216,7 @@ search within that event, so I can review probable matches.
   public activation evidence remain separate gates. This adds no customer-outcome claim.
 
   The gallery-photo query path is defined by [ADR 0024](adr/0024-use-gallery-face-as-search-query.md)
-  and the approved [gallery-photo search design](superpowers/specs/2026-08-05-gallery-face-selector-design.md).
+  and the approved [gallery-photo search design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-05-gallery-face-selector-design.md).
   Current local evidence for the combined gallery-photo implementation is 145 focused Python tests,
   70 JavaScript tests for the production markup and chooser behavior, and 83 visual tests covering
   the zero-, one-, two-, and four-face event-gallery fixture at desktop and 390px mobile widths.
@@ -312,8 +312,8 @@ future feedback prompts in my browser.
   feedback schema, restricted audited admin inspection, and guarded feedback-bucket lifecycle.
   Focused Django/deployment tests, JavaScript tests, containerized visual tests, and the complete
   CI-equivalent release gate pass on this branch. The
-  [selfie-search quality feedback specification](superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md),
-  [implementation plan](plans/2026-08-04-selfie-search-quality-feedback.md), and
+  [selfie-search quality feedback specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md),
+  [implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-08-04-selfie-search-quality-feedback.md), and
   [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md) define the accepted boundary.
   `SELFIE_FEEDBACK_ENABLED=False` remains the default; no canonical-deployment activation or
   real customer-outcome evidence is claimed. The face-cluster increment also provides the
@@ -350,8 +350,8 @@ gallery by event-local capture time, so I can reach likely photos without upload
 storing a manual query.
 
 - Status: Delivered
-- Evidence: The approved [event gallery time-filter design](superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
-  and [capture-time projection design](superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
+- Evidence: The approved [event gallery time-filter design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-08-event-gallery-time-filter-design.md)
+  and [capture-time projection design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-08-photo-capture-time-projection-design.md)
   define the event-local form, exact inclusive bounds, privacy boundary, and two-release gate.
   Release B commit `d5b21e4` delivered the projection-only filtered reader after clean immutable-
   local-clone reconciliation and a [sanitized 2x benchmark](performance/2026-08-08-event-gallery-time-filter-local-clone.json)

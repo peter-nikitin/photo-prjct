@@ -2,7 +2,7 @@
 
 - Date: 2026-09-30 (Europe/Moscow).
 - Status: repository preparation and read-only baseline; **no paid, IAM, network, secret, alert or cutover operation is approved here**.
-- Governing design: [approved two-folder specification](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [ADR 0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md), [ADR 0042](../adr/0042-isolate-autoscaled-photo-worker-pools.md), [ADR 0043](../adr/0043-observe-isolated-workers-with-git-managed-alerts.md).
+- Governing design: [approved two-folder specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [ADR 0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md), [ADR 0042](../adr/0042-isolate-autoscaled-photo-worker-pools.md), [ADR 0043](../adr/0043-observe-isolated-workers-with-git-managed-alerts.md).
 - Full dated resource/quota/tariff evidence: [2026-09-30 preflight](2026-09-30-worker-folder-activation-preflight.md). The [2026-09-28 proposal](2026-09-28-worker-pool-activation-approval.md) is historical and assumed one folder; its old 200 GiB quota and prices are not current authorization.
 - Next review: [prerequisite command package](2026-09-30-worker-prerequisites-approval.md), refreshed after PR #231 deployment; includes IAM/network batches, rollback, prices and integration with the delivered Prometheus alert platform. Its monitoring reconciliation section distinguishes existing platform delivery from remaining worker-specific coverage.
 

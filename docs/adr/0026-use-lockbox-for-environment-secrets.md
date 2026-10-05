@@ -108,7 +108,7 @@ or if production access requires materially different isolation.
 
 ## References
 
-- [Environment-scoped Lockbox secrets design](../superpowers/specs/2026-08-07-environment-scoped-lockbox-secrets-design.md)
+- [Environment-scoped Lockbox secrets design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-07-environment-scoped-lockbox-secrets-design.md)
 - [ADR 0003](0003-docker-compose-yandex-cloud.md)
 - [ADR 0005](0005-promote-images-through-staging.md)
 - [Architecture: accepted constraints](../architecture.md#accepted-constraints)

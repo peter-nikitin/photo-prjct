@@ -48,13 +48,12 @@ steps are executable, not because it duplicates the future patch.
 ## Worker/state/artifact plan gate
 
 When the observable plan scope changes a worker contract, durable processing state, or a
-generated/derived artifact, retain and complete the template's exact
+generated/derived artifact, include and complete a
 `Worker/state/artifact release safeguards` section. Complete its seven checkable slots: Live-state
 inventory; Compatibility matrix; Reviewed data-state migration or reset semantics; End-to-end
 contract sizing; Previous-snapshot upgrade rehearsal; Staged activation and rollback order; and
 Supported bounded operational commands. A plan is blocked when any slot outcome is unknown; return
-the unknown to its decision owner before implementation. The template is the structural source of
-truth; use the [2026-07-31 staging processing-state reset postmortem](../../../docs/postmortems/2026-07-31-staging-processing-state-reset.md)
+the unknown to its decision owner before implementation. Use the [2026-07-31 staging processing-state reset postmortem](../../../docs/postmortems/2026-07-31-staging-processing-state-reset.md)
 for rationale rather than copying its prose.
 
 ## Operational fast lane
@@ -85,7 +84,7 @@ data migration, a pricing-affecting cloud action, or a conflict with an accepted
 4. Detect architectural decisions hidden in the request. Invoke `$write-adr` before planning when
    the work requires a durable choice that is neither accepted nor safely reversible. Never let a
    plan silently override an accepted ADR.
-5. Copy `docs/plans/0000-template.md` to `docs/plans/YYYY-MM-DD-topic.md`. Link the approved
+5. Create a temporary plan at the ignored `docs/plans/YYYY-MM-DD-topic.md` path. Link the approved
    specification, exact architecture sections, and resolved ADR impact; write `none` only after
    checking. Apply the Worker/state/artifact plan gate when its observable condition is true.
 6. Decompose work into independently verifiable tasks. Name exact paths, cross-task interfaces,
@@ -103,10 +102,12 @@ data migration, a pricing-affecting cloud action, or a conflict with an accepted
    return to the decision owner instead of leaving the implementer to guess.
 11. For subagent execution, add one instruction to use `$execute-implementation-plan`; do not repeat
     its orchestration contract in the plan or individual tasks.
+12. Before merge, transfer accepted durable decisions and reasons to ADRs, reconcile implemented
+    architecture, and remove the plan and specification from the Git index and final commit.
 
 ## Quality rules
 
-- Use English and lowercase hyphenated filenames.
+- Write prose in Russian and use lowercase hyphenated filenames.
 - Prefer cohesive behavior-level tasks over a long file-by-file inventory.
 - Keep every approved decision in one place: the specification. A plan references that decision
   and adds sequence, ownership, dependencies, and verification.

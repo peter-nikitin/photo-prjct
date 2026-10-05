@@ -138,7 +138,7 @@ or indefinite plaintext contact retention becomes unacceptable.
 
 ## References
 
-- [Selfie search quality feedback design](../superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md)
+- [Selfie search quality feedback design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md)
 - [Architecture: security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)
 - [ADR 0001: Use a Django modular monolith](0001-django-modular-monolith.md)
 - [ADR 0002: Use PostgreSQL as the system of record](0002-postgresql-system-of-record.md)

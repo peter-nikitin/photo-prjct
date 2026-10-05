@@ -72,7 +72,7 @@ worker images and the backup; do not restore an old image against the contracted
 
 ## References
 
-- [Retirement specification](../superpowers/specs/2026-10-04-retire-legacy-face-models-design.md)
+- [Retirement specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-10-04-retire-legacy-face-models-design.md)
 - [ADR 0040](0040-use-pgvector-for-exact-face-search.md)
 - [ADR 0041](0041-accept-pgvector-numerical-boundaries.md)
 - [Architecture: Search](../architecture.md#search)

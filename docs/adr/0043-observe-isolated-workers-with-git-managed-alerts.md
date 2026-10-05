@@ -90,7 +90,7 @@ automatic remediation, paid provisioning, IAM change or live activation is autho
 
 ### Follow-up
 
-- The approved [phase-one plan](../plans/2026-09-28-worker-telemetry-collection.md) delivers
+- The approved [phase-one plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-28-worker-telemetry-collection.md) delivers
   repository collection, private ingestion, canonical export and opt-in delivery preparation.
   This does not activate cloud delivery or waive the alert-stage prerequisites below.
 - Resolve supported workspace/channel lifecycle and Alertmanager read-back/rollback without
@@ -117,7 +117,7 @@ application cannot provide reproducible configuration and safe verification/roll
 
 ## References
 
-- [Worker telemetry specification](../superpowers/specs/2026-09-28-worker-pool-telemetry-design.md)
+- [Worker telemetry specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-28-worker-pool-telemetry-design.md)
 - [Architecture accepted constraints](../architecture.md#accepted-constraints)
 - [ADR 0017](0017-use-django-polled-photo-processing-jobs.md)
 - [ADR 0018](0018-use-managed-yandex-monitoring.md)

@@ -278,6 +278,8 @@ def test_combined_package_selects_independent_application_and_observability_path
         "web_changed": True,
         "worker_changed": True,
         "worker_base_changed": False,
+        "import_changed": False,
+        "commerce_changed": False,
     }
     assert module.classify_observability(paths)["cloud_changed"]
 
@@ -374,7 +376,13 @@ def test_complete_observability_package_never_publishes_application_images():
     assert not any(module.classify(paths).values())
     assert module.classify_observability(paths)["canonical_changed"]
     selected = module.classify(paths + ["src/backend/processing/views.py", "Dockerfile.worker"])
-    assert selected == {"web_changed": True, "worker_changed": True, "worker_base_changed": False}
+    assert selected == {
+        "web_changed": True,
+        "worker_changed": True,
+        "worker_base_changed": False,
+        "import_changed": False,
+        "commerce_changed": False,
+    }
 
 
 def test_old_entrypoint_uses_new_revision_inventory_and_logic(tmp_path, monkeypatch):

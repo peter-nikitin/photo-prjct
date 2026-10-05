@@ -178,22 +178,56 @@ def update(image, *, root=Path("/"), run=subprocess.run, status=status, readines
             )
         private_json(journal_path, {"candidate": candidate, "old": active})
         # A failed Docker submission may still have started/admitted the candidate.
-        # Preserve its journal; a later timer reconciles rather than killing it blindly.
+        # Preserve its journal; the next activation reconciles instead of killing it blindly.
         compose(slot, ["up", "-d"])
         finish(candidate, active)
         return "updated"
+
+
+def ci_activate(image, *, root=Path("/"), run=subprocess.run, status=status):
+    result = update(image, root=root, run=run, status=status)
+    if result == "recovered":
+        # Recovery finishes an earlier handoff before resolving this CI release's image.
+        # One additional pass pulls the requested pointer; do not retire polling if
+        # another interrupted/concurrent handoff prevents that bounded activation.
+        result = update(image, root=root, run=run, status=status)
+        if result == "recovered":
+            raise ValueError("current worker activation did not converge")
+    with host_lock(root=root):
+        active = active_slot(root=root)
+        reply = status(SLOTS[active["slot"]])
+        if reply.get("ready") is not True or reply.get("registration_generation") != active.get(
+            "registration_generation"
+        ):
+            raise ValueError("active worker not ready")
+        timer = root / "etc/systemd/system/findme-worker-updater.timer"
+        if timer.exists():
+            run(
+                ["systemctl", "disable", "--now", "findme-worker-updater.timer"],
+                check=True,
+                timeout=30,
+            )
+            timer.unlink()
+            run(["systemctl", "daemon-reload"], check=True, timeout=30)
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("/etc/findme-worker/bootstrap.json"))
     parser.add_argument("--image", help="explicit compatible immutable digest for recovery")
+    parser.add_argument(
+        "--ci-activation",
+        action="store_true",
+        help="prove active readiness and retire polling after CI push",
+    )
     args = parser.parse_args()
     try:
-        print("worker_image_" + update(args.image or read_json(args.config)["worker_image"]))
+        operation = ci_activate if args.ci_activation else update
+        print("worker_image_" + operation(args.image or read_json(args.config)["worker_image"]))
     except BlockingIOError:
         print("worker_image_host_busy")
-        return 0
+        return 1 if args.ci_activation else 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         print("worker_image_update_failed")
         return 1

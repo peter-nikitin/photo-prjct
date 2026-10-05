@@ -5,10 +5,14 @@ set -eu
 root_dir="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 tmp_dir="$(mktemp -d)"
 runtime_container=""
+backend_container=""
 
 cleanup() {
     if [ -n "$runtime_container" ]; then
         docker rm -f "$runtime_container" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$backend_container" ]; then
+        docker rm -f "$backend_container" >/dev/null 2>&1 || true
     fi
     rm -rf "$tmp_dir"
 }
@@ -166,6 +170,7 @@ exercise_bearer_error_logging() {
     docker run --detach \
         --name "$runtime_container" \
         --add-host web:127.0.0.1 \
+        --add-host web-next:127.0.0.1 \
         --publish 127.0.0.1::80 \
         --publish 127.0.0.1::443 \
         --volume "$runtime_rendered:/etc/nginx/conf.d/default.conf:ro" \
@@ -504,6 +509,7 @@ exercise_bearer_error_logging() {
 validate_variant() {
     name="$1"
     alias="$2"
+    slot="$3"
     rendered="$tmp_dir/rendered/$name.conf"
 
     docker run --rm \
@@ -512,7 +518,9 @@ validate_variant() {
         -v "$root_dir/deploy/nginx:/opt/nginx:ro" \
         -v "$tmp_dir/rendered:/rendered" \
         nginx:1.27-alpine \
-        /bin/sh /opt/nginx/reload-nginx.sh --render "/rendered/$name.conf"
+        /bin/sh /opt/nginx/reload-nginx.sh --render "/rendered/$name.conf" --slot "$slot"
+
+    grep -Fq "server $slot:8000;" "$rendered"
 
     if grep -Eq '^[[:space:]]*server_name[[:space:]]*;' "$rendered"; then
         echo "$name rendered an empty server_name directive" >&2
@@ -575,16 +583,16 @@ validate_variant() {
     fi
     private_server="$(awk '/^[[:space:]]*listen 8080;/ { private = 1 } private { print }' "$rendered")"
     private_locations="$(printf '%s\n' "$private_server" | grep -c '^[[:space:]]*location ')"
-    if [ "$private_locations" -ne 3 ]; then
-        echo "$name private listener must expose only health, metrics, and its deny fallback" >&2
+    if [ "$private_locations" -ne 5 ]; then
+        echo "$name private listener must expose health, diagnostics, metrics and import with its deny fallback" >&2
         exit 1
     fi
     printf '%s\n' "$private_server" | grep -Fq 'location = /health/ {'
     printf '%s\n' "$private_server" | grep -Fq 'location = /metrics/ {'
     printf '%s\n' "$private_server" | grep -Fq 'return 444;'
     private_proxies="$(printf '%s\n' "$private_server" | grep -c 'proxy_pass http://django_upstream;')"
-    if [ "$private_proxies" -ne 2 ]; then
-        echo "$name private listener must proxy only health and metrics" >&2
+    if [ "$private_proxies" -ne 4 ]; then
+        echo "$name private listener must proxy health, diagnostics, metrics and import" >&2
         exit 1
     fi
     grep -Fq 'map $uri $selfie_search_access_client_address {' "$rendered"
@@ -615,11 +623,11 @@ validate_variant() {
     grep -Fq 'add_header Vary "Cookie" always;' "$rendered"
     grep -Fq 'error_log /dev/null emerg;' "$rendered"
     expected_access_logs=5
-    expected_bearer_error_logs=6
+    expected_bearer_error_logs=9
     if [ -n "$alias" ]; then
         grep -Fq "server_name $alias;" "$rendered"
         expected_access_logs=6
-        expected_bearer_error_logs=9
+        expected_bearer_error_logs=12
     elif grep -Fq 'server_name www.findme-photo.ru;' "$rendered"; then
         echo "$name retained the optional alias server" >&2
         exit 1
@@ -637,6 +645,7 @@ validate_variant() {
 
     docker run --rm \
         --add-host web:127.0.0.1 \
+        --add-host web-next:127.0.0.1 \
         -v "$rendered:/etc/nginx/conf.d/default.conf:ro" \
         -v "$tmp_dir/letsencrypt:/etc/letsencrypt:ro" \
         nginx:1.27-alpine nginx -t
@@ -644,8 +653,170 @@ validate_variant() {
     exercise_bearer_error_logging "$name" "$rendered" "$alias"
 }
 
-validate_variant alias www.findme-photo.ru
-validate_variant no-alias ""
+validate_variant alias www.findme-photo.ru web
+validate_variant no-alias "" web-next
+
+# Exercise the deployed switch command with real Nginx workers. Two tiny local
+# upstream fixtures identify which Django slot received public/private traffic.
+exercise_slot_switch() {
+    directory="$tmp_dir/slot-switch"
+    mkdir -p "$directory/templates" "$directory/conf" "$directory/static"
+    cp "$root_dir/deploy/nginx/https.conf.template" "$directory/templates/"
+    cp "$root_dir/deploy/nginx/private-worker.conf.template" "$directory/templates/"
+    cp "$root_dir/deploy/nginx/reload-nginx.sh" "$directory/templates/"
+    printf '%s\n' old > "$directory/static/site.abcdef123456.css"
+    printf '%s\n' new > "$directory/static/site.123456abcdef.css"
+    printf '%s\n' \
+        'server { listen 127.0.0.1:8000; location /static/ { alias /assets/; } location / { return 200 "web"; } }' \
+        'server { listen 127.0.0.2:8000; location /static/ { alias /assets/; } location / { return 200 "web-next"; } }' \
+        > "$directory/conf/fixtures.conf"
+    docker run --rm --entrypoint /bin/sh \
+        -e PUBLIC_DOMAIN=findme-photo.ru -e WORKER_POOL_PRIVATE_API_IPV4=10.1.0.2 \
+        -v "$directory/templates:/opt/nginx:ro" -v "$directory/conf:/rendered" \
+        nginx:1.27-alpine /opt/nginx/reload-nginx.sh --render /rendered/default.conf --slot web
+    runtime_container="nginx-slot-switch-$$"
+    docker run --detach --name "$runtime_container" --entrypoint nginx \
+        --add-host web:127.0.0.1 --add-host web-next:127.0.0.2 \
+        --publish 127.0.0.1::443 --publish 127.0.0.1::8443 \
+        -e PUBLIC_DOMAIN=findme-photo.ru -e WORKER_POOL_PRIVATE_API_IPV4=10.1.0.2 \
+        -v "$directory/templates:/opt/nginx:ro" -v "$directory/conf:/etc/nginx/conf.d" \
+        -v "$directory/static:/assets:ro" -v "$tmp_dir/letsencrypt:/etc/letsencrypt:ro" \
+        nginx:1.27-alpine -g 'daemon off;' >/dev/null
+    public_port="$(docker port "$runtime_container" 443/tcp)"
+    public_port="${public_port##*:}"
+    private_port="$(docker port "$runtime_container" 8443/tcp)"
+    private_port="${private_port##*:}"
+    for slot in web web-next web; do
+        docker exec "$runtime_container" /bin/sh /opt/nginx/reload-nginx.sh --apply --slot "$slot"
+        # A graceful reload hands new connections to the new worker generation.
+        attempts=0
+        while :; do
+            body="$(curl --silent --insecure --max-time 3 --noproxy '*' \
+                --resolve "findme-photo.ru:$public_port:127.0.0.1" \
+                "https://findme-photo.ru:$public_port/health/" || true)"
+            [ "$body" != "$slot" ] || break
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 20 ] || { echo "public route did not switch to $slot" >&2; exit 1; }
+            sleep 0.1
+        done
+        for path in health/ metrics/ worker-diagnostics/metrics/ internal/photo-import/v1/protocol/; do
+            body="$(docker exec "$runtime_container" wget -qO- "http://127.0.0.1:8080/$path")"
+            [ "$body" = "$slot" ] || { echo "private $path did not follow $slot" >&2; exit 1; }
+        done
+        body="$(curl --silent --insecure --max-time 3 --noproxy '*' \
+            --resolve "findme-photo.ru:$private_port:127.0.0.1" \
+            "https://findme-photo.ru:$private_port/internal/photo-processing/v1/protocol/")"
+        [ "$body" = "$slot" ] || { echo "private worker did not follow $slot" >&2; exit 1; }
+        status="$(request_status "$directory/import.headers" findme-photo.ru "$public_port" /internal/photo-import/v1/protocol/)"
+        [ "$status" = 404 ] || { echo "public import endpoint became reachable" >&2; exit 1; }
+        for file in site.abcdef123456.css site.123456abcdef.css; do
+            status="$(request_status "$directory/static.headers" findme-photo.ru "$public_port" "/static/$file")"
+            [ "$status" = 200 ] || { echo "versioned asset disappeared: $file" >&2; exit 1; }
+        done
+        printf '%s\n' "$slot" > "$directory/templates/selected-slot"
+        docker exec "$runtime_container" /bin/sh /opt/nginx/reload-nginx.sh --render /tmp/persisted.conf
+        docker exec "$runtime_container" grep -Fq "server $slot:8000;" /tmp/persisted.conf
+        case "$slot" in web) other=web-next ;; web-next) other=web ;; esac
+        printf '%s\n' "$other" > "$directory/templates/selected-slot"
+        cp "$directory/conf/default.conf" "$directory/before-mismatch.conf"
+        if docker exec "$runtime_container" /bin/sh /opt/nginx/reload-nginx.sh --render /tmp/mismatch.conf; then
+            echo "startup accepted persisted $other with installed $slot" >&2
+            exit 1
+        fi
+        cmp "$directory/before-mismatch.conf" "$directory/conf/default.conf"
+        rm "$directory/templates/selected-slot"
+        # The first installation replaces the bind-mounted script before the
+        # first switch writes its marker. Startup must verify that old web is
+        # still healthy; it cannot assume a slot after a later interrupted switch.
+        if [ "$slot" = web ]; then
+            docker exec "$runtime_container" /bin/sh /opt/nginx/reload-nginx.sh --render /tmp/first-start.conf
+            docker exec "$runtime_container" grep -Fq 'server web:8000;' /tmp/first-start.conf
+        elif docker exec "$runtime_container" /bin/sh /opt/nginx/reload-nginx.sh --render /tmp/first-start.conf; then
+            echo "missing marker accepted an installed web-next upstream" >&2
+            exit 1
+        fi
+    done
+    cp "$directory/conf/default.conf" "$directory/inspected.conf"
+    printf '%s\n' 'invalid installed directive;' >> "$directory/conf/default.conf"
+    cp "$directory/conf/default.conf" "$directory/unreadable.conf"
+    if docker exec "$runtime_container" /bin/sh /opt/nginx/reload-nginx.sh --render /tmp/inspection-failure.conf; then
+        echo "startup accepted failed installed-config inspection" >&2
+        exit 1
+    fi
+    cmp "$directory/unreadable.conf" "$directory/conf/default.conf"
+    cp "$directory/inspected.conf" "$directory/conf/default.conf"
+    cp "$directory/conf/default.conf" "$directory/previous.conf"
+    printf '%s\n' 'invalid candidate directive;' >> "$directory/templates/https.conf.template"
+    if docker exec "$runtime_container" /bin/sh /opt/nginx/reload-nginx.sh --apply --slot web-next; then
+        echo "invalid switch unexpectedly succeeded" >&2
+        exit 1
+    fi
+    cmp "$directory/previous.conf" "$directory/conf/default.conf"
+    body="$(docker exec "$runtime_container" wget -qO- http://127.0.0.1:8080/health/)"
+    [ "$body" = web ] || { echo "invalid switch changed serving upstream" >&2; exit 1; }
+    if docker exec "$runtime_container" /bin/sh /opt/nginx/reload-nginx.sh --apply --slot 'web; injected'; then
+        echo "invalid upstream unexpectedly succeeded" >&2
+        exit 1
+    fi
+    docker rm -f "$runtime_container" >/dev/null
+    runtime_container=""
+}
+
+exercise_slot_switch
+
+exercise_initial_start() {
+    directory="$tmp_dir/initial-start"
+    mkdir -p "$directory/backend" "$directory/templates"
+    cp "$root_dir/deploy/nginx/https.conf.template" "$directory/templates/"
+    cp "$root_dir/deploy/nginx/private-worker.conf.template" "$directory/templates/"
+    cp "$root_dir/deploy/nginx/reload-nginx.sh" "$directory/templates/"
+    printf '%s\n' 'server { listen 8000; location / { return 200 "web"; } }' \
+        > "$directory/backend/default.conf"
+    backend_container="nginx-initial-web-$$"
+    docker run --detach --name "$backend_container" \
+        -v "$directory/backend:/etc/nginx/conf.d:ro" \
+        nginx:1.27-alpine >/dev/null
+    backend_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$backend_container")"
+    runtime_container="nginx-initial-start-$$"
+    docker run --detach --name "$runtime_container" --entrypoint /bin/sh \
+        --add-host "web:$backend_ip" --publish 127.0.0.1::443 \
+        -e PUBLIC_DOMAIN=findme-photo.ru \
+        -v "$directory/templates:/opt/nginx:ro" \
+        -v "$tmp_dir/letsencrypt:/etc/letsencrypt:ro" \
+        nginx:1.27-alpine /opt/nginx/reload-nginx.sh >/dev/null
+    for phase in start restart persisted-restart; do
+        if [ "$phase" = persisted-restart ]; then
+            printf '%s\n' web > "$directory/templates/selected-slot"
+        fi
+        if [ "$phase" != start ]; then docker restart "$runtime_container" >/dev/null; fi
+        binding="$(docker port "$runtime_container" 443/tcp)"
+        port="${binding##*:}"
+        attempts=0
+        while :; do
+            body="$(curl --silent --insecure --max-time 1 --noproxy '*' \
+                --resolve "findme-photo.ru:$port:127.0.0.1" \
+                "https://findme-photo.ru:$port/health/" || true)"
+            [ "$body" != web ] || break
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 30 ] || { echo "initial $phase did not retain healthy web" >&2; exit 1; }
+            sleep 0.1
+        done
+    done
+    docker stop "$backend_container" >/dev/null
+    docker restart "$runtime_container" >/dev/null
+    attempts=0
+    while [ "$(docker inspect --format '{{.State.Running}}' "$runtime_container")" = true ]; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 50 ] || { echo "initial startup accepted unhealthy web" >&2; exit 1; }
+        sleep 0.1
+    done
+    docker logs "$runtime_container" 2>&1 | grep -Fq 'Django startup requires a healthy selected slot: web'
+    docker rm -f "$runtime_container" "$backend_container" >/dev/null
+    runtime_container=""
+    backend_container=""
+}
+
+exercise_initial_start
 
 expect_render_rejected() {
     name="$1"
@@ -658,7 +829,7 @@ expect_render_rejected() {
         -v "$root_dir/deploy/nginx:/opt/nginx:ro" \
         -v "$tmp_dir/rendered:/rendered" \
         nginx:1.27-alpine \
-        /opt/nginx/reload-nginx.sh --render "/rendered/$name.conf"; then
+        /opt/nginx/reload-nginx.sh --render "/rendered/$name.conf" --slot web; then
         echo "$name unexpectedly accepted invalid hostname input" >&2
         exit 1
     fi
@@ -675,7 +846,7 @@ if docker run --rm --entrypoint /usr/bin/timeout \
     -v "$root_dir/deploy/nginx:/source:ro" \
     -v "$tmp_dir/invalid-template:/opt/nginx:ro" \
     -v "$tmp_dir/working-conf:/etc/nginx/conf.d" \
-    nginx:1.27-alpine 3 /bin/sh /source/reload-nginx.sh; then
+    nginx:1.27-alpine 3 /bin/sh /source/reload-nginx.sh --apply --slot web; then
     echo "invalid candidate unexpectedly passed nginx validation" >&2
     exit 1
 fi

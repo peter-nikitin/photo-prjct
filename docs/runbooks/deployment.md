@@ -7,13 +7,23 @@ or promotion target; this repository has no GitHub Environment deployment bounda
 
 ## Ordinary automatic deployment
 
-A `main` push publishes affected components. Documentation-only changes build and deploy nothing.
-Backend/import/canonical deployment inputs publish web/import SHA images and deploy the canonical
-VM without pulling or restarting photo workers. Worker inputs publish a worker SHA image and
-advance `latest`; host updaters replace containers in place. Mixed changes do both. Pinned models
-and dependencies live in a separately reusable base selected by its input hash; the code Dockerfile
-receives its resolved immutable digest. Publication and deployment are serialized. A failed release
-needs an explicit retry; a later documentation push does not retry it.
+A `main` push classifies web (including Commerce), import and photo-worker inputs separately.
+Changed components build immutable SHA images and then advance their own GHCR `latest` pointers:
+`photo-prjct:latest`, `photo-prjct-import-worker:latest` and
+`photo-prjct-worker:latest`. Commerce uses the web image. Documentation-only changes build no
+image and contact no application host. A web change hands off Django on the canonical VM; an import
+change reconciles import; a photo-worker change activates running pool members through CI. Mixed
+changes perform only the affected actions. The worker model/dependency base is reused by input
+hash. Publication and deployment are serialized. A failed release needs an explicit retry; a later
+documentation push does not retry it.
+
+The canonical web image is pulled and pinned to its local image ID before the handoff, so a later
+`latest` move cannot change the candidate. Deployment has two equivalent Django services, `web`
+and `web-next`. The deployment setup runs once, starts the unselected slot without mutating the
+database on service startup, verifies its health, switches the existing Nginx public/private/import
+upstream by graceful reload, and drains accepted requests on the predecessor before stopping it.
+Shared, versioned static assets remain available across the switch. On first activation from the
+old single-slot layout, `web` keeps serving while `web-next` warms; Nginx and PostgreSQL stay up.
 
 A manual deployment must supply
 an exact 40-character commit as `deployment_sha`; the workflow rejects a missing, malformed,
@@ -25,13 +35,16 @@ the purpose of the dispatch.
 Review the **Deploy** workflow result and run the acceptance checks below. Do not SSH to invoke
 `deploy/apply-deployment.sh` directly or use a mutable checkout as a deployment source.
 
-The first updater installation is a separate one-time operation at the current cap one after
-claims are paused/drained and the new web protocol/migration is deployed with the worker image.
-Ordinary Deploy does not install templates or recreate worker VMs. The
-[worker-pool runbook](worker-pools.md#one-time-updater-installation-at-cap-one) is the operational
-path; its exact managed-instance `rollingRecreate` is required because the current
-`OPPORTUNISTIC` policy does not restart the live selfie VM after a template patch. The historical
-fleet receipt and shared web/worker SHA are not deployment gates.
+The one-time worker access and updater installation is a separate operation before merging the
+worker-changing package, after claims are paused/drained. It installs the public half of the
+existing CI `VM_SSH_KEY` for the restricted worker user, limits worker SSH ingress to the canonical
+VM's security-group ID and explicitly recreates the sole selfie managed instance at cap one; bulk
+remains at zero. Prove a one-shot activation of the current worker image before the new image and
+web protocol are published. The
+[worker-pool runbook](worker-pools.md#one-time-ci-push-cutover-at-cap-one) covers this transition.
+Ordinary Deploy does not change group templates or recreate VMs. A worker-changing Deploy requires
+that private access cutover to have been completed and verified.
+The historical fleet receipt and shared web/worker SHA are not deployment gates.
 
 After a release commits, the apply script removes Docker images unused by any container
 from the canonical VM. It skips this cleanup on failed deployments. The workflow prints
@@ -73,8 +86,10 @@ path fails closed before any deployment mutation when any of them is absent, or 
 `COMMERCE_PUBLIC_ORIGIN` is anything other than exactly `https://$PUBLIC_DOMAIN`.
 
 Before enabling the worker, verify the Postbox sender identity and DNS authentication outside this
-runbook's application deployment step. If readiness fails, Deploy restores the previous Compose
-profile and does not alter Order, grant, delivery, or feature-flag rows.
+runbook's application deployment step. If readiness fails, Deploy reports a failed release. Once
+Commerce profile reconciliation has begun, the previous profile is not automatically restored;
+read back the selected web slot, actual Commerce containers and health before recovery. A readiness
+failure alone is not evidence that Order, grant, delivery or feature-flag rows changed.
 
 ## Controlled privileged-package pause
 
@@ -124,8 +139,9 @@ read-only `ProcessingAttempt` query succeeds against the current database. Befor
 `processing.0016` drops `ProcessingAttempt.worker_build`, a schema-compatible previous web can be
 restored after that probe. Once the drop has committed, the old web is incompatible even if the
 overall migration command reports failure; the same probe blocks its restoration. A failed or
-uncertain probe stops web, retains the candidate package and `.deployment-recovery`, and saves the
-candidate inputs as `.deployment-recovery/candidate.env` (mode 0600). Keep claims paused and recover
+uncertain probe preserves the observed selected route and slots without claiming they are healthy,
+retains the candidate package and `.deployment-recovery`, and saves the candidate inputs as
+`.deployment-recovery/candidate.env` (mode 0600). Keep claims paused and recover
 forward with a compatible new-protocol candidate or code fix. Do not claim that an old SHA is a safe
 rollback after the column drop, and preserve the snapshot until forward recovery is verified.
 
@@ -137,18 +153,29 @@ run (replace the placeholder with its complete 40-character commit SHA):
 gh workflow run deploy.yml --ref main -f deployment_sha=<EXACT_COMPATIBLE_SHA> -f recover_forward=true
 ```
 
-This mode publishes web/import images only, acquires the canonical deployment lock, and consumes
-the retained private `candidate.env`. It keeps the candidate's configuration and secrets; only
-the approved web/import release identity and transient registry credential come from the dispatch.
+This mode publishes the reviewed web image only, acquires the canonical deployment lock, and
+consumes the retained private `candidate.env`. It keeps the candidate's configuration, secrets and
+import image identity; only the approved web release identity and transient registry credential
+come from the dispatch.
 The original candidate SHA can be retried, or a reviewed compatible forward-fix SHA can be selected.
 Before package replacement, recovery validates the image's OCI SHA, build-independent model/claim
 interface, current DB compatibility and both pools' paused claims. Native AdaFace capability and
 normal migration, import, Commerce, public health and observability checks still apply.
-Any failed/uncertain recovery retains the original snapshot and installed compatible candidate;
-post-mutation failure stops web and never restores the pre-cutover image. Only verified commit
+Any failed/uncertain recovery retains the original snapshot, installed compatible candidate,
+selected route and observed slot state for inspection; it never restores an incompatible pre-cutover
+image. Only verified commit
 removes `candidate.env`, the recovery gate and retained predecessor package. Leave all unrelated
 dispatch options disabled. Read back the recovered image/health with the acceptance commands below
 before continuing the one-time worker cutover and explicitly unpausing claims.
+
+For an ordinary handoff failure before Nginx switches, the selected predecessor remains serving.
+After a switch, recovery may select the still-running predecessor only when its schema probe proves
+compatibility. An uncertain switch or failed predecessor drain retains the selected route and both
+slots for inspection; do not stop a slot that may own accepted requests. The workflow's
+`DEPLOY_RESULT` phase and rollback field identify what was attempted. A completed release is
+reverted through an explicit compatible image deployment using the same workflow. PostgreSQL
+upgrades, incompatible migrations, certificate reissue, VM reboot and resize are maintenance
+operations outside the ordinary zero-downtime handoff.
 
 A red workflow is not proof that the VM is unavailable, and a green rollback
 is not proof that the candidate was applied. Preserve the workflow URL and named failed phase,
@@ -167,15 +194,28 @@ must not contain a token, secret, raw deployment log, VM detail, database value,
 
 ## Acceptance checks
 
-After an ordinary deployment or corrected retry, verify the deployed marker, Compose health,
-observability package, application-level observability, and public health:
+After an ordinary deployment or corrected retry, verify the workflow's final `DEPLOY_RESULT`,
+selected Nginx slot, actual running image, Compose health, observability package, application-level
+observability, and public health. On the canonical VM, these checks are read-only:
 
 ```bash
 ssh -l petrnikitin 111.88.151.64 'sudo cat /opt/photo-prjct/deployed-image'
+ssh -l petrnikitin 111.88.151.64 'sudo python3 /opt/photo-prjct/deploy/web-slot.py --root /opt/photo-prjct selected'
 ssh -l petrnikitin 111.88.151.64 'cd /opt/photo-prjct && sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml ps'
 ssh -l petrnikitin 111.88.151.64 'sudo /usr/local/sbin/findme-selfie-observability verify'
 ssh -l petrnikitin 111.88.151.64 'cd /opt/photo-prjct && sh deploy/verify-selfie-observability.sh'
 curl -fsS https://findme-photo.ru/health/
+```
+
+To compare the actual selected web container with the committed local image ID, run on the
+canonical VM after the first two-slot deployment:
+
+```sh
+cd /opt/photo-prjct
+selected_slot="$(sudo python3 deploy/web-slot.py --root /opt/photo-prjct selected)"
+selected_container="$(sudo docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml ps -q "$selected_slot")"
+sudo docker inspect --format '{{.Image}} {{.State.Status}} {{.State.Health.Status}}' "$selected_container"
+sudo cat deployed-image
 ```
 
 If `COMMERCE_WORKER_ENABLED=True`, also run:
@@ -184,7 +224,13 @@ If `COMMERCE_WORKER_ENABLED=True`, also run:
 ssh -l petrnikitin 111.88.151.64 'cd /opt/photo-prjct && sh deploy/run-commerce-worker-health.sh'
 ```
 
-Accept the release only when `deployed-image` matches the requested immutable image, expected
-Compose services are healthy, the Commerce worker health command succeeds when enabled,
-observability checks succeed, and public health returns `{"status": "ok"}`. If a check fails,
-investigate without speculative application-data, storage, or root-package mutation.
+For a web release, compare the selected slot's container image ID with `deployed-image` and the
+workflow's requested image; inspect the predecessor and deployment drain phase to ensure accepted
+requests finished before it stopped. Confirm Nginx and PostgreSQL were not restarted during the
+handoff from the workflow and bounded container events; a green workflow alone cannot establish
+live zero downtime. For import and worker releases, check their own running image IDs rather than
+assuming the web marker represents them. The [worker-pool runbook](worker-pools.md) covers private
+API readiness, serving generation and scale-from-zero. Accept only when expected services are
+healthy, the Commerce health command succeeds when enabled, observability checks succeed and
+public health returns `{"status": "ok"}`. If a check fails, investigate without speculative
+application-data, storage or root-package mutation.

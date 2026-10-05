@@ -22,12 +22,13 @@ def test_import_worker_is_isolated_and_bounded():
             "PHOTO_IMPORT_WORKER_TOKEN",
             "PHOTO_IMPORT_BUILD",
         }
-        assert (
-            worker["environment"]["PHOTO_IMPORT_API_URL"]
-            == "http://web:8000/internal/photo-import/v1/"
+        assert worker["environment"]["PHOTO_IMPORT_API_URL"] == (
+            "http://nginx:8080/internal/photo-import/v1/"
+            if filename == "docker-compose.deployment.yml"
+            else "http://web:8000/internal/photo-import/v1/"
         )
         for name, service in services.items():
-            if name not in {"web", "import-worker"}:
+            if name not in {"web", "web-next", "import-worker"}:
                 assert "PHOTO_IMPORT_WORKER_TOKEN" not in service.get("environment", {})
     dockerfile = (ROOT / "Dockerfile.import-worker").read_text()
     assert "USER importer" in dockerfile and "src/backend" not in dockerfile

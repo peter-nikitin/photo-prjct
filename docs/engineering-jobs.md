@@ -103,8 +103,12 @@ request run.
 
 ### EJ-003 — Maintainer — Deploy an immutable image to the canonical deployment
 
-When main advances, I want one SHA-tagged image built and applied to the canonical deployment, so I can
-serve the exact reviewed artifact. Before any application mutation, the candidate migration ledger
+When main advances, I want the changed component images built from exact reviewed commits and
+applied through one serialized workflow, so the canonical deployment serves the intended web and
+supporting workers. Web, import and photo-worker each have an independent `latest` pointer;
+Commerce uses the web image. A web release warms the unselected Django slot, switches the selected
+Nginx upstream and drains accepted requests on the predecessor. Before any application mutation,
+the candidate migration ledger
 and plan are checked read-only. Pull requests protect numbered migration identities, privileged
 observability-package changes pause the automatic path until an operator bootstrap and manual
 dispatch, and named deployment phases feed one bounded non-blocking failure issue. The existing
@@ -119,11 +123,12 @@ GHCR image, Docker Compose, root-owned package, and rollback path remain authori
   [`src/backend/picflow/management/commands/verify_migration_history.py`](../src/backend/picflow/management/commands/verify_migration_history.py),
   [`src/backend/picflow/tests/test_verify_migration_history_command.py`](../src/backend/picflow/tests/test_verify_migration_history_command.py),
   [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh),
+  [`deploy/web-slot.py`](../deploy/web-slot.py),
   [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py),
   [`tests/test_repository_foundation.py`](../tests/test_repository_foundation.py),
   and [canonical deployment runbook](runbooks/deployment.md).
-- Deployment evidence: Current main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) ended with `DEPLOY_RESULT=success`. The later [public-monitor run 32461320506](https://github.com/peter-nikitin/photo-prjct/actions/runs/32461320506) also succeeded. These Actions records do not directly observe the VM, deployed image, runtime configuration, or customer outcome; keep `Delivered` until acceptance checks establish `Validated`.
-- Last updated: 2026-08-21
+- Deployment evidence: Main `be22bdd` passed [CI run 32457775703](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775703), and its automatic [Deploy run 32457775668](https://github.com/peter-nikitin/photo-prjct/actions/runs/32457775668) ended with `DEPLOY_RESULT=success`. The later [public-monitor run 32461320506](https://github.com/peter-nikitin/photo-prjct/actions/runs/32461320506) also succeeded. These dated runs predate the two-slot and independent-image changes; they do not prove that those changes have reached the VM or that a live handoff completed without interruption. Keep `Delivered` pending current live acceptance.
+- Last updated: 2026-10-05
 
 ### EJ-004 — Operator — Run the canonical HTTPS edge
 
@@ -653,16 +658,21 @@ work does not consume the public web/database host's resources and idle bulk cap
   [independent-image deployment plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-10-03-independent-worker-image-deployment.md)
   describe the current path. The repository implements remote private worker pools, durable
   claim/lease handoff, a reusable model base, host-owned in-place image updates, and component-aware
-  Deploy. Documentation-only changes do not deploy; backend-only releases leave photo-worker
-  images and templates untouched; changed worker inputs publish `latest`. Pool bounds remain bulk
-  0..1 and selfie 1..1, with bulk at zero when idle.
+  Deploy. Documentation-only changes do not deploy; web/import-only releases leave photo-worker
+  images and templates untouched; changed worker inputs publish `latest` and CI invokes the one-shot
+  updater on approved running members through the canonical VM. The existing Lockbox `VM_SSH_KEY`
+  authenticates both private SSH hops. Pool bounds remain bulk 0..1 and selfie 1..1, with bulk at
+  zero when idle; newly started VMs pull the current worker pointer.
 
   On 2026-10-03 the initial remote-only fleet receipt was read back `committed`. This is evidence
   for the prior remote-fleet acceptance, not for the new worker updater. The independent-image
   migration, first `latest` publication and one-time existing-template transition have not been
-  live-verified. That transition pauses and drains claims, deploys the new web protocol/migration
-  with the worker image, patches the existing templates, and explicitly recreates the sole selfie
-  managed instance at cap one; it never adds a second VM or starts the idle bulk pool. See the
+  live-verified. That transition pauses and drains claims, restricts worker SSH to the canonical
+  security-group source, installs only the current CI public key in existing templates, and
+  explicitly recreates the sole selfie managed instance at cap one. After proving current-image
+  one-shot activation, the reviewed merge publishes the new worker image and deploys the new web
+  protocol/migration. It never adds a second VM or starts the idle bulk pool. The periodic
+  registry-polling timer is retired only after CI activation is proven. See the
   [worker-pool runbook](runbooks/worker-pools.md). The canonical web recovery guard blocks an
   incompatible previous image after the processing column drop and retains candidate recovery
   inputs for a paused forward fix; see the [deployment runbook](runbooks/deployment.md).
@@ -671,7 +681,7 @@ work does not consume the public web/database host's resources and idle bulk cap
   remain required after rollout. Missing or stale metrics are unknown, not healthy zeros, and rule
   evaluation is not recipient-notification proof. Historical AdaFace enrollment and event
   activation have not started.
-- Last updated: 2026-10-03
+- Last updated: 2026-10-05
 
 ## Status log
 
@@ -731,6 +741,7 @@ This log is append-only.
 | 2026-09-27 | EJ-009 | Planned | Validated | Baseline VM/public-probe ingestion is live; the operator verified the console dashboard and baseline alert settings and received Alarm/OK emails from the [isolated failure/recovery drill](runbooks/minimal-monitoring.md#activation-evidence-2026-09-27). Commerce worker metric collection remains a separate extension. |
 | 2026-09-27 | EJ-030 | Not recorded | In progress | Accepted ADRs 0040/0041 and scoped local schema, reconciliation, SQL-reader and feature-routing evidence; final-package and production rollout gates remain open. |
 | 2026-09-28 | EJ-031 | Not recorded | In progress | Approved worker-isolation repository implementation has reviewed private transport, lifecycle, metrics and provisioning code; canonical release integration and final verification remain in progress. No paid provisioning or live relocation is claimed. |
+| 2026-10-05 | EJ-031 | In progress | In progress | Repository CI-push path reuses the existing Lockbox SSH key and adds restricted worker access, while live security-group/template/selfie recreation and CI activation remain unverified; no new live cutover is claimed. |
 
 PostgreSQL observability repository support adds a private exporter and a bounded Django database
 probe. The exporter belongs to independent observability reconciliation; monitoring failure does

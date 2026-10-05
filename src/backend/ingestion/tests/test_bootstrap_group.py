@@ -1,9 +1,8 @@
 from io import StringIO
-from pathlib import Path
 
 from django.contrib.auth.models import Group, Permission
 from django.core.management import CommandError, call_command
-from django.test import SimpleTestCase, TestCase
+from django.test import TestCase
 
 
 class BootstrapPhotographerGroupTests(TestCase):
@@ -33,21 +32,3 @@ class BootstrapPhotographerGroupTests(TestCase):
             CommandError, "ingestion.upload_photos permission is missing"
         ):
             call_command("bootstrap_photographer_group", stdout=StringIO())
-
-
-class EntrypointOrderingTests(SimpleTestCase):
-    def test_feature_flag_sync_and_bootstrap_run_between_migrate_and_collectstatic(self) -> None:
-        entrypoint = Path(__file__).parents[2] / "entrypoint.sh"
-        contents = entrypoint.read_text()
-        self.assertLess(
-            contents.index("python manage.py migrate --noinput"),
-            contents.index("python manage.py sync_feature_flags"),
-        )
-        self.assertLess(
-            contents.index("python manage.py sync_feature_flags"),
-            contents.index("python manage.py bootstrap_photographer_group"),
-        )
-        self.assertLess(
-            contents.index("python manage.py bootstrap_photographer_group"),
-            contents.index("python manage.py collectstatic --noinput"),
-        )

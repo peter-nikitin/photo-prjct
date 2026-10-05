@@ -41,7 +41,7 @@ log_format selfie_search_safe '$selfie_search_access_client_address - $selfie_se
     '"$selfie_search_access_referrer" "$selfie_search_access_user_agent" $request_time';
 
 upstream django_upstream {
-    server web:8000;
+    server ${DJANGO_SLOT}:8000;
 }
 
 server {
@@ -246,6 +246,18 @@ server {
     listen 8080;
     server_name _;
     access_log /var/log/nginx/access.log selfie_search_safe;
+
+    # Compose-only import traffic follows the same release as all other routes.
+    # Worker authentication remains Django's responsibility; never log its body.
+    location ^~ /internal/photo-import/v1/ {
+        access_log off;
+        error_log /dev/null emerg;
+        proxy_pass http://django_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-SSL on;
+    }
 
     location = /worker-diagnostics/metrics/ {
         access_log off;

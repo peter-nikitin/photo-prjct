@@ -61,8 +61,6 @@ def test_enabled_import_checks_protocol_after_web_then_starts(tmp_path, fake_bin
 def test_failed_candidate_stops_import_before_stopping_web_for_forward_recovery(
     tmp_path, fake_bin, lease_result
 ):
-    from tests.deployment.test_deployment_scripts import _write_executable
-
     env = _apply_env(tmp_path, fake_bin, scenario="public-failure")
     env.update(
         PHOTO_IMPORT_ENABLED="True",
@@ -70,40 +68,17 @@ def test_failed_candidate_stops_import_before_stopping_web_for_forward_recovery(
         PHOTO_IMPORT_BUILD="release",
         PHOTO_IMPORT_WORKER_TOKEN="import-secret",
     )
-    docker = fake_bin / "docker"
-    docker.write_text(
-        docker.read_text().replace(
-            "set -eu",
-            'set -eu\ncase "$*" in *"label=com.docker.compose.service=import-worker"*) '
-            'printf "import-fixture-id\\n" ;; esac',
-            1,
-        )
-    )
-    _write_executable(fake_bin / "sleep", 'printf "sleep %s\\n" "$*" >> "$COMMAND_LOG"')
     probe_file = tmp_path / "import-lease-probes"
     probe_file.write_text(lease_result)
     env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode != 0
     commands = "\n".join(_apply_log(tmp_path))
-    started = commands.index("up -d --no-deps import-worker")
-    stopped_import = commands.rindex("rm -f import-fixture-id")
-    lease_probe = commands.rindex("import-lease-probe")
-    stopped_web = commands.rindex(" stop web")
-    assert started < stopped_import < lease_probe < stopped_web
-    assert commands.count("up -d --no-deps import-worker") == 1
-    assert commands.count("up -d --no-deps web nginx") == 1
-    assert "previous-web-processing-schema-probe" not in commands
-    assert "phase=public-health rollback=failed" in result.stdout
-    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
-        tmp_path / ".env"
-    ).read_bytes()
-    assert (tmp_path / ".deployment-recovery/previous.env").is_file()
-    if lease_result.startswith("error"):
-        assert "Forward recovery could not drain candidate import leases" in result.stderr
-    else:
-        assert _apply_log(tmp_path).count("import-lease-probe") == 2
-        assert commands.index("sleep 5", stopped_import) < lease_probe
+    assert "up -d --no-deps import-worker" not in commands
+    assert "import-lease-probe" not in commands
+    assert "slot switch web" in commands
+    assert "phase=public-health rollback=succeeded" in result.stdout
+    assert not (tmp_path / ".deployment-recovery").exists()
 
 
 def test_import_token_projection_is_optional_and_edge_denies_internal_api():
@@ -143,9 +118,9 @@ def test_protocol_readiness_failure_keeps_candidate_without_starting_import(tmp_
     assert "up -d --no-deps import-worker" not in "\n".join(_apply_log(tmp_path))
     assert "import-lease-probe" not in "\n".join(_apply_log(tmp_path))
     commands = "\n".join(_apply_log(tmp_path))
-    assert commands.count("up -d --no-deps web nginx") == 1
-    assert " stop web" in commands
-    assert "previous-web-processing-schema-probe" not in commands
+    assert commands.count("up -d --wait --wait-timeout 120 --no-deps web-next") == 1
+    assert " stop web" not in commands
+    assert "previous-web-processing-schema-probe" in commands
     assert (tmp_path / ".env").read_bytes() != (tmp_path / "previous-env.expected").read_bytes()
     assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
         tmp_path / ".env"
@@ -208,17 +183,7 @@ def test_previous_enabled_import_container_with_no_live_lease_proceeds_without_s
     result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode == 0, result.stderr
     commands = "\n".join(_apply_log(tmp_path))
-    assert (
-        commands.index("rm -f import-fixture-id")
-        < commands.index("import-lease-probe")
-        < commands.index("up -d --no-deps web nginx")
-    )
-    assert (
-        "sleep "
-        not in commands[
-            commands.index("rm -f import-fixture-id") : commands.index("up -d --no-deps web nginx")
-        ]
-    )
+    assert commands.index("slot switch web-next") < commands.index("rm import-fixture-id")
     assert "yandex-disk-import" not in commands
 
 
@@ -242,9 +207,7 @@ def test_previous_enabled_import_waits_only_while_a_lease_is_live(tmp_path, fake
     assert commands.index("sleep 5") < commands.index(
         "import-lease-probe", commands.index("sleep 5")
     )
-    assert commands.index("import-lease-probe", commands.index("sleep 5")) < commands.index(
-        "up -d --no-deps web nginx"
-    )
+    assert commands.index("slot switch web-next") < commands.index("import-lease-probe")
 
 
 def test_import_lease_probe_failure_blocks_web_replacement(tmp_path, fake_bin):
@@ -299,3 +262,55 @@ def test_failed_import_deploy_does_not_override_operator_gate(tmp_path, fake_bin
 
     assert result.returncode != 0
     assert "yandex-disk-import" not in "\n".join(_apply_log(tmp_path))
+
+
+def test_legacy_import_worker_refuses_first_activation_before_database_or_edge_mutation(
+    tmp_path, fake_bin
+):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            'set -eu\ncase "$*" in\n'
+            '  *"label=com.docker.compose.service=import-worker"*) echo legacy-import; exit 0 ;;\n'
+            '  "exec legacy-import "*) exit 1 ;;\nesac',
+            1,
+        )
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    assert "explicit first-activation import cutover required" in result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert "candidate-migrate" not in commands
+    assert "slot switch" not in commands
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+
+
+def test_modern_import_worker_receives_term_and_finishes_before_removal(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            """set -eu
+case "$*" in
+  *"label=com.docker.compose.service=import-worker"*) echo modern-import; exit 0 ;;
+  "exec modern-import "*) exit 0 ;;
+  "inspect --format {{.State.Running}} modern-import")
+    if [ -f "$DEPLOY_ROOT/import-finished" ]; then echo false; else echo true; fi
+    exit 0 ;;
+  "kill --signal TERM modern-import")
+    printf 'import-term-finished\\n' >> "$COMMAND_LOG"
+    touch "$DEPLOY_ROOT/import-finished"; exit 0 ;;
+  "rm modern-import") test -f "$DEPLOY_ROOT/import-finished" ;;
+esac""",
+            1,
+        )
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert commands.index("slot switch web-next") < commands.index("import-term-finished")
+    assert commands.index("import-term-finished") < commands.index("rm modern-import")
+    assert "rm -f modern-import" not in commands

@@ -31,6 +31,32 @@ def module(name):
     return loaded
 
 
+@pytest.mark.parametrize(
+    ("path", "images", "services"),
+    [
+        ("docs/runbooks/deployment.md", (), ()),
+        ("src/backend/processing/views.py", ("web",), ("web",)),
+        ("src/backend/picflow/templates/picflow/gallery.html", ("web",), ("web",)),
+        ("src/backend/picflow/static/ui/gallery.css", ("web",), ("web",)),
+        ("src/backend/commerce/templates/commerce/order.html", ("web",), ("web",)),
+        ("src/import_worker/import_worker/runtime.py", ("import",), ("import",)),
+        ("src/backend/commerce/runtime.py", ("web",), ("web", "commerce")),
+        ("src/worker/photo_worker/client.py", ("worker",), ("worker",)),
+    ],
+)
+def test_independent_image_and_running_service_selection(path, images, services):
+    selected = module("classify-release").classify([path])
+    assert (
+        tuple(name for name in ("web", "import", "worker") if selected[f"{name}_changed"]) == images
+    )
+    assert (
+        tuple(
+            name for name in ("web", "import", "commerce", "worker") if selected[f"{name}_changed"]
+        )
+        == services
+    )
+
+
 def test_forward_recovery_dispatch_is_explicit_exact_sha_and_web_only():
     workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
     event = workflow.get("on", workflow.get(True))
@@ -80,7 +106,7 @@ def test_forward_dispatch_classification_forces_web_only_and_rejects_other_modes
     [
         (["docs/runbooks/deployment.md", "README.md"], (False, False, False)),
         (["src/backend/processing/views.py"], (True, False, False)),
-        (["src/import_worker/import_worker/runtime.py"], (True, False, False)),
+        (["src/import_worker/import_worker/runtime.py"], (False, False, False)),
         (["src/worker/photo_worker/client.py"], (False, True, False)),
         (["src/worker/requirements.cpu.txt"], (False, True, True)),
         (["Dockerfile.worker-base"], (False, True, True)),
@@ -99,7 +125,11 @@ def test_forward_dispatch_classification_forces_web_only_and_rejects_other_modes
 )
 def test_only_effective_component_inputs_are_published(paths, expected):
     selected = module("classify-release").classify(paths)
-    assert tuple(selected.values()) == expected
+    assert (
+        selected["web_changed"],
+        selected["worker_changed"],
+        selected["worker_base_changed"],
+    ) == expected
 
 
 def test_workflow_builds_worker_with_immutable_base_and_latest_only_after_smoke():
@@ -160,6 +190,91 @@ def test_failed_worker_pointer_publication_reports_failure(tmp_path):
         == "buildx imagetools create --tag ghcr.io/example/photo-prjct-worker:latest "
         "ghcr.io/example/photo-prjct-worker@sha256:" + "a" * 64
     )
+
+
+def test_canonical_images_have_independent_latest_publication_and_activation():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())["jobs"]
+    steps = {step.get("name"): step for step in jobs["build"]["steps"]}
+    assert "import_changed == 'true'" in steps["Build and push import image"]["if"]
+    assert (
+        "steps.import.outputs.digest"
+        in steps["Publish current import pointer"]["env"]["IMAGE_DIGEST"]
+    )
+    assert "steps.web.outputs.digest" in steps["Publish current web pointer"]["env"]["IMAGE_DIGEST"]
+    deployment = next(
+        step for step in jobs["deploy"]["steps"] if step.get("name") == "Run deployment"
+    )
+    assert deployment["env"]["DEPLOY_WEB"] == "${{ needs.classify-release.outputs.web_changed }}"
+    assert (
+        deployment["env"]["DEPLOY_IMPORT"] == "${{ needs.classify-release.outputs.import_changed }}"
+    )
+    assert (
+        deployment["env"]["DEPLOY_COMMERCE"]
+        == "${{ needs.classify-release.outputs.commerce_changed }}"
+    )
+    assert "import_changed == 'true'" in jobs["deploy"]["if"]
+    ordered = [step.get("name") for step in jobs["build"]["steps"]]
+    for image in ("web", "import", "worker"):
+        assert ordered.index(f"Check {image} image") < ordered.index(
+            f"Publish current {image} pointer"
+        )
+
+
+def test_failed_pointer_advance_restores_known_previous_target(tmp_path):
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_LOG"\n'
+        'case "$*" in *new-digest*) exit 1 ;; esac\n'
+    )
+    docker.chmod(0o755)
+    result = subprocess.run(
+        [
+            "sh",
+            ROOT / "deploy/image-pointer.sh",
+            "advance",
+            "ghcr.io/example/app:latest",
+            "new-digest",
+            "old-digest",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "DOCKER_LOG": str(tmp_path / "calls"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert (tmp_path / "calls").read_text().splitlines() == [
+        "buildx imagetools create --tag ghcr.io/example/app:latest new-digest",
+        "buildx imagetools create --tag ghcr.io/example/app:latest old-digest",
+    ]
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_worker_code_release_selects_the_existing_base_cache_before_building(tmp_path, available):
+    steps = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())["jobs"]["build"][
+        "steps"
+    ]
+    step = next((step for step in steps if step.get("id") == "base_cache"), None)
+    assert step is not None, "Worker code releases must resolve or publish the effective base cache"
+    docker = tmp_path / "docker"
+    docker.write_text(f"#!/bin/sh\nexit {0 if available else 1}\n")
+    docker.chmod(0o755)
+    output = tmp_path / "output"
+    result = subprocess.run(
+        ["sh", "-c", step["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "BASE_IMAGE": "ghcr.io/example/base:inputs",
+            "GITHUB_OUTPUT": str(output),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert output.read_text() == f"missing={'false' if available else 'true'}\n"
 
 
 def test_native_collector_helper_installs_verified_owned_source_and_can_remove(tmp_path):

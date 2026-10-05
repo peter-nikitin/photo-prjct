@@ -4,6 +4,31 @@ set -eu
 
 : "${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN}"
 PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
+mode="${1:-}"
+if [ "$mode" = "--render" ]; then
+    output="${2:?Set render output}"
+    shift 2
+elif [ "$mode" = "--apply" ]; then
+    shift
+fi
+DJANGO_SLOT=""
+verify_startup=1
+if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = "--slot" ] || {
+        echo "Usage: $0 [--render OUTPUT|--apply] [--slot web|web-next]" >&2
+        exit 2
+    }
+    DJANGO_SLOT="$2"
+    verify_startup=0
+elif [ -f /opt/nginx/selected-slot ]; then
+    DJANGO_SLOT="$(cat /opt/nginx/selected-slot)"
+else
+    DJANGO_SLOT=web
+fi
+case "$DJANGO_SLOT" in
+    web|web-next) ;;
+    *) echo "Invalid Django upstream slot" >&2; exit 2 ;;
+esac
 
 valid_hostname() {
     hostname="$1"
@@ -22,6 +47,37 @@ normalize_hostname() {
 if ! valid_hostname "$PUBLIC_DOMAIN"; then
     echo "PUBLIC_DOMAIN must be a valid DNS hostname" >&2
     exit 2
+fi
+
+if [ "$verify_startup" = 1 ]; then
+    # Ordinary startup must preserve interrupted-switch evidence. Only an
+    # explicit --slot operation may reconcile the installed config and marker.
+    if ! installed_configuration="$(nginx -T 2>/dev/null)"; then
+        echo "Cannot inspect installed Nginx configuration for Django startup" >&2
+        exit 2
+    fi
+    installed_slot="$(printf '%s\n' "$installed_configuration" | awk '
+        /upstream django_upstream[[:space:]]*\{/ { in_upstream = 1; next }
+        in_upstream && /}/ { in_upstream = 0 }
+        in_upstream && /server / { print $2 }
+    ')"
+    if [ -f /opt/nginx/selected-slot ]; then
+        if [ "$installed_slot" != "$DJANGO_SLOT:8000;" ]; then
+            echo "Django startup selection mismatch: persisted=$DJANGO_SLOT installed=$installed_slot; explicit switch required" >&2
+            exit 2
+        fi
+    else
+        # A successfully inspected fresh stock config or healthy legacy web is
+        # the only markerless first-activation state that may choose initial web.
+        case "$installed_slot" in
+            ''|'web:8000;') ;;
+            *) echo "Missing Django selection does not match the initial web upstream" >&2; exit 2 ;;
+        esac
+    fi
+    if ! wget -q -T 3 -O /dev/null --header "Host: $PUBLIC_DOMAIN" "http://$DJANGO_SLOT:8000/health/"; then
+        echo "Django startup requires a healthy selected slot: $DJANGO_SLOT" >&2
+        exit 2
+    fi
 fi
 
 if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
@@ -94,20 +150,16 @@ if [ -n "${WORKER_POOL_PRIVATE_API_IPV4:-}" ]; then
     PRIVATE_WORKER_SERVER="$(cat /opt/nginx/private-worker.conf.template)"
 fi
 
-export PUBLIC_DOMAIN PUBLIC_DOMAIN_ALIAS_SERVER_NAME HTTPS_ALIAS_SERVER PRIVATE_WORKER_SERVER
+export PUBLIC_DOMAIN PUBLIC_DOMAIN_ALIAS_SERVER_NAME HTTPS_ALIAS_SERVER PRIVATE_WORKER_SERVER DJANGO_SLOT
 
 render_config() {
     output="$1"
-    envsubst '${PUBLIC_DOMAIN} ${PUBLIC_DOMAIN_ALIAS_SERVER_NAME} ${HTTPS_ALIAS_SERVER} ${PRIVATE_WORKER_SERVER}' \
+    envsubst '${PUBLIC_DOMAIN} ${PUBLIC_DOMAIN_ALIAS_SERVER_NAME} ${HTTPS_ALIAS_SERVER} ${PRIVATE_WORKER_SERVER} ${DJANGO_SLOT}' \
         < /opt/nginx/https.conf.template > "$output"
 }
 
-if [ "${1:-}" = "--render" ]; then
-    [ "$#" -eq 2 ] || {
-        echo "Usage: $0 --render OUTPUT" >&2
-        exit 2
-    }
-    render_config "$2"
+if [ "$mode" = "--render" ]; then
+    render_config "$output"
     exit 0
 fi
 
@@ -128,6 +180,22 @@ render_config "$candidate"
 } > "$test_config"
 
 nginx -t -c "$test_config"
+if [ "$mode" = "--apply" ]; then
+    previous="$(mktemp /etc/nginx/conf.d/.previous.conf.XXXXXX)"
+    cp /etc/nginx/conf.d/default.conf "$previous"
+    mv "$candidate" /etc/nginx/conf.d/default.conf
+    if ! nginx -s reload; then
+        mv "$previous" /etc/nginx/conf.d/default.conf
+        exit 1
+    fi
+    if ! nginx -T 2>/dev/null | grep -Fq "server $DJANGO_SLOT:8000;"; then
+        mv "$previous" /etc/nginx/conf.d/default.conf
+        nginx -s reload
+        exit 1
+    fi
+    rm -f "$previous"
+    exit 0
+fi
 mv "$candidate" /etc/nginx/conf.d/default.conf
 
 nginx -g "daemon off;" &

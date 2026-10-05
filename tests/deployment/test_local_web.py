@@ -217,6 +217,72 @@ def _assert_material_removed(environment: dict[str, str]) -> None:
     assert all(not path.exists() for path in roots)
 
 
+@pytest.mark.parametrize("failed_command", ["", "sync_feature_flags"])
+def test_ordinary_compose_web_prepares_local_database_before_serving(
+    tmp_path: Path, failed_command: str
+) -> None:
+    assert DOCKER is not None
+    rendered = subprocess.run(
+        [
+            DOCKER,
+            "compose",
+            "--env-file",
+            ".env.example",
+            "-f",
+            "docker-compose.yml",
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "COMPOSE_PROJECT_NAME": "local-entrypoint-test"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    web = json.loads(rendered.stdout)["services"]["web"]
+    assert web["entrypoint"] == ["/bin/sh", "/app/src/backend/local-entrypoint.sh"]
+    assert web["command"] == ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    command_log = tmp_path / "commands.log"
+    _write_executable(
+        fake_bin / "python",
+        """
+printf '%s\\n' "$*" >> "$COMMAND_LOG"
+case " $* " in
+  *" $FAIL_COMMAND "*) [ -z "$FAIL_COMMAND" ] || exit 23 ;;
+esac
+""",
+    )
+    result = subprocess.run(
+        ["/bin/sh", ROOT / "src/backend/local-entrypoint.sh", *web["command"]],
+        cwd=ROOT / "src/backend",
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "COMMAND_LOG": str(command_log),
+            "FAIL_COMMAND": failed_command,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    expected = ["manage.py migrate --noinput", "manage.py sync_feature_flags"]
+    if failed_command:
+        assert result.returncode == 23
+    else:
+        assert result.returncode == 0, result.stderr
+        expected += [
+            "manage.py bootstrap_photographer_group",
+            "manage.py collectstatic --noinput",
+            "manage.py runserver 0.0.0.0:8000",
+        ]
+    assert command_log.read_text(encoding="utf-8").splitlines() == expected
+
+
 def test_make_staging_local_resolves_the_exact_local_web_projection_and_starts_only_db_and_web(
     local_launcher_environment: dict[str, str],
 ) -> None:

@@ -14,6 +14,17 @@ ROOT = Path(__file__).resolve().parents[2]
 OBSERVABILITY = ROOT / "deploy" / "selfie-observability"
 
 
+def _deployment_root_with_selector_sentinel(tmp_path: Path) -> tuple[Path, Path]:
+    deploy_root = tmp_path / "deployment"
+    (deploy_root / "deploy").mkdir(parents=True)
+    selector_marker = tmp_path / "deployment-selector-executed"
+    (deploy_root / "deploy/web-slot.py").write_text(
+        f"from pathlib import Path\nPath({str(selector_marker)!r}).touch()\nprint('web-next')\n",
+        encoding="utf-8",
+    )
+    return deploy_root, selector_marker
+
+
 def _ini(name: str) -> configparser.ConfigParser:
     parser = configparser.ConfigParser(interpolation=None, strict=True)
     parser.optionxform = str
@@ -60,12 +71,13 @@ def test_host_runner_uses_unambiguous_utc_window_tags_and_marks_explicit_recompu
         encoding="utf-8",
     )
     journalctl.chmod(0o755)
+    deploy_root, selector_marker = _deployment_root_with_selector_sentinel(tmp_path)
     result = subprocess.run(
         ["sh", OBSERVABILITY / "run-daily-summary.sh", "2026-08-03"],
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "DEPLOY_ROOT": str(ROOT),
+            "DEPLOY_ROOT": str(deploy_root),
             "PYTHON_BIN": sys.executable,
             "JOURNAL_ARGS": str(tmp_path / "journal-args"),
         },
@@ -75,6 +87,7 @@ def test_host_runner_uses_unambiguous_utc_window_tags_and_marks_explicit_recompu
     )
 
     assert result.returncode == 0, result.stderr
+    assert not selector_marker.exists()
     arguments = (tmp_path / "journal-args").read_text(encoding="utf-8").splitlines()
     assert arguments == [
         "--since",
@@ -83,6 +96,8 @@ def test_host_runner_uses_unambiguous_utc_window_tags_and_marks_explicit_recompu
         "2026-08-03T21:00:00Z",
         "--output=cat",
         "CONTAINER_TAG=findme.service=web",
+        "+",
+        "CONTAINER_TAG=findme.service=web-next",
         "+",
         "CONTAINER_TAG=findme.service=worker",
         "+",
@@ -101,13 +116,14 @@ def test_host_runner_propagates_journal_failure_without_emitting_an_empty_summar
     journalctl = fake_bin / "journalctl"
     journalctl.write_text("#!/bin/sh\nexit 23\n", encoding="utf-8")
     journalctl.chmod(0o755)
+    deploy_root, _ = _deployment_root_with_selector_sentinel(tmp_path)
 
     result = subprocess.run(
         ["sh", OBSERVABILITY / "run-daily-summary.sh", "2026-08-03"],
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "DEPLOY_ROOT": str(ROOT),
+            "DEPLOY_ROOT": str(deploy_root),
             "PYTHON_BIN": sys.executable,
         },
         text=True,

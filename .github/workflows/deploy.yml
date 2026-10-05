@@ -77,6 +77,8 @@ jobs:
       web_changed: ${{ steps.classify.outputs.web_changed }}
       worker_changed: ${{ steps.classify.outputs.worker_changed }}
       worker_base_changed: ${{ steps.classify.outputs.worker_base_changed }}
+      import_changed: ${{ steps.classify.outputs.import_changed }}
+      commerce_changed: ${{ steps.classify.outputs.commerce_changed }}
     steps:
       - name: Check out release history
         uses: actions/checkout@v4
@@ -124,6 +126,8 @@ jobs:
               echo 'web_changed=true' >> "$GITHUB_OUTPUT"
               echo 'worker_changed=false' >> "$GITHUB_OUTPUT"
               echo 'worker_base_changed=false' >> "$GITHUB_OUTPUT"
+              echo 'import_changed=false' >> "$GITHUB_OUTPUT"
+              echo 'commerce_changed=false' >> "$GITHUB_OUTPUT"
             else
               python deploy/classify-release.py --base "${release_sha}^" --head "$release_sha" >> "$GITHUB_OUTPUT"
             fi
@@ -207,15 +211,18 @@ jobs:
 
   build:
     name: Publish changed component images
-    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && (needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.worker_changed == 'true') }}
+    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && (needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' || needs.classify-release.outputs.worker_changed == 'true') }}
     runs-on: ubuntu-latest
     needs: [classify-release]
     permissions:
       contents: read
       packages: write
     outputs:
-      app_image: ${{ steps.image.outputs.app_image }}
-      import_worker_image: ${{ steps.image.outputs.import_worker_image }}
+      app_image: ghcr.io/${{ github.repository }}:latest
+      import_worker_image: ghcr.io/${{ github.repository }}-import-worker:latest
+      previous_web_image: ${{ steps.previous.outputs.web }}
+      previous_import_image: ${{ steps.previous.outputs.import }}
+      previous_worker_image: ${{ steps.previous.outputs.worker }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -239,11 +246,27 @@ jobs:
           release_sha="${{ needs.classify-release.outputs.release_sha }}"
           echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${release_sha}" >> "$GITHUB_OUTPUT"
           echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" >> "$GITHUB_OUTPUT"
-          base_key="$(git ls-tree -r HEAD -- Dockerfile.worker-base .dockerignore .github/workflows/deploy.yml src/worker/requirements.txt src/worker/requirements.cpu.txt | sha256sum | cut -d ' ' -f 1)"
+          base_key="$(git ls-tree -r HEAD -- Dockerfile.worker-base .dockerignore src/worker/requirements.txt src/worker/requirements.cpu.txt | sha256sum | cut -d ' ' -f 1)"
           echo "worker_base=ghcr.io/${GITHUB_REPOSITORY}-worker-base:${base_key}" >> "$GITHUB_OUTPUT"
           echo "import_worker_image=ghcr.io/${GITHUB_REPOSITORY}-import-worker:${release_sha}" >> "$GITHUB_OUTPUT"
+      - name: Retain previous registry targets for this run
+        id: previous
+        run: |
+          set -eu
+          for component in web import worker; do
+            case "$component" in
+              web) repository="ghcr.io/${GITHUB_REPOSITORY}" ;;
+              import) repository="ghcr.io/${GITHUB_REPOSITORY}-import-worker" ;;
+              worker) repository="ghcr.io/${GITHUB_REPOSITORY}-worker" ;;
+            esac
+            digest="$(docker buildx imagetools inspect "$repository:latest" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+            target=
+            case "$digest" in sha256:*) target="$repository@$digest" ;; esac
+            echo "$component=$target" >> "$GITHUB_OUTPUT"
+          done
       - name: Build and push import image
-        if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
+        id: import
+        if: ${{ needs.classify-release.outputs.import_changed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -253,6 +276,7 @@ jobs:
           cache-from: type=gha,scope=import-worker
           cache-to: type=gha,mode=max,scope=import-worker,ignore-error=true
       - name: Build and push image
+        id: web
         if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
         uses: docker/build-push-action@v6
         with:
@@ -263,9 +287,47 @@ jobs:
           tags: ${{ steps.image.outputs.app_image }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web,ignore-error=true
+      - name: Check web image
+        if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
+        env:
+          IMAGE_DIGEST: ${{ steps.web.outputs.digest }}
+        run: docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}" -c 'import django, gunicorn, psycopg, PIL; import compileall; assert compileall.compile_dir(".", quiet=1)'
+      - name: Check import image
+        if: ${{ needs.classify-release.outputs.import_changed == 'true' }}
+        env:
+          IMAGE_DIGEST: ${{ steps.import.outputs.digest }}
+        run: docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}-import-worker@${IMAGE_DIGEST}" -c 'import import_worker.__main__'
+      - name: Publish current web pointer
+        if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
+        env:
+          IMAGE_DIGEST: ${{ steps.web.outputs.digest }}
+          PREVIOUS_IMAGE: ${{ steps.previous.outputs.web }}
+        run: |
+          set -eu
+          sh deploy/image-pointer.sh advance "ghcr.io/${GITHUB_REPOSITORY}:latest" "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}" "$PREVIOUS_IMAGE"
+      - name: Publish current import pointer
+        if: ${{ needs.classify-release.outputs.import_changed == 'true' }}
+        env:
+          IMAGE_DIGEST: ${{ steps.import.outputs.digest }}
+          PREVIOUS_IMAGE: ${{ steps.previous.outputs.import }}
+        run: |
+          set -eu
+          sh deploy/image-pointer.sh advance "ghcr.io/${GITHUB_REPOSITORY}-import-worker:latest" "ghcr.io/${GITHUB_REPOSITORY}-import-worker@${IMAGE_DIGEST}" "$PREVIOUS_IMAGE"
+      - name: Inspect effective worker base cache
+        id: base_cache
+        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
+        env:
+          BASE_IMAGE: ${{ steps.image.outputs.worker_base }}
+        run: |
+          set -eu
+          if docker buildx imagetools inspect "$BASE_IMAGE" >/dev/null 2>&1; then
+            echo 'missing=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'missing=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Build and push worker base
         id: base
-        if: ${{ needs.classify-release.outputs.worker_base_changed == 'true' }}
+        if: ${{ needs.classify-release.outputs.worker_base_changed == 'true' || steps.base_cache.outputs.missing == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -301,6 +363,11 @@ jobs:
           tags: ${{ steps.image.outputs.worker_image }}
           cache-from: type=gha,scope=worker
           cache-to: type=gha,mode=max,scope=worker,ignore-error=true
+      - name: Check worker image
+        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
+        env:
+          IMAGE_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}-worker@${IMAGE_DIGEST}" -c 'import photo_worker.client, photo_worker.contracts'
       - name: Publish current worker pointer
         if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
         env:
@@ -313,15 +380,34 @@ jobs:
           test "${#hash}" -eq 64
           test -z "$(printf '%s' "$hash" | tr -d '0-9a-f')"
           docker buildx imagetools create --tag "ghcr.io/${GITHUB_REPOSITORY}-worker:latest" "ghcr.io/${GITHUB_REPOSITORY}-worker@${digest}"
+      - name: Restore registry pointers after publication failure
+        if: ${{ failure() }}
+        env:
+          PREVIOUS_WEB_IMAGE: ${{ steps.previous.outputs.web }}
+          PREVIOUS_IMPORT_IMAGE: ${{ steps.previous.outputs.import }}
+          PREVIOUS_WORKER_IMAGE: ${{ steps.previous.outputs.worker }}
+        run: |
+          status=0
+          if [ "${{ needs.classify-release.outputs.web_changed }}" = true ]; then
+            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}:latest" "$PREVIOUS_WEB_IMAGE" || status=1
+          fi
+          if [ "${{ needs.classify-release.outputs.import_changed }}" = true ]; then
+            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-import-worker:latest" "$PREVIOUS_IMPORT_IMAGE" || status=1
+          fi
+          if [ "${{ needs.classify-release.outputs.worker_changed }}" = true ]; then
+            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-worker:latest" "$PREVIOUS_WORKER_IMAGE" || status=1
+          fi
+          exit "$status"
 
   deploy:
     name: Deploy
-    if: ${{ always() && needs.build.result == 'success' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && needs.classify-release.outputs.web_changed == 'true' }}
+    if: ${{ always() && needs.build.result == 'success' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && (needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' || needs.classify-release.outputs.worker_changed == 'true') }}
     runs-on: ubuntu-latest
     needs: [classify-release, build, reconcile-observability-host]
     permissions:
       contents: read
       id-token: write
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -343,11 +429,15 @@ jobs:
             --identity github-oidc \
             -- deploy/run-remote.sh verify-paused-observability-release
       - name: Run deployment
+        if: ${{ needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' }}
         env:
           VM_HOST: ${{ vars.VM_HOST }}
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
+          DEPLOY_WEB: ${{ needs.classify-release.outputs.web_changed }}
+          DEPLOY_IMPORT: ${{ needs.classify-release.outputs.import_changed }}
+          DEPLOY_COMMERCE: ${{ needs.classify-release.outputs.commerce_changed }}
           RECOVER_FORWARD: ${{ inputs.recover_forward && 'True' || 'False' }}
           RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
           WORKER_POOL_PRIVATE_API_IPV4: ${{ vars.WORKER_POOL_PRIVATE_API_IPV4 }}
@@ -420,6 +510,22 @@ jobs:
             --consumer deploy \
             --identity github-oidc \
             -- deploy/run-remote.sh deploy
+      - name: Run photo-worker activation
+        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
+        env:
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+          WORKER_POOL_FOLDER_ID: ${{ vars.WORKER_POOL_FOLDER_ID }}
+          WORKER_POOL_BULK_GROUP_ID: ${{ vars.WORKER_POOL_BULK_GROUP_ID }}
+          WORKER_POOL_SELFIE_GROUP_ID: ${{ vars.WORKER_POOL_SELFIE_GROUP_ID }}
+          WORKER_POOL_SUBNET_ID: ${{ vars.WORKER_POOL_SUBNET_ID }}
+          WORKER_POOL_SECURITY_GROUP_ID: ${{ vars.WORKER_POOL_SECURITY_GROUP_ID }}
+          WORKER_POOL_CANONICAL_VM_ID: ${{ vars.WORKER_POOL_CANONICAL_VM_ID }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --consumer remote-check --identity github-oidc \
+            -- deploy/worker-pools/activate.py
       - name: Verify private upload storage contract
         if: ${{ inputs.verify_private_storage }}
         env:
@@ -457,6 +563,35 @@ jobs:
             --consumer deploy \
             --identity github-oidc \
             -- deploy/run-remote.sh selfie-feedback-storage
+
+      - name: Log in to GHCR for failed activation recovery
+        if: ${{ failure() }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Set up Docker Buildx for failed activation recovery
+        if: ${{ failure() }}
+        uses: docker/setup-buildx-action@v3
+      - name: Restore canonical registry pointers after activation failure
+        if: ${{ failure() }}
+        env:
+          PREVIOUS_WEB_IMAGE: ${{ needs.build.outputs.previous_web_image }}
+          PREVIOUS_IMPORT_IMAGE: ${{ needs.build.outputs.previous_import_image }}
+          PREVIOUS_WORKER_IMAGE: ${{ needs.build.outputs.previous_worker_image }}
+        run: |
+          status=0
+          if [ "${{ needs.classify-release.outputs.web_changed }}" = true ]; then
+            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}:latest" "$PREVIOUS_WEB_IMAGE" || status=1
+          fi
+          if [ "${{ needs.classify-release.outputs.import_changed }}" = true ]; then
+            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-import-worker:latest" "$PREVIOUS_IMPORT_IMAGE" || status=1
+          fi
+          if [ "${{ needs.classify-release.outputs.worker_changed }}" = true ]; then
+            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-worker:latest" "$PREVIOUS_WORKER_IMAGE" || status=1
+          fi
+          exit "$status"
 
   reconcile-deploy-issue:
     name: Reconcile deployment issue

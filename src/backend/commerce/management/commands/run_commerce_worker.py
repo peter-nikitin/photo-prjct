@@ -1,4 +1,6 @@
-import time
+import signal
+from threading import Event
+from types import FrameType
 
 from django.conf import settings
 from django.core.checks import Tags
@@ -14,6 +16,7 @@ from commerce.worker import (
 
 
 class Command(BaseCommand):
+    supports_graceful_stop = True
     help = "Run the bounded Commerce email and payment-reconciliation poller."
     requires_system_checks = [Tags.models, COMMERCE_RUNTIME_CHECK_TAG]
 
@@ -28,8 +31,15 @@ class Command(BaseCommand):
         worker = _configured_worker()
         if not acquire_commerce_worker_lock():
             raise CommandError("A Commerce worker is already running.")
+        stopping = Event()
+        previous_handler = signal.getsignal(signal.SIGTERM)
+
+        def request_stop(signum: int, frame: FrameType | None) -> None:
+            stopping.set()
+
         try:
-            while True:
+            signal.signal(signal.SIGTERM, request_stop)
+            while not stopping.is_set():
                 result = worker.run_once()
                 self.stdout.write(
                     "commerce worker pass: "
@@ -39,8 +49,9 @@ class Command(BaseCommand):
                 )
                 if options["once"]:
                     return
-                time.sleep(poll_seconds)
+                stopping.wait(poll_seconds)
         finally:
+            signal.signal(signal.SIGTERM, previous_handler)
             release_commerce_worker_lock()
 
 

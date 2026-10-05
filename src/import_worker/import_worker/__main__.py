@@ -1,6 +1,7 @@
 """Run with only an internal endpoint, dedicated token and temporary-directory mount."""
 
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -25,7 +26,10 @@ def main() -> None:
         return
     if sys.argv[1:]:
         raise SystemExit("Unsupported import worker arguments.")
-    Runner(config, client, DiskSource(transport), transport).run()
+    runner = Runner(config, client, DiskSource(transport), transport)
+    signal.signal(signal.SIGTERM, lambda *_: runner.request_stop())
+    signal.signal(signal.SIGINT, lambda *_: runner.request_stop())
+    runner.run()
 
 
 if __name__ == "__main__":

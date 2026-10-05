@@ -65,6 +65,7 @@ class Runner:
     ):
         self.config, self.client, self.source, self.transport = config, client, source, transport
         self.sleep = sleep
+        self.stopping = False
         config.temp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.lock = (config.temp_dir / "worker.lock").open("a")
         try:
@@ -79,7 +80,12 @@ class Runner:
         self.path.unlink(missing_ok=True)
         self.lock.close()
 
+    def request_stop(self) -> None:
+        self.stopping = True
+
     def run_once(self) -> bool:
+        if self.stopping:
+            return False
         result = self.client.call("claim", lease_seconds=Config.lease_seconds)
         work = result["work"]
         if work is None:
@@ -214,7 +220,7 @@ class Runner:
 
     def run(self) -> None:
         try:
-            while True:
+            while not self.stopping:
                 try:
                     if not self.run_once():
                         self.sleep(5)

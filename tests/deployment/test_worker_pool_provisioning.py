@@ -32,6 +32,8 @@ def config(pool_max_size=2):
         "network_id": "network",
         "subnet_id": "subnet",
         "worker_sg_id": "worker-sg",
+        "worker_ssh_public_key": "ssh-ed25519 "
+        + base64.b64encode(b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" + b"a" * 32).decode(),
         "canonical_vm_id": "canonical",
         "private_api_ipv4": "10.0.0.5",
         "worker_sa_id": "worker-sa",
@@ -51,6 +53,21 @@ def config(pool_max_size=2):
             "selfie": {"id": None, "baseline": None},
         },
     }
+
+
+def test_new_worker_template_installs_one_shot_updater_without_polling_timer():
+    template = json.loads(module("provision").cloud_init(config(), "selfie").split("\n", 1)[1])
+    paths = {row["path"] for row in template["write_files"]}
+    assert "/etc/systemd/system/findme-worker-updater.service" in paths
+    assert "/etc/systemd/system/findme-worker-updater.timer" not in paths
+    user = template["users"][0]
+    assert user["name"] == "findme-deploy"
+    assert user["ssh_authorized_keys"] == [config()["worker_ssh_public_key"]]
+    assert user["sudo"] == [
+        "ALL=(root) NOPASSWD: /usr/bin/python3 "
+        "/usr/local/lib/findme-worker/updater.py --ci-activation"
+    ]
+    assert "groups" not in user
 
 
 @pytest.mark.parametrize("pool_max_size", [1, 2])
@@ -749,7 +766,15 @@ class FakeCloud:
             "worker-sg": {
                 "folderId": "worker-folder",
                 "networkId": "network",
-                "rules": [{"direction": "EGRESS"}],
+                "rules": [
+                    {"direction": "EGRESS"},
+                    {
+                        "direction": "INGRESS",
+                        "protocolName": "TCP",
+                        "ports": {"fromPort": "22", "toPort": "22"},
+                        "securityGroupId": "edge-sg",
+                    },
+                ],
             },
             "edge-sg": {
                 "folderId": "canonical-folder",
@@ -1169,7 +1194,7 @@ def test_existing_unknown_duplicate_and_drifted_targets_are_rejected_before_muta
 
 def test_collector_cloud_fault_still_publishes_demand_but_reports_incomplete_collection(tmp_path):
     collector = module("metrics")
-    runner = Mock(side_effect=[TimeoutError("sensitive-url"), Mock()])
+    runner = Mock(side_effect=[Mock(stdout="web\n"), TimeoutError("sensitive-url"), Mock()])
     path = tmp_path / "worker-pools-observation.json"
     path.write_text(
         json.dumps(
@@ -1188,14 +1213,16 @@ def test_collector_cloud_fault_still_publishes_demand_but_reports_incomplete_col
             },
             run=runner,
         )
-    assert runner.call_count == 2
-    assert "publish_worker_pool_metrics" in runner.call_args_list[1].args[0]
-    assert runner.call_args_list[1].args[0][-2:] == ["--folder-id", "canonical-folder"]
+    assert runner.call_count == 3
+    assert "publish_worker_pool_metrics" in runner.call_args_list[2].args[0]
+    assert runner.call_args_list[2].args[0][-2:] == ["--folder-id", "canonical-folder"]
 
 
 def test_collector_publication_fault_is_not_reported_as_success(tmp_path):
     collector = module("metrics")
-    runner = Mock(side_effect=[Mock(), subprocess.CalledProcessError(1, "publish")])
+    runner = Mock(
+        side_effect=[Mock(stdout="web\n"), Mock(), subprocess.CalledProcessError(1, "publish")]
+    )
     path = tmp_path / "worker-pools-observation.json"
     path.write_text(
         json.dumps(
@@ -1208,7 +1235,7 @@ def test_collector_publication_fault_is_not_reported_as_success(tmp_path):
     )
     with pytest.raises(subprocess.CalledProcessError):
         collector.collect({"deploy_root": str(tmp_path), "cloud": str(path)}, run=runner)
-    assert runner.call_count == 2
+    assert runner.call_count == 3
 
 
 @pytest.mark.parametrize(
@@ -1284,7 +1311,7 @@ def test_telemetry_packaging_opt_in_is_default_off_and_uses_reviewed_image_depen
     assert conf["zone"] == "ru-central1-a"
     assert "/usr/local/lib/findme-worker/telemetry.py" in files
     assert "/usr/local/lib/findme-worker/telemetry-requirements.txt" in files
-    assert set(user_data) == {"write_files", "runcmd"}
+    assert set(user_data) == {"write_files", "runcmd", "users"}
     calls = []
 
     def run(args, **kwargs):

@@ -16,6 +16,66 @@ GENERATION = "12345678-1234-1234-1234-123456789013"
 IMAGE = "ghcr.io/example/photo-prjct-worker:latest"
 
 
+def test_ci_activation_proves_ready_before_retiring_polling(tmp_path):
+    updater = load("updater")
+    setup_host(tmp_path)
+    timer = tmp_path / "etc/systemd/system/findme-worker-updater.timer"
+    timer.parent.mkdir(parents=True)
+    timer.write_text("old timer")
+    run = Docker(digest="a")
+    updater.ci_activate(
+        IMAGE,
+        root=tmp_path,
+        run=run,
+        status=lambda port: {"ready": True, "registration_generation": GENERATION},
+    )
+    assert ["systemctl", "disable", "--now", "findme-worker-updater.timer"] in run.calls
+    assert not timer.exists()
+
+
+def test_ci_activation_failed_readiness_keeps_polling(tmp_path):
+    updater = load("updater")
+    setup_host(tmp_path)
+    run = Docker(digest="a")
+    with pytest.raises(ValueError, match="active worker not ready"):
+        updater.ci_activate(
+            IMAGE,
+            root=tmp_path,
+            run=run,
+            status=lambda port: {"ready": False, "registration_generation": GENERATION},
+        )
+    assert not any("disable" in call for call in run.calls)
+
+
+def test_ci_activation_recovers_previous_candidate_then_activates_current_latest(tmp_path):
+    base = setup_host(tmp_path)
+    host = load("host")
+    host.private_json(
+        base / "replacement.json",
+        {
+            "old": host.active_slot(root=tmp_path),
+            "candidate": {
+                "slot": "b",
+                "digest": "ghcr.io/example/photo-prjct-worker@sha256:" + "b" * 64,
+                "build": "b" * 40,
+            },
+        },
+    )
+    timer = tmp_path / "etc/systemd/system/findme-worker-updater.timer"
+    timer.parent.mkdir(parents=True)
+    timer.write_text("old timer")
+    docker = Docker(digest="c", running_digest="b")
+    load("updater").ci_activate(
+        IMAGE,
+        root=tmp_path,
+        run=docker,
+        status=lambda port: {"ready": True, "registration_generation": GENERATION},
+    )
+    assert host.active_slot(root=tmp_path)["build"] == "c" * 40
+    assert ["docker", "pull", IMAGE] in docker.calls
+    assert not timer.exists()
+
+
 def load(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / f"deploy/worker-pools/{name}.py")
     module = importlib.util.module_from_spec(spec)
@@ -386,4 +446,4 @@ def test_bootstrap_installs_image_pointer_without_static_build_authority(tmp_pat
     env = (tmp_path / "etc/findme-worker/runtime.env").read_text()
     assert "PHOTO_WORKER_BUILD" not in env and "WORKER_IMAGE" not in env
     assert ["systemctl", "start", "findme-worker-updater.service"] in calls
-    assert ["systemctl", "enable", "--now", "findme-worker-updater.timer"] in calls
+    assert ["systemctl", "enable", "--now", "findme-worker-updater.timer"] not in calls

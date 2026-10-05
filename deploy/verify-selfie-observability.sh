@@ -10,7 +10,8 @@ for command in docker python3 sed sudo; do
 done
 
 compose() { APP_ENV_FILE="$DEPLOY_ROOT/.env" docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ROOT/.env" -f "$DEPLOY_ROOT/docker-compose.deployment.yml" -f "$DEPLOY_ROOT/docker-compose.https.yml" "$@"; }
-services="web nginx"
+slot="$(python3 "$DEPLOY_ROOT/deploy/web-slot.py" --root "$DEPLOY_ROOT" selected)"
+services="$slot nginx"
 for service in $services; do
     containers="$(compose ps -q "$service")"
     if [ -z "$containers" ]; then
@@ -24,6 +25,6 @@ for service in $services; do
 done
 probe_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 probe_code="import logging; from selfie_search.observability import SelfieEventName, emit_selfie_event; emit_selfie_event(logging.getLogger('selfie_search'), event=SelfieEventName.OBSERVABILITY_PROBE, probe_id='$probe_id')"
-compose exec -T web sh -c 'python manage.py shell --no-imports -c "$1" 2>/proc/1/fd/2' sh "$probe_code"
-sudo -n "$OBSERVABILITY_HELPER" verify-probe "$probe_id" || { echo "emitted observability probe is unreadable" >&2; exit 1; }
+compose exec -T "$slot" sh -c 'python manage.py shell --no-imports -c "$1" 2>/proc/1/fd/2' sh "$probe_code"
+sudo -n "$OBSERVABILITY_HELPER" verify-probe "$probe_id" "$slot" || { echo "emitted observability probe is unreadable" >&2; exit 1; }
 echo SELFIE_OBSERVABILITY_VERIFIED

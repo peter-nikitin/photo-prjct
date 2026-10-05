@@ -105,14 +105,16 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   independent image updater or this branch's migration. Historical enrollment and event
   activation have not started.
 
-  The implementation of [ADR 0051](adr/0051-release-photo-worker-images-independently.md) is in
-  the repository: Deploy classifies changed components, worker images use a reusable model base,
-  and a host updater warms and switches worker containers without VM replacement. Documentation-
-  only changes do not deploy; backend-only releases leave worker images and groups alone; worker
-  changes publish `latest`. These changes have not been deployed or published to GHCR. The
-  one-time live transition remains: pause and drain claims, deploy the new web protocol/migration
-  with the worker image, patch the existing templates, then explicitly recreate the sole selfie
-  managed instance at cap one. Bulk remains zero; no second VM is added. See the
+  This branch implements [ADR 0051](adr/0051-release-photo-worker-images-independently.md):
+  Deploy classifies changed components and advances their independent `latest` pointers; CI
+  activates running photo-worker VMs through the canonical VM with the existing Lockbox deployment
+  SSH key. A one-shot host updater warms and switches worker containers without replacing VMs on
+  ordinary releases. Documentation-only changes do not deploy; backend-only releases leave
+  photo-worker images and groups alone. The CI-push path has not been merged or live-verified.
+  Its one-time access cutover adds canonical-SG-only private SSH, installs the existing public key
+  in both worker templates, and recreates only the sole selfie member at cap one after separate
+  approval and claim drain. Bulk remains zero; no second VM or key is added. Only after CI
+  activation succeeds does the worker timer retire. See the
   [worker-pool runbook](runbooks/worker-pools.md).
 - Confirmed private JPEGs are transactionally enrolled in explicit processing states. Django and
   PostgreSQL own jobs, leases, retries, accepted results, immutable attempt evidence, and immutable
@@ -248,13 +250,15 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
 - The shared HTTPS overlay terminates TLS, serves ACME HTTP-01 challenges, and Certbot manages
   Let's Encrypt certificates in persistent volumes. This accepted boundary is governed by
   [ADR 0011](adr/0011-use-minimal-shared-https-rollout.md).
-- HTTPS deployment ensures a certificate exists, validates canonical redirects and trusted health
-  with `curl`, restores the prior application image in process on failure, and records the successful
-  image only after all checks pass. DNS is an activation preflight, and hostname changes require an
+- HTTPS deployment ensures a certificate exists and validates canonical redirects and trusted health
+  with `curl`. Ordinary web releases warm the unselected Compose slot, switch Nginx after readiness,
+  and drain the predecessor; a compatible predecessor may serve recovery, while incompatible schema
+  changes require forward repair. DNS is an activation preflight, and hostname changes require an
   operator-controlled certificate reissue.
 - A merge to `main` that changes Django or photo-worker image inputs builds the affected immutable
-  image in GHCR; a Django release deploys it with Docker Compose to the canonical Yandex Cloud VM
-  through **Deploy**. Observability-only and documentation-only merges do not build those images.
+  image in GHCR and advances that component's `latest` pointer; **Deploy** activates only affected
+  hosts. A Django release uses the two Compose web slots on the canonical Yandex Cloud VM.
+  Observability-only and documentation-only merges do not build those images.
   There is no promotion workflow or GitHub Environment boundary for application deployment.
 - Pull-request CI treats every numbered migration already present on the base revision as an
   immutable identity: modifications, deletions, and renames fail the identity check, while new
@@ -262,8 +266,8 @@ deployment topology. ADR 0028 and the accepted constraints below define the cano
   images from effective application inputs. Observability-only inputs select independent host/cloud
   reconciliation instead; changes to the workflow or SSH transport alone do not publish application
   images. The privileged selfie-observability host package uses a root-owned, exact-main reconciler
-  and a one-time foundation install before automatic activation. Ordinary application pushes retain
-  the automatic SHA-image path.
+  and a one-time foundation install before automatic activation. Application source SHAs remain CI
+  provenance, not a shared web/worker runtime release gate.
 - Before `mutation_started=1`, the candidate image performs read-only migration-history validation
   and prints its migration plan. Deployment emits a bounded `DEPLOY_PHASE` marker sequence and one
   sanitized `DEPLOY_RESULT`; automatic push failures reconcile one exact-title GitHub issue using a
@@ -379,9 +383,14 @@ GitHub Actions -> GHCR -> Yandex Cloud VM -> Docker Compose
   caller authentication, lease fencing and result validation remain. The migration has not been
   applied to canonical production as part of this package.
 
-- [ADR 0051](adr/0051-release-photo-worker-images-independently.md) supersedes only the shared
-  web/worker SHA and coupled image rollout in ADRs 0028, 0042 and 0049. One canonical Deploy
-  authority remains. After `processing.0016` drops the old column, automatic web recovery is
+- [ADR 0051](adr/0051-release-photo-worker-images-independently.md) supersedes the shared
+  web/worker SHA, coupled image rollout and SHA-tagged web selection in ADRs 0028, 0042 and 0049.
+  The accepted target publishes changed component images to independent `latest` pointers and
+  activates running hosts once from the canonical CI Deploy workflow. Remote photo-worker access
+  remains private through the canonical VM using the existing CI deployment key; registry polling
+  is retired only after that path works on the current fleet.
+  This is an accepted design, not a claim that the revised activation is deployed. After
+  `processing.0016` drops the old column, automatic web recovery is
   allowed only if the previous image passes the live schema probe; otherwise the candidate package
   and recovery environment are retained and recovery proceeds forward with claims paused. The
   [deployment runbook](runbooks/deployment.md) records this boundary.

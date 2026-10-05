@@ -237,8 +237,10 @@ case "$action" in
         exit 0
         ;;
     verify-probe)
-        [ "$#" -eq 2 ] || { echo "verify-probe requires one UUID" >&2; exit 2; }
+        [ "$#" -eq 3 ] || { echo "verify-probe requires a UUID and selected Django slot" >&2; exit 2; }
         probe_id="$2"
+        slot="$3"
+        case "$slot" in web|web-next) ;; *) echo "invalid selected Django slot" >&2; exit 2 ;; esac
         case "$probe_id" in
             ????????-????-????-????-????????????) ;;
             *) echo "invalid observability probe id" >&2; exit 2 ;;
@@ -249,7 +251,7 @@ case "$action" in
         done
         {
             journalctl --since '2 minutes ago' \
-                CONTAINER_TAG='findme.service=web' -o cat
+                "CONTAINER_TAG=findme.service=$slot" -o cat
         } | grep -Fq "\"probe_id\":\"$probe_id\"" || {
                 echo "emitted observability probe is unreadable" >&2
                 exit 1
@@ -261,7 +263,7 @@ case "$action" in
         [ "$#" -le 1 ] || { echo "install accepts no arguments" >&2; exit 2; }
         ;;
     *)
-        echo "usage: $0 install|rollback|commit|verify|verify-probe UUID" >&2
+        echo "usage: $0 install|rollback|commit|verify|verify-probe UUID SLOT" >&2
         exit 2
         ;;
 esac

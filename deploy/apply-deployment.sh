@@ -108,16 +108,15 @@ try:
     image = os.environ['APP_IMAGE']
     if not re.fullmatch(r'[0-9a-f]{40}', sha):
         raise ValueError
-    original = re.fullmatch(r'(ghcr\.io/[a-z0-9_./-]+):[0-9a-f]{40}', retained['APP_IMAGE'])
-    if original is None or image != f'{original[1]}:{sha}':
+    if not re.fullmatch(r'ghcr\.io/[a-z0-9_./-]+:(latest|[0-9a-f]{40})', image):
         raise ValueError
     environment = {**os.environ, **retained, 'APP_IMAGE': image,
                    'RECOVER_FORWARD': 'True', 'FINDME_FORWARD_ENV_LOADED': '1',
+                   'DEPLOY_WEB': 'true',
+                   'DEPLOY_IMPORT': retained['DEPLOY_IMPORT'],
+                   'DEPLOY_COMMERCE': retained['DEPLOY_COMMERCE'],
                    'COMPOSE_PROJECT_NAME': 'photo-prjct'}
     environment.pop('PREVIOUS_DEPLOYMENT_PACKAGE_ROOT', None)
-    if retained.get('PHOTO_IMPORT_ENABLED') == 'True':
-        environment['IMPORT_WORKER_IMAGE'] = f'{original[1]}-import-worker:{sha}'
-        environment['PHOTO_IMPORT_BUILD'] = sha
 except (OSError, KeyError, ValueError):
     raise SystemExit('Invalid retained forward-recovery inputs') from None
 os.execve('/bin/sh', ['sh', *sys.argv[1:]], environment)
@@ -129,6 +128,12 @@ fi
 : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
 : "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
 : "${APP_IMAGE:?Set APP_IMAGE}"
+: "${DEPLOY_WEB:?Set DEPLOY_WEB}"
+: "${DEPLOY_IMPORT:?Set DEPLOY_IMPORT}"
+: "${DEPLOY_COMMERCE:?Set DEPLOY_COMMERCE}"
+for component_selection in "$DEPLOY_WEB" "$DEPLOY_IMPORT" "$DEPLOY_COMMERCE"; do
+    case "$component_selection" in true|false) ;; *) exit 2 ;; esac
+done
 : "${SECRET_KEY:?Set SECRET_KEY}"
 : "${DEBUG:?Set DEBUG}"
 : "${ALLOWED_HOSTS:?Set ALLOWED_HOSTS}"
@@ -157,10 +162,6 @@ case "$requested_import_enabled" in
         : "${IMPORT_WORKER_IMAGE:?Set IMPORT_WORKER_IMAGE}"
         : "${PHOTO_IMPORT_WORKER_TOKEN:?Set PHOTO_IMPORT_WORKER_TOKEN}"
         : "${PHOTO_IMPORT_BUILD:?Set PHOTO_IMPORT_BUILD}"
-        case "$IMPORT_WORKER_IMAGE" in
-            *:"${APP_IMAGE##*:}") ;;
-            *) echo "Import and web images must use the same release tag" >&2; exit 2 ;;
-        esac
         ;;
     False) ;;
     *) echo "PHOTO_IMPORT_ENABLED must be True or False" >&2; exit 2 ;;
@@ -571,8 +572,6 @@ fi
 
 : "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL}"
 overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
-vector_database_reconciled=0
-vector_database_image="pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b"
 health_port=443
 health_url="https://$PUBLIC_DOMAIN/health/"
 observability_helper=/usr/local/sbin/findme-selfie-observability
@@ -607,7 +606,24 @@ compose_with_requested_runtime_profiles() {
 }
 
 compose_reconcile_requested_runtime_profiles() {
-    compose up -d --no-deps web nginx || return 1
+    # Let the current bounded pass finish and release its advisory lock. Never
+    # let Compose's default stop timeout turn accepted payment/email work into
+    # a forced termination. A slow drain fails this release with the owner alive.
+    for commerce_container in $(docker ps -aq \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=commerce-worker"); do
+        if [ "$(docker inspect --format '{{.State.Running}}' "$commerce_container")" = true ]; then
+            docker kill --signal TERM "$commerce_container" >/dev/null || return 1
+            commerce_stop_deadline=$(($(date +%s) + 1800))
+            while [ "$(docker inspect --format '{{.State.Running}}' "$commerce_container")" = true ]; do
+                if [ "$(date +%s)" -ge "$commerce_stop_deadline" ]; then
+                    echo "Commerce worker still owns accepted work; left alive to finish" >&2
+                    return 1
+                fi
+                sleep 2
+            done
+        fi
+    done
     if [ "$requested_commerce_worker_enabled" = True ]; then
         compose --profile commerce up -d --no-deps commerce-worker || return 1
     else
@@ -632,26 +648,25 @@ fail_commerce_worker_runtime_verification() {
 }
 
 requested_env_tmp=""
-recovery_env_tmp=""
 previous_env_tmp=""
 previous_deployed_image_tmp=""
-previous_cart_cleanup_tmp=""
 marker_tmp=""
 candidate_command_output_tmp=""
 mutation_started=0
 deployment_committed=0
-native_only_activation_started=0
+selected_slot=""
+candidate_slot=web
+switch_attempted=0
+predecessor_stopped=0
+workers_reconciled=0
 recovery_in_progress=0
 observability_installed=0
-candidate_import_worker_start_attempted=0
 
 cleanup() {
     rm -f \
         ${requested_env_tmp:+"$requested_env_tmp"} \
-        ${recovery_env_tmp:+"$recovery_env_tmp"} \
         ${previous_env_tmp:+"$previous_env_tmp"} \
         ${previous_deployed_image_tmp:+"$previous_deployed_image_tmp"} \
-        ${previous_cart_cleanup_tmp:+"$previous_cart_cleanup_tmp"} \
         ${marker_tmp:+"$marker_tmp"} \
         ${candidate_command_output_tmp:+"$candidate_command_output_tmp"}
 }
@@ -662,28 +677,6 @@ clear_deployment_recovery_snapshot() {
         "$DEPLOY_ROOT/.deployment-recovery/package-path" \
         "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
     rmdir "$DEPLOY_ROOT/.deployment-recovery"
-}
-
-previous_cart_cleanup_is_present() {
-    awk -v schedule="23 3 * * * DEPLOY_ROOT=$DEPLOY_ROOT /bin/sh $DEPLOY_ROOT/deploy/run-cart-cleanup.sh >> $DEPLOY_ROOT/cart-cleanup.log 2>&1" '
-        $0 == "# BEGIN photo-prjct-cart-cleanup" {
-            if (state != 0 || found) exit 1
-            state = 1
-            next
-        }
-        state == 1 && $0 == schedule {
-            state = 2
-            next
-        }
-        state == 2 && $0 == "# END photo-prjct-cart-cleanup" {
-            state = 3
-            found = 1
-            next
-        }
-        state == 0 || state == 3 { next }
-        { exit 1 }
-        END { exit found && state == 3 ? 0 : 1 }
-    ' "$previous_cart_cleanup_tmp"
 }
 
 restore_previous_deployment_markers() {
@@ -785,45 +778,6 @@ clear_candidate_compose_interpolation() {
         IMPORT_WORKER_IMAGE
 }
 
-retain_vector_database_image() {
-    # Application rollback keeps the new PG16 capability for vector-bearing data.
-    database_compose_tmp="$(mktemp "$DEPLOY_ROOT/.database-compose.XXXXXX")" || return 1
-    if ! awk -v image="$vector_database_image" '
-        /^  db:/ { db = 1 }
-        /^  [a-zA-Z0-9_-]+:/ && !/^  db:/ { db = 0 }
-        db && /^    image:/ { $0 = "    image: " image; replaced = 1 }
-        { print }
-        END { if (!replaced) exit 1 }
-    ' "$DEPLOY_ROOT/docker-compose.deployment.yml" > "$database_compose_tmp"; then
-        rm -f "$database_compose_tmp"
-        return 1
-    fi
-    mv "$database_compose_tmp" "$DEPLOY_ROOT/docker-compose.deployment.yml"
-}
-
-restore_previous_deployment_package() {
-    previous_package_root="${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}"
-    [ -n "$previous_package_root" ] || return 0
-    case "$previous_package_root" in
-        "$DEPLOY_ROOT"/*) ;;
-        *) return 1 ;;
-    esac
-    for package_entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
-        [ -e "$previous_package_root/$package_entry" ] || return 1
-    done
-    failed_package_root="$(mktemp -d "$DEPLOY_ROOT/.deployment-failed.XXXXXX")" || return 1
-    for package_entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
-        mv "$DEPLOY_ROOT/$package_entry" "$failed_package_root/$package_entry" || return 1
-        mv "$previous_package_root/$package_entry" "$DEPLOY_ROOT/$package_entry" || return 1
-    done
-    if [ "$vector_database_reconciled" -eq 1 ]; then
-        retain_vector_database_image || return 1
-    fi
-    rm -rf "$failed_package_root" || return 1
-    rm -rf "$previous_package_root" || return 1
-    unset PREVIOUS_DEPLOYMENT_PACKAGE_ROOT
-}
-
 import_lease_remaining_seconds() {
     compose exec -T db sh -ec '
         psql -XAt -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "
@@ -845,7 +799,19 @@ stop_import_before_web_change() {
         --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
         --filter "label=com.docker.compose.service=import-worker")" || return 1
     for import_container in $import_containers; do
-        docker rm -f "$import_container" || return 1
+        if [ "$(docker inspect --format '{{.State.Running}}' "$import_container")" = true ]; then
+            docker exec "$import_container" python -c 'from import_worker.runner import Runner; assert hasattr(Runner, "request_stop")' || return 1
+            docker kill --signal TERM "$import_container" >/dev/null || return 1
+            import_stop_deadline=$(($(date +%s) + 300))
+            while [ "$(docker inspect --format '{{.State.Running}}' "$import_container")" = true ]; do
+                if [ "$(date +%s)" -ge "$import_stop_deadline" ]; then
+                    echo "Import worker still owns accepted work; left alive to finish" >&2
+                    return 1
+                fi
+                sleep 2
+            done
+        fi
+        docker rm "$import_container" || return 1
     done
     if [ "$import_enabled" = True ]; then
         # The stopped worker cannot renew leases; API v1 bounds each lease to 300 seconds.
@@ -891,8 +857,12 @@ start_import_after_web_ready() {
     import_env_file="$1"
     compose_with_env_file "$import_env_file" --profile import run --rm --no-deps -T \
         import-worker python -m import_worker --check-ready || return 1
-    candidate_import_worker_start_attempted=1
-    compose_with_env_file "$import_env_file" --profile import up -d --no-deps import-worker
+    compose_with_env_file "$import_env_file" --profile import up -d --no-deps import-worker || return 1
+    import_container="$(compose_with_env_file "$import_env_file" --profile import ps -q import-worker)" || return 1
+    [ -n "$import_container" ] || return 1
+    [ "$(docker inspect --format '{{.State.Running}} {{.State.Restarting}} {{.State.OOMKilled}}' "$import_container")" = 'true false false' ] || return 1
+    compose_with_env_file "$import_env_file" --profile import exec -T \
+        import-worker python -m import_worker --check-ready
 }
 
 previous_web_matches_processing_schema() (
@@ -913,73 +883,41 @@ with transaction.atomic():
 )
 
 recover_previous_deployment() {
-    if [ "$previous_env_exists" -eq 1 ] && ! previous_web_matches_processing_schema; then
-        echo "Previous web is incompatible with the current processing schema; automatic recovery blocked" >&2
-        candidate_recovery_env="$DEPLOY_ROOT/.env"
-        if [ -n "$requested_env_tmp" ] && [ -f "$requested_env_tmp" ]; then
-            candidate_recovery_env="$requested_env_tmp"
-        fi
-        # Keep the installed candidate and private inputs for explicit forward recovery.
-        # Also stop a predecessor still running when failure preceded candidate activation.
-        install -m 0600 "$candidate_recovery_env" \
-            "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
-        candidate_recovery_env_status=$?
-        compose stop web
-        candidate_web_stop_status=$?
-        if [ "$candidate_recovery_env_status" -ne 0 ] || [ "$candidate_web_stop_status" -ne 0 ]; then
-            echo "Blocked recovery could not preserve candidate inputs or stop web; operator intervention required" >&2
-        fi
-        echo "Candidate package and .deployment-recovery retained; keep claims paused and recover forward" >&2
-        return 1
-    fi
-    if [ "$previous_import_enabled" = True ] || \
-        [ "$candidate_import_worker_start_attempted" -eq 1 ]; then
-        stop_import_before_web_change True || return 1
-    else
-        stop_import_before_web_change False || return 1
-    fi
-
-    if [ "$previous_env_exists" -eq 0 ]; then
-        recovery_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.recovery.XXXXXX")" || return 1
-        recovery_source_env="$DEPLOY_ROOT/.env"
-        if [ ! -f "$recovery_source_env" ]; then
-            [ -n "$requested_env_tmp" ] && [ -f "$requested_env_tmp" ] || return 1
-            recovery_source_env="$requested_env_tmp"
-        fi
-        cp "$recovery_source_env" "$recovery_env_tmp" || return 1
-        if ! compose_with_env_file "$recovery_env_tmp" down --remove-orphans; then
+    # Never disturb live traffic when recovery is uncertain. The retained snapshot
+    # fences the next ordinary release until the explicit forward path succeeds.
+    [ "$RECOVER_FORWARD" = False ] || return 1
+    [ "$predecessor_stopped" -eq 0 ] || return 1
+    [ "$deployment_phase" != predecessor-drain ] || return 1
+    [ "$workers_reconciled" -eq 0 ] || return 1
+    if [ -n "$selected_slot" ]; then
+        previous_web_matches_processing_schema || {
+            echo "Previous web is incompatible with the current processing schema; recover forward" >&2
             return 1
+        }
+        if [ "$switch_attempted" -eq 1 ]; then
+            web_slot switch "$selected_slot" || return 1
+            verify_recovered_public_edge || return 1
+            web_slot drain || return 1
         fi
-        restore_previous_deployment_package || return 1
-        rm -f "$DEPLOY_ROOT/.env"
+        [ "$(web_slot selected)" = "$selected_slot" ] || return 1
+        compose rm -sf "$candidate_slot" || return 1
         restore_previous_deployment_markers || return 1
-        echo "No previous deployment environment was present; restored no-env state" >&2
+        cp -p "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
+        # Keep the new deployment machinery: the live edge bind mount and
+        # selection are authoritative; no container is recreated for rollback.
         return 0
     fi
-
-    restore_previous_deployment_markers || return 1
-    [ -n "$previous_env_tmp" ] || return 1
-    mv "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
-    previous_env_tmp=""
-    restore_previous_deployment_package || return 1
-    clear_candidate_compose_interpolation
-    compose up -d --no-deps web nginx || return 1
-    if [ "$previous_commerce_worker_enabled" = True ]; then
-        compose --profile commerce up -d --no-deps commerce-worker || return 1
-    else
-        compose --profile commerce rm -sf commerce-worker || return 1
-    fi
-    if [ "$previous_import_enabled" = True ]; then
-        compose_with_env_file "$DEPLOY_ROOT/.env" up -d --wait web || return 1
-        start_import_after_web_ready "$DEPLOY_ROOT/.env" || return 1
-    fi
-    echo "Previous application and worker profile reconciled" >&2
+    # Fresh installation has no predecessor. Once edge activation is attempted,
+    # retain the healthy candidate for forward recovery instead of taking it down.
+    [ "$switch_attempted" -eq 0 ] || return 1
+    rm -f "$DEPLOY_ROOT/.env" || return 1
+    restore_previous_deployment_markers
 }
 
 verify_recovered_public_edge() {
-    recovered_public_domain="$(sed -n 's/^PUBLIC_DOMAIN=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    recovered_public_domain="$(sed -n 's/^PUBLIC_DOMAIN=//p' "$previous_env_tmp" | head -n 1)"
     [ -n "$recovered_public_domain" ] || return 1
-    recovered_public_domain_alias="$(sed -n 's/^PUBLIC_DOMAIN_ALIAS=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    recovered_public_domain_alias="$(sed -n 's/^PUBLIC_DOMAIN_ALIAS=//p' "$previous_env_tmp" | head -n 1)"
     PUBLIC_DOMAIN="$recovered_public_domain" PUBLIC_DOMAIN_ALIAS="$recovered_public_domain_alias" \
         sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"
 }
@@ -998,17 +936,9 @@ on_exit() {
         [ "$status" -ne 0 ] || status=1
         if [ "$recovery_in_progress" -eq 0 ]; then
             recovery_in_progress=1
-            if [ "$RECOVER_FORWARD" = True ] || [ "$native_only_activation_started" -eq 1 ]; then
+            if [ "$RECOVER_FORWARD" = True ]; then
                 rollback_result=failed
-                if [ "$candidate_import_worker_start_attempted" -eq 1 ]; then
-                    stop_import_before_web_change True || \
-                        echo "Forward recovery could not drain candidate import leases" >&2
-                fi
-                compose stop web || echo "Forward recovery could not stop web" >&2
-                if [ "$RECOVER_FORWARD" = False ]; then
-                    restore_previous_deployment_markers || echo "Committed image marker recovery failed" >&2
-                fi
-                echo "Forward recovery failed; original snapshot retained and claims must stay paused" >&2
+                echo "Forward recovery failed; selected traffic and original snapshot retained" >&2
             elif ! recover_previous_deployment; then
                 rollback_result=failed
                 echo "Previous deployment recovery failed" >&2
@@ -1018,16 +948,7 @@ on_exit() {
                 if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
                     clear_deployment_recovery_snapshot || rollback_result=failed
                 fi
-                if [ "${previous_upload_enabled:-False}" = True ]; then
-                    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install || true
-                else
-                    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove || true
-                fi
-                if [ "$previous_cart_cleanup_present" = True ]; then
-                    sh "$DEPLOY_ROOT/deploy/install-cart-cleanup-cron.sh" install || true
-                else
-                    sh "$DEPLOY_ROOT/deploy/install-cart-cleanup-cron.sh" remove || true
-                fi
+                # Pre-commit recovery has not changed the cleanup schedules.
             fi
         fi
         if [ "$observability_installed" -eq 1 ]; then
@@ -1062,7 +983,7 @@ fail() {
 
 phase() {
     case "$1" in
-        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit)
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|local-health|edge-switch|predecessor-drain|gallery-media-smoke|worker-health|public-health|observability-verify|commit)
             deployment_phase="$1"
             printf 'DEPLOY_PHASE=%s elapsed_seconds=%s\n' "$1" "$(elapsed_seconds)"
             ;;
@@ -1085,19 +1006,9 @@ else
     [ ! -e "$DEPLOY_ROOT/.deployment-recovery" ] || fail "Canonical recovery remains unfinished"
 fi
 previous_import_enabled="False"
-previous_upload_enabled="False"
-previous_processing_enabled="False"
-previous_commerce_worker_enabled="False"
 previous_env_exists=0
 previous_deployed_image_exists=0
-previous_cart_cleanup_present=False
-has_successful_deployment=0
 has_established_deployment=0
-previous_cart_cleanup_tmp="$(mktemp)" || fail "Could not snapshot cart cleanup schedule"
-crontab -l > "$previous_cart_cleanup_tmp" 2>/dev/null || :
-if previous_cart_cleanup_is_present; then
-    previous_cart_cleanup_present=True
-fi
 install -d -m 0755 "$DEPLOY_ROOT"
 if [ -f "$DEPLOY_ROOT/.env" ]; then
     has_established_deployment=1
@@ -1106,33 +1017,8 @@ if [ -f "$DEPLOY_ROOT/.env" ]; then
     cp -p "$DEPLOY_ROOT/.env" "$previous_env_tmp" || fail "Could not snapshot previous deployment environment"
     previous_import_enabled="$(sed -n 's/^PHOTO_IMPORT_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
     case "$previous_import_enabled" in True|False) ;; *) previous_import_enabled=False ;; esac
-    previous_upload_enabled="$(
-        sed -n 's/^PHOTO_UPLOAD_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
-    )"
-    previous_processing_enabled="$(
-        sed -n 's/^PHOTO_PROCESSING_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
-    )"
-    previous_commerce_worker_enabled="$(
-        sed -n 's/^COMMERCE_WORKER_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1
-    )"
-    case "$previous_processing_enabled" in
-        True|False)
-            ;;
-        *)
-            previous_processing_enabled="False"
-            ;;
-    esac
-    case "$previous_commerce_worker_enabled" in
-        True|False)
-            ;;
-        *)
-            previous_commerce_worker_enabled="False"
-            ;;
-    esac
 fi
 if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
-    has_established_deployment=1
-    has_successful_deployment=1
     previous_deployed_image_exists=1
     previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
     cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
@@ -1152,7 +1038,68 @@ else
 fi
 unset postgres_volume_inspect_error
 
-ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}web,$PUBLIC_DOMAIN"
+web_slot() {
+    python3 "$DEPLOY_ROOT/deploy/web-slot.py" --root "$DEPLOY_ROOT" "$@"
+}
+if [ "$previous_env_exists" -eq 1 ]; then
+    if [ "$RECOVER_FORWARD" = True ]; then
+        if [ "$forward_verify_only" -eq 1 ]; then
+            selected_slot="$(web_slot installed)" || fail "Cannot inspect the installed Django selection"
+        else
+            selected_slot="$(web_slot reconcile)" || fail "Cannot reconcile the installed Django selection"
+        fi
+    else
+        selected_slot="$(web_slot selected)" || fail "Cannot prove the selected Django slot; explicit forward reconciliation required"
+    fi
+    case "$selected_slot" in
+        web) candidate_slot=web-next ;;
+        web-next) candidate_slot=web ;;
+        *) fail "Invalid selected Django slot" ;;
+    esac
+    if [ "$RECOVER_FORWARD" = True ]; then
+        selected_container="$(compose ps -a -q "$selected_slot")"
+    else
+        selected_container="$(compose ps -q "$selected_slot")"
+    fi
+    [ -n "$selected_container" ] || fail "Selected Django container is absent"
+    selected_image="$(docker inspect --format '{{.Image}}' "$selected_container")" || \
+        fail "Selected Django image is unavailable"
+    python3 - "$previous_env_tmp" "$selected_image" <<'PY_PIN_PREVIOUS'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_text('\n'.join(
+    f'APP_IMAGE={sys.argv[2]}' if line.startswith('APP_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_PREVIOUS
+    # Any workers left by an interrupted reload still own accepted requests.
+    web_slot drain || fail "Previous edge handoff remains undrained"
+    # Old import images do not handle TERM gracefully. Refuse their replacement
+    # before migrations or web selection; first activation needs an idle/disabled
+    # import cutover or a separately approved worker upgrade.
+    if [ "$DEPLOY_IMPORT" = true ]; then
+    for import_container in $(docker ps -q \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=import-worker"); do
+        run_private_candidate_command docker exec "$import_container" python -c \
+            'from import_worker.runner import Runner; assert hasattr(Runner, "request_stop")' || \
+            fail "Existing import worker cannot drain accepted work; explicit first-activation import cutover required"
+    done
+    fi
+    if [ "$DEPLOY_COMMERCE" = true ]; then
+        for commerce_container in $(docker ps -q \
+            --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+            --filter "label=com.docker.compose.service=commerce-worker"); do
+            run_private_candidate_command docker exec "$commerce_container" python manage.py \
+                shell --no-imports -c \
+                'from commerce.management.commands.run_commerce_worker import Command; assert getattr(Command, "supports_graceful_stop", False)' || \
+                fail "Existing Commerce worker cannot drain accepted work; explicit first-activation Commerce cutover required"
+        done
+    fi
+fi
+
+ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}web,web-next,$PUBLIC_DOMAIN"
 if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
     ALLOWED_HOSTS="$ALLOWED_HOSTS,$PUBLIC_DOMAIN_ALIAS"
 fi
@@ -1162,6 +1109,8 @@ requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
 {
     printf 'APP_IMAGE=%s\n' "$requested_image"
     printf 'IMPORT_WORKER_IMAGE=%s\n' "${IMPORT_WORKER_IMAGE:-}"
+    printf 'DEPLOY_IMPORT=%s\n' "$DEPLOY_IMPORT"
+    printf 'DEPLOY_COMMERCE=%s\n' "$DEPLOY_COMMERCE"
     printf 'PHOTO_IMPORT_ENABLED=%s\n' "$requested_import_enabled"
     printf 'PHOTO_IMPORT_WORKER_TOKEN=%s\n' "${PHOTO_IMPORT_WORKER_TOKEN:-}"
     printf 'PHOTO_IMPORT_BUILD=%s\n' "${PHOTO_IMPORT_BUILD:-}"
@@ -1258,12 +1207,75 @@ if [ -n "${GHCR_READ_TOKEN:-}" ]; then
     fi
 fi
 
-if ! compose_with_env_file "$requested_env_tmp" pull web; then
+if [ "$DEPLOY_WEB" = true ] && ! compose_with_env_file "$requested_env_tmp" pull web; then
     fail "Candidate application image pull failed"
 fi
+if [ "$DEPLOY_WEB" = true ]; then
+    requested_image="$(docker image inspect --format '{{.Id}}' "$requested_image")" || fail "Pulled application image identity unavailable"
+    [ -n "$requested_image" ] || fail "Pulled application image identity unavailable"
+    python3 - "$requested_env_tmp" "$requested_image" <<'PY_PIN_IMAGE'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+image = sys.argv[2]
+path.write_text('\n'.join(
+    f'APP_IMAGE={image}' if line.startswith('APP_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_IMAGE
+    APP_IMAGE="$requested_image"
+    export APP_IMAGE
+fi
 
-if [ "$requested_import_enabled" = True ]; then
-    compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
+if [ "$DEPLOY_IMPORT" = true ] && [ "$requested_import_enabled" = True ]; then
+    if [ "$RECOVER_FORWARD" = False ]; then
+        compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
+    fi
+    IMPORT_WORKER_IMAGE="$(docker image inspect --format '{{.Id}}' "$IMPORT_WORKER_IMAGE")" || fail "Selected import image identity unavailable"
+    [ -n "$IMPORT_WORKER_IMAGE" ] || fail "Selected import image identity unavailable"
+    export IMPORT_WORKER_IMAGE
+    python3 - "$requested_env_tmp" "$IMPORT_WORKER_IMAGE" <<'PY_PIN_IMPORT'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_text('\n'.join(
+    f'IMPORT_WORKER_IMAGE={sys.argv[2]}' if line.startswith('IMPORT_WORKER_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_IMPORT
+fi
+
+if [ "$DEPLOY_WEB" = false ]; then
+    [ -n "$selected_slot" ] || fail "Import activation requires an established Django deployment"
+    # Import has its own compatible HTTP contract; it does not perform Django
+    # release setup or change the selected edge. Retain the serving configuration.
+    python3 - "$previous_env_tmp" "$requested_env_tmp" <<'PY_IMPORT_ENV'
+from pathlib import Path
+import sys
+previous, requested = map(Path, sys.argv[1:])
+updates = {
+    line.partition('=')[0]: line
+    for line in requested.read_text().splitlines()
+    if line.partition('=')[0] in {
+        'IMPORT_WORKER_IMAGE', 'PHOTO_IMPORT_ENABLED', 'PHOTO_IMPORT_WORKER_TOKEN', 'PHOTO_IMPORT_BUILD'
+    }
+}
+lines = []
+for line in previous.read_text().splitlines():
+    name = line.partition('=')[0]
+    lines.append(updates.pop(name, line))
+requested.write_text('\n'.join([*lines, *updates.values()]) + '\n')
+PY_IMPORT_ENV
+    phase worker-health
+    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker drain failed"
+    if [ "$requested_import_enabled" = True ]; then
+        start_import_after_web_ready "$requested_env_tmp" || fail "Import API protocol readiness failed"
+    fi
+    mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
+    requested_env_tmp=""
+    phase commit
+    deployment_committed=1
+    exit 0
 fi
 
 if [ "$RECOVER_FORWARD" = True ]; then
@@ -1317,7 +1329,7 @@ else:
     print("gallery-private-media-preflight-ok")
 '
 phase private-media-preflight
-if [ "$has_successful_deployment" -eq 0 ]; then
+if [ -z "$selected_slot" ]; then
     echo "gallery-private-media-preflight-skipped:no-existing-deployment"
 else
     if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
@@ -1354,14 +1366,18 @@ if [ "$RECOVER_FORWARD" = False ]; then
 fi
 observability_installed=1
 mutation_started=1
-sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
-if [ "$previous_env_exists" -eq 1 ]; then
-    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker stop failed"
+# Retain exact candidate inputs before the first database mutation as well as
+# before activation, so incompatible setup failure has the same forward path.
+if [ "$RECOVER_FORWARD" = False ]; then
+    install -m 0600 "$requested_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
 fi
+sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
 
 phase vector-database-preflight
-compose_with_env_file "$requested_env_tmp" pull db || fail "Vector database image pull failed"
-compose_with_env_file "$requested_env_tmp" up -d --wait --no-deps db || fail "Vector database start failed"
+if [ "$has_established_deployment" -eq 0 ]; then
+    compose_with_env_file "$requested_env_tmp" pull db || fail "Vector database image pull failed"
+    compose_with_env_file "$requested_env_tmp" up -d --wait --no-deps db || fail "Vector database start failed"
+fi
 if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
     collation_mismatches=$(psql -At -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "SELECT count(*) FROM (
             SELECT 1 FROM pg_database
@@ -1376,7 +1392,6 @@ if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
 '; then
     fail "Vector database collation versions are incompatible; restore the previous database image"
 fi
-vector_database_reconciled=1
 if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
     psql -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "CREATE EXTENSION IF NOT EXISTS vector"
     installed_version=$(psql -At --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "SELECT extversion FROM pg_extension WHERE extname = '\''vector'\''")
@@ -1386,9 +1401,24 @@ if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
 fi
 
 phase projection-preflight
+if [ -n "$selected_slot" ]; then
+    web_slot seed-static "$selected_slot" || fail "Predecessor static preservation failed"
+fi
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput; then
     fail "Candidate migration failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py sync_feature_flags; then
+    fail "Candidate feature synchronization failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py bootstrap_photographer_group; then
+    fail "Candidate photographer group bootstrap failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py collectstatic --noinput; then
+    fail "Candidate static collection failed"
 fi
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     run --rm --no-deps -T --entrypoint python web manage.py \
@@ -1396,12 +1426,12 @@ if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
     fail "Gallery media publication drain failed"
 fi
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
-    run --rm -T --entrypoint python web manage.py \
+    run --rm --no-deps -T --entrypoint python web manage.py \
     rebuild_gallery_media_projection --all-events --apply; then
     fail "Gallery media projection rebuild failed"
 fi
 if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
-    run --rm -T --entrypoint python web manage.py \
+    run --rm --no-deps -T --entrypoint python web manage.py \
     verify_gallery_media_projection --all-events --require-clean; then
     fail "Gallery media projection verification failed"
 fi
@@ -1410,13 +1440,8 @@ mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
 requested_env_tmp=""
 
 phase certificate
-compose stop nginx || true
-if ! sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh"; then
-    fail "Certificate bootstrap failed"
-fi
-
-if ! compose_with_requested_runtime_profiles pull; then
-    fail "Deployment image pull failed"
+if [ -z "$selected_slot" ]; then
+    sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh" || fail "Certificate bootstrap failed"
 fi
 
 # Retain candidate inputs before it can accept native-only writes. Any failure
@@ -1431,17 +1456,9 @@ max_compose_attempts=3
 compose_wait_seconds=5
 while [ "$attempt" -le "$max_compose_attempts" ]; do
     compose_up_status=0
-    if [ "$previous_env_exists" -eq 0 ] && [ "$requested_processing_enabled" = False ] && \
-        [ "$requested_commerce_worker_enabled" = False ]; then
-        compose_up_command() {
-            compose up -d --remove-orphans
-        }
-    else
-        compose_up_command() {
-            compose_reconcile_requested_runtime_profiles
-        }
-    fi
-    native_only_activation_started=1
+    compose_up_command() {
+        compose up -d --wait --wait-timeout 120 --no-deps "$candidate_slot"
+    }
     if compose_up_command; then
         break
     else
@@ -1459,11 +1476,22 @@ done
 
 echo "docker compose up exit status: $compose_up_status" >&2
 
+if [ -n "$selected_slot" ] && [ "$RECOVER_FORWARD" = False ]; then
+    previous_web_matches_processing_schema || fail "Predecessor schema compatibility failed; recover forward"
+fi
+phase edge-switch
+if [ -z "$selected_slot" ]; then
+    compose up -d --no-deps nginx certbot || fail "Initial edge bootstrap failed"
+fi
+switch_attempted=1
+web_slot switch "$candidate_slot" || fail "Django edge switch failed"
+[ "$(web_slot selected)" = "$candidate_slot" ] || fail "Django edge selection read-back failed"
+
 phase local-health
 attempt=1
 max_attempts=12
 while [ "$attempt" -le "$max_attempts" ]; do
-    web_container="$(compose ps -q web)"
+    web_container="$(compose ps -q "$candidate_slot")"
     running_image=""
     if [ -n "$web_container" ]; then
         running_image="$(
@@ -1484,13 +1512,9 @@ while [ "$attempt" -le "$max_attempts" ]; do
 done
 
 phase gallery-media-smoke
-if ! run_private_candidate_command compose exec -T web python manage.py \
+if ! run_private_candidate_command compose exec -T "$candidate_slot" python manage.py \
     smoke_gallery_media_projection; then
     fail "Candidate gallery media smoke failed"
-fi
-
-if [ "$requested_import_enabled" = True ]; then
-    start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
 fi
 
 phase worker-health
@@ -1513,10 +1537,31 @@ commerce_worker_is_ready() {
     if [ "$commerce_worker_state" != 'true false false' ]; then
         return 1
     fi
-    sh "$DEPLOY_ROOT/deploy/run-commerce-worker-health.sh"
+    compose exec -T "$candidate_slot" python manage.py commerce_worker_health \
+        --max-ready-age-seconds "$requested_commerce_worker_health_max_ready_age_seconds"
 }
 
-if [ "$requested_commerce_worker_enabled" = True ]; then
+phase public-health
+sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh" || fail "Requested deployment failed public HTTPS smoke verification"
+phase predecessor-drain
+web_slot drain || fail "Predecessor requests did not drain; selected traffic retained"
+
+# Only now reconcile the other application processes; photo-worker pools remain
+# under their independent release authority.
+phase worker-health
+if [ "$DEPLOY_COMMERCE" = true ]; then
+    workers_reconciled=1
+    compose_reconcile_requested_runtime_profiles || fail "Application worker reconciliation failed"
+fi
+if [ "$DEPLOY_IMPORT" = true ]; then
+    workers_reconciled=1
+    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker stop failed"
+    if [ "$requested_import_enabled" = True ]; then
+        start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
+    fi
+fi
+
+if [ "$DEPLOY_COMMERCE" = true ] && [ "$requested_commerce_worker_enabled" = True ]; then
     commerce_worker_attempt=1
     max_commerce_worker_attempts=6
     commerce_worker_wait_seconds=5
@@ -1547,6 +1592,10 @@ if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
 fi
 
 phase commit
+if [ -n "$selected_slot" ]; then
+    compose stop "$selected_slot" || fail "Drained predecessor stop failed"
+    predecessor_stopped=1
+fi
 if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
     sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
 else
@@ -1556,9 +1605,9 @@ sh "$DEPLOY_ROOT/deploy/install-cart-cleanup-cron.sh" install
 
 marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.XXXXXX")"
 printf '%s\n' "$requested_image" > "$marker_tmp"
+sudo -n "$observability_helper" commit
 mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
 marker_tmp=""
-sudo -n "$observability_helper" commit
 deployment_committed=1
 clear_deployment_recovery_snapshot || fail "Committed recovery gate cleanup failed"
 if ! docker image prune -a -f >/dev/null; then

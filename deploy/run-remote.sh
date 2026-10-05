@@ -193,7 +193,7 @@ run_quietly_with_stdin() {
 
 relay_deployment_markers() {
     LC_ALL=C grep -Eo \
-        '(DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+|DEPLOY_RESULT=(success|failure) phase=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) rollback=(not-needed|succeeded|failed) elapsed_seconds=[0-9]+|^DEPLOY_IMAGE_PRUNE_RESULT=(success|failure))$|^(Container registry login failed|Candidate application image pull failed|Import image pull failed)$' \
+        '(DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|edge-switch|predecessor-drain|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+|DEPLOY_RESULT=(success|failure) phase=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|edge-switch|predecessor-drain|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) rollback=(not-needed|succeeded|failed) elapsed_seconds=[0-9]+|^DEPLOY_IMAGE_PRUNE_RESULT=(success|failure))$|^(Container registry login failed|Candidate application image pull failed|Import image pull failed|Existing import worker cannot drain accepted work; explicit first-activation import cutover required)$' \
         "$command_output" || true
 }
 
@@ -262,6 +262,48 @@ previous_package_exists=0
 replacement_entries=''
 package_install_complete=0
 
+replace_deploy_directory() {
+  # Preserve the directory inode mounted by the running edge. Moving deploy
+  # would leave Nginx on disconnected predecessor scripts and marker.
+  python3 - "$1" "$2" <<'PY_DEPLOY'
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+source, target = map(Path, sys.argv[1:])
+target.mkdir(parents=True, exist_ok=True)
+for entry in target.iterdir():
+    if entry.name != 'nginx':
+        shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+for entry in source.iterdir():
+    if entry.name != 'nginx':
+        if entry.is_dir():
+            shutil.copytree(entry, target / entry.name)
+        else:
+            shutil.copy2(entry, target / entry.name)
+nginx = target / 'nginx'
+nginx.mkdir(exist_ok=True)
+incoming = source / 'nginx'
+if incoming.is_dir():
+    for entry in incoming.iterdir():
+        if entry.name == 'selected-slot':
+            continue
+        if not entry.is_file() or entry.is_symlink():
+            raise SystemExit('Unexpected Nginx package entry')
+        descriptor, temporary = tempfile.mkstemp(dir=nginx)
+        os.close(descriptor)
+        try:
+            shutil.copy2(entry, temporary)
+            os.replace(temporary, nginx / entry.name)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    for entry in nginx.iterdir():
+        if entry.name != 'selected-slot' and not (incoming / entry.name).exists():
+            entry.unlink()
+PY_DEPLOY
+}
+
 restore_install_failure() {
   status=$?
   trap - EXIT HUP INT TERM
@@ -272,6 +314,10 @@ restore_install_failure() {
       # Record entries before moving so a signal between either move and shell bookkeeping is safe.
       for entry in $replacement_entries; do
         if [ -e "$previous_package/$entry" ]; then
+          if [ "$entry" = deploy ]; then
+            replace_deploy_directory "$previous_package/deploy" "$deployment_root/deploy" || exit 1
+            continue
+          fi
           if ! rm -rf "$deployment_root/$entry" || \
             ! mv "$previous_package/$entry" "$deployment_root/$entry"; then
             echo 'candidate package restoration failed; staging retained' >&2
@@ -300,6 +346,10 @@ restore_install_failure() {
     for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
       if [ "$previous_package_exists" -eq 1 ]; then
         if [ -e "$previous_package/$entry" ]; then
+          if [ "$entry" = deploy ]; then
+            replace_deploy_directory "$previous_package/deploy" "$deployment_root/deploy"
+            continue
+          fi
           rm -rf "$deployment_root/$entry"
           mv "$previous_package/$entry" "$deployment_root/$entry"
         fi
@@ -344,6 +394,14 @@ fi
 package_mutation_started=1
 for entry in docker-compose.deployment.yml docker-compose.https.yml deploy; do
   replacement_entries="$replacement_entries $entry"
+  if [ "$entry" = deploy ]; then
+    if [ "$previous_package_exists" -eq 1 ]; then
+      cp -Rp "$deployment_root/deploy" "$previous_package/deploy.snapshot"
+      mv "$previous_package/deploy.snapshot" "$previous_package/deploy"
+    fi
+    replace_deploy_directory "$candidate_package/deploy" "$deployment_root/deploy"
+    continue
+  fi
   if [ "$previous_package_exists" -eq 1 ]; then
     mv "$deployment_root/$entry" "$previous_package/$entry"
   fi
@@ -366,13 +424,17 @@ fi'''
 
 commands = {
     'deploy': deployment_command,
-    'private-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True web sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
-    'selfie-storage': "cd /opt/photo-prjct; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T web python manage.py verify_selfie_search_storage --confirm-real-storage",
-    'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID web python manage.py verify_selfie_feedback_storage --confirm-real-storage",
+    'private-storage': "cd /opt/photo-prjct; slot=$(python3 deploy/web-slot.py selected) && docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e PHOTO_UPLOAD_ENABLED=True \"$slot\" sh -lc 'python manage.py verify_private_upload_storage --confirm-real-storage --origin \"$PRIVATE_MEDIA_ALLOWED_ORIGINS\"'",
+    'selfie-storage': 'cd /opt/photo-prjct; slot=$(python3 deploy/web-slot.py selected) && docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T "$slot" python manage.py verify_selfie_search_storage --confirm-real-storage',
+    'selfie-feedback-storage': "cd /opt/photo-prjct; test \"$(sed -n 's/^SELFIE_FEEDBACK_ENABLED=//p' .env | head -n 1)\" = False; slot=$(python3 deploy/web-slot.py selected) && docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml exec -T -e SELFIE_FEEDBACK_ENABLED=True -e SELFIE_FEEDBACK_S3_BUCKET -e SELFIE_FEEDBACK_S3_ACCESS_KEY_ID -e SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY -e SELFIE_FEEDBACK_KMS_KEY_ID \"$slot\" python manage.py verify_selfie_feedback_storage --confirm-real-storage",
     'reconcile-observability': 'exec sudo -n /usr/local/sbin/findme-observability-reconcile "$RELEASE_SHA"',
     'configure-monitoring': 'exec sudo sh /opt/photo-prjct/deploy/configure-monitoring-agent.sh --folder-id "$YANDEX_CLOUD_FOLDER_ID"',
     'verify-deployed-image': r'''set -eu
-test "$(cat /opt/photo-prjct/deployed-image)" = "$APP_IMAGE"
+cd /opt/photo-prjct
+slot=$(python3 deploy/web-slot.py selected)
+container=$(docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml -f docker-compose.https.yml ps -q "$slot")
+test -n "$container"
+test "$(docker inspect --format '{{.Image}}' "$container")" = "$(docker image inspect --format '{{.Id}}' "$APP_IMAGE")"
 test "$(sed -n 's/^PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES"
 test "$(sed -n 's/^PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=//p' /opt/photo-prjct/.env | head -n 1)" = "$PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES"''',
     'verify-paused-observability-release': r'''set -eu
@@ -425,6 +487,9 @@ export RECOVER_FORWARD RELEASE_SHA
 
 REMOTE_DEPLOYMENT_VALUES='
 APP_IMAGE
+DEPLOY_WEB
+DEPLOY_IMPORT
+DEPLOY_COMMERCE
 RECOVER_FORWARD
 RELEASE_SHA
 WORKER_POOL_PRIVATE_API_IPV4
@@ -592,7 +657,7 @@ remote_target=$VM_USER@$VM_HOST
 cd "$REPOSITORY_ROOT"
 
 if [ "$mode" = remote-preflight ]; then
-    run_quietly remote remote_failed ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" "$remote_target" "test -d /opt/photo-prjct && test -r /opt/photo-prjct/deployed-image"
+    run_quietly remote remote_failed ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -i "$key_file" "$remote_target" "test -d /opt/photo-prjct && test -r /opt/photo-prjct/.env && cd /opt/photo-prjct && python3 deploy/web-slot.py selected"
     printf '[remote] stage=%s status=ok\n' "$mode"
     exit 0
 fi

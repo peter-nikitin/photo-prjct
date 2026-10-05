@@ -1,11 +1,6 @@
 #!/bin/sh
 set -eu
 
-python manage.py migrate --noinput
-python manage.py sync_feature_flags
-python manage.py bootstrap_photographer_group
-python manage.py collectstatic --noinput
-
 metrics_dir=/tmp/prometheus_multiproc
 if rm -rf "$metrics_dir" && mkdir -p "$metrics_dir"; then
     export PROMETHEUS_MULTIPROC_DIR="$metrics_dir"

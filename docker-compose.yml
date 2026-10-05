@@ -14,6 +14,7 @@ services:
 
   web:
     build: .
+    entrypoint: ["/bin/sh", "/app/src/backend/local-entrypoint.sh"]
     command: python manage.py runserver 0.0.0.0:8000
     working_dir: /app/src/backend
     volumes:

@@ -1,6 +1,8 @@
 import logging
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -928,6 +930,37 @@ class CommerceWorkerTests(TransactionTestCase):
             call_command("run_commerce_worker", "--once")
         with self.assertRaisesRegex(CommandError, "worker is not live"):
             call_command("commerce_worker_health", "--max-ready-age-seconds", "300")
+
+    def test_term_finishes_current_pass_and_releases_lock_without_another_pass(self) -> None:
+        from commerce.management.commands import run_commerce_worker as command
+
+        self.assertTrue(command.Command.supports_graceful_stop)
+        events = []
+        original_handler = signal.getsignal(signal.SIGTERM)
+
+        def accepted_pass():
+            events.append("accepted")
+            handler = signal.getsignal(signal.SIGTERM)
+            assert callable(handler), "Commerce must handle TERM while work is accepted"
+            handler(signal.SIGTERM, None)
+            events.append("completed")
+            return SimpleNamespace(
+                email_deliveries=1, payment_reconciliations=0, attention_reminders=0
+            )
+
+        worker = SimpleNamespace(run_once=accepted_pass)
+        with (
+            patch.object(command, "_configured_worker", return_value=worker),
+            patch.object(command, "acquire_commerce_worker_lock", return_value=True),
+            patch.object(
+                command,
+                "release_commerce_worker_lock",
+                side_effect=lambda: events.append("released"),
+            ),
+        ):
+            command.Command().handle(once=False, poll_seconds=5)
+        self.assertEqual(events, ["accepted", "completed", "released"])
+        self.assertEqual(signal.getsignal(signal.SIGTERM), original_handler)
 
     @override_settings(
         PHOTO_PROCESSING_ENABLED=False,

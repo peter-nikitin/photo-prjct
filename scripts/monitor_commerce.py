@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,22 @@ class Config:
 
 def observe(config: Config) -> str:
     root = Path(config.deploy_root)
+    selected = subprocess.run(
+        [
+            sys.executable,
+            str(root / "deploy/web-slot.py"),
+            "--root",
+            str(root),
+            "selected",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=15,
+    ).stdout.strip()
+    if selected not in {"web", "web-next"}:
+        raise ValueError("invalid selected Django slot")
     result = subprocess.run(
         [
             "docker",
@@ -36,7 +53,7 @@ def observe(config: Config) -> str:
             str(root / "docker-compose.https.yml"),
             "exec",
             "-T",
-            "web",
+            selected,
             "python",
             "manage.py",
             "commerce_worker_health",

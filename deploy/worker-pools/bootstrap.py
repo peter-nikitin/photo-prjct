@@ -166,7 +166,6 @@ def activate(config, values, instance_id, *, root=Path("/"), run=subprocess.run,
     mark_phase("image-update")
     invoke(["systemctl", "start", "findme-worker-updater.service"], timeout=2700)
     mark_phase("service-start")
-    invoke(["systemctl", "enable", "--now", "findme-worker-updater.timer"])
     invoke(["systemctl", "enable", "--now", "findme-worker-retire.timer"])
     if telemetry_enabled:
         try:

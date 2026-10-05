@@ -154,6 +154,9 @@ def _write_executable(path: Path, body: str) -> None:
 def _deployment_values() -> dict[str, str]:
     return {
         "APP_IMAGE": "ghcr.io/peter-nikitin/photo-prjct:test-image",
+        "DEPLOY_WEB": "true",
+        "DEPLOY_IMPORT": "false",
+        "DEPLOY_COMMERCE": "false",
         "IMPORT_WORKER_IMAGE": "import:test-image",
         "PHOTO_IMPORT_BUILD": "test-image",
         "PHOTO_IMPORT_ENABLED": "False",
@@ -838,7 +841,8 @@ def test_remote_preflight_proves_private_ssh_projection_without_remote_mutation(
     assert "UserKnownHostsFile=" in ssh_arguments
     assert str(tmp_path / "staging-key") in ssh_arguments
     assert "deployer@staging.example.test" in ssh_arguments
-    assert "test -d /opt/photo-prjct && test -r /opt/photo-prjct/deployed-image" in ssh_arguments
+    assert "test -d /opt/photo-prjct && test -r /opt/photo-prjct/.env" in ssh_arguments
+    assert "python3 deploy/web-slot.py selected" in ssh_arguments
     assert "docker compose" not in ssh_arguments
     assert "mkdir" not in ssh_arguments
     assert ssh_stdin == ""

@@ -8,6 +8,30 @@ from import_worker.runner import Lease, LeaseLost, Runner
 from import_worker.transport import TransportError
 
 
+def test_requested_stop_finishes_accepted_manifest_and_does_not_claim_again(tmp_path):
+    client, source = Mock(), Mock()
+    runner = Runner(
+        Config("http://nginx/internal/photo-import/v1/", "token", tmp_path), client, source, Mock()
+    )
+    client.call.return_value = {
+        "work": dict(
+            kind="manifest", attempt_id=str(uuid4()), batch_id=str(uuid4()), source={"key": "token"}
+        )
+    }
+
+    def pages(*args, **kwargs):
+        runner.request_stop()
+        yield "canonical", []
+
+    source.pages.side_effect = pages
+    runner.run()
+    assert sum(call.args[0] == "claim" for call in client.call.call_args_list) == 1
+    assert any(
+        call.args[0].endswith("/manifest/finalize") for call in client.callback.call_args_list
+    )
+    assert runner.lock.closed
+
+
 def test_renewal_failure_stops_side_effects_and_does_not_extend_lease():
     client = Mock()
     lease = Lease(client, str(uuid4()), clock=lambda: 10)

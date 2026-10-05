@@ -69,5 +69,5 @@ if measured recovery or availability requirements cannot be met by separate Comp
 ## References
 
 - [ADR 0003](0003-docker-compose-yandex-cloud.md)
-- [Deployment design](../superpowers/specs/2026-07-11-staging-production-deployment-design.md)
-- [Architecture evolution stages](../architecture.md#evolution-stages)
+- [Deployment design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-11-staging-production-deployment-design.md)
+- [Architecture deployment](../architecture.md#deployment-domain-assignment--accepted)

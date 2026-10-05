@@ -125,7 +125,7 @@ budget, or public selection among gallery faces causes material abuse.
 
 ## References
 
-- [Gallery face selector design](../superpowers/specs/2026-08-05-gallery-face-selector-design.md)
+- [Gallery face selector design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-05-gallery-face-selector-design.md)
 - [ADR 0019: Use public event-scoped selfie search](0019-use-public-event-selfie-search.md)
 - [Architecture: Search](../architecture.md#search)
 - [Architecture: security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)

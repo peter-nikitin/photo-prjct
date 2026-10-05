@@ -92,11 +92,10 @@ image; this does not revoke bytes already received, and no object or database mi
 
 ## References
 
-- [Event photo gallery design](../superpowers/specs/2026-07-18-event-photo-gallery-design.md)
-- [Event photo gallery implementation plan](../plans/2026-07-18-event-photo-gallery.md)
+- [Event photo gallery design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-18-event-photo-gallery-design.md)
+- [Event photo gallery implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-18-event-photo-gallery.md)
 - [Architecture: purchase and download](../architecture.md#purchase-and-download)
 - [Architecture: security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)
-- [Architecture: open decisions](../architecture.md#open-decisions)
 - [ADR 0001](0001-django-modular-monolith.md)
 - [ADR 0002](0002-postgresql-system-of-record.md)
 - [ADR 0006](0006-yandex-object-storage-media.md)

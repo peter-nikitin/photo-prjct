@@ -1,22 +1,27 @@
-# Architecture Decision Records
+# Архитектурные решения
 
-ADRs capture durable decisions that materially affect system structure, operations, security, data,
-or development workflow. They explain why a choice was made; `architecture.md` describes the
-resulting system.
+ADR фиксирует долговременный выбор, причины, рассмотренные альтернативы и последствия.
+[Архитектура](../architecture.md) описывает систему в целом, а код и операционные
+свидетельства показывают фактическое состояние. Рабочие спецификации и планы удаляются
+до слияния PR согласно [ADR 0055](0055-keep-accepted-decisions-not-working-documents.md).
 
-## Lifecycle
+<a id="lifecycle"></a>
+## Статусы
 
-- **Proposed**: under discussion; implementation must not rely on it as settled.
-- **Accepted**: approved and authoritative.
-- **Rejected**: considered but not selected.
-- **Superseded**: replaced by a later ADR, linked in both records.
+- **Proposed** — решение обсуждается и пока не является обязательным.
+- **Accepted** — решение принято и действует.
+- **Rejected** — вариант рассмотрен и отклонён.
+- **Superseded** — решение заменено более поздним ADR; оба документа ссылаются друг на друга.
 
-Accepted ADRs are immutable except for spelling, formatting, and link corrections. Change a decision
-with a new ADR that supersedes the old one. Allocate the next four-digit number and use a lowercase
-hyphenated filename: `NNNN-short-title.md`. Copy [the template](0000-template.md), never edit it in
-place, and add the new record to this index.
+Принятый ADR меняют только для исправления опечаток, форматирования и ссылок. Для изменения
+самого решения создают новый ADR с очередным четырёхзначным номером и указывают взаимные
+ссылки. Новые ADR пишутся по-русски; существующие английские тексты пока сохраняются.
+Для нового решения используйте [шаблон](0000-template.md) как структуру, не редактируя его
+вместо создания отдельного файла. Затем добавьте запись в указатель ниже.
 
-## Index
+<a id="index"></a>
+## Указатель
+
 
 | Number | Decision | Status |
 | --- | --- | --- |
@@ -52,7 +57,7 @@ place, and add the new record to this index.
 | 0030 | [Use anonymous server-side event carts](0030-use-anonymous-server-side-event-carts.md) | Accepted |
 | 0031 | [Use orders and adapters for paid original delivery](0031-use-orders-and-adapters-for-paid-original-delivery.md) | Accepted |
 | 0032 | [Reconcile code-owned feature flags at startup](0032-reconcile-code-owned-feature-flags-at-startup.md) | Accepted |
-| 0033 | [Keep durable knowledge and test executable contracts](0033-keep-durable-knowledge-test-executable-contracts.md) | Accepted |
+| 0033 | [Keep durable knowledge and test executable contracts](0033-keep-durable-knowledge-test-executable-contracts.md) | Superseded |
 | 0034 | [Stream page-scoped photo archives through Django](0034-stream-page-scoped-photo-archives-through-django.md) | Accepted |
 | 0035 | [Use Django-polled Yandex Disk import](0035-use-django-polled-yandex-disk-import.md) | Accepted |
 | 0036 | [Issue direct gallery small-preview capabilities](0036-issue-direct-gallery-small-preview-capabilities.md) | Superseded |
@@ -74,93 +79,4 @@ place, and add the new record to this index.
 | 0052 | [Notify only on actionable service degradation](0052-notify-only-on-actionable-service-degradation.md) | Accepted |
 | 0053 | [Reconcile observability independently on main](0053-reconcile-observability-independently-on-main.md) | Accepted |
 | 0054 | [Retire SFace and fix the AdaFace vector dimension](0054-retire-sface-and-fix-adaface-vector-dimension.md) | Accepted |
-
-## Public selfie-search outcome
-
-[ADR 0019](0019-use-public-event-selfie-search.md) supersedes
-[ADR 0015](0015-allow-anonymous-free-event-original-delivery.md). The repository implementation
-conforms to ADR 0019's Django/PostgreSQL authority, private worker, event isolation, transient query
-embedding, cleanup-before-publication, stable bearer result, and paid-result-only media boundaries.
-ADR 0020 supersedes only the inline-Django transport for already authorized gallery and result
-media; its direct Object Storage delivery is accepted but not yet implementation evidence. Lifecycle
-mutation, real-storage preflight, exact rollout-image model smoke, staging capacity evidence, and
-feature activation remain rollout work rather than completed decision evidence. The worker model packaging has since moved to pinned SCRFD/AdaFace under
-[ADR 0054](0054-retire-sface-and-fix-adaface-vector-dimension.md).
-
-[ADR 0021](0021-allow-original-download-for-authorized-photos.md) supersedes only ADR 0019 and
-ADR 0020's attachment-download exclusions. It accepts attachment delivery wherever those existing
-gallery or ready-result contexts already authorize an original, without adding a free-versus-paid
-decision or opening a normal paid gallery.
-
-[ADR 0029](0029-use-watermarked-previews-for-paid-photos.md) supersedes ADRs 0019, 0020, and 0021
-only for photos in the new explicit paid-watermarked generation. It accepts a normal paid gallery
-backed only by an accepted watermarked derivative, uses that same derivative in ready selfie-search
-results, and denies original presentation and download for those photos. Existing rows retain their
-explicit current policy. [ADR 0031](0031-use-orders-and-adapters-for-paid-original-delivery.md)
-supersedes that denial only after a qualifying Order becomes paid.
-
-[ADR 0036](0036-issue-direct-gallery-small-preview-capabilities.md) supersedes ADR 0020 only for
-accepted small presentation derivatives in a rendered normal-gallery page. It issues a six-hour
-exact-object capability during bounded HTML authorization while leaving originals, downloads,
-result media, private media, legacy-original presentation, and ADR 0029's paid watermarked
-selection on their current paths.
-
-[ADR 0038](0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) supersedes ADR 0036 only
-for derivative-backed normal-gallery small presentation. It retains bounded page authorization and
-six-hour capabilities while routing fixed 960-pixel request-time representations through Yandex
-Cloud CDN and an isolated imgproxy origin. Current application routes remain authoritative for
-legacy originals and every other media context.
-
-[ADR 0031](0031-use-orders-and-adapters-for-paid-original-delivery.md) accepts immutable
-single-event RUB Orders, normalized PaymentAttempts behind a narrow gateway adapter, trusted manual
-payment confirmation, paid-OrderItem original entitlement, permanent revocable anonymous Order
-links, asynchronous email delivery, and durable Commerce attention. The concrete bank/email
-protocols, fiscal and legal contracts, public activation, and refunds remain later work.
-
-[ADR 0047](0047-separate-order-payment-from-new-cart-selection.md) supersedes ADR 0031 only for
-retaining and locking the originating cart until payment, retrying payment from that cart, and
-removing cart positions at paid fulfillment. It accepts a new cart identity when an Order is
-created, browser-local Order history under the existing purchase capability, and exact-Order
-payment retry. Implementation remains pending.
-
-[ADR 0034](0034-stream-page-scoped-photo-archives-through-django.md) accepts and the repository
-implements a narrow exception to ADR 0020 for an authorized page-scoped aggregate ZIP body: Django
-streams at most one numbered page of private originals without retaining an archive. The code-owned
-`bulk-photo-download` definition reconciles in `off`; deployment, activation, maximum-page
-capacity acceptance, and live customer evidence remain incomplete. Individual downloads retain
-direct signed Object Storage delivery, and all selfie-result and paid-Order authorization remains
-unchanged.
-
-[ADR 0022](0022-use-numbered-gallery-pages.md) supersedes only ADR 0020's cursor-pagination
-follow-up. Normal galleries and ready selfie-search results use bounded numbered pages; all media
-delivery and authorization decisions in ADRs 0019, 0020, and 0021 remain unchanged.
-
-[ADR 0023](0023-store-consented-selfie-search-feedback.md) preserves ADR 0019's search-selfie
-cleanup gate while accepting a separate consented feedback copy: the browser retains the selected
-file locally for at most seven days, PostgreSQL stores one immutable feedback/contact/consent record
-per search, and a dedicated private KMS-encrypted bucket deletes feedback selfies through its
-30-day lifecycle. Feedback media is unavailable to public media routes and the ML worker; sensitive
-staff access is explicit and audited.
-
-[ADR 0025](0025-expand-selfie-search-with-face-clusters.md) extends ADR 0019's direct-only result
-membership with conservative event-scoped face-cluster expansion from calibrated strong direct
-anchors. Direct results remain first; PostgreSQL stores immutable source provenance and counts;
-feedback and bounded observability distinguish direct from expanded results without changing
-clusters automatically. Named identity, cross-event matching, contextual evidence, and persistent
-query vectors remain excluded.
-
-[ADR 0024](0024-use-gallery-face-as-search-query.md) accepts one explicitly selected current
-compatible face embedding of an existing gallery photo as a second event-scoped query source. A
-single usable face submits directly; multiple usable faces require an explicit crop-based choice.
-It preserves ADR 0019's ranking, immutable bearer result, and media-authorization boundaries
-without creating a crop object, temporary image, or worker job.
-
-[ADR 0040](0040-use-pgvector-for-exact-face-search.md) supersedes ADR 0019 only for
-in-memory direct comparison and its initial exclusion of vector infrastructure. It accepts an
-independent parallel vector table, exact full-cohort PostgreSQL ranking, and a temporary
-`off` / `staff` / `on` read gate. Public activation requires reconciliation, parity, capacity,
-and recovery evidence; worker separation and recognition-model reprocessing remain later work.
-
-[ADR 0041](0041-accept-pgvector-numerical-boundaries.md) supersedes only ADR 0040's strict
-numerical parity condition. It accepts native SQL ranking with classified very borderline
-changes within the existing numerical tolerance; unexplained differences still block activation.
+| 0055 | [Хранить принятые решения, а не рабочие спецификации и планы](0055-keep-accepted-decisions-not-working-documents.md) | Accepted |

@@ -69,5 +69,5 @@ operator review of numerical effects and performance; schema and biometric priva
 ## References
 
 - [ADR 0040](0040-use-pgvector-for-exact-face-search.md)
-- [Specification](../superpowers/specs/2026-09-25-pgvector-exact-face-search-design.md)
-- [Implementation plan](../plans/2026-09-27-pgvector-exact-face-search.md)
+- [Specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-25-pgvector-exact-face-search-design.md)
+- [Implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-27-pgvector-exact-face-search.md)

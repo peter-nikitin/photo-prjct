@@ -41,8 +41,8 @@ specification must not anticipate the plan by duplicating those mechanics.
    specifications, experiments, and jobs; and implementation/tests when behavior already exists.
 2. Resolve contradictions before approval. Revise the design or classify it as superseding the
    affected ADR; never rely only on an ADR title or architecture summary.
-3. Save the design under `docs/superpowers/specs/YYYY-MM-DD-topic-design.md` with exact `Related
-   architecture`, `Related ADRs`, and `ADR impact` metadata.
+3. Save the design temporarily under ignored `docs/superpowers/specs/YYYY-MM-DD-topic-design.md`
+   with exact `Related architecture`, `Related ADRs`, and `ADR impact` metadata. Write prose in Russian.
 4. During self-review, verify scope, internal consistency, ambiguity, applicable ADR boundaries,
    separation of accepted architecture from unimplemented design, and compliance with the document
    contract above.
@@ -50,6 +50,8 @@ specification must not anticipate the plan by duplicating those mechanics.
    silently accept a new or superseding ADR.
 6. Invoke `$write-plan` after approval. Pass the approved specification and its ADR-impact
    classification so planning begins with ADR resolution.
+7. Before merge, transfer accepted durable decisions and reasons to ADRs, reconcile implemented
+   architecture, and remove the specification from the Git index and final commit.
 
 ## Required ADR impact
 
@@ -68,4 +70,4 @@ classification; list independent new or superseding decisions separately.
 - Do not edit an accepted ADR to match a specification; use `$write-adr` to supersede it.
 - Do not update current implemented architecture merely because a specification was approved.
 - Do not require an ADR for reversible implementation detail.
-- Do not mechanically rewrite old specifications; reconcile them when next used.
+- Old specifications remain available in Git history; reconcile them only when needed.

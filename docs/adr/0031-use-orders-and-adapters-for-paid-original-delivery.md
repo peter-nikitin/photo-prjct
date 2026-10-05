@@ -139,7 +139,7 @@ legal/accounting requirements invalidate permanent anonymous fulfillment.
 
 ## References
 
-- [Paid Photo Purchase and Original Delivery Design](../superpowers/specs/2026-08-20-paid-photo-purchase-and-original-delivery-design.md)
+- [Paid Photo Purchase and Original Delivery Design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-20-paid-photo-purchase-and-original-delivery-design.md)
 - [Architecture: Target MVP module responsibilities](../architecture.md#target-mvp-architecture--proposed)
 - [Architecture: Purchase and download](../architecture.md#purchase-and-download)
 - [Architecture: Security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)

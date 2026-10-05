@@ -117,5 +117,5 @@ different edge requirements.
 - [ADR 0005](0005-promote-images-through-staging.md)
 - [ADR 0007](0007-nginx-certbot-https-edge.md)
 - [ADR 0010](0010-share-https-edge-across-environments.md)
-- [Canonical domain HTTPS edge design](../superpowers/specs/2026-07-13-canonical-domain-https-edge-design.md)
-- [Canonical domain HTTPS edge implementation plan](../plans/2026-07-13-canonical-domain-https-edge.md)
+- [Canonical domain HTTPS edge design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-13-canonical-domain-https-edge-design.md)
+- [Canonical domain HTTPS edge implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-13-canonical-domain-https-edge.md)

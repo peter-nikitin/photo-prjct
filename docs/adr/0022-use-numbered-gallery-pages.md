@@ -89,4 +89,4 @@ decision is active are presentation locators only and create no persistent state
 - [ADR 0019: Use public event-scoped selfie search](0019-use-public-event-selfie-search.md)
 - [ADR 0020: Use signed direct Object Storage media delivery](0020-use-signed-direct-object-storage-media-delivery.md)
 - [ADR 0021: Allow original download for authorized photos](0021-allow-original-download-for-authorized-photos.md)
-- [Gallery pages and uncropped portraits design](../superpowers/specs/2026-08-02-gallery-pages-and-uncropped-portraits-design.md)
+- [Gallery pages and uncropped portraits design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-02-gallery-pages-and-uncropped-portraits-design.md)

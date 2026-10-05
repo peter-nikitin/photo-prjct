@@ -103,5 +103,5 @@ expected definition, or feature definitions require ownership outside the applic
 ## References
 
 - [ADR 0028](0028-operate-one-canonical-deployment.md)
-- [Feature-flag definition reconciliation design](../superpowers/specs/2026-08-22-feature-flag-definition-reconciliation-design.md)
+- [Feature-flag definition reconciliation design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-22-feature-flag-definition-reconciliation-design.md)
 - [Current architecture](../architecture.md)

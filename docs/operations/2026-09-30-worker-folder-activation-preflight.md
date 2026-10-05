@@ -2,7 +2,7 @@
 
 - Date: 2026-09-30 (Europe/Moscow).
 - Status: preparation for review, **not** an apply package or paid approval.
-- Design: [approved separate-folder specification](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [ADR 0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) and [repository plan](../plans/2026-09-30-isolated-worker-folder-support.md); approved pool ceiling remains [bulk 0..1, selfie 1..1](../superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md).
+- Design: [approved separate-folder specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [ADR 0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md) and [repository plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-30-isolated-worker-folder-support.md); approved pool ceiling remains [bulk 0..1, selfie 1..1](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-29-capped-worker-pool-activation-design.md).
 - Scope: no cloud, IAM, secret, network, alert, deployment, or application mutation was submitted during this inventory.
 
 ## Exact observed baseline

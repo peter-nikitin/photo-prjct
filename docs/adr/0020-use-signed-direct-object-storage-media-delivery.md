@@ -99,7 +99,7 @@ expiry bounds the latter.
 
 ## References
 
-- [Event Media Direct Delivery and Pagination Design](../superpowers/specs/2026-07-31-event-media-direct-delivery-and-pagination-design.md)
+- [Event Media Direct Delivery and Pagination Design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-31-event-media-direct-delivery-and-pagination-design.md)
 - [ADR 0006: Use Yandex Object Storage for media](0006-yandex-object-storage-media.md)
 - [ADR 0013: Use direct private Object Storage ingestion](0013-use-direct-private-object-storage-ingestion.md)
 - [ADR 0017: Use Django-polled photo-processing jobs](0017-use-django-polled-photo-processing-jobs.md)

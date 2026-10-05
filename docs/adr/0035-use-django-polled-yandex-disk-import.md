@@ -128,8 +128,8 @@ execution. Reconsider worker placement or scheduling only when measured contenti
 
 ## References
 
-- [Implementation plan](../plans/2026-09-07-yandex-disk-photo-import.md)
-- [Approved public Yandex Disk import specification](../superpowers/specs/2026-09-07-yandex-disk-photo-import-design.md)
+- [Implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-07-yandex-disk-photo-import.md)
+- [Approved public Yandex Disk import specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-07-yandex-disk-photo-import-design.md)
 - [Architecture: photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing)
 - [ADR 0006: Object Storage](0006-yandex-object-storage-media.md)
 - [ADR 0012: Photographer permissions](0012-use-django-photographer-permissions.md)

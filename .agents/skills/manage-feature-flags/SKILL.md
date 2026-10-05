@@ -10,9 +10,8 @@ migration, worker-protocol, and side-effect protections.
 
 ## Change the complete structure
 
-1. Read `docs/adr/0028-operate-one-canonical-deployment.md`,
-   `docs/adr/0032-reconcile-code-owned-feature-flags-at-startup.md`, and
-   `docs/superpowers/specs/2026-08-22-feature-flag-definition-reconciliation-design.md`. Treat
+1. Read `docs/adr/0028-operate-one-canonical-deployment.md` and
+   `docs/adr/0032-reconcile-code-owned-feature-flags-at-startup.md`. Treat
    `src/backend/feature_flags/registry.py` as the sole definition source.
 2. Add a named immutable `FeatureDefinition` to `FEATURE_DEFINITIONS`. Import it at every
    authoritative web entry point and side effect; call the typed evaluation service and preserve
@@ -53,8 +52,8 @@ required exposure in Admin.
 - Cover fail-closed `off`, active-staff `staff`, public `on`, missing rows, reconciliation state
   preservation, and call-site-plus-definition removal with focused tests.
 - Run the proportional repository checks, `git diff --check`, and the deployment/read-only evidence
-  required by the accepted specification.
+  required by the accepted ADRs and runbooks.
 
 Use `registry.py`, `services.py`, `management/commands/sync_feature_flags.py`, `admin.py`,
 `entrypoint.sh`, and feature-flag/deployment tests as implementation sources of truth; use the ADRs
-and the cited specification for lifecycle and rollback decisions.
+and the cited ADRs for lifecycle and rollback decisions.

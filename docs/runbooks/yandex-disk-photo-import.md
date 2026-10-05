@@ -17,7 +17,7 @@ photo-processing token as the import credential.
    against deployed `899e9cc` or the actual current release. Preserve existing DB and private objects.
 2. Deliver the optional credential through the established secret projection. Deploy schema/new web
    with the product gate off and `PHOTO_IMPORT_ENABLED=False`. Only additive import tables are new.
-3. Review [local acceptance evidence](../plans/2026-09-07-yandex-disk-import-acceptance.md), CI and the
+3. Review local acceptance tests, CI and the
    target host's existing available capacity. Do not resize a VM implicitly.
 4. With explicit operational authorization, set capability `PHOTO_IMPORT_ENABLED=True`, use the
    matching release `IMPORT_WORKER_IMAGE` and `PHOTO_IMPORT_BUILD`, and run Deploy. Its authenticated

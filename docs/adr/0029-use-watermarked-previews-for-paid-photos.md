@@ -137,12 +137,10 @@ approved artwork requires a materially different composition contract.
 ## References
 
 - [Paid watermarked previews
-  design](../superpowers/specs/2026-08-20-paid-watermarked-previews-design.md)
+  design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-20-paid-watermarked-previews-design.md)
 - [Architecture: purchase and download](../architecture.md#purchase-and-download)
 - [Architecture: security, privacy, and legal
   boundaries](../architecture.md#security-privacy-and-legal-boundaries)
-- [Architecture: evolution stages](../architecture.md#evolution-stages)
-- [Architecture: open decisions](../architecture.md#open-decisions)
 - [ADR 0017](0017-use-django-polled-photo-processing-jobs.md)
 - [ADR 0019](0019-use-public-event-selfie-search.md)
 - [ADR 0020](0020-use-signed-direct-object-storage-media-delivery.md)

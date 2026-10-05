@@ -55,4 +55,4 @@ Validate staging by checking its rendered Compose configuration has only the HTT
 - [ADR 0003](0003-docker-compose-yandex-cloud.md)
 - [ADR 0005](0005-promote-images-through-staging.md)
 - [ADR 0007](0007-nginx-certbot-https-edge.md)
-- [Minimal staging deployment plan](../plans/2026-07-13-minimal-staging-deployment.md)
+- [Minimal staging deployment plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-13-minimal-staging-deployment.md)

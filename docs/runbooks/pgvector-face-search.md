@@ -2,8 +2,7 @@
 
 # Exact pgvector face search: release and recovery
 
-Related: [cutover plan](../plans/2026-10-04-complete-pgvector-face-read-cutover.md),
-[ADR 0040](../adr/0040-use-pgvector-for-exact-face-search.md),
+Related: [ADR 0040](../adr/0040-use-pgvector-for-exact-face-search.md),
 [ADR 0041](../adr/0041-accept-pgvector-numerical-boundaries.md).
 
 The application now ranks both uploaded selfies and gallery faces against

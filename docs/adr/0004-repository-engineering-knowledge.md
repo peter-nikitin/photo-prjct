@@ -56,4 +56,4 @@ truth.
 
 ## References
 
-- [Architecture change rules](../architecture.md#change-rules)
+- [ADR 0055: accepted decisions and working documents](0055-keep-accepted-decisions-not-working-documents.md)

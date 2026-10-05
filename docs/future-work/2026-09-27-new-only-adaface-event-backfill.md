@@ -3,7 +3,7 @@
 - Date: 2026-09-27
 - Status: Blocked dependent task; not approved for execution
 - Owner: project maintainer
-- Depends on: [worker isolation](../plans/2026-09-27-autoscaled-worker-isolation.md) and
+- Depends on: [worker isolation](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-27-autoscaled-worker-isolation.md) and
   the deployed pgvector baseline under ADRs 0040/0041
 - Governing recovery boundary: ADR 0040's reader/storage transition and ADR 0041's accepted numerical policy
 

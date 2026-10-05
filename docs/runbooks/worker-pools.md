@@ -51,7 +51,7 @@ notification-delivery proof.
 
 ## One-time CI push cutover at cap one
 
-Follow the [accepted deployment plan](../plans/2026-10-04-zero-downtime-django-deployment.md).
+Follow [ADR 0051](../adr/0051-release-photo-worker-images-independently.md) and the steps below.
 Repository support does not prove that this cloud cutover has happened. Re-read exact group and
 managed-instance IDs, effective security-group rules, canonical VM security-group ID, current key
 fingerprint, pending operations, scale/deploy policies and workloads before each cloud mutation.

@@ -96,8 +96,8 @@ requirements within the fixed ceiling, rather than silently re-enabling local wo
 
 ## References
 
-- [Historical AdaFace backfill and local photo-worker retirement specification](../superpowers/specs/2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md)
-- [Remote-only photo-worker operations specification](../superpowers/specs/2026-10-02-remote-only-photo-worker-operations-design.md)
+- [Historical AdaFace backfill and local photo-worker retirement specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-10-02-historical-adaface-backfill-and-local-worker-retirement-design.md)
+- [Remote-only photo-worker operations specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-10-02-remote-only-photo-worker-operations-design.md)
 - [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md)
 - [ADR 0046](0046-isolate-worker-pool-management-in-a-separate-folder.md)
 - [Worker-pool runbook](../runbooks/worker-pools.md)

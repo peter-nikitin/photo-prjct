@@ -66,5 +66,5 @@ the browser session ends.
 
 ## References
 
-- [Stage 2 photographer upload design](../superpowers/specs/2026-07-13-stage-2-photographer-upload-design.md)
+- [Stage 2 photographer upload design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-13-stage-2-photographer-upload-design.md)
 - [Architecture: photo ingestion and indexing](../architecture.md#photo-ingestion-and-indexing)

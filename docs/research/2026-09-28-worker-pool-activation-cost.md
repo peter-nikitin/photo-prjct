@@ -4,7 +4,7 @@
 - Status: current public tariff estimate for approval; no resources created and no account bill inspected.
 - Region/currency: Russia, RUB, published prices including VAT; no CVoS commitment, grant or individual discount.
 - Scope: incremental cost; the existing main VM remains 8 vCPU / 16 GiB and yields no assumed savings.
-- Contracts: [worker runbook](../runbooks/worker-pools.md), [pool specification](../superpowers/specs/2026-09-23-autoscaled-photo-worker-pools-design.md), [telemetry specification](../superpowers/specs/2026-09-28-worker-pool-telemetry-design.md).
+- Contracts: [worker runbook](../runbooks/worker-pools.md), [pool specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-23-autoscaled-photo-worker-pools-design.md), [telemetry specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-28-worker-pool-telemetry-design.md).
 
 The fixed recurring subtotal is **4,511.02 RUB/month at the floor**, **5,957.00 RUB/month if the initial 1+1 machines run all month**, and **11,605.45 RUB/month at continuous 2+2 capacity**, using 730 hours. These subtotals include worker compute, worker boot disks, one new NAT gateway and one bootstrap-secret version. Add image storage, bootstrap reads, telemetry, traffic and temporary image-building resources below. They are not an all-inclusive invoice or a workload prediction.
 

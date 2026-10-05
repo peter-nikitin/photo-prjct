@@ -66,7 +66,7 @@ repository integration, not paid creation, live rule activation or worker cutove
 
 ### Follow-up
 
-- Implement the [integration plan](../plans/2026-09-30-worker-prometheus-alerts.md).
+- Implement the [integration plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-30-worker-prometheus-alerts.md).
 - Before customer cutover, prove fresh source samples, sustained firing, missing-series and
   retained-stale-source behavior, recovery and actual delivery for each pool.
 
@@ -79,6 +79,6 @@ No data reset, database restore, queue mutation or capacity change follows from 
 
 ## References
 
-- [Monitoring-as-code design](../superpowers/specs/2026-09-28-monitoring-as-code-design.md)
+- [Monitoring-as-code design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-28-monitoring-as-code-design.md)
 - [Existing activation evidence](../operations/2026-09-28-monitoring-activation.md)
-- [Folder activation specification](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)
+- [Folder activation specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md)

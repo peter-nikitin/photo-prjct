@@ -71,4 +71,4 @@ Compose/workflow revision if the edge rollout fails; certificate volumes remain 
 - [Architecture deployment topology](../architecture.md#current-architecture--implemented)
 - [ADR 0003](0003-docker-compose-yandex-cloud.md)
 - [ADR 0005](0005-promote-images-through-staging.md)
-- [HTTPS edge implementation plan](../plans/2026-07-13-https-edge.md)
+- [HTTPS edge implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-13-https-edge.md)

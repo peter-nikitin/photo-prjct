@@ -135,7 +135,7 @@ different cart authority.
 
 ## References
 
-- [Anonymous paid-photo cart design](../superpowers/specs/2026-08-20-anonymous-paid-photo-cart-design.md)
+- [Anonymous paid-photo cart design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-20-anonymous-paid-photo-cart-design.md)
 - [Architecture: target MVP](../architecture.md#target-mvp-architecture--proposed)
 - [Architecture: purchase and download](../architecture.md#purchase-and-download)
 - [Architecture: security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)

@@ -186,7 +186,7 @@ When the canonical domain prerequisites are confirmed, I want the prepared share
 activated and observed, so I can serve trusted canonical traffic and renew certificates safely.
 
 - Status: Delivered
-- Evidence: [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful then-designated staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
+- Evidence: [Canonical domain HTTPS edge plan — Chunk 2](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful then-designated staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740)
 - Last updated: 2026-07-17
 
 ### EJ-009 — Operator — Detect service degradation
@@ -211,7 +211,7 @@ Remote Write ingestion, diagnostic alert application and notifications are not p
 baseline validation and remain separately gated.
 
 - Status: Validated
-- Evidence: [Minimal service monitoring design](superpowers/specs/2026-07-30-minimal-service-monitoring-design.md),
+- Evidence: [Minimal service monitoring design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-30-minimal-service-monitoring-design.md),
   [image-origin probe decision](adr/0039-run-public-probe-on-image-origin-vm.md), and
   [activation runbook](runbooks/minimal-monitoring.md).
 - Last updated: 2026-09-27
@@ -222,7 +222,7 @@ When transactional data or media metadata is lost or corrupted, I want a tested 
 procedure with agreed recovery targets, so I can recover service safely.
 
 - Status: Candidate
-- Evidence: [`scripts/clone-deployed-db.sh`](../scripts/clone-deployed-db.sh) and [`tests/deployment/test_clone_deployed_database.py`](../tests/deployment/test_clone_deployed_database.py) provide partial local restore evidence: a developer can create a validated deployed-VM logical dump, replace only the current checkout's local Compose database through a serialized local-Docker-only workflow, quiesce the normal web service, retain diagnostic and safety dumps, and validate migration readiness without running the mutating web entrypoint. Separate isolated PostgreSQL 16 integrations verify marker/owner/ACL normalization and the actual project image's `django_migrations`, `showmigrations`, and `makemigrations` readiness against a restored migrated schema without deployed-VM network contact. This remains insufficient for service-data recovery: scheduled backups, retention, RPO/RTO, media recovery, and a disaster-recovery drill are not established. See also [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions).
+- Evidence: [`scripts/clone-deployed-db.sh`](../scripts/clone-deployed-db.sh) and [`tests/deployment/test_clone_deployed_database.py`](../tests/deployment/test_clone_deployed_database.py) provide partial local restore evidence: a developer can create a validated deployed-VM logical dump, replace only the current checkout's local Compose database through a serialized local-Docker-only workflow, quiesce the normal web service, retain diagnostic and safety dumps, and validate migration readiness without running the mutating web entrypoint. Separate isolated PostgreSQL 16 integrations verify marker/owner/ACL normalization and the actual project image's `django_migrations`, `showmigrations`, and `makemigrations` readiness against a restored migrated schema without deployed-VM network contact. This remains insufficient for service-data recovery: scheduled backups, retention, RPO/RTO, media recovery, and a disaster-recovery drill are not established. See also [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Architecture and ADR index](architecture.md).
 - Last updated: 2026-07-25
 
 ### EJ-015 — Operator — Inspect bounded selfie-search operational evidence
@@ -401,7 +401,7 @@ decision without changing runtime behavior.
   100 controls, and 1,506 uncertain gallery entries. This fixture proves only the finalization
   round trip, not a quality decision. The tooling and evidence are local and filesystem-only; no
   canonical-deployment generation is activated, and the separate search-relevance review remains pending.
-  See the [approved sampled-review plan](plans/2026-08-08-ten-percent-face-quality-review.md) and
+  See the [approved sampled-review plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-08-08-ten-percent-face-quality-review.md) and
   [`face_spike` experiment](../experiments/face_recognition_spike/README.md).
 - Last updated: 2026-08-08
 
@@ -421,7 +421,7 @@ other events, ranking, or historical biometric evidence.
   `preview-small-v1` cohort validation, dry-run-by-default
   historical reprocessing command (retired under ADR 0054), idempotent replay,
   privacy-safe status aggregates, and append-only activation gate recorded in the
-  [reviewed rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md) and implemented at the time in
+  [reviewed rollout design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md) and implemented at the time in
   [`enrollment.py`](../src/backend/processing/services/enrollment.py) and
   [`face_quality.py`](../src/backend/processing/services/face_quality.py). Its focused activation,
   replay, enrollment, and adjacent corpus tests passed (60 tests). Commit `333f5b8` accepts the
@@ -434,7 +434,7 @@ other events, ranking, or historical biometric evidence.
   photos/jobs/attempts/projections with zero technical failures, 37,573 kept faces, and 18,610
   quality-rejected faces; its exact configuration, preview-manifest, comparison-manifest, and
   YuNet/SFace SHA-256 values are recorded in the
-  [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence).
+  [approved rollout design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence).
   That evidence keeps local canonical projection
   `a98b5d13152683419c722a115045037fdf883a1f5cdcc3e47a2bddf5291b7d63` separate from accepted
   runtime `PhotoDerivative` cohort
@@ -634,7 +634,7 @@ sources run without the old JSON embedding table.
 - Status: Complete
 - Evidence: [ADR 0040](adr/0040-use-pgvector-for-exact-face-search.md),
   [ADR 0041](adr/0041-accept-pgvector-numerical-boundaries.md), and the
-  [retirement plan](plans/2026-10-04-complete-pgvector-face-read-cutover.md) govern exact native
+  [retirement plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-10-04-complete-pgvector-face-read-cutover.md) govern exact native
   search for both selfie and gallery sources. Production deploy `1801c097` completed on
   2026-10-04. The post-deploy read-back found 147,774 current vectors, zero old vectors or raw
   historical embedding arrays, a physical `vector(512)` column, no JSON embedding table and no
@@ -655,7 +655,7 @@ work does not consume the public web/database host's resources and idle bulk cap
 - Evidence: [ADR 0042](adr/0042-isolate-autoscaled-photo-worker-pools.md),
   [ADR 0050](adr/0050-decouple-processing-queue-from-worker-builds.md),
   [ADR 0051](adr/0051-release-photo-worker-images-independently.md), and the
-  [independent-image deployment plan](plans/2026-10-03-independent-worker-image-deployment.md)
+  [independent-image deployment plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-10-03-independent-worker-image-deployment.md)
   describe the current path. The repository implements remote private worker pools, durable
   claim/lease handoff, a reusable model base, host-owned in-place image updates, and component-aware
   Deploy. Documentation-only changes do not deploy; web/import-only releases leave photo-worker
@@ -695,10 +695,10 @@ This log is append-only.
 | 2026-07-17 | EJ-004 | Not recorded | Validated | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), [`docker-compose.https.yml`](../docker-compose.https.yml), [`deploy/apply-deployment.sh`](../deploy/apply-deployment.sh), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
 | 2026-07-17 | EJ-005 | Not recorded | Validated | [`package.json`](../package.json), [`Dockerfile.visual-tests`](../Dockerfile.visual-tests), [`docker-compose.visual.yml`](../docker-compose.visual.yml), and [`tests/test_repository_foundation.py::test_visual_regression_runs_in_a_pinned_container_environment`](../tests/test_repository_foundation.py) |
 | 2026-07-17 | EJ-006 | Not recorded | Validated | [`.github/workflows/promote-production.yml`](https://github.com/peter-nikitin/photo-prjct/blob/7fd40983db93029cf1fc21addca12c2a9ed22040/.github/workflows/promote-production.yml) and [`tests/test_repository_foundation.py::test_deployment_workflows_separate_staging_and_production`](../tests/test_repository_foundation.py) |
-| 2026-07-17 | EJ-007 | Not recorded | Candidate | [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production) |
-| 2026-07-17 | EJ-008 | Not recorded | Delivered | [Canonical domain HTTPS edge plan — Chunk 2](plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
-| 2026-07-17 | EJ-009 | Not recorded | Candidate | [Architecture open decisions — Observability stack](architecture.md#open-decisions) |
-| 2026-07-17 | EJ-010 | Not recorded | Candidate | [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Open decisions](architecture.md#open-decisions) |
+| 2026-07-17 | EJ-007 | Not recorded | Candidate | [Architecture accepted constraints](architecture.md#accepted-constraints) and [staging-production deployment design — Phase 3](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-11-staging-production-deployment-design.md#phase-3-provision-production) |
+| 2026-07-17 | EJ-008 | Not recorded | Delivered | [Canonical domain HTTPS edge plan — Chunk 2](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-13-canonical-domain-https-edge.md#chunk-2-https-activation-release), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), and [successful GitHub Actions staging deploy run 29556330740](https://github.com/peter-nikitin/photo-prjct/actions/runs/29556330740) |
+| 2026-07-17 | EJ-009 | Not recorded | Candidate | [Architecture deployment boundaries](architecture.md#deployment-domain-assignment--accepted) |
+| 2026-07-17 | EJ-010 | Not recorded | Candidate | [Architecture Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) and [Architecture and ADR index](architecture.md) |
 | 2026-07-19 | EJ-005 | Validated | Validated | Local visual runs now reuse a dependency-keyed image; [`tests/test_visual_test_runner.py`](../tests/test_visual_test_runner.py) verifies build-once behavior. |
 | 2026-07-19 | EJ-002 | Validated | Validated | Pull requests retain the complete suite while branch-push CI is limited to `main`; [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and [`tests/test_repository_foundation.py`](../tests/test_repository_foundation.py) enforce the trigger contract. |
 | 2026-07-19 | EJ-005 | Validated | Validated | CI reuses a dependency-keyed GHCR image with build fallback, and [`.github/workflows/visual-test-image.yml`](../.github/workflows/visual-test-image.yml) publishes changed dependency images only from `main`. |
@@ -724,7 +724,7 @@ This log is append-only.
 | 2026-08-08 | EJ-019 | Validated | Delivered | Accepted Release A staging writer/direct-reader operation, local Release B projection-reader evidence, clean global reconciliation, and aggregate 2x benchmark are recorded. Release B review, PR/CI, deployment, live candidate gate, and cutover remain pending. |
 | 2026-08-10 | EJ-019 | Delivered | Delivered | Release B commit `d5b21e4` is deployed. The obsolete exact Release A image precondition is retired; future deployments retain live all-events reconciliation and event-9 benchmark gates. |
 | 2026-08-08 | EJ-021 | Not recorded | Validated | A frozen 15,052-rejection comparison produced an immutable private 1,506-face, six-stratum sampled bundle with 100 separate retained controls; its bounded hashes, unchanged-source check, logical-page probes, and non-human fixture-finalizer round trip are recorded in EJ-021. Human labels, an operator decision, runtime activation, and search-relevance review remain separate. |
-| 2026-08-10 | EJ-022 | Not recorded | Delivered | Commits `e29e65a` and `333f5b8` provide the exact preview-backed version-4 approval/replay/activation and dark-deployment capability with focused local-contract tests. The maintainer-accepted 17,043-photo full-corpus quality selection, its counts, and its exact hashes are recorded in the [approved rollout design](superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence). Current-merge-candidate `make check`/reconciliation, PR/CI, all staging and production rollout stages, and live verification remain unrecorded. |
+| 2026-08-10 | EJ-022 | Not recorded | Delivered | Commits `e29e65a` and `333f5b8` provide the exact preview-backed version-4 approval/replay/activation and dark-deployment capability with focused local-contract tests. The maintainer-accepted 17,043-photo full-corpus quality selection, its counts, and its exact hashes are recorded in the [approved rollout design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-10-preview-face-quality-v4-rollout-design.md#approval-evidence). Current-merge-candidate `make check`/reconciliation, PR/CI, all staging and production rollout stages, and live verification remain unrecorded. |
 | 2026-08-10 | EJ-022 | Delivered | Delivered | Commit `4f10a1a` enforces the clarified accepted cohort contract: the local projection and accepted runtime cohort have distinct canonical hashes and 17,043/17,043 SHA mismatches bound by one immutable reviewed crosswalk. Runtime enrollment and activation recompute the accepted cohort identity over photo ID, accepted SHA-256, byte size, and geometry; no byte-equivalence or environment-rollout evidence is claimed. |
 | 2026-08-15 | EJ-023 | Not recorded | Validated | Local automated coverage validates inline folder administration, durable mixed-folder ingestion, and stable public GET filtering restricted to the existing eligible event gallery. Folder identifiers remain non-authoritative for media; the mass editor is deferred. No CI, deployment, staging, or customer evidence is claimed. |
 | 2026-08-20 | EJ-024 | Not recorded | In progress | ADR 0029's repository path is implemented with an off-by-default gate and focused Django/worker test evidence. Final artwork, complete-suite, visual, worker-image, deployment, and real-activation evidence remain pending. |

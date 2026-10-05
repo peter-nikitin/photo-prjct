@@ -37,9 +37,10 @@ the ADR index and architecture summary consistent.
 
 ## Quality rules
 
-- Use English and concise, neutral language.
+- Write new ADRs in Russian with concise, neutral language; leave existing English ADRs as they are.
 - Explain why the decision is appropriate now; do not write a retrospective narrative.
-- Keep detailed task sequences, commands, and file inventories in `docs/plans`, not the ADR.
+- Keep detailed task sequences, commands, and file inventories in temporary plans; retain only
+  accepted durable decisions and their reasons in the ADR after merge.
 - Treat accepted ADR content as immutable except for spelling, formatting, and link corrections.
 - Preserve unresolved storage, queue, vector, ML, payment, and biometric choices until evidence and
   authority exist.

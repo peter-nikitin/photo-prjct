@@ -193,6 +193,6 @@ progress after deployment. Failure of any live gate requires rollback; selfie se
 ## Sources
 
 - [ADR 0017](adr/0017-use-django-polled-photo-processing-jobs.md)
-- [Worker specification](superpowers/specs/2026-07-29-event-photo-processing-worker-design.md)
+- [Worker specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-29-event-photo-processing-worker-design.md)
 - [Local manual check](local-photo-processing-check.md)
 - `.agents/skills/manage-yandex-cloud/references/inventory.md`

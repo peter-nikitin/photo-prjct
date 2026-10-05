@@ -2,7 +2,7 @@
 
 - Status: ready for review; commands below have **not** been executed.
 - Baseline: `e66a09d2bf3573254e3ec8468033b37bd3470401` (PR #231), verified live on 2026-09-30.
-- Design authority: [approved specification](../superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [ADR 0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md).
+- Design authority: [approved specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-30-isolated-worker-folder-activation-design.md), [ADR 0046](../adr/0046-isolate-worker-pool-management-in-a-separate-folder.md).
 - This package makes the next infrastructure changes reviewable. It does not authorize them or replace the [activation acceptance and rollback](2026-09-30-worker-folder-operational-handoff.md).
 
 ## Current evidence and recommended order
@@ -210,7 +210,7 @@ path; the application secret's other fields and pgvector state remain intact.
 
 ## Existing Prometheus delivery and remaining worker integration
 
-The [approved monitoring-as-code design](../superpowers/specs/2026-09-28-monitoring-as-code-design.md),
+The [approved monitoring-as-code design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-28-monitoring-as-code-design.md),
 [implementation/runbook](../../deploy/monitoring/prometheus/README.md) and
 [activation evidence](2026-09-28-monitoring-activation.md) establish the delivered
 foundation in canonical folder `b1g2qttgfhb4gdunvlge`:
@@ -243,7 +243,7 @@ that does not itself export native queue/capacity metrics or install worker aler
 `worker_pool_metrics.py` still publishes the authoritative autoscaling series through
 the native Monitoring writer. Keep that writer and its scale/retirement semantics.
 
-The [worker integration plan](../plans/2026-09-30-worker-prometheus-alerts.md) closes that repository
+The [worker integration plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-30-worker-prometheus-alerts.md) closes that repository
 gap under [ADR 0048](../adr/0048-reuse-managed-prometheus-for-worker-alerts.md):
 
 1. Add read-only queue/capacity/source observations to the existing private diagnostic scrape.

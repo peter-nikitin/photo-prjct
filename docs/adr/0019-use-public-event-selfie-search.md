@@ -129,7 +129,7 @@ documented callback bound.
 
 ## References
 
-- [Public selfie search design](../superpowers/specs/2026-07-30-public-selfie-search-design.md)
+- [Public selfie search design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-30-public-selfie-search-design.md)
 - [Architecture: Search](../architecture.md#search)
 - [Architecture: security, privacy, and legal boundaries](../architecture.md#security-privacy-and-legal-boundaries)
 - [ADR 0001: Use a Django modular monolith](0001-django-modular-monolith.md)

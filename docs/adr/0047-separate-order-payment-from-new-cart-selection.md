@@ -54,7 +54,7 @@ ADR 0031's immutable Order and PaymentAttempt evidence, one-active-attempt invar
 
 ### Follow-up
 
-- Implement and verify [the approved specification](../superpowers/specs/2026-09-30-browser-order-history-and-independent-carts-design.md) after this ADR is accepted.
+- Implement and verify [the approved specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-30-browser-order-history-and-independent-carts-design.md) after this ADR is accepted.
 - Reconcile the Purchase and download architecture summary and the affected product-job evidence after delivery.
 
 ## Validation and rollback
@@ -65,7 +65,7 @@ Rollback first closes new checkout through the existing paid-purchase gate while
 
 ## References
 
-- [Browser Order History and Independent Carts design](../superpowers/specs/2026-09-30-browser-order-history-and-independent-carts-design.md)
+- [Browser Order History and Independent Carts design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-30-browser-order-history-and-independent-carts-design.md)
 - [Architecture: Purchase and download](../architecture.md#purchase-and-download)
 - [ADR 0030: Use anonymous server-side event carts](0030-use-anonymous-server-side-event-carts.md)
 - [ADR 0031: Use orders and adapters for paid original delivery](0031-use-orders-and-adapters-for-paid-original-delivery.md)

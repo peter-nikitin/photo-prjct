@@ -110,12 +110,9 @@ def test_repository_markdown_links_resolve_to_local_files() -> None:
             ROOT / "docs" / "architecture.md",
             ROOT / "docs" / "product-jobs.md",
             ROOT / "docs" / "engineering-jobs.md",
-            ROOT / "docs" / "plans" / "2026-08-23-pareto-test-suite-refactor.md",
-            ROOT
-            / "docs"
-            / "superpowers"
-            / "specs"
-            / "2026-08-23-pareto-test-suite-refactor-design.md",
+            ROOT / "README.md",
+            ROOT / "CONTEXT.md",
+            ROOT / "docs" / "runbooks",
             ROOT / "docs" / "adr",
             ROOT / ".agents" / "skills",
         )

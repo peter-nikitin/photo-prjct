@@ -135,7 +135,7 @@ private-media boundary.
 
 ## References
 
-- [CDN and imgproxy gallery delivery design](../superpowers/specs/2026-09-15-cdn-imgproxy-gallery-delivery-design.md)
+- [CDN and imgproxy gallery delivery design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-09-15-cdn-imgproxy-gallery-delivery-design.md)
 - [Architecture](../architecture.md)
 - [ADR 0003: Use Docker Compose on a Yandex Cloud VM](0003-docker-compose-yandex-cloud.md)
 - [ADR 0006: Use Yandex Object Storage for media](0006-yandex-object-storage-media.md)

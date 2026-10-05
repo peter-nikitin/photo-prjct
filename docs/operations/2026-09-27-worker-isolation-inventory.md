@@ -2,7 +2,7 @@
 
 - Date: 2026-09-27
 - Status: Read-only preparation; no code deployment or cloud mutation
-- Related plan: [Isolation](../plans/2026-09-27-autoscaled-worker-isolation.md)
+- Related plan: [Isolation](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-09-27-autoscaled-worker-isolation.md)
 
 ## Observations
 

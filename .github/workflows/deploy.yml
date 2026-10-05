@@ -401,7 +401,7 @@ jobs:
 
   deploy:
     name: Deploy
-    if: ${{ always() && needs.build.result == 'success' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && (needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true') }}
+    if: ${{ always() && needs.build.result == 'success' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && (needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' || needs.classify-release.outputs.worker_changed == 'true') }}
     runs-on: ubuntu-latest
     needs: [classify-release, build, reconcile-observability-host]
     permissions:
@@ -429,6 +429,7 @@ jobs:
             --identity github-oidc \
             -- deploy/run-remote.sh verify-paused-observability-release
       - name: Run deployment
+        if: ${{ needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' }}
         env:
           VM_HOST: ${{ vars.VM_HOST }}
           VM_USER: ${{ vars.VM_USER }}
@@ -509,6 +510,22 @@ jobs:
             --consumer deploy \
             --identity github-oidc \
             -- deploy/run-remote.sh deploy
+      - name: Run photo-worker activation
+        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
+        env:
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+          WORKER_POOL_FOLDER_ID: ${{ vars.WORKER_POOL_FOLDER_ID }}
+          WORKER_POOL_BULK_GROUP_ID: ${{ vars.WORKER_POOL_BULK_GROUP_ID }}
+          WORKER_POOL_SELFIE_GROUP_ID: ${{ vars.WORKER_POOL_SELFIE_GROUP_ID }}
+          WORKER_POOL_SUBNET_ID: ${{ vars.WORKER_POOL_SUBNET_ID }}
+          WORKER_POOL_SECURITY_GROUP_ID: ${{ vars.WORKER_POOL_SECURITY_GROUP_ID }}
+          WORKER_POOL_CANONICAL_VM_ID: ${{ vars.WORKER_POOL_CANONICAL_VM_ID }}
+        run: |
+          python scripts/run-with-environment-secrets.py \
+            --consumer remote-check --identity github-oidc \
+            -- deploy/worker-pools/activate.py
       - name: Verify private upload storage contract
         if: ${{ inputs.verify_private_storage }}
         env:
@@ -562,6 +579,7 @@ jobs:
         env:
           PREVIOUS_WEB_IMAGE: ${{ needs.build.outputs.previous_web_image }}
           PREVIOUS_IMPORT_IMAGE: ${{ needs.build.outputs.previous_import_image }}
+          PREVIOUS_WORKER_IMAGE: ${{ needs.build.outputs.previous_worker_image }}
         run: |
           status=0
           if [ "${{ needs.classify-release.outputs.web_changed }}" = true ]; then
@@ -569,6 +587,9 @@ jobs:
           fi
           if [ "${{ needs.classify-release.outputs.import_changed }}" = true ]; then
             sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-import-worker:latest" "$PREVIOUS_IMPORT_IMAGE" || status=1
+          fi
+          if [ "${{ needs.classify-release.outputs.worker_changed }}" = true ]; then
+            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-worker:latest" "$PREVIOUS_WORKER_IMAGE" || status=1
           fi
           exit "$status"
 

@@ -17,12 +17,15 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 from urllib.request import Request
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/backend"))
+sys.path.insert(0, str(ROOT / "deploy/worker-pools"))
+from discovery import validate_ingress  # noqa: E402
 from processing.services import worker_pool_cloud  # noqa: E402
 from processing.services.worker_pool_cloud import (  # noqa: E402
     COMPUTE,
@@ -42,6 +45,7 @@ FIELDS = {
     "network_id",
     "subnet_id",
     "worker_sg_id",
+    "worker_ssh_public_key",
     "canonical_vm_id",
     "private_api_ipv4",
     "worker_sa_id",
@@ -114,10 +118,26 @@ def validate(config):
         "worker_image",
         "docker_version",
         "compose_version",
+        "worker_ssh_public_key",
     }:
         identifier(config[key])
     if config["folder_id"] == config["canonical_folder_id"]:
         raise ValueError("worker and canonical folders must differ")
+    key = config["worker_ssh_public_key"]
+    if not isinstance(key, str) or "\n" in key or not key:
+        raise ValueError("existing CI public key required")
+    with tempfile.NamedTemporaryFile(mode="w") as public_key:
+        public_key.write(key + "\n")
+        public_key.flush()
+        try:
+            subprocess.run(
+                ["ssh-keygen", "-l", "-f", public_key.name],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.SubprocessError as exc:
+            raise ValueError("invalid CI public key") from exc
     address = ipaddress.IPv4Address(config["private_api_ipv4"])
     if not any(
         address in ipaddress.IPv4Network(cidr)
@@ -226,7 +246,7 @@ def cloud_init(config, pool):
             ROOT / "deploy/worker-pools/telemetry.timer"
         ).read_text(),
     }
-    for name in ("host.py", "updater.py", "updater.service", "updater.timer"):
+    for name in ("host.py", "updater.py", "updater.service"):
         target = (
             f"/etc/systemd/system/findme-worker-{name}"
             if name.endswith((".service", ".timer"))
@@ -236,6 +256,17 @@ def cloud_init(config, pool):
     # Reviewed base image already contains Python, Docker and Compose. No apt/curl installs.
     return "#cloud-config\n" + json.dumps(
         {
+            "users": [
+                {
+                    "name": "findme-deploy",
+                    "lock_passwd": True,
+                    "ssh_authorized_keys": [config["worker_ssh_public_key"]],
+                    "sudo": [
+                        "ALL=(root) NOPASSWD: /usr/bin/python3 "
+                        "/usr/local/lib/findme-worker/updater.py --ci-activation"
+                    ],
+                }
+            ],
             "write_files": [
                 {
                     "path": path,
@@ -541,14 +572,19 @@ def inspect(config, cloud):
     if gateway.get("folderId") != config["folder_id"] or "sharedEgressGateway" not in gateway:
         raise ValueError("wrong private egress gateway")
     worker_sg = cloud.resource("vpc", "securityGroups", config["worker_sg_id"])
+    canonical = cloud.get(f"instances/{config['canonical_vm_id']}", view="FULL")
+    for nic in canonical["networkInterfaces"]:
+        if not nic.get("securityGroupIds"):
+            nic["securityGroupIds"] = [network["defaultSecurityGroupId"]]
     if (
         worker_sg.get("folderId") != config["folder_id"]
         or worker_sg.get("networkId") != config["network_id"]
-        or any(rule.get("direction") == "INGRESS" for rule in worker_sg.get("rules", []))
-        or not any(rule.get("direction") == "EGRESS" for rule in worker_sg.get("rules", []))
     ):
         raise ValueError("worker SG prerequisite missing")
-    canonical = cloud.get(f"instances/{config['canonical_vm_id']}", view="FULL")
+    try:
+        validate_ingress(worker_sg, canonical)
+    except ValueError as exc:
+        raise ValueError("worker SG prerequisite missing") from exc
     canonical_grants = cloud.bindings("compute", "instances", config["canonical_vm_id"])
     if any(
         relevant_bindings(canonical_grants, config[account])
@@ -748,7 +784,8 @@ def install_updater(config, *, cloud):
         metadata = deepcopy(original["instanceTemplate"]["metadata"])
         metadata["user-data"] = cloud_init(config, pool)
         # Only userdata changes. The old build/image metadata is inert; no group shape,
-        # disks, scale policy, labels, SSH access or deployment policy is reconstructed.
+        # disks, scale policy, labels or deployment policy is reconstructed. Cloud-init
+        # now includes the approved CI public key and restricted updater user.
         body = {
             "updateMask": "instanceTemplate.metadata",
             "instanceTemplate": {"metadata": metadata},

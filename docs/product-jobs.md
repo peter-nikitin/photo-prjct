@@ -46,6 +46,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
 | PJ-015 | Customer | Filter an event gallery by capture time | Delivered | 2026-08-21 |
 | PJ-016 | Customer | Select paid event photos | In progress | 2026-08-22 |
+| PJ-017 | Customer | Найти фотографии визуально похожего лыжника | Candidate | 2026-10-05 |
 
 ## Job details
 
@@ -360,6 +361,24 @@ storing a manual query.
   evidence does not establish customer-outcome validation.
 - Last updated: 2026-08-21
 
+### PJ-017 — Customer — Найти фотографии визуально похожего лыжника
+
+Когда на фотографиях горнолыжной съёмки не видно моего лица и нет стартового номера, я хочу
+выбрать снимок с собой и найти в этом событии другие фотографии визуально похожего лыжника,
+чтобы просмотреть вероятные совпадения без поиска по лицу или номеру.
+
+- Status: Candidate
+- Evidence: Потребность и границы задачи уточнены для горных лыж: спортсмены носят шлемы,
+  маски и часто закрывают лицо баффом. Смена комплекта создаёт новую поисковую идентичность,
+  даже если оба комплекта носил один человек. Похожую форму могут носить разные люди;
+  комплекция, детали снаряжения и контекст съёмки помогают оценивать кандидатов, но по
+  отдельности не доказывают совпадение. [Техническое исследование](research/2026-10-05-ski-appearance-clustering.md)
+  перечисляет вопросы и проверки, необходимые до составления плана реализации.
+- Граница задачи: результаты показывают вероятные совпадения с выбранным лыжником, но не
+  устанавливают личность и не гарантируют нахождение всех фотографий. Неоднозначные случаи
+  одинаковой формы нужно оставлять доступными для проверки, а не объединять автоматически.
+- Last updated: 2026-10-05
+
 Visual design-reference screens are not delivery evidence.
 
 ## Status log
@@ -408,3 +427,4 @@ This log is append-only.
 | 2026-09-25 | PJ-007 | In progress | Validated | Canonical production completed 37/37 Istra and 28/28 Gagarin/Metelsky bib jobs without error or retry, and the operator verified public exact-number search. Three apparel `65` false positives are accepted for the opt-in first version and recorded with concrete revisit triggers in future work. |
 | 2026-10-01 | PJ-007 | Validated | Validated | Local repository addition lets authorized operators edit current bib readings in the private event photo workspace and records append-only analytics changes. Management exact `bib` and `without_bib=1` filters use current readings; public exact search keeps its existing current-row contract. No new deployment or customer-use evidence is claimed. |
 | 2026-09-15 | PJ-005 | Validated | Validated | Repository implementation of ADR 0036 issues six-hour exact-object small-preview capabilities only for accepted normal-gallery derivatives. Legacy, large, download, result, private, archive, and purchased-media routes remain application-authorized; no CI, deployment, direct-transfer, or customer-outcome evidence is claimed. |
+| 2026-10-05 | PJ-017 | Not recorded | Candidate | Для горнолыжной съёмки без видимого лица и номера предложен поиск визуально похожего лыжника в пределах события и одного комплекта. Техническое исследование определяет проверки, необходимые до планирования реализации. |

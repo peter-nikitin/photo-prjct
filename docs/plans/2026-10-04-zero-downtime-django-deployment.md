@@ -1,22 +1,22 @@
 # Zero-downtime Django deployment implementation plan
 
 - Date: 2026-10-04
-- Status: Approved by maintainer on 2026-10-04
+- Status: Revised for maintainer-approved CI-push design on 2026-10-04
 - Owner: project maintainer
-- Related specification: [Zero-downtime Django releases](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md)
+- Related specifications: [Zero-downtime Django releases](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md), [Independent worker-image deployment](../superpowers/specs/2026-10-03-independent-worker-image-deployment-design.md)
 - Related architecture: [Current architecture — implemented](../architecture.md#current-architecture--implemented)
 - Related ADRs: [0003](../adr/0003-docker-compose-yandex-cloud.md), [0007](../adr/0007-nginx-certbot-https-edge.md), [0011](../adr/0011-use-minimal-shared-https-rollout.md), [0028](../adr/0028-operate-one-canonical-deployment.md), [0051](../adr/0051-release-photo-worker-images-independently.md), [0053](../adr/0053-reconcile-observability-independently-on-main.md)
 - ADR impact: Conforms to the cited accepted ADRs; no new environment, cloud resource or release authority.
 
 ## Goal, scope and acceptance
 
-Implement the approved specification's [outcome and scope](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#outcome-and-scope) and [acceptance criteria](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#acceptance-criteria). Scope delta: none. The first activation must migrate the existing single `web` container while it serves traffic; future ordinary web releases alternate `web` and `web-next` without a VM, PostgreSQL or Nginx restart. No VM resize or worker-image change.
+Implement the approved Django [outcome and acceptance](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#acceptance-criteria) and the revised [CI-push release contract](../superpowers/specs/2026-10-03-independent-worker-image-deployment-design.md#selected-design). The first web activation must migrate the existing single `web` container while it serves traffic; future ordinary releases alternate `web` and `web-next` without a VM, PostgreSQL or Nginx restart. Deploy only changed component images via their own `latest` pointers, trigger running hosts from CI, and retire the worker polling timer after the private path works. No VM resize or extra worker VM.
 
 The project `$execute-implementation-plan` skill controls implementer/reviewer dispatch, Git ownership, verification fingerprints, final commit and PR handoff. The same draft PR carries this plan and the implementation after review.
 
 ## Worker/state/artifact release safeguards
 
-Not applicable: this plan changes neither the photo-worker claim/result contract nor durable processing rows or generated customer-photo artifacts. The local import worker's endpoint moves behind the existing private Nginx edge without changing its request/response contract. Static build assets have their own overlap check in Task 2.
+Not applicable to processing state or customer-photo artifacts: this plan changes the release trigger, not the photo-worker claim/result contract or durable processing rows. The local import worker's endpoint moves behind the existing private Nginx edge without changing its request/response contract. Static build assets have their own overlap check in Task 2. Existing web/worker overlap must satisfy the active semantic contract; incompatible migrations remain excluded from ordinary handoff.
 
 ## Implementation
 
@@ -48,42 +48,79 @@ Not applicable: this plan changes neither the photo-worker claim/result contract
 
 ### Task 3: Replace stop/start deploy with warm handoff and bounded recovery
 
-**Files:** `deploy/apply-deployment.sh`, `deploy/web-slot.py`, `tests/deployment/test_deployment_scripts.py`, `tests/deployment/test_import_deployment.py`, `tests/deployment/test_remote_only_deployment.py`, `tests/deployment/test_component_release.py`, `tests/deployment/validate-web-slot-handoff.sh` (new).
+**Files:** `deploy/apply-deployment.sh`, `deploy/run-remote.sh`, `deploy/web-slot.py`, `src/import_worker/` and its focused tests if graceful accepted-work drain requires it, `docker-compose.https.yml` if needed to remove slot-specific edge startup dependency, `tests/deployment/test_deployment_scripts.py`, `tests/deployment/test_import_deployment.py`, `tests/deployment/test_remote_only_deployment.py`, `tests/deployment/test_component_release.py`, `tests/deployment/test_legacy_face_retirement.py`, `tests/deployment/test_pgvector_database.py` for an obsolete deployment-script assertion, `tests/deployment/validate-web-slot-handoff.sh` (new).
 
 - **Specification:** [Selected design](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#selected-design), [Shared database and compatibility contract](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#shared-database-and-compatibility-contract), [Failure and recovery semantics](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#failure-and-recovery-semantics).
 - **Depends on:** Task 2's selected-slot read/switch interface and shared assets.
-- **Produces:** ordinary Deploy starts only the unselected web slot, checks readiness, atomically switches and validates the edge, drains the previous slot, then commits `deployed-image`. It leaves the old slot serving on pre-switch failure and preserves it on uncertain post-switch failure. The existing deployment lock and safe forward-recovery path remain authoritative.
+- **Produces:** ordinary Deploy starts only the unselected web slot, checks readiness, atomically switches and validates the edge, then drains the previous slot. It leaves the old slot serving on pre-switch failure and preserves it on uncertain post-switch failure. The selected upstream and running container image, not `deployed-image`, identify the active release. The existing deployment lock and safe forward-recovery path remain authoritative.
 
-- [ ] Add failing phase tests for candidate pull/setup/readiness failure, Nginx validation failure, successful held-request handoff, post-switch smoke failure, interrupted retry, drain timeout and prior-image compatibility. Assert that neither Nginx nor PostgreSQL is stopped or recreated on an ordinary web release and the marker advances only after verified success.
+- [ ] Add failing phase tests for candidate pull/setup/readiness failure, Nginx validation failure, successful held-request handoff, post-switch smoke failure, interrupted retry, drain timeout and prior-image compatibility. Assert that neither Nginx nor PostgreSQL is stopped or recreated on an ordinary web release and no second marker is required to identify the selected image.
 - [ ] Run `sh scripts/run-in-test-env.sh .venv/bin/pytest -q -m operational tests/deployment/test_deployment_scripts.py tests/deployment/test_remote_only_deployment.py tests/deployment/test_component_release.py`; record focused RED outcomes.
-- [ ] Replace the ordinary release's `compose stop nginx`, broad `compose up` and unconditional database reconciliation with slot-specific candidate operations. Keep initial certificate/database bootstrap and explicit exceptional database/certificate maintenance separate. Move Commerce/import worker image reconciliation after web selection without changing the private import contract or terminating accepted work.
-- [ ] Re-run focused tests GREEN. Run `sh tests/deployment/validate-web-slot-handoff.sh` against local disposable Docker containers: hold an old-slot request open while switching, check new requests and private routes on the candidate, and prove the held request completes before predecessor stop. A failed/uncertain switch must show a healthy selected slot and truthful deployment failure.
+- [ ] Preserve the selected-slot file and the live bind-mounted `deploy/nginx` directory inode while the remote package installer replaces `deploy/`, retaining the previous package's copy for rollback. Replace the ordinary release's `compose stop nginx`, broad `compose up` and unconditional database reconciliation with slot-specific candidate operations. Keep initial certificate/database bootstrap and explicit exceptional database/certificate maintenance separate. Move Commerce/import worker image reconciliation after web selection without changing the private import contract or terminating accepted work; a legacy importer without graceful drain must fail closed before web switch when it cannot be safely replaced.
+- [ ] Re-run focused tests GREEN. Run `sh tests/deployment/validate-web-slot-handoff.sh` against local disposable Docker containers: hold an old-slot request open while switching, check new requests and private routes on the candidate, and prove the held request completes before predecessor stop. A failed/uncertain switch must show a healthy selected slot and truthful deployment failure. Fix the reproduced stopped-slot recovery case using the installed configuration file rather than DNS-dependent `nginx -T` for identification; retain strict validation before switching.
 
-### Task 4: Reconcile shipped behavior and operating instructions
+### Task 4: Make host-side consumers follow the selected Django slot
 
-**Files:** `docs/architecture.md`, `docs/runbooks/deployment.md`, `docs/engineering-jobs.md`, and any deployment test fixture changed by Tasks 1–3.
+**Files:** `deploy/run-commerce-worker-health.sh`, `deploy/run-upload-cleanup.sh`, `deploy/run-cart-cleanup.sh`, `deploy/verify-selfie-observability.sh`, `scripts/monitor_commerce.py`, `deploy/worker-pools/metrics.py`, `deploy/selfie-observability/run-daily-summary.sh`, `deploy/selfie-observability/root-helper.sh`, `deploy/selfie-observability/summarize.py`, and focused tests for these commands. `deploy/run-remote.sh` verification commands belong to Task 3.
 
-- **Specification:** [Acceptance criteria](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#acceptance-criteria), [Explicit non-goals](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#explicit-non-goals).
-- **Depends on:** verified Tasks 1–3.
-- **Produces:** current architecture/runbook distinguish the committed active slot, temporary candidate, one PostgreSQL, compatible migrations, static retention, ordinary rollback and maintenance-window operations. No ADR text is silently rewritten.
+- **Specification:** [Selected design](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#selected-design), [Acceptance criteria](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#acceptance-criteria).
+- **Depends on:** Task 3's selected-slot runtime and verified handoff.
+- **Produces:** scheduled cleanup, Commerce health, selfie observability and worker-pool metric publication use whichever Django slot is selected; none silently fail when `web` becomes the stopped predecessor. The host scripts keep their existing schedule, permissions and outputs.
 
-- [ ] Document ordinary CI release and first-activation behavior, plus exact read-only checks for selected upstream, both web images, public/private health and old-request drain.
-- [ ] Document that incompatible migration, PostgreSQL upgrade, certificate reissue, VM reboot and resize are outside the zero-downtime promise; state how an operator identifies a stopped, switched-but-uncommitted or committed release.
-- [ ] Compare final behavior with specification and ADRs 0003/0007/0011/0028/0051/0053; update implemented architecture facts and record conformance in PR. Stop for an ADR decision if implementation would contradict an accepted boundary.
+- [ ] Add focused tests that select `web-next`, stop `web`, and verify each host-side command targets the selected live slot; check that observability service filtering includes the selected slot without double counting.
+- [ ] Replace fixed `docker compose exec ... web` targets with the selected-slot read interface, keeping existing failures explicit rather than falling back to the inactive slot.
+- [ ] Run focused operational tests GREEN and verify the existing `web`-selected case is unchanged.
+
+### Task 5: Publish independent `latest` images and activate canonical services from CI
+
+**Files:** `.github/workflows/deploy.yml`, `deploy/classify-release.py`, `deploy/run-remote.sh`, `deploy/apply-deployment.sh`, deployment Compose files, `tests/deployment/test_component_release.py`, `tests/deployment/test_deployment_scripts.py` and focused classifier tests.
+
+- **Specification:** [Component classification and shared trigger](../superpowers/specs/2026-10-03-independent-worker-image-deployment-design.md#decide-what-to-publish-from-the-change-itself), [Django selected image](../superpowers/specs/2026-10-04-zero-downtime-django-deployment-design.md#selected-design).
+- **Depends on:** verified Tasks 3–4.
+- **Produces:** web, photo-worker and import-worker have independent `latest` pointers; Commerce reuses the web image. The serialized Deploy workflow builds only effective changed images, publishes pointers after checks, then invokes only affected running services. The web handoff uses the image just pulled, even if `latest` later moves. Remove shared-SHA and successful-image-marker release gates rather than retaining a compatibility path. A documentation-only change contacts no application host.
+
+- [ ] Write failing tests for docs-only, web-only, import-only, Commerce-only and photo-worker-only changes; assert exact image builds and remote activation selection, with no shared-SHA requirement.
+- [ ] Run `sh scripts/run-in-test-env.sh .venv/bin/pytest -q -m operational tests/deployment/test_component_release.py tests/deployment/test_deployment_scripts.py` and record RED; implement the smallest classifier/workflow/host changes, then rerun GREEN.
+- [ ] Test failed web pull or activation retains the observed selected slot; failed pointer advance/activation restores the previous known registry target and reports failure without claiming running containers were rolled back.
+
+### Task 6: Push activation to running photo-worker VMs and retire registry polling
+
+**Files:** `.github/workflows/deploy.yml`, `deploy/worker-pools/bootstrap.py`, `deploy/worker-pools/provision.py`, `deploy/worker-pools/updater.py`, systemd unit/timer files, private-access provisioning files, `tests/deployment/test_worker_pool_provisioning.py`, `tests/deployment/test_remote_only_deployment.py`, and focused updater/transport tests.
+
+- **Specification:** [Running and newly started VMs](../superpowers/specs/2026-10-03-independent-worker-image-deployment-design.md#running-and-newly-started-vms), [ADR 0051](../adr/0051-release-photo-worker-images-independently.md).
+- **Depends on:** Task 5's independent worker publication; existing one-shot warm/handoff operation.
+- **Produces:** Deploy discovers approved running bulk/selfie members and invokes the warm/handoff service once through private SSH via the canonical VM. The same existing CI `VM_SSH_KEY` authenticates both hops; only its public half is installed for the worker user, whose sudo authority is limited to the one-shot updater. The worker security group allows port 22 only from the canonical VM. A zero-size bulk group is not started. Worker boot still pulls `latest`; after a proven CI trigger, the periodic timer is disabled and removed. Any access or activation failure fails Deploy visibly.
+
+- [ ] Write failing tests for one running selfie member, zero bulk members, multiple approved members, failed private connection, failed warm-up, and no public SSH ingress; verify the timer is absent from the desired template.
+- [ ] Run focused operational tests RED; implement one-shot private activation reusing the existing updater; rerun focused tests GREEN and test current worker boot from `latest` without CI contacting a zero-size group.
+- [ ] Prepare the existing templates with the current deployment public key and a command-limited worker user. Recreate the single selfie member once at cap one so it receives that access; bulk remains at zero. This is a separate, bounded cutover with a selfie-processing pause, not part of an ordinary release.
+- [ ] Before applying the security-group/template/recreation changes, read back exact live worker identities, network and workloads; show old/new configuration, exact commands, cost impact, validation and rollback; obtain immediate operational approval. Do not widen ingress or silently recreate a running VM.
+
+### Task 7: Reconcile shipped behavior and operating instructions
+
+**Files:** `docs/architecture.md`, `docs/runbooks/deployment.md`, `docs/runbooks/worker-pools.md`, `docs/engineering-jobs.md`, and deployment test fixtures affected by Tasks 1–6.
+
+- **Specification:** Both revised specifications and accepted ADR 0051.
+- **Depends on:** verified Tasks 1–6.
+- **Produces:** current architecture and runbooks distinguish the selected web slot, each current image pointer, CI-triggered worker activation, scale-from-zero, compatible recovery, and exceptional maintenance operations. Do not claim cloud access or live activation without direct evidence.
+
+- [ ] Document ordinary CI release and first-activation behavior, plus read-only checks for selected upstream, running images, worker readiness, public/private health and old-request drain.
+- [ ] Document that incompatible migration, PostgreSQL upgrade, certificate reissue, VM reboot and resize are outside the zero-downtime promise. Remove routine polling-timer and shared-SHA operator instructions after delivery.
+- [ ] Compare final behavior with specifications and ADRs 0003/0007/0011/0028/0051/0053; update implemented architecture facts only for verified behavior and record conformance in PR.
 
 ## Verification and handoff
 
 - Use `$select-verification-suites` on the final changed-path package; run each selected suite for its exact final-package fingerprint, and run `make check` once after all task/review loops. Run `.venv/bin/pre-commit run --files` for every changed Python file and `make static` after integrating Python changes.
-- Focused deployment, `sh tests/deployment/validate-nginx.sh`, and `sh tests/deployment/validate-web-slot-handoff.sh` must be GREEN. The local Docker handoff must demonstrate continuous public health, correct private route selection, held-request completion, static assets from both versions and no PostgreSQL/Nginx restart. Simulated failures must leave truthful marker and active-slot state.
-- PR CI repeats the same package checks. A successful merge/workflow is not itself live zero-downtime proof: live acceptance checks the selected SHA, old/new container state, no edge/database restart, public and private health and deployment-phase outcome. Do not induce customer traffic or a database restart solely to prove the handoff.
+- Focused deployment, `sh tests/deployment/validate-nginx.sh`, and `sh tests/deployment/validate-web-slot-handoff.sh` must be GREEN. The local Docker handoff must demonstrate continuous public health, correct private route selection, held-request completion, static assets from both versions and no PostgreSQL/Nginx restart. Simulated failures must leave truthful selected-slot and image state.
+- PR CI repeats the same package checks. A successful merge/workflow is not itself live zero-downtime proof: live acceptance checks selected slot and image, old/new container state, no edge/database restart, public and private health and deployment-phase outcome. Do not induce customer traffic or a database restart solely to prove the handoff.
 
 ## Operational impact and rollout
 
-The first activation is an ordinary `main` Deploy after green review: the existing Nginx and `web` stay serving, the candidate slot is added, static assets are seeded, the candidate is warmed, and Nginx reloads onto it. The database and certificate are retained. Later releases alternate slots. No direct operator command on the VM or paid Yandex resource change is required; any unexpected need for one is a stop condition requiring separate review. Web/worker/observability release classification remains independent.
+Before merging this mixed web/worker package, pause and drain remote claims, perform the separately approved worker private-access/security-group/template cutover, recreate the sole selfie member once at cap one, and prove CI can activate its current image while the old web protocol still runs. Bulk remains at zero. This cutover reuses the current CI key and waits for warm/serving proof; until the push path is proven, do not disable the worker timer. Only then merge the reviewed package so the ordinary `main` Deploy publishes the new images and performs the first web activation: Nginx and `web` stay serving while a candidate slot is warmed, static assets are seeded and Nginx reloads onto it. The database and certificate remain. Accept the new worker and web before unpausing claims. Later web releases alternate slots; ordinary releases do not recreate VMs or run direct operator VM commands.
 
 ## Rollback
 
-Before switch, discard only the candidate and keep the old slot and marker. After switch, reverse the Nginx selection to the still-running compatible predecessor before it is drained. A migration that has made the predecessor incompatible forbids reverse selection and requires compatible forward recovery instead. Preserve database, volumes, certificate and immutable images; never remove a serving slot to force the deployment to green. After a committed release, a rollback is a new reviewed compatible immutable web-image deployment through the same workflow.
+Before switch, discard only the candidate and keep the selected slot. After switch, reverse the Nginx selection to the still-running compatible predecessor before it is drained. A migration that has made the predecessor incompatible forbids reverse selection and requires compatible forward recovery instead. Preserve database, volumes, certificate and image objects; never remove a serving slot to force the deployment to green. For worker activation failure, restore the previous known `latest` pointer and retain observed running containers; partial activation requires compatible forward repair. A completed release is reverted by an explicit compatible image deployment through the same workflow.
 
 ## Open questions
 

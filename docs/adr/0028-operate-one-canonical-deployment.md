@@ -6,7 +6,8 @@
 - Supersedes: [0005](0005-promote-images-through-staging.md),
   [0026](0026-use-lockbox-for-environment-secrets.md)
 - Superseded by: [ADR 0042](0042-isolate-autoscaled-photo-worker-pools.md) for photo-worker placement only;
-  [ADR 0051](0051-release-photo-worker-images-independently.md) for shared web/photo-worker SHA only
+  [ADR 0051](0051-release-photo-worker-images-independently.md) for image selection and
+  independent CI-triggered component releases
 
 ## Context
 
@@ -32,7 +33,7 @@ canonical deployment.
 - Permit maintainer acceptance against the real application data without another deployment.
 - Keep infrastructure and recurring cost proportionate to one low-traffic deployment.
 - Make active names describe the system without retaining obsolete environment identities.
-- Preserve immutable images, CI, deployment preflights, health checks, rollback, Lockbox authority,
+- Preserve checked images, CI, deployment preflights, health checks, rollback, Lockbox authority,
   and least-privilege OIDC.
 - Avoid speculative multi-environment abstractions before a test deployment is required.
 
@@ -48,8 +49,8 @@ canonical deployment.
 Select option 3.
 
 Operate one canonical deployment on the designated Yandex Cloud VM. A merge to `main` may build and
-deploy its immutable image automatically after CI. There is no staging promotion workflow and no
-second deployed release identity.
+deploy changed images automatically after CI as specified by ADR 0051. There is no staging
+promotion workflow and no second deployed environment.
 
 Incomplete customer-facing behavior is deployed only behind a database-backed runtime release
 gate. Gates fail closed, support `off`, authenticated active staff, and public states, and are
@@ -93,7 +94,7 @@ person infrastructure access.
 
 - Incomplete features can be accepted on real data without exposure to ordinary users.
 - Runtime acceptance does not require rebuilding or redeploying the application.
-- There is one deployed SHA, one data authority, one secret authority, and one set of operational
+- There is one canonical deployment, one data authority, one secret authority, and one set of operational
   names.
 - Current cost and operational effort remain proportionate to the actual traffic and release rate.
 - A later test deployment is introduced deliberately instead of preserved speculatively.

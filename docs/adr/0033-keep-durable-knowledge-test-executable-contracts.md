@@ -88,5 +88,5 @@ machine-readable contracts may be added without changing this decision.
 ## References
 
 - [Pareto test-suite refactor design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-23-pareto-test-suite-refactor-design.md)
-- [Architecture change rules](../architecture.md#change-rules)
+- [ADR 0055: accepted decisions and working documents](0055-keep-accepted-decisions-not-working-documents.md)
 - [ADR 0004](0004-repository-engineering-knowledge.md)

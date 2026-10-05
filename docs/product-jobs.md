@@ -373,7 +373,7 @@ This log is append-only.
 | 2026-07-17 | PJ-003 | Not recorded | Validated | [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_renders_published_event`](../src/backend/picflow/tests/test_views.py) and [`src/backend/picflow/tests/test_views.py::PageTests::test_event_detail_returns_404_for_draft_event`](../src/backend/picflow/tests/test_views.py) |
 | 2026-07-17 | PJ-004 | Not recorded | Candidate | [Target MVP architecture — Ingestion](architecture.md#target-mvp-architecture--proposed) |
 | 2026-08-01 | PJ-004 | Candidate | Validated | Implemented resumable owned-batch upload is locally evidenced by focused, JavaScript, containerized visual, full Python with 82.71% branch coverage, Django-check, migration-drift, Ruff format/lint, mypy, and diff-check runs. |
-| 2026-07-17 | PJ-005 | Not recorded | Candidate | [Architecture evolution stages — Photo-bank core](architecture.md#evolution-stages) |
+| 2026-07-17 | PJ-005 | Not recorded | Candidate | [Current architecture — photo ingestion](architecture.md#photo-ingestion-and-indexing) |
 | 2026-07-17 | PJ-006 | Not recorded | Candidate | [Target MVP architecture — Moderation](architecture.md#target-mvp-architecture--proposed) |
 | 2026-07-17 | PJ-007 | Not recorded | Candidate | [Target MVP architecture — Search](architecture.md#search) |
 | 2026-07-17 | PJ-008 | Not recorded | Candidate | [Target MVP architecture — Search](architecture.md#search) and [Security, privacy, and legal boundaries](architecture.md#security-privacy-and-legal-boundaries) |

@@ -116,7 +116,6 @@ incident response.
 
 - [Current architecture](../architecture.md#current-architecture--implemented)
 - [Operations module](../architecture.md#target-mvp-architecture--proposed)
-- [Architecture open decisions](../architecture.md#open-decisions)
 - [ADR 0003](0003-docker-compose-yandex-cloud.md)
 - [ADR 0007](0007-nginx-certbot-https-edge.md)
 - [ADR 0011](0011-use-minimal-shared-https-rollout.md)

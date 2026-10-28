@@ -266,26 +266,31 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
     assert "capture_metadata" not in selfie["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
 
 
-def test_deployment_has_only_remote_photo_workers_and_preserves_shared_services() -> None:
-    """Production Compose cannot grant local photo claims, but keeps shared services."""
+def test_deployment_places_one_private_local_photo_worker_with_shared_services() -> None:
+    """The worker receives only a private API and a dedicated token on the shared VM."""
     compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
     services = compose["services"]
     assert set(services) == {
         "db",
         "web",
-        "web-next",
+        "edge",
+        "imgproxy",
+        "photo-worker",
         "import-worker",
         "commerce-worker",
-        "postgres-exporter",
     }
+    worker = services["photo-worker"]
+    assert worker["profiles"] == ["processing"]
+    assert worker["environment"]["PHOTO_WORKER_TRANSPORT"] == "local"
+    assert worker["environment"]["PHOTO_WORKER_API_URL"] == (
+        "http://web:8000/internal/photo-processing/v1/"
+    )
+    assert worker["environment"]["PHOTO_WORKER_TOKEN"] == ("${PHOTO_PROCESSING_WORKER_TOKEN:-}")
+    assert not (FORBIDDEN_SETTINGS & set(worker["environment"]))
+    assert not worker.get("ports")
     assert services["import-worker"]["profiles"] == ["import"]
     assert services["commerce-worker"]["profiles"] == ["commerce"]
-    for slot in ("web", "web-next"):
-        assert services[slot]["environment"]["PHOTO_PROCESSING_FLEET_TOKEN"] == (
-            "${PHOTO_PROCESSING_FLEET_TOKEN:-}"
-        )
-    for service in services.values():
-        assert "PHOTO_PROCESSING_WORKER_TOKEN" not in service.get("environment", {})
+    assert services["web"]["environment"]["PHOTO_WORKER_POOL_COORDINATOR_ENABLED"] == "False"
 
 
 def test_default_compose_config_interpolates_example_without_enabling_the_worker() -> None:

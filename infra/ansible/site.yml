@@ -1,0 +1,7 @@
+---
+- name: Prepare one FindMe Photo recovery host
+  hosts: recovery
+  become: true
+  gather_facts: true
+  roles:
+    - host

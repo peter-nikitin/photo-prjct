@@ -108,7 +108,9 @@ def readiness(request: HttpRequest) -> HttpResponse:
 
 @_endpoint
 def claim(request: HttpRequest) -> HttpResponse:
-    data, error = _json_object(request, required={"contract_version", "lease_seconds"})
+    data, error = _json_object(
+        request, required={"contract_version", "lease_seconds"}, optional={"batch_id"}
+    )
     if error is not None:
         return error
     assert data is not None
@@ -118,7 +120,11 @@ def claim(request: HttpRequest) -> HttpResponse:
     if not _bounded_int(lease_seconds, minimum=1, maximum=300):
         return _invalid_request()
     try:
-        claimed = claim_import_work(lease_seconds=lease_seconds)
+        target_batch_id = UUID(data["batch_id"]) if "batch_id" in data else None
+    except (TypeError, ValueError, AttributeError):
+        return _invalid_request()
+    try:
+        claimed = claim_import_work(lease_seconds=lease_seconds, batch_id=target_batch_id)
     except (ImportConflict, ValueError) as exc:
         return _service_error(exc)
     if claimed.kind == "empty":
@@ -405,7 +411,7 @@ def fail(request: HttpRequest, attempt_id: UUID) -> HttpResponse:
 
 
 def _json_object(
-    request: HttpRequest, *, required: set[str]
+    request: HttpRequest, *, required: set[str], optional: set[str] | None = None
 ) -> tuple[dict[str, Any] | None, HttpResponse | None]:
     limit = min(settings.PHOTO_IMPORT_MAX_JSON_BYTES, IMPORT_MAX_JSON_BYTES)
     declared = request.headers.get("Content-Length")
@@ -420,7 +426,9 @@ def _json_object(
         return None, _invalid_request()
     if request.content_type != "application/json":
         return None, _invalid_request()
-    if not isinstance(parsed, dict) or set(parsed) != required:
+    if not isinstance(parsed, dict) or not required <= set(parsed) <= required | (
+        optional or set()
+    ):
         return None, _invalid_request()
     return parsed, None
 

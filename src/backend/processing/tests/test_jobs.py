@@ -574,6 +574,31 @@ class ProcessingJobServiceTests(TestCase):
             self.assertIsNone(state.current_job.claimed_at)
             self.assertEqual(state.current_job.run.status, EventProcessingRun.Status.COLLECTING)
 
+    def test_explicit_job_id_claim_leaves_earlier_ready_job_untouched(self) -> None:
+        states = [
+            request_processor(
+                self.private_photo(suffix),
+                processor_type="capture_metadata",
+                contract_version=1,
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+                configuration=capture_metadata_configuration("Europe/Moscow"),
+            )
+            for suffix in ("older", "target")
+        ]
+        assert states[0].current_job_id is not None
+        assert states[1].current_job_id is not None
+
+        claimed = claim_job(
+            contract_version=1,
+            processor_type="capture_metadata",
+            processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            job_id=states[1].current_job_id,
+        )
+
+        self.assertEqual(claimed.job.id, states[1].current_job_id)
+        self.assertEqual(ProcessingJob.objects.get(pk=states[0].current_job_id).status, "queued")
+        self.assertEqual(ProcessingAttempt.objects.count(), 1)
+
     def test_claim_scope_without_an_exact_match_returns_empty_without_mutation(self) -> None:
         other_event = Event.objects.create(
             name="No scoped match event",

@@ -93,6 +93,24 @@ class SearchJobTests(TestCase):
         )
         self.storage = RecordingStorage()
 
+    def test_explicit_search_job_id_leaves_other_ready_search_untouched(self) -> None:
+        older = self.make_search(with_candidate=False)
+        target = self.make_search(with_candidate=False)
+        target_job = SelfieSearchJob.objects.get(search=target)
+
+        claimed = claim_search_job(
+            contract_version=1,
+            processor_type="selfie_query",
+            processor_version=2,
+            job_id=target_job.id,
+        )
+
+        assert isinstance(claimed, ClaimedSearchJob)
+        self.assertEqual(claimed.job.id, target_job.id)
+        self.assertEqual(
+            SelfieSearchJob.objects.get(search=older).status, SelfieSearchJob.Status.QUEUED
+        )
+
     def test_native_callback_publishes_after_cleanup_and_never_uses_legacy(self) -> None:
         search = self.make_search()
         claimed = self.claim(search)

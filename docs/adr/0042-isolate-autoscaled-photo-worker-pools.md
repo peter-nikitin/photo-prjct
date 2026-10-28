@@ -9,6 +9,7 @@
 - Superseded by: [ADR 0049](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
   only for post-acceptance recovery through on-host photo workers;
   [ADR 0051](0051-release-photo-worker-images-independently.md) for shared web/worker SHA and coupled image rollout
+- Superseded by: [ADR 0056](0056-minimum-viable-infrastructure.md) — для размещения photo-worker, Instance Groups и autoscaling флота
 
 ## Context
 

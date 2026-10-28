@@ -1,19 +1,9 @@
 #!/bin/sh
 set -eu
-
-# Include the shared cloud transport used by explicit one-time provisioning.
 [ "$#" -eq 1 ] || exit 2
+case "$1" in /*) ;; *) echo 'Package path must be absolute' >&2; exit 2 ;; esac
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-archive=$1
-case "$archive" in /*) ;; *) exit 2 ;; esac
-scratch=$(mktemp -d)
-trap 'rm -rf -- "$scratch"' EXIT HUP INT TERM
 cd "$repository_root"
-tar --exclude=__pycache__ --exclude='*.pyc' -cf "$archive" \
-    docker-compose.deployment.yml docker-compose.https.yml deploy
-package="$scratch/deploy/worker-pools/_canonical/processing/services"
-mkdir -p "$package"
-cp src/backend/processing/__init__.py "$package/../__init__.py"
-cp src/backend/processing/services/__init__.py "$package/__init__.py"
-cp src/backend/processing/services/worker_pool_cloud.py "$package/worker_pool_cloud.py"
-tar -rf "$archive" -C "$scratch" deploy/worker-pools/_canonical
+tar --exclude=__pycache__ --exclude='*.pyc' -cf "$1" \
+    docker-compose.deployment.yml deploy scripts/restore-recovery-database.sh \
+    scripts/rehearse-recovery.sh

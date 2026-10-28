@@ -1,8 +1,9 @@
+from time import time
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
-from django.test import override_settings
+from django.test import Client, override_settings
 
 from picflow.gallery_image_delivery import GalleryImageDeliverySettings, GalleryImageUrlSigner
 
@@ -31,11 +32,32 @@ def test_accepted_preview_gets_the_golden_six_hour_cdn_capability() -> None:
     signer = GalleryImageUrlSigner(
         GalleryImageDeliverySettings.from_django_settings(), clock=lambda: 1_700_000_000.75
     )
-
     assert signer.sign_accepted_preview(key=PREVIEW_KEY, expires_in=21_600) == (
         "https://img.findme-photo.ru/yL0SS1lZCc3esLqjZGKScs95SoWIsdIA0MCocDzgNV4"
         f"/gallery-v1/{ENCODED_SOURCE}.jpg?md5=D9YvW3ht33mGUxymPxRgew&expires=1700021600"
     )
+
+
+@override_settings(**(VALID_SETTINGS | {"GALLERY_CDN_ORIGIN": "http://192.0.2.44"}))
+def test_direct_ip_http_image_requires_unexpired_signed_capability() -> None:
+    signer = GalleryImageUrlSigner(GalleryImageDeliverySettings.from_django_settings(), clock=time)
+    signed = urlsplit(signer.sign_accepted_preview(key=PREVIEW_KEY, expires_in=60))
+    client = Client()
+    response = client.get(
+        "/internal/gallery-token/",
+        HTTP_X_FINDME_IMAGE_URI=f"{signed.path}?{signed.query}",
+    )
+    assert response.status_code == 204
+    for uri in (
+        signed.path + "?" + signed.query.replace("md5=", "md5=bad"),
+        signed.path
+        + "?"
+        + signed.query.replace(f"expires={parse_qs(signed.query)['expires'][0]}", "expires=1"),
+        "/unsigned/gallery-v1/file.jpg",
+    ):
+        assert (
+            client.get("/internal/gallery-token/", HTTP_X_FINDME_IMAGE_URI=uri).status_code == 403
+        )
 
 
 @pytest.mark.parametrize(

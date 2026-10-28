@@ -1,0 +1,233 @@
+---
+- name: Require the reviewed public SSH key
+  ansible.builtin.assert:
+    that: findme_ssh_public_key is defined and findme_ssh_public_key | trim | length > 0
+    fail_msg: Pass the existing INFRA_SSH_PUBLIC_KEY to Ansible.
+
+- name: Keep the non-root administrative user with a locked password
+  ansible.builtin.user:
+    name: findme
+    shell: /bin/bash
+    groups: sudo
+    append: false
+    create_home: true
+    password_lock: true
+    state: present
+
+- name: Keep a private SSH directory
+  ansible.builtin.file:
+    path: /home/findme/.ssh
+    state: directory
+    owner: findme
+    group: findme
+    mode: '0700'
+
+- name: Replace authorized keys with the reviewed CI public key
+  ansible.builtin.copy:
+    dest: /home/findme/.ssh/authorized_keys
+    content: "{{ findme_ssh_public_key | trim }}\n"
+    owner: findme
+    group: findme
+    mode: '0600'
+
+- name: Keep passwordless sudo for the bootstrap administrator
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-findme
+    content: "findme ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Keep SSH key-only and non-root on repeat configuration
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/00-findme-recovery.conf
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      AllowUsers findme
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Validate and reload SSH
+
+- name: Read effective SSH policy before reload
+  ansible.builtin.command: /usr/sbin/sshd -T -C user=findme,host=localhost,addr=127.0.0.1
+  register: findme_sshd_policy
+  changed_when: false
+
+- name: Require effective SSH policy
+  ansible.builtin.assert:
+    that:
+      - "'permitrootlogin no' in findme_sshd_policy.stdout_lines"
+      - "'passwordauthentication no' in findme_sshd_policy.stdout_lines"
+      - "'kbdinteractiveauthentication no' in findme_sshd_policy.stdout_lines"
+      - "'pubkeyauthentication yes' in findme_sshd_policy.stdout_lines"
+      - "'allowusers findme' in findme_sshd_policy.stdout_lines"
+    fail_msg: The effective sshd configuration does not match the reviewed access policy.
+
+- name: Activate a validated SSH policy
+  ansible.builtin.meta: flush_handlers
+
+- name: Install Docker and host utilities
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - docker-compose-v2
+      - e2fsprogs
+      - jq
+      - curl
+    update_cache: true
+    cache_valid_time: 3600
+    state: present
+
+- name: Create PostgreSQL disk mountpoint
+  ansible.builtin.file:
+    path: /var/lib/findme-photo
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Wait for attached PostgreSQL disk by stable device name
+  ansible.builtin.wait_for:
+    path: /dev/disk/by-id/virtio-pgdata
+    timeout: 60
+
+- name: Detect PostgreSQL disk filesystem
+  ansible.builtin.command: blkid -s TYPE -o value /dev/disk/by-id/virtio-pgdata
+  register: postgres_disk_type
+  changed_when: false
+  failed_when: postgres_disk_type.rc not in [0, 2]
+
+- name: Reject an unexpected filesystem
+  ansible.builtin.assert:
+    that: postgres_disk_type.rc == 2 or postgres_disk_type.stdout == 'ext4'
+    fail_msg: PostgreSQL disk already contains a non-ext4 filesystem; inspect it manually.
+
+- name: Inspect all signatures before formatting an apparently blank disk
+  ansible.builtin.command: wipefs --no-act --output TYPE --noheadings /dev/disk/by-id/virtio-pgdata
+  register: postgres_disk_signatures
+  changed_when: false
+  when: postgres_disk_type.rc == 2
+
+- name: Refuse to format a disk with any existing signature
+  ansible.builtin.assert:
+    that: postgres_disk_signatures.stdout | trim == ''
+    fail_msg: PostgreSQL disk has a partition or other signature; inspect it before formatting.
+  when: postgres_disk_type.rc == 2
+
+- name: Format a new PostgreSQL disk only
+  ansible.builtin.command: mkfs.ext4 -F /dev/disk/by-id/virtio-pgdata
+  when: postgres_disk_type.rc == 2
+
+- name: Read PostgreSQL filesystem UUID
+  ansible.builtin.command: blkid -s UUID -o value /dev/disk/by-id/virtio-pgdata
+  register: postgres_disk_uuid
+  changed_when: false
+
+- name: Persist PostgreSQL mount by UUID
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^UUID=.* /var/lib/findme-photo '
+    line: "UUID={{ postgres_disk_uuid.stdout }} /var/lib/findme-photo ext4 defaults 0 2"
+    state: present
+
+- name: Check mount
+  ansible.builtin.command: mountpoint -q /var/lib/findme-photo
+  register: postgres_mountpoint
+  changed_when: false
+  failed_when: postgres_mountpoint.rc not in [0, 1]
+
+- name: Mount PostgreSQL disk
+  ansible.builtin.command: mount /var/lib/findme-photo
+  when: postgres_mountpoint.rc == 1
+
+- name: Create PostgreSQL data directory below ext4 root
+  ansible.builtin.file:
+    path: /var/lib/findme-photo/postgres
+    state: directory
+    owner: '999'
+    group: '999'
+    mode: '0700'
+
+- name: Ensure Docker waits for PostgreSQL disk mount
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Require mounted PostgreSQL disk for Docker service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/docker.service.d/findme-postgres-mount.conf
+    content: |
+      [Unit]
+      RequiresMountsFor=/var/lib/findme-photo
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload Docker unit
+
+- name: Load Docker mount dependency before starting it
+  ansible.builtin.meta: flush_handlers
+
+- name: Keep Docker enabled only after the PostgreSQL mount is present
+  ansible.builtin.service:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Create private runtime directory
+  ansible.builtin.file:
+    path: /opt/photo-prjct
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Check swap file
+  ansible.builtin.stat:
+    path: /swapfile
+  register: findme_swapfile
+
+- name: Allocate 2 GiB swap file on new host
+  ansible.builtin.command: fallocate -l 2G /swapfile
+  when: not findme_swapfile.stat.exists
+
+- name: Secure swap file
+  ansible.builtin.file:
+    path: /swapfile
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Detect swap signature
+  ansible.builtin.command: blkid -s TYPE -o value /swapfile
+  register: findme_swap_type
+  changed_when: false
+  failed_when: findme_swap_type.rc not in [0, 2]
+
+- name: Initialize swap once
+  ansible.builtin.command: mkswap /swapfile
+  when: findme_swap_type.rc == 2
+
+- name: Persist swap
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^/swapfile '
+    line: /swapfile none swap sw 0 0
+    state: present
+
+- name: Detect active swap
+  ansible.builtin.command: swapon --noheadings --show=NAME
+  register: findme_swaps
+  changed_when: false
+
+- name: Activate swap
+  ansible.builtin.command: swapon /swapfile
+  when: "'/swapfile' not in findme_swaps.stdout_lines"

@@ -1,0 +1,41 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BackendBucketMetadata",
+      "Effect": "Allow",
+      "Principal": {"CanonicalUser": "BACKEND_SA_ID"},
+      "Action": ["s3:GetBucketVersioning"],
+      "Resource": ["arn:aws:s3:::findme-photo-tfstate"]
+    },
+    {
+      "Sid": "BackendListOnlyStatePrefixes",
+      "Effect": "Allow",
+      "Principal": {"CanonicalUser": "BACKEND_SA_ID"},
+      "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
+      "Resource": ["arn:aws:s3:::findme-photo-tfstate"],
+      "Condition": {"StringLike": {"s3:prefix": ["core/single-vm/*", "core/lock-probe/*"]}}
+    },
+    {
+      "Sid": "BackendStateReadWriteAndVersionRecovery",
+      "Effect": "Allow",
+      "Principal": {"CanonicalUser": "BACKEND_SA_ID"},
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:GetObjectVersion"],
+      "Resource": [
+        "arn:aws:s3:::findme-photo-tfstate/core/single-vm/terraform.tfstate",
+        "arn:aws:s3:::findme-photo-tfstate/core/lock-probe/terraform.tfstate"
+      ]
+    },
+    {
+      "Sid": "BackendLockAndProbeLifecycle",
+      "Effect": "Allow",
+      "Principal": {"CanonicalUser": "BACKEND_SA_ID"},
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::findme-photo-tfstate/core/single-vm/terraform.tfstate.tflock",
+        "arn:aws:s3:::findme-photo-tfstate/core/lock-probe/terraform.tfstate.tflock",
+        "arn:aws:s3:::findme-photo-tfstate/core/lock-probe/terraform.tfstate"
+      ]
+    }
+  ]
+}

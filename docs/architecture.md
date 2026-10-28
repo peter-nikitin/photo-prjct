@@ -16,16 +16,19 @@ FindMe Photo помогает участникам мероприятий нах
 зависит от правил галереи и подтверждённой покупки.
 
 <a id="current-architecture--implemented"></a>
-## Текущая схема
+## Текущая схема кода
 
 ```text
-Браузер → Nginx/HTTPS → Django/Gunicorn → PostgreSQL
-                           │
-                           ├→ закрытые оригиналы и производные в Object Storage
-                           ├→ приватный API обработки → пулы photo-worker
-                           └→ платёжный шлюз и доставка писем через Commerce worker
+GitHub Actions Infrastructure → Terraform (VPC, диски, одна VM)
+                              → Ansible (пользователь, SSH, Docker, PG mount)
+                              → GHCR images + runtime package без запуска приложения
 
-GitHub Actions → GHCR → каноническая VM и пулы worker
+После ручного восстановления БД:
+Браузер → Nginx HTTP edge → Django/Gunicorn → PostgreSQL на той же VM
+                            │
+                            ├→ закрытые медиа в существующем Object Storage
+                            ├→ приватный API → локальные photo/import worker
+                            └→ Commerce worker и платёжный шлюз
 ```
 
 Django — модульный монолит: он владеет HTTP-интерфейсом, полномочиями и правилами продукта.
@@ -39,16 +42,40 @@ PostgreSQL — источник истины для состояний и рез
 <a id="deployment-domain-assignment--accepted"></a>
 ## Развёртывание
 
-Публичный адрес — `https://findme-photo.ru/`. Один канонический сервис на VM выпускается через
-Docker Compose и workflow **Deploy**; пулы обработчиков отделены от него, но используют его
-очередь и полномочия. Образы web и photo-worker выпускаются независимо; для web в репозитории
-реализовано переключение между слотами, а для worker — активация образа через CI. Наличие этого
-пути в коде не подтверждает его активацию на VM. Актуальный
-порядок и состояние приведены в [runbook развёртывания](runbooks/deployment.md) и
-[runbook пулов](runbooks/worker-pools.md). Границы закрепляют
-[ADR 0028](adr/0028-operate-one-canonical-deployment.md),
-[0042](adr/0042-isolate-autoscaled-photo-worker-pools.md) и
-[0051](adr/0051-release-photo-worker-images-independently.md).
+В коде подготовлен один Docker Compose runtime на VM. `Infrastructure` после согласованного
+PR plan применяет Terraform, повторяемо конфигурирует ОС через Ansible, публикует независимые
+immutable web/photo/import images в GHCR и размещает runtime package. Он не запускает БД,
+миграции или приложение до отдельного ручного восстановления. Старые автоматические пути
+Deploy, image-origin, worker pools и monitoring для прежней топологии отключены.
+Общий `deploy/apply-deployment.sh` выпускает выбранные образы только после появления схемы БД;
+полное автоматическое приложение merge → release завершается на следующем этапе. Конкретный
+порядок — в [bootstrap runbook](runbooks/single-vm-infrastructure-bootstrap.md) и
+[runbook восстановления](runbooks/single-vm-recovery.md). Этот код ещё не применён к облаку:
+live restore, запуск, публичный HTTP/HTTPS и стоимость не подтверждены.
+
+<a id="accepted-recovery-target"></a>
+## Принятые решения и следующие этапы
+
+25 октября 2026 года владелец принял следующие решения для восстановления:
+
+- [ADR 0056](adr/0056-minimum-viable-infrastructure.md): минимально жизнеспособная
+  конфигурация без запаса под предполагаемую нагрузку; первоначально одна минимальная VM
+  для приложения, БД, обработчиков и image origin, без второго прогретого экземпляра.
+- [ADR 0057](adr/0057-declarative-cloud-infrastructure.md): IaC в Git — источник истины
+  для желаемого состояния облачных ресурсов; Terraform и его выкатка через «merge → release».
+  Перенос к другому поставщику требует адаптации provider-ресурсов и отдельного переноса данных.
+- [ADR 0058](adr/0058-stable-public-entrypoint-nlb.md): постоянный публичный IP принадлежит
+  NLB, backend размещается в `ru-central1-d`; TLS остаётся на Nginx.
+- [ADR 0063](adr/0063-repeatable-host-configuration.md): конфигурация ОС воспроизводится
+  из кода Ansible и выпускается через тот же пайплайн, включая изменения только ОС.
+
+Код stage 1 реализует Terraform, Ansible и единый runtime без NLB. NLB, постоянный
+публичный IP, HTTPS и полный app CI release относятся к следующим этапам; их наличие в ADR
+не означает готовый код или live активацию. Постоянный мониторинг новой VM
+отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md);
+проверки готовности и приёмка после выпуска сохраняются. По уточнению владельца 26 октября восстановление использует
+существующие media/feedback buckets с текущими именами; [их миграция](future-work/2026-10-26-canonical-media-bucket-migration.md)
+отложена на следующий этап.
 
 <a id="target-mvp-architecture--proposed"></a>
 ## Ответственность модулей

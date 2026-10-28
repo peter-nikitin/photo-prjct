@@ -135,26 +135,6 @@ def test_host_runner_propagates_journal_failure_without_emitting_an_empty_summar
     assert result.stdout == ""
 
 
-def test_public_services_use_journald_stable_nonsecret_tags_only() -> None:
-    product = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
-    https = yaml.safe_load((ROOT / "docker-compose.https.yml").read_text(encoding="utf-8"))
-    services = {
-        "web": product["services"]["web"],
-        "nginx": https["services"]["nginx"],
-    }
-
-    assert {"worker-bulk", "worker-selfie"}.isdisjoint(product["services"])
-    for name, service in services.items():
-        assert service["logging"] == {
-            "driver": "journald",
-            "options": {"tag": f"findme.service={name}"},
-        }
-        serialized = json.dumps(service["logging"])
-        assert "TOKEN" not in serialized
-        assert "SECRET" not in serialized
-    assert "logging" not in product["services"]["db"]
-
-
 def test_deployment_workflow_uses_canonical_compose_tags(tmp_path: Path) -> None:
     deployment = yaml.safe_load(
         (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")

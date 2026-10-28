@@ -1,0 +1,377 @@
+name: Infrastructure
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created]
+  push:
+    branches: [main]
+
+concurrency:
+  group: findme-infrastructure-state-and-host
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  classify:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      terraform: ${{ steps.paths.outputs.terraform }}
+      ansible: ${{ steps.paths.outputs.ansible }}
+      runtime: ${{ steps.paths.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify exact changed paths
+        id: paths
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE" "$HEAD" | python infra/ci/classify.py >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Infrastructure validation
+    if: github.event_name == 'pull_request' && (needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true')
+    needs: [classify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.0
+          terraform_wrapper: false
+      - name: Validate Terraform without backend or cloud identity
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform fmt -check -recursive
+          terraform -chdir=infra/terraform init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infra/terraform validate
+          terraform -chdir=infra/terraform test -no-color
+      - name: Validate Ansible syntax without a VM
+        run: |
+          set -euo pipefail
+          python -m pip install ansible-core==2.19.3
+          printf '[recovery]\nrecovery-vm ansible_connection=local\n' > /tmp/findme-inventory
+          ansible-playbook -i /tmp/findme-inventory infra/ansible/site.yml --syntax-check
+          ansible-playbook -i /tmp/findme-inventory infra/ansible/install-backup-agent.yml --syntax-check
+
+  plan:
+    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: [classify, validate]
+    runs-on: ubuntu-latest
+    environment: infrastructure
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
+      TF_VAR_ssh_public_key: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+      YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Require a trusted write-authorized PR author
+        run: python infra/ci/release.py authorize-actor '${{ github.event.pull_request.user.login }}'
+      - name: Exchange short-lived infrastructure OIDC token
+        run: python infra/ci/identity.py
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.0
+          terraform_wrapper: false
+      - name: Create saved resource plan
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform init -input=false -lockfile=readonly
+          terraform -chdir=infra/terraform fmt -check -recursive
+          terraform -chdir=infra/terraform validate
+          terraform -chdir=infra/terraform plan -input=false -var-file=project.tfvars -out=plan.tfplan
+          terraform -chdir=infra/terraform show -json plan.tfplan > infra/terraform/plan.json
+          python infra/ci/plan_summary.py infra/terraform/plan.json | tee resource-diff.txt
+      - name: Estimate supported Yandex resources locally
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/yc-cost.tar.gz https://github.com/terraform-yc-modules/terraform-yc-cost-estimation/archive/7a74a71c72d7f49cae58ebc626658f5c2c816df1.tar.gz
+          mkdir -p /tmp/yc-cost
+          tar -xzf /tmp/yc-cost.tar.gz -C /tmp/yc-cost --strip-components=1
+          python -m pip install -r /tmp/yc-cost/functions/requirements.txt
+          cd /tmp/yc-cost/functions
+          python - <<'PY'
+          import os, runpy, sys
+          sys.argv = ['get-sku.py', os.environ['YC_TOKEN'], '--output', 'sku.json']
+          runpy.run_path('get-sku.py', run_name='__main__')
+          PY
+          python app.py "$GITHUB_WORKSPACE/infra/terraform/plan.json" --full --no-color | tee "$GITHUB_WORKSPACE/cost.txt"
+      - name: Publish reviewable summary without plan values
+        run: |
+          {
+            echo '## Terraform resource actions'; cat resource-diff.txt
+            echo; echo '## Supported-resource cost estimate'; cat cost.txt
+            echo; echo 'Unknown and manually priced: dynamic VM public IPv4, backup-agent usage, egress, Object Storage state/versioning, recovered data and extraction scratch. This estimate is not a bill cap.'
+            echo; echo "Approval after review: comment /infra approve $GITHUB_RUN_ID on this PR. A new push needs a new plan run and approval."
+          } | tee /tmp/infra-review.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "Review the complete saved plan in this restricted run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> /tmp/infra-review.txt
+          gh pr comment '${{ github.event.pull_request.number }}' --body-file /tmp/infra-review.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.event.pull_request.number }}
+          path: infra/terraform/plan.tfplan
+          retention-days: 7
+          if-no-files-found: error
+      - name: Keep infra approval pending until an authorized plan comment
+        env:
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD" \
+            -f state=pending -f context=infra/approved \
+            -f description="Approve this plan run in the PR after reviewing resources and cost" >/dev/null
+
+  no-resource-plan:
+    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform != 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: [classify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Mark non-Terraform PR as needing no resource-plan approval
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD" \
+            -f state=success -f context=infra/approved \
+            -f description="No Terraform or infrastructure CI resource change" >/dev/null
+
+  approve:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/infra approve ')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify latest write-authorized approval and exact plan artifact
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          python infra/ci/release.py verify-pr "$PR_NUMBER" > /tmp/approved-plan.json
+          head_sha="$(python -c 'import json; print(json.load(open("/tmp/approved-plan.json"))["head_sha"])')"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$head_sha" \
+            -f state=success -f context=infra/approved \
+            -f description="Current plan artifact approved by a write-authorized collaborator" >/dev/null
+
+  release:
+    if: github.event_name == 'push' && (needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true' || needs.classify.outputs.runtime == 'true')
+    needs: [classify]
+    runs-on: ubuntu-latest
+    environment: infrastructure
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
+      TF_VAR_ssh_public_key: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+      YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve approved saved plan after merge
+        if: needs.classify.outputs.terraform == 'true'
+        run: |
+          set -euo pipefail
+          python infra/ci/release.py verify-merge "$GITHUB_SHA" > /tmp/approved-plan.json
+      - name: Download exactly the approved run artifact
+        if: needs.classify.outputs.terraform == 'true'
+        run: |
+          set -euo pipefail
+          artifact_id="$(python -c 'import json; print(json.load(open("/tmp/approved-plan.json"))["artifact_id"])')"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > /tmp/approved-plan.zip
+          unzip -j /tmp/approved-plan.zip plan.tfplan -d infra/terraform
+      - name: Log in to GHCR for immutable stage-one images
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+      - name: Resolve worker base content key
+        id: images
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+        run: |
+          key="$(git ls-tree -r HEAD -- Dockerfile.worker-base .dockerignore src/worker/requirements.txt src/worker/requirements.cpu.txt | sha256sum | cut -d ' ' -f 1)"
+          echo "base=ghcr.io/${GITHUB_REPOSITORY}-worker-base:$key" >> "$GITHUB_OUTPUT"
+      - name: Build and publish web
+        id: web
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: RELEASE_SHA=${{ github.sha }}
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+      - name: Build and publish import worker
+        id: import
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.import-worker
+          push: true
+          tags: ghcr.io/${{ github.repository }}-import-worker:${{ github.sha }}
+      - name: Check worker base registry presence
+        id: base_present
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+        env:
+          BASE_IMAGE: ${{ steps.images.outputs.base }}
+        run: |
+          if docker buildx imagetools inspect "$BASE_IMAGE" >/dev/null 2>&1; then echo 'missing=false' >> "$GITHUB_OUTPUT"; else echo 'missing=true' >> "$GITHUB_OUTPUT"; fi
+      - name: Build and publish worker base if absent
+        if: steps.base_present.outputs.missing == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.worker-base
+          push: true
+          tags: ${{ steps.images.outputs.base }}
+      - name: Resolve immutable worker base
+        id: worker_base
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+        env:
+          BASE_IMAGE: ${{ steps.images.outputs.base }}
+        run: |
+          digest="$(docker buildx imagetools inspect "$BASE_IMAGE" --format '{{.Manifest.Digest}}')"
+          case "$digest" in sha256:*) ;; *) exit 2 ;; esac
+          echo "ref=${BASE_IMAGE%:*}@$digest" >> "$GITHUB_OUTPUT"
+      - name: Build and publish photo worker
+        id: worker
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.worker
+          build-args: |
+            RELEASE_SHA=${{ github.sha }}
+            WORKER_BASE_IMAGE=${{ steps.worker_base.outputs.ref }}
+          push: true
+          tags: ghcr.io/${{ github.repository }}-worker:${{ github.sha }}
+      - name: Check published image imports
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
+        env:
+          WEB: ${{ steps.web.outputs.digest }}
+          IMPORT: ${{ steps.import.outputs.digest }}
+          WORKER: ${{ steps.worker.outputs.digest }}
+        run: |
+          docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}@${WEB}" -c 'import django, gunicorn, psycopg, PIL'
+          docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}-import-worker@${IMPORT}" -c 'import import_worker.__main__'
+          docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}-worker@${WORKER}" -c 'import photo_worker.client, photo_worker.contracts'
+      - name: Exchange short-lived infrastructure OIDC token
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
+        run: python infra/ci/identity.py
+      - uses: hashicorp/setup-terraform@v3
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
+        with:
+          terraform_version: 1.17.0
+          terraform_wrapper: false
+      - name: Open locked state and apply approved saved plan only
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
+        env:
+          TERRAFORM_CHANGED: ${{ needs.classify.outputs.terraform }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform init -input=false -lockfile=readonly
+          if [ "$TERRAFORM_CHANGED" = true ]; then
+            terraform -chdir=infra/terraform apply -input=false -auto-approve plan.tfplan
+          fi
+          terraform -chdir=infra/terraform output -json > /tmp/findme-outputs.json
+      - name: Install Ansible 2.19.3
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
+        run: python -m pip install ansible-core==2.19.3
+      - name: Trust public host key from authenticated VM serial output
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          host="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["ssh_host"]["value"])')"
+          vm="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["vm_id"]["value"])')"
+          python infra/ci/known_hosts.py "$vm" "$host" /tmp/findme-known-hosts
+          echo "$host" > /tmp/findme-host
+          umask 077
+          : > /tmp/findme-ssh-key
+          printf '%s' "$VM_SSH_KEY" > /tmp/findme-ssh-key
+      - name: Configure host OS; never start app or restore data
+        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
+        env:
+          FINDME_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          host="$(cat /tmp/findme-host)"
+          printf '[recovery]\nrecovery-vm ansible_host=%s\n' "$host" > /tmp/findme-inventory
+          umask 077
+          python -c 'import json,os; print(json.dumps({"findme_ssh_public_key": os.environ["FINDME_SSH_PUBLIC_KEY"]}))' > /tmp/findme-ansible-vars.json
+          ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook -i /tmp/findme-inventory -u findme \
+            -e @/tmp/findme-ansible-vars.json \
+            --private-key /tmp/findme-ssh-key \
+            --ssh-common-args '-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes' \
+            infra/ansible/site.yml
+      - name: Stage runtime package and pull images without starting services
+        if: needs.classify.outputs.terraform == 'true'
+        env:
+          WEB: ${{ steps.web.outputs.digest }}
+          IMPORT: ${{ steps.import.outputs.digest }}
+          WORKER: ${{ steps.worker.outputs.digest }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+        run: |
+          set -euo pipefail
+          host="$(cat /tmp/findme-host)"
+          sh deploy/package-deployment.sh /tmp/findme-runtime.tar
+          ssh_opts='-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes'
+          scp $ssh_opts -i /tmp/findme-ssh-key /tmp/findme-runtime.tar "findme@$host:/tmp/findme-runtime.tar"
+          ssh $ssh_opts -i /tmp/findme-ssh-key "findme@$host" \
+            'sudo tar -xf /tmp/findme-runtime.tar -C /opt/photo-prjct && rm /tmp/findme-runtime.tar'
+          printf '%s' "$GHCR_READ_TOKEN" | ssh $ssh_opts -i /tmp/findme-ssh-key "findme@$host" \
+            "sudo docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin" >/dev/null
+          for image in "ghcr.io/${GITHUB_REPOSITORY}@${WEB}" "ghcr.io/${GITHUB_REPOSITORY}-import-worker@${IMPORT}" "ghcr.io/${GITHUB_REPOSITORY}-worker@${WORKER}"; do
+            ssh $ssh_opts -i /tmp/findme-ssh-key "findme@$host" "sudo docker pull '$image'" >/dev/null
+            echo "$image" >> /tmp/findme-image-refs
+          done
+          { echo 'Runtime package staged and three immutable images pulled. PostgreSQL, web and workers remain stopped.'; cat /tmp/findme-image-refs; } >> "$GITHUB_STEP_SUMMARY"

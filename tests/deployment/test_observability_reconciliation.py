@@ -51,32 +51,16 @@ def workflow(name):
     return yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
 
 
-def test_cloud_automatically_applies_exact_push_sha_and_retains_backup_on_failure():
-    package = workflow("monitoring.yml")
-    assert package.get("on", package.get(True))["push"]["branches"] == ["main"]
-    paths = package.get("on", package.get(True))["push"]["paths"]
-    assert "deploy/observability/**" in paths
-    assert "deploy/monitoring/probe-vm/**" in paths
-    assert "deploy/image-origin/monitoring/**" in paths
-    reconcile = package["jobs"]["reconcile"]
-    assert "cloud_changed" in reconcile["if"]
-    assert reconcile["environment"] == "monitoring"
-    assert (
-        reconcile["env"]["MONITORING_REVISION"]
-        == "${{ github.event_name == 'push' && github.sha || inputs.revision }}"
-    )
-    assert (
-        reconcile["env"]["MONITORING_ACTION"]
-        == "${{ github.event_name == 'push' && 'apply' || inputs.action }}"
-    )
-    backup = next(
-        step
-        for step in reconcile["steps"]
-        if step.get("with", {}).get("name", "").startswith("monitoring-backup-")
-    )
-    assert "always()" in backup["if"]
-    assert "MONITORING_REVISION" in backup["with"]["name"]
-    assert package["concurrency"]["queue"] == "max"
+def test_retired_observability_workflows_do_not_auto_mutate_old_hosts():
+    for name in ("monitoring.yml", "deploy-public-probe.yml", "deploy-image-origin.yml"):
+        events = workflow(name).get("on", workflow(name).get(True))
+        assert "push" not in events
+
+
+def test_infrastructure_release_does_not_depend_on_obsolete_monitoring():
+    release = workflow("infrastructure.yml")["jobs"]["release"]
+    assert release["needs"] == ["classify"]
+    assert "monitoring" not in release["if"]
 
 
 def test_canonical_host_is_separate_and_never_runs_mutable_checkout_as_root():
@@ -92,17 +76,6 @@ def test_canonical_host_is_separate_and_never_runs_mutable_checkout_as_root():
         step["run"] for step in jobs["classify-release"]["steps"] if step.get("id") == "classify"
     )
     assert 'pause_reason="Commit ${GITHUB_SHA} changes' not in classify
-
-
-def test_public_host_automation_uses_existing_workflow_and_oidc_boundaries():
-    public = workflow("deploy-public-probe.yml")
-    assert public.get("on", public.get(True))["push"]["branches"] == ["main"]
-    assert "public_changed" in public["jobs"]["reconcile-public-observability"]["if"]
-    origin = workflow("deploy-image-origin.yml")
-    assert origin.get("on", origin.get(True))["push"]["branches"] == ["main"]
-    steps = origin["jobs"]["deploy-image-origin"]["steps"]
-    deploy = next(step for step in steps if step.get("name") == "Deploy isolated image origin")
-    assert "github.event_name == 'push' && 'true'" in deploy["env"]["IMAGE_ORIGIN_MONITORING_ONLY"]
 
 
 def host_module():
@@ -824,16 +797,6 @@ def test_application_failure_blocks_cloud_apply_when_application_metrics_changed
 
     with pytest.raises(module.HostReleaseError, match="failure"):
         module.wait_for_hosts("a" * 40, {"application_changed": True}, api=api)
-
-
-def test_product_deploy_runs_after_failed_monitoring_reconcile():
-    deploy = workflow("deploy.yml")["jobs"]["deploy"]
-    assert "always()" in deploy["if"]
-    assert "needs.build.result" in deploy["if"]
-    assert "needs.reconcile-observability-host.result" not in deploy["if"]
-    compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())
-    assert compose["services"]["postgres-exporter"]["profiles"] == ["observability"]
-    assert "postgres-exporter" not in compose["services"]["web"]["depends_on"]
 
 
 def postgres_module():

@@ -38,6 +38,27 @@ class ImportServiceTests(TestCase):
         self.folder = EventFolder.objects.create(event=self.event, name="Start")
         self.flags = {YANDEX_DISK_IMPORT: FEATURE_FLAG_ON}
 
+    def test_explicit_batch_claim_leaves_other_queued_import_untouched(self) -> None:
+        with override_feature_flags(self.flags):
+            older = create_import(
+                actor=self.owner,
+                event=self.event,
+                folder=self.folder,
+                submitted_source_key="first-source",
+                submission_key="first-submission",
+            )
+            target = create_import(
+                actor=self.owner,
+                event=self.event,
+                folder=self.folder,
+                submitted_source_key="second-source",
+                submission_key="second-submission",
+            )
+            claimed = claim_import_work(batch_id=target.id)
+        self.assertEqual(claimed.kind, "manifest")
+        self.assertEqual(ImportAttempt.objects.get(pk=claimed.attempt_id).batch_id, target.id)
+        self.assertEqual(ImportBatch.objects.get(pk=older.id).status, ImportBatch.Status.QUEUED)
+
     def create_and_claim_manifest(self, *, submission_key: str = "submission"):
         with override_feature_flags(self.flags):
             created = create_import(

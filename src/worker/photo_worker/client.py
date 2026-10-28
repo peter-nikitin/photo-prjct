@@ -209,6 +209,7 @@ class HttpClient:
         processor_type: str = PROCESSOR_TYPE,
         processor_version: int | None = None,
         contract_version: int = 1,
+        job_id: str | None = None,
     ) -> Claim:
         if self._transport == "remote" and self._member is None:
             raise ValueError("remote claim requires registered host identity")
@@ -232,6 +233,7 @@ class HttpClient:
                         ),
                         "lease_seconds": lease_seconds,
                     }
+                    | ({"job_id": job_id} if job_id is not None else {})
                     | envelope,
                 )
             )

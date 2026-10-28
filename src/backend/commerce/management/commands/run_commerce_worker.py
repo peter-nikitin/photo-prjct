@@ -22,9 +22,13 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser) -> None:
         parser.add_argument("--once", action="store_true")
+        parser.add_argument("--payment-attempt-id", type=int)
         parser.add_argument("--poll-seconds", type=int, default=5)
 
     def handle(self, *args, **options) -> None:
+        payment_attempt_id = options["payment_attempt_id"]
+        if payment_attempt_id is not None and (not options["once"] or payment_attempt_id <= 0):
+            raise CommandError("--payment-attempt-id requires --once and a positive ID.")
         poll_seconds = options["poll_seconds"]
         if not isinstance(poll_seconds, int) or poll_seconds <= 0:
             raise CommandError("--poll-seconds must be positive.")
@@ -40,7 +44,9 @@ class Command(BaseCommand):
         try:
             signal.signal(signal.SIGTERM, request_stop)
             while not stopping.is_set():
-                result = worker.run_once()
+                result = worker.run_once(
+                    **({"payment_attempt_id": payment_attempt_id} if payment_attempt_id else {})
+                )
                 self.stdout.write(
                     "commerce worker pass: "
                     f"email_deliveries={result.email_deliveries} "

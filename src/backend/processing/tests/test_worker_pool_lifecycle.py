@@ -435,13 +435,13 @@ class LifecycleTests(TransactionTestCase):
                 lifecycle.register(self.envelopes[0])
 
     @override_settings(DEBUG=False)
-    def test_production_local_admission_is_denied_even_when_local_pause_is_open(self):
+    def test_production_local_admission_follows_coordinator_switch(self):
         lifecycle.set_claims_paused("selfie", paused=False, local=True)
         with lifecycle.claim_admission((1, "selfie_query", 2), None) as admission:
             self.assertFalse(admission.allowed)
         with override_settings(PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False):
             with lifecycle.claim_admission((1, "selfie_query", 2), None) as admission:
-                self.assertFalse(admission.allowed)
+                self.assertTrue(admission.allowed)
 
     def test_warmed_same_boot_replacement_transfers_claims_without_build_gate(self):
         old = self.envelopes[0]

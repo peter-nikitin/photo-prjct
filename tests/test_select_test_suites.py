@@ -281,6 +281,27 @@ def test_worker_image_dockerfiles_select_only_operational_suite(path: str) -> No
     assert selection.reasons["visual"] == ()
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "infra/terraform/compute.tf",
+        "infra/ansible/site.yml",
+        "infra/ci/release.py",
+        ".github/workflows/infrastructure.yml",
+        "scripts/rehearse-recovery.sh",
+        "scripts/restore-recovery-database.sh",
+    ],
+)
+def test_single_vm_infrastructure_paths_select_operational_only(path: str) -> None:
+    config = select_test_suites.load_config(ROOT / "tests" / "suite-selection.toml")
+    selection = select_test_suites.select_suites(config, [path])
+    assert (selection.operational, selection.migrations, selection.visual) == (
+        True,
+        False,
+        False,
+    )
+
+
 def init_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
     repository.mkdir()

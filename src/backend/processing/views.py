@@ -232,6 +232,7 @@ def claim(request: HttpRequest) -> JsonResponse:
         | (
             worker_pool_lifecycle.ENVELOPE_FIELDS | {"registration_generation"} if remote else set()
         ),
+        optional={"job_id"} if not remote else set(),
     )
     if error is not None:
         return error
@@ -243,14 +244,20 @@ def claim(request: HttpRequest) -> JsonResponse:
         and _positive_int(data["lease_seconds"])
     ):
         return _invalid_request()
+    if "job_id" in data:
+        try:
+            UUID(data["job_id"])
+        except (TypeError, ValueError, AttributeError):
+            return _invalid_request()
     try:
         member = worker_pool_lifecycle.MemberIdentity.parse(data) if remote else None
     except worker_pool_lifecycle.AdmissionDenied:
         return _invalid_request()
-    if data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type:
-        recover_expired_search_attempts(storage=TemporarySelfieStorage())
-    else:
-        recover_expired_attempts()
+    if "job_id" not in data:
+        if data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type:
+            recover_expired_search_attempts(storage=TemporarySelfieStorage())
+        else:
+            recover_expired_attempts()
     try:
         payload = _claim_with_grant(data, member=member)
     except worker_pool_lifecycle.RegistrationChanged:
@@ -576,6 +583,7 @@ def _claim(data: dict[str, Any]) -> ClaimedJob | EmptyClaim | ClaimedSearchJob |
             processor_type=data["processor_type"],
             processor_version=data["processor_version"],
             lease_seconds=data["lease_seconds"],
+            job_id=UUID(data["job_id"]) if "job_id" in data else None,
         )
     from processing.services.jobs import claim_job
 
@@ -584,6 +592,7 @@ def _claim(data: dict[str, Any]) -> ClaimedJob | EmptyClaim | ClaimedSearchJob |
         processor_type=data["processor_type"],
         processor_version=data["processor_version"],
         lease_seconds=data["lease_seconds"],
+        job_id=UUID(data["job_id"]) if "job_id" in data else None,
     )
 
 
@@ -949,7 +958,11 @@ def _validate_grant_lease(
 
 
 def _json_object(
-    request: HttpRequest, *, required: set[str], maximum_bytes: int | None = None
+    request: HttpRequest,
+    *,
+    required: set[str],
+    optional: set[str] | None = None,
+    maximum_bytes: int | None = None,
 ) -> tuple[dict[str, Any] | None, JsonResponse | None]:
     maximum_bytes = maximum_bytes or settings.PHOTO_PROCESSING_MAX_REQUEST_BYTES
     declared = request.headers.get("Content-Length")
@@ -964,7 +977,9 @@ def _json_object(
         return None, _invalid_request()
     if request.content_type != "application/json":
         return None, _invalid_request()
-    if not isinstance(parsed, dict) or set(parsed) != required:
+    if not isinstance(parsed, dict) or not required <= set(parsed) <= required | (
+        optional or set()
+    ):
         return None, _invalid_request()
     return parsed, None
 

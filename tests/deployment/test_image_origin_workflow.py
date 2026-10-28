@@ -68,7 +68,7 @@ def test_origin_deploy_agent_keeps_public_prometheus_route() -> None:
 
 def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
     workflow = _workflow()
-    assert workflow[True]["push"]["branches"] == ["main"]
+    assert "push" not in workflow[True]
     assert {"workflow_dispatch": workflow[True]["workflow_dispatch"]} == {
         "workflow_dispatch": {
             "inputs": {

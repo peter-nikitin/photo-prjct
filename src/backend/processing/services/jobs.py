@@ -63,6 +63,7 @@ def claim_job(
     now: timezone.datetime | None = None,
     event_id: int | None = None,
     configuration_hash: str | None = None,
+    job_id: UUID | None = None,
 ) -> ClaimedJob | EmptyClaim:
     """Atomically seal and lease compatible, optionally exact-scoped work."""
     now = now or timezone.now()
@@ -87,6 +88,8 @@ def claim_job(
             )
             if event_id is not None:
                 candidates = candidates.filter(event_id=event_id)
+            if job_id is not None:
+                candidates = candidates.filter(pk=job_id)
             if configuration_hash is not None:
                 candidates = candidates.filter(configuration_hash=configuration_hash)
             candidates = candidates.order_by("available_at", "created_at", "id")

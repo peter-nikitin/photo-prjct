@@ -92,6 +92,15 @@ class WorkerTokenAuthenticationTests(SimpleTestCase):
     def setUp(self) -> None:
         self.factory = RequestFactory()
 
+    @override_settings(
+        DEBUG=False, PHOTO_PROCESSING_ENABLED=True, PHOTO_PROCESSING_WORKER_TOKEN="worker-secret"
+    )
+    def test_production_local_worker_uses_separate_bearer_token(self) -> None:
+        for token, expected in (("worker-secret", True), ("wrong", False), ("", False)):
+            with self.subTest(token=token):
+                request = self.factory.post("/", HTTP_AUTHORIZATION=f"Bearer {token}")
+                self.assertEqual(has_worker_token(request), expected)
+
     @override_settings(PHOTO_PROCESSING_ENABLED=True, PHOTO_PROCESSING_WORKER_TOKEN="worker-secret")
     def test_missing_malformed_and_incorrect_credentials_have_one_sanitized_denial(self) -> None:
         @require_worker_token

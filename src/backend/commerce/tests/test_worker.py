@@ -445,6 +445,26 @@ class CommerceWorkerTests(TransactionTestCase):
         self.assertEqual(recovered[0].attempt_id, attempt.pk)
         self.assertNotEqual(recovered[0].lease_id, first[0].lease_id)
 
+    def test_exact_payment_claim_leaves_other_due_attempt_untouched(self) -> None:
+        older = self.make_due_payment_attempt(
+            self.make_order(public_number="FM-EXCT2222", status=Order.Status.PENDING),
+            suffix="older",
+        )
+        target = self.make_due_payment_attempt(
+            self.make_order(public_number="FM-EXCT2223", status=Order.Status.PENDING),
+            suffix="target",
+        )
+
+        claims = claim_due_payment_reconciliations(
+            now=self.now, limit=1, adapter_key="deterministic-test", attempt_id=target.pk
+        )
+
+        self.assertEqual([claim.attempt_id for claim in claims], [target.pk])
+        self.assertEqual(
+            PaymentAttempt.objects.get(pk=older.pk).reconciliation_state,
+            PaymentAttempt.ReconciliationState.PENDING,
+        )
+
     def test_concurrent_reconciliation_claims_share_no_provider_status_fetch(self) -> None:
         """Two PostgreSQL pollers racing for one due attempt produce exactly one lease."""
         order = self.make_order(public_number="FM-RCNC2223", status=Order.Status.PENDING)
@@ -958,7 +978,7 @@ class CommerceWorkerTests(TransactionTestCase):
                 side_effect=lambda: events.append("released"),
             ),
         ):
-            command.Command().handle(once=False, poll_seconds=5)
+            command.Command().handle(once=False, poll_seconds=5, payment_attempt_id=None)
         self.assertEqual(events, ["accepted", "completed", "released"])
         self.assertEqual(signal.getsignal(signal.SIGTERM), original_handler)
 

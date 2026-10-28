@@ -87,7 +87,17 @@ class CommerceWorker:
         self._claim_limit = claim_limit
         self._email_timeout_seconds = email_timeout_seconds
 
-    def run_once(self, *, now: datetime | None = None) -> CommerceWorkerRun:
+    def run_once(
+        self, *, now: datetime | None = None, payment_attempt_id: int | None = None
+    ) -> CommerceWorkerRun:
+        if payment_attempt_id is not None:
+            return CommerceWorkerRun(
+                email_deliveries=0,
+                payment_reconciliations=self._process_payment_reconciliations(
+                    now=now, attempt_id=payment_attempt_id
+                ),
+                attention_reminders=0,
+            )
         delivered = self._process_email_deliveries(now=now)
         reconciled = self._process_payment_reconciliations(now=now)
         reminded = self._process_attention_reminders(now=now)
@@ -135,13 +145,16 @@ class CommerceWorker:
             timedelta(seconds=self._claim_limit * self._email_timeout_seconds + 60),
         )
 
-    def _process_payment_reconciliations(self, *, now: datetime | None) -> int:
+    def _process_payment_reconciliations(
+        self, *, now: datetime | None, attempt_id: int | None = None
+    ) -> int:
         processed = 0
         claim_time = now or timezone.now()
         for claim in claim_due_payment_reconciliations(
             now=claim_time,
             limit=self._claim_limit,
             adapter_key=self._payment_gateway.adapter_key,
+            attempt_id=attempt_id,
         ):
             try:
                 reconcile_payment_attempt(
@@ -322,6 +335,7 @@ def claim_due_payment_reconciliations(
     now: datetime,
     limit: int,
     adapter_key: str,
+    attempt_id: int | None = None,
 ) -> tuple[PaymentReconciliationClaim, ...]:
     """Recover and lease a bounded batch of due payment status reconciliations."""
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= _MAX_CLAIM_LIMIT:
@@ -329,8 +343,9 @@ def claim_due_payment_reconciliations(
     if not isinstance(adapter_key, str) or not adapter_key:
         raise ValueError("Payment reconciliation adapter key is required.")
     with transaction.atomic():
-        _recover_expired_payment_reconciliation_leases(now=now, limit=limit)
-        attempts = list(
+        if attempt_id is None:
+            _recover_expired_payment_reconciliation_leases(now=now, limit=limit)
+        candidates = (
             PaymentAttempt.objects.select_for_update(skip_locked=True)
             .filter(
                 status=PaymentAttempt.Status.PENDING,
@@ -338,8 +353,10 @@ def claim_due_payment_reconciliations(
                 adapter_key=adapter_key,
             )
             .filter(reconciliation_next_attempt_at__lte=now)
-            .order_by("reconciliation_next_attempt_at", "pk")[:limit]
         )
+        if attempt_id is not None:
+            candidates = candidates.filter(pk=attempt_id)
+        attempts = list(candidates.order_by("reconciliation_next_attempt_at", "pk")[:limit])
         claims: list[PaymentReconciliationClaim] = []
         for attempt in attempts:
             lease_id = uuid4()

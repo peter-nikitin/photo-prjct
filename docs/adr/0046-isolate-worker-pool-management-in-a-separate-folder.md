@@ -6,6 +6,7 @@
 - Supersedes: none
 - Superseded by: [ADR 0049](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md)
   only for post-acceptance recovery through on-host photo workers
+- Superseded by: [ADR 0056](0056-minimum-viable-infrastructure.md) — для отдельного worker-folder и управления удалённым флотом
 
 ## Context
 

@@ -221,6 +221,45 @@ def test_cost_estimator_rejects_success_without_complete_summary(tmp_path: Path)
         cost_estimation.run_estimator(estimator_dir, plan)
 
 
+def test_cost_estimator_formats_verified_totals_as_plain_monthly_bullets() -> None:
+    cost_estimation = load_helper("cost_estimation")
+    report = """
+=== TERRAFORM COST ESTIMATION ===
+CURRENT INFRASTRUCTURE:
+  Hourly: 0 RUB
+  Monthly: 0 RUB
+PLANNED INFRASTRUCTURE:
+  Hourly: 1825.0 RUB
+  Monthly: 1357800.0 RUB
+DIFFERENCE:
+  Hourly: +1825.0 RUB
+  Monthly: +1357800.0 RUB
+=== CURRENT USAGE DETAILS ===
+╔═══════╗
+=== PLANNED USAGE DETAILS ===
+╔═══════╗
+"""
+
+    summary = cost_estimation.format_summary(report)
+
+    assert summary == (
+        "- Сейчас: 0 RUB/мес. (0 RUB/ч)\n"
+        "- По плану: 1 357 800 RUB/мес. (1 825 RUB/ч)\n"
+        "- Разница: +1 357 800 RUB/мес. (+1 825 RUB/ч)\n"
+        "- Расчётная база: 744 ч/мес.\n"
+    )
+    assert summary.endswith("\n")
+    assert "|" not in summary
+    with pytest.raises(RuntimeError, match="missing or invalid cost totals"):
+        cost_estimation.format_summary(report.replace("Monthly: 0 RUB", "Monthly: unknown RUB"))
+
+    negative_report = report.replace("Hourly: +1825.0 RUB", "Hourly: -0.5 RUB").replace(
+        "Monthly: +1357800.0 RUB", "Monthly: -372 RUB"
+    )
+    negative_summary = cost_estimation.format_summary(negative_report)
+    assert "- Разница: -372 RUB/мес. (-0.5 RUB/ч)" in negative_summary
+
+
 def _approval_fixture():
     head = "a" * 40
     pr = {

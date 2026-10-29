@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,53 @@ SUPPORTED_RESOURCES = {
     "yandex_compute_instance_group",
     "yandex_vpc_address",
 }
+
+_TOTAL_SECTIONS = {
+    "CURRENT INFRASTRUCTURE:": "Сейчас",
+    "PLANNED INFRASTRUCTURE:": "По плану",
+    "DIFFERENCE:": "Разница",
+}
+
+
+def format_summary(report: str) -> str:
+    """Show checked upstream totals in a compact format suitable for a PR comment."""
+    totals: dict[str, tuple[str, str]] = {}
+    section: str | None = None
+    for line in report.splitlines():
+        heading = line.strip()
+        if heading in _TOTAL_SECTIONS:
+            section = heading
+            continue
+        if section is None:
+            continue
+        match = re.fullmatch(r"\s*(Hourly|Monthly):\s*([+-]?[\d,]+(?:\.\d+)?)\s+RUB\s*", line)
+        if match:
+            hourly, monthly = totals.get(section, ("", ""))
+            value = match.group(2).replace(",", "")
+            totals[section] = (
+                value if match.group(1) == "Hourly" else hourly,
+                value if match.group(1) == "Monthly" else monthly,
+            )
+        elif heading.startswith("=== "):
+            section = None
+
+    if set(totals) != set(_TOTAL_SECTIONS) or any(
+        not hourly or not monthly for hourly, monthly in totals.values()
+    ):
+        raise RuntimeError("upstream cost estimator returned missing or invalid cost totals")
+
+    def display(value: str) -> str:
+        integer, dot, fraction = value.partition(".")
+        sign = integer[0] if integer.startswith(("+", "-")) else ""
+        grouped = f"{int(integer.lstrip('+-')):,}".replace(",", " ")
+        return f"{sign}{grouped}{dot}{fraction.rstrip('0') if dot else ''}".rstrip(".")
+
+    lines = []
+    for heading, label in _TOTAL_SECTIONS.items():
+        hourly, monthly = totals[heading]
+        lines.append(f"- {label}: {display(monthly)} RUB/мес. ({display(hourly)} RUB/ч)")
+    lines.append("- Расчётная база: 744 ч/мес.")
+    return "\n".join(lines) + "\n"
 
 
 def _resource_address_from_reference(
@@ -183,7 +231,7 @@ def main() -> int:
     parser.add_argument("--estimator-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
-        sys.stdout.write(estimate(args.plan, args.estimator_dir))
+        sys.stdout.write(format_summary(estimate(args.plan, args.estimator_dir)))
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
         print(f"Cost estimation failed: {exc}", file=sys.stderr)
         return 1

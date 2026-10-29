@@ -127,12 +127,18 @@ jobs:
       - name: Publish reviewable summary without plan values
         run: |
           {
-            echo '## Terraform resource actions'; cat resource-diff.txt
-            echo; echo '## Supported-resource cost estimate'; cat cost.txt
-            echo; echo 'Unknown and manually priced: backup-agent usage, egress, Object Storage state/versioning, recovered data and extraction scratch. This estimate is not a bill cap.'
-            echo; echo "Approval after review: comment /infra approve $GITHUB_RUN_ID on this PR. A new push needs a new plan run and approval."
+            echo '## Изменения ресурсов Terraform'
+            echo
+            sed 's/^/- /' resource-diff.txt
+            echo
+            echo '## Оценка стоимости'
+            echo
+            cat cost.txt
+            printf '\nНе включены: backup-agent, трафик, Object Storage и восстановление данных. Это оценка, не лимит счёта.\n'
+            echo
+            echo "[Запуск CI и сохранённый plan]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+            printf '\nПосле проверки оставьте комментарий `/infra approve %s`. Для нового push потребуется новый план и подтверждение.\n' "$GITHUB_RUN_ID"
           } | tee /tmp/infra-review.txt >> "$GITHUB_STEP_SUMMARY"
-          echo "Review the complete saved plan in this restricted run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> /tmp/infra-review.txt
           gh pr comment '${{ github.event.pull_request.number }}' --body-file /tmp/infra-review.txt
       - uses: actions/upload-artifact@v4
         with:

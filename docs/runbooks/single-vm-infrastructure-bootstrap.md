@@ -1,8 +1,13 @@
 # Первое создание инфраструктуры одной VM
 
-Этот документ описывает код этапа 1 и пакет действий для отдельного согласования. На 28 октября
-2026 года backend, CI identity, VM, диски и Cloud Backup agent **не создавались** этим PR.
-Проверки Terraform с `-backend=false` и mock provider не являются реальным облачным plan.
+Этот документ описывает код этапа 1 и порядок bootstrap. 29 октября 2026 года после
+отдельного разрешения владельца созданы backend и CI identity в `core`; проверены versioning,
+изоляция доступа и настоящая конкуренция за S3 lock. Облачный plan PR #299 выполнен в
+[Infrastructure run 40641805973, attempt 2](https://github.com/peter-nikitin/photo-prjct/actions/runs/40641805973/attempts/2)
+для коммита `385a341d0fa100998e9577aa494b2b86eb48c2d2`: восемь действий create, без apply.
+VM, диски и Cloud Backup agent ещё не создавались. Оценщик стоимости в этом запуске выдал
+ошибку при успешном exit code; этот запуск не подтверждает успешную оценку расходов.
+Проверки Terraform с `-backend=false` и mock provider также не являются облачным plan.
 После согласования ресурсов один merge запускает `Infrastructure`: публикацию immutable образов,
 apply одобренного plan, Ansible и размещение runtime-пакета. БД, web и обработчики остаются
 остановленными до ручного восстановления по [порядку восстановления](single-vm-recovery.md).
@@ -54,7 +59,8 @@ yc storage bucket get --name findme-photo-tfstate
 yc iam service-account create --name findme-photo-infrastructure --folder-id b1g2qttgfhb4gdunvlge
 SA_ID=<returned-service-account-id>
 yc resource-manager folder add-access-binding --id b1g2qttgfhb4gdunvlge --role compute.editor --subject "serviceAccount:$SA_ID"
-yc resource-manager folder add-access-binding --id b1g2qttgfhb4gdunvlge --role vpc.editor --subject "serviceAccount:$SA_ID"
+yc resource-manager folder add-access-binding --id b1g2qttgfhb4gdunvlge --role vpc.privateAdmin --subject "serviceAccount:$SA_ID"
+yc resource-manager folder add-access-binding --id b1g2qttgfhb4gdunvlge --role vpc.securityGroups.admin --subject "serviceAccount:$SA_ID"
 yc resource-manager folder add-access-binding --id b1g2qttgfhb4gdunvlge --role vpc.publicAdmin --subject "serviceAccount:$SA_ID"
 yc resource-manager folder add-access-binding --id b1g2qttgfhb4gdunvlge --role iam.serviceAccounts.admin --subject "serviceAccount:$SA_ID"
 yc resource-manager folder add-access-binding --id b1g2qttgfhb4gdunvlge --role resource-manager.admin --subject "serviceAccount:$SA_ID"
@@ -66,7 +72,8 @@ yc iam workload-identity federated-credential create --service-account-id "$SA_I
 `resource-manager.admin` требуется для назначения `backup.user` новому VM account; это
 широкое право в пределах `core`, поэтому перед bootstrap отдельно просмотрите полный список
 прав и возможность ограничить их после создания. `compute.editor` и `vpc.publicAdmin` нужны
-созданию VM с публичным IP; `vpc.editor` — VPC, subnet и SG. Эти роли **не** дают доступа к
+созданию VM с публичным IP; `vpc.privateAdmin` — VPC и subnet,
+`vpc.securityGroups.admin` — SG. Роли `vpc.editor` в ЯО нет. Эти роли **не** дают доступа к
 прежним media buckets вне `core` по намерению конфигурации, но фактические inherited bindings
 нужно проверить. Для чтения serial output у CI достаточно включённого в `compute.editor`
 `compute.viewer`. [Compute roles](https://yandex.cloud/en/docs/compute/security/),
@@ -87,6 +94,9 @@ BACKEND_SA_ID=<returned-service-account-id>
 umask 077
 private_dir=$(mktemp -d /tmp/findme-tfstate-bootstrap.XXXXXX)
 python3 -c 'import pathlib,sys; p=pathlib.Path("infra/bootstrap/state-bucket-policy.json.template"); print(p.read_text().replace("BACKEND_SA_ID",sys.argv[1]))' "$BACKEND_SA_ID" > "$private_dir/policy.json"
+yc storage bucket update --name findme-photo-tfstate \
+  --grants "grant-type=grant-type-account,grantee-id=$BACKEND_SA_ID,permission=permission-read" \
+  --grants "grant-type=grant-type-account,grantee-id=$BACKEND_SA_ID,permission=permission-write"
 yc storage bucket update --name findme-photo-tfstate --policy-from-file "$private_dir/policy.json"
 yc iam access-key create --service-account-id "$BACKEND_SA_ID" --format json > "$private_dir/access-key.json"
 python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_key"]["key_id"])' "$private_dir/access-key.json" > "$private_dir/key-id"
@@ -98,6 +108,12 @@ gh secret set INFRA_S3_SECRET_ACCESS_KEY -R peter-nikitin/photo-prjct --env infr
 Команды сохраняют одноразово выдаваемый secret только в приватных файлах и передают его в
 `gh secret set` через stdin. После проверки GitHub secrets удалите приватный каталог безопасным
 способом на машине оператора; потеря secret до загрузки требует выпуска нового static key.
+В ЯО bucket policy проверяется после базового IAM/ACL разрешения, поэтому сначала
+назначаются bucket ACL READ/WRITE и только затем ограничивающая policy. Если policy уже
+установлена, не удаляйте её вслепую: она может запрещать оператору изменение ACL; требуется
+рассмотренное узкое разрешение управления ACL для конкретного оператора.
+[Порядок проверок доступа](https://yandex.cloud/ru/docs/storage/security/overview).
+
 Policy применяется **целиком** и заменит прежнюю policy, поэтому этот пакет рассчитан только
 на новый отдельный bucket. Перед первым настоящим plan проверьте доступ и lock на probe key
 ниже. [Bucket policy](https://yandex.cloud/en/docs/storage/concepts/policy),
@@ -126,18 +142,22 @@ identity, не в PR без credentials:
 ```sh
 export AWS_ACCESS_KEY_ID=<backend-access-key-id>
 export AWS_SECRET_ACCESS_KEY=<backend-secret-key>
-export YC_TOKEN=<short-lived-IAM-token>
-terraform -chdir=infra/terraform init -reconfigure -backend-config='key=core/lock-probe/terraform.tfstate'
-terraform -chdir=infra/terraform console -var-file=project.tfvars
+PROBE_ROOT=$(mktemp -d /tmp/findme-tf-lock-probe.XXXXXX)
+cp infra/terraform/backend.tf "$PROBE_ROOT/backend.tf"
+printf 'variable "lock_probe" { type = string }\n' > "$PROBE_ROOT/probe.tf"
+terraform -chdir="$PROBE_ROOT" init -reconfigure -backend-config='key=core/lock-probe/terraform.tfstate'
+terraform -chdir="$PROBE_ROOT" plan
 ```
 
-Держите первый `console` открытым; из второго процесса с тем же backend key запустите
-`terraform -chdir=infra/terraform plan -lock-timeout=0s -var-file=project.tfvars`.
-Второй процесс обязан получить ошибку блокировки. Если оба получили lock, **не выполняйте**
-основной apply. Удаляйте только тестовый key и его версии после явной проверки, что процессы
-закрыты; основной state/lock не трогайте. Перед первым планом повторно инициализируйте
-обычный backend key из `backend.tf` через `terraform init -reconfigure`. Не используйте
-`-lock=false` и не применяйте plan, созданный с тестовым key.
+Первый `plan` должен удерживать lock, пока ожидает значение `lock_probe`. Из второго процесса
+с тем же probe root запустите `terraform -chdir="$PROBE_ROOT" plan -input=false
+-lock-timeout=0s -var=lock_probe=complete`. Он обязан получить ошибку блокировки.
+После ввода значения в первый процесс и его завершения повторный plan должен пройти.
+На реальной проверке 29 октября `terraform console` 1.17.0 не удержал lock; для этой проверки
+используется `plan`. Не выполняйте apply ни в probe root, ни в основном root.
+Удаляйте только тестовый key и его версии после проверки, что процессы закрыты; основной
+state/lock не трогайте. Перед первым основным plan инициализируйте canonical backend
+через `terraform -chdir=infra/terraform init -reconfigure`. Не используйте `-lock=false`.
 
 ## PR → сохранённый plan → merge
 
@@ -147,9 +167,15 @@ syntax. Облачный plan стартует только после наст�
 бинарный `plan.tfplan` как закрытый Actions artifact на 7 дней, публикует в PR только список
 ресурсов/действий и оценку через локальный
 [`terraform-yc-cost-estimation`](https://github.com/terraform-yc-modules/terraform-yc-cost-estimation/tree/7a74a71c72d7f49cae58ebc626658f5c2c816df1).
-Полный plan JSON не пишется в комментарий. Непокрытые компоненты — динамический VM public IPv4,
-трафик, backup-agent, state/versioning и пространство восстановления — оцениваются вручную
-по официальным тарифам; число `0` для них не означает бесплатность.
+Для совместимости с форматом этого estimator CI передаёт ему временную копию `planned_values`:
+внешний диск, указанный в `boot_disk.disk_id`, переносится в формат `initialize_params` и
+исключается из отдельного подсчёта, чтобы учесть boot disk ровно один раз. Исходный plan не
+меняется. Ошибка адаптера или estimator, в том числе напечатанная upstream CLI при exit code 0,
+завершает шаг оценки ошибкой; неполный отчёт не публикуется как успешная оценка. Месячный итог
+считает 31 день (744 часа), как закреплённый upstream estimator. Полный plan JSON не пишется в
+комментарий. Непокрытые компоненты — трафик, backup-agent, Object Storage state/versioning и
+пространство восстановления — оцениваются вручную по официальным тарифам; число `0` для них не
+означает бесплатность. Public IPv4 при `nat = true` считается estimator-ом.
 
 После просмотра точного run, resource diff и стоимости уполномоченный участник с правом write,
 maintain или admin оставляет комментарий `/infra approve RUN_ID`. Новый push требует нового

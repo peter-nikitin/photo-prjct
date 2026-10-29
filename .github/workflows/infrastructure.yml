@@ -122,13 +122,15 @@ jobs:
           sys.argv = ['get-sku.py', os.environ['YC_TOKEN'], '--output', 'sku.json']
           runpy.run_path('get-sku.py', run_name='__main__')
           PY
-          python app.py "$GITHUB_WORKSPACE/infra/terraform/plan.json" --full --no-color | tee "$GITHUB_WORKSPACE/cost.txt"
+          python "$GITHUB_WORKSPACE/infra/ci/cost_estimation.py" \
+            "$GITHUB_WORKSPACE/infra/terraform/plan.json" \
+            --estimator-dir "$PWD" | tee "$GITHUB_WORKSPACE/cost.txt"
       - name: Publish reviewable summary without plan values
         run: |
           {
             echo '## Terraform resource actions'; cat resource-diff.txt
             echo; echo '## Supported-resource cost estimate'; cat cost.txt
-            echo; echo 'Unknown and manually priced: dynamic VM public IPv4, backup-agent usage, egress, Object Storage state/versioning, recovered data and extraction scratch. This estimate is not a bill cap.'
+            echo; echo 'Unknown and manually priced: backup-agent usage, egress, Object Storage state/versioning, recovered data and extraction scratch. This estimate is not a bill cap.'
             echo; echo "Approval after review: comment /infra approve $GITHUB_RUN_ID on this PR. A new push needs a new plan run and approval."
           } | tee /tmp/infra-review.txt >> "$GITHUB_STEP_SUMMARY"
           echo "Review the complete saved plan in this restricted run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> /tmp/infra-review.txt

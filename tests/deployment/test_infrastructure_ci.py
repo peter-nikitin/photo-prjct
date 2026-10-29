@@ -86,6 +86,83 @@ def test_plan_step_writes_json_where_summary_command_reads_it(tmp_path: Path) ->
     )
 
 
+def test_cost_plan_normalizes_referenced_boot_disk_without_double_counting() -> None:
+    cost_estimation = load_helper("cost_estimation")
+    fixture = ROOT / "tests/fixtures/infrastructure/cost_plan.json"
+    plan = json.loads(fixture.read_text())
+
+    normalized = cost_estimation.normalize_plan(plan)
+    resources = normalized["planned_values"]["root_module"]["resources"]
+    by_address = {resource["address"]: resource for resource in resources}
+
+    assert set(by_address) == {
+        "yandex_compute_disk.postgres",
+        "yandex_compute_instance.app",
+    }
+    assert by_address["yandex_compute_instance.app"]["values"]["boot_disk"][0][
+        "initialize_params"
+    ] == [{"size": 30, "type": "network-hdd"}]
+    assert by_address["yandex_compute_instance.app"]["values"]["scheduling_policy"] == [{}]
+    assert by_address["yandex_compute_disk.postgres"]["values"] == {
+        "size": 10,
+        "type": "network-hdd",
+    }
+    assert plan["planned_values"]["root_module"]["resources"][0]["address"] == (
+        "yandex_compute_disk.boot"
+    )
+    prior_resources = normalized["prior_state"]["values"]["root_module"]["resources"]
+    prior_by_address = {resource["address"]: resource for resource in prior_resources}
+    assert set(prior_by_address) == set(by_address)
+    assert prior_by_address["yandex_compute_instance.app"]["values"]["boot_disk"][0][
+        "initialize_params"
+    ] == [{"size": 30, "type": "network-hdd"}]
+    assert prior_by_address["yandex_compute_disk.postgres"]["values"]["size"] == 10
+
+    id_only_plan = json.loads(json.dumps(plan))
+    planned_instance = next(
+        resource
+        for resource in id_only_plan["planned_values"]["root_module"]["resources"]
+        if resource["type"] == "yandex_compute_instance"
+    )
+    planned_instance["values"]["boot_disk"][0]["disk_id"] = "disk-boot-id"
+    next(
+        resource
+        for resource in id_only_plan["planned_values"]["root_module"]["resources"]
+        if resource["address"] == "yandex_compute_disk.boot"
+    )["values"]["id"] = "disk-boot-id"
+    id_only_plan["configuration"]["root_module"]["resources"][0]["expressions"]["boot_disk"][0][
+        "disk_id"
+    ]["references"] = []
+    id_only_normalized = cost_estimation.normalize_plan(id_only_plan)
+    assert len(id_only_normalized["planned_values"]["root_module"]["resources"]) == 2
+
+
+def test_cost_estimator_rejects_upstream_error_printed_with_success_exit_code(
+    tmp_path: Path,
+) -> None:
+    cost_estimation = load_helper("cost_estimation")
+    estimator_dir = tmp_path / "estimator"
+    estimator_dir.mkdir()
+    (estimator_dir / "app.py").write_text("print(\"Error: 'initialize_params'\")\n")
+    plan = tmp_path / "plan.json"
+    plan.write_text("{}")
+
+    with pytest.raises(RuntimeError, match="upstream cost estimator reported an error"):
+        cost_estimation.run_estimator(estimator_dir, plan)
+
+
+def test_cost_estimator_rejects_success_without_complete_summary(tmp_path: Path) -> None:
+    cost_estimation = load_helper("cost_estimation")
+    estimator_dir = tmp_path / "estimator"
+    estimator_dir.mkdir()
+    (estimator_dir / "app.py").write_text('print("No resources found")\n')
+    plan = tmp_path / "plan.json"
+    plan.write_text("{}")
+
+    with pytest.raises(RuntimeError, match="incomplete report"):
+        cost_estimation.run_estimator(estimator_dir, plan)
+
+
 def _approval_fixture():
     head = "a" * 40
     pr = {

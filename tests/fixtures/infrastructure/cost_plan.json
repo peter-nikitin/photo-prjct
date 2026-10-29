@@ -1,0 +1,84 @@
+{
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "yandex_compute_disk.boot",
+          "type": "yandex_compute_disk",
+          "name": "boot",
+          "values": {"size": 30, "type": "network-hdd"}
+        },
+        {
+          "address": "yandex_compute_disk.postgres",
+          "type": "yandex_compute_disk",
+          "name": "postgres",
+          "values": {"size": 10, "type": "network-hdd"}
+        },
+        {
+          "address": "yandex_compute_instance.app",
+          "type": "yandex_compute_instance",
+          "name": "app",
+          "values": {
+            "boot_disk": [{"auto_delete": false, "initialize_params": []}],
+            "resources": [{"cores": 2, "core_fraction": 20, "memory": 1, "gpus": null}],
+            "network_interface": [{"nat": true}],
+            "scheduling_policy": null
+          }
+        }
+      ]
+    }
+  },
+  "prior_state": {
+    "values": {
+      "root_module": {
+        "resources": [
+          {
+            "address": "yandex_compute_disk.boot",
+            "type": "yandex_compute_disk",
+            "name": "boot",
+            "values": {"id": "disk-boot-id", "size": 30, "type": "network-hdd"}
+          },
+          {
+            "address": "yandex_compute_disk.postgres",
+            "type": "yandex_compute_disk",
+            "name": "postgres",
+            "values": {"id": "disk-postgres-id", "size": 10, "type": "network-hdd"}
+          },
+          {
+            "address": "yandex_compute_instance.app",
+            "type": "yandex_compute_instance",
+            "name": "app",
+            "values": {
+              "boot_disk": [{"auto_delete": false, "disk_id": "disk-boot-id", "initialize_params": null}],
+              "resources": [{"cores": 2, "core_fraction": 20, "memory": 1, "gpus": null}],
+              "network_interface": [{"nat": true}],
+              "scheduling_policy": null
+            }
+          }
+        ]
+      }
+    }
+  },
+  "configuration": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "yandex_compute_instance.app",
+          "type": "yandex_compute_instance",
+          "expressions": {
+            "boot_disk": [
+              {
+                "disk_id": {
+                  "references": [
+                    "yandex_compute_disk.boot.id",
+                    "yandex_compute_disk.boot"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

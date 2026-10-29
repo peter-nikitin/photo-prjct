@@ -7,9 +7,8 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from ipaddress import IPv4Address
 from typing import ClassVar
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
@@ -31,15 +30,10 @@ class GalleryImageDeliverySettings:
 
     def __post_init__(self) -> None:
         try:
-            URLValidator(schemes=["https", "http"])(self.cdn_origin)
+            URLValidator(schemes=["https"])(self.cdn_origin)
             origin = urlsplit(self.cdn_origin)
             if (
-                (
-                    origin.scheme == "http"
-                    and (origin.port is not None or not _ipv4(origin.hostname))
-                )
-                or origin.scheme not in {"http", "https"}
-                or origin.username is not None
+                origin.username is not None
                 or origin.password is not None
                 or origin.path not in ("", "/")
                 or "?" in self.cdn_origin
@@ -48,9 +42,7 @@ class GalleryImageDeliverySettings:
             ):
                 raise ValueError
         except (ValidationError, ValueError, TypeError):
-            raise ImproperlyConfigured(
-                "GALLERY_CDN_ORIGIN must be HTTPS or a direct HTTP IPv4 origin"
-            ) from None
+            raise ImproperlyConfigured("GALLERY_CDN_ORIGIN must be an HTTPS origin") from None
         if not isinstance(self.cdn_token_secret, str) or not 6 <= len(self.cdn_token_secret) <= 32:
             raise ImproperlyConfigured("GALLERY_CDN_TOKEN_SECRET must contain 6 to 32 characters")
         for name, value in (
@@ -143,40 +135,3 @@ def _imgproxy_signature(path: str, *, key: bytes, salt: bytes) -> str:
 def _cdn_token(path: str, *, expires: int, secret: str) -> str:
     # Yandex CDN's secure-token protocol requires MD5, with no client-IP binding.
     return _urlsafe_base64(hashlib.md5(f"{expires}{path} {secret}".encode()).digest())
-
-
-def _ipv4(host: str | None) -> bool:
-    try:
-        IPv4Address(host or "")
-    except ValueError:
-        return False
-    return True
-
-
-def valid_direct_ip_image_token(uri: str, *, secret: str, now: int | None = None) -> bool:
-    """Validate the existing CDN capability at the temporary HTTP IP edge."""
-    if not secret:
-        return False
-    parsed = urlsplit(uri)
-    if (
-        parsed.scheme
-        or parsed.netloc
-        or parsed.fragment
-        or not re.fullmatch(
-            r"/[A-Za-z0-9_-]{43}/(?:gallery-v1|cover-v1)/[A-Za-z0-9_-]{1,768}\.jpg",
-            parsed.path,
-        )
-    ):
-        return False
-    try:
-        query = parse_qs(parsed.query, strict_parsing=True)
-        if set(query) != {"md5", "expires"} or any(len(values) != 1 for values in query.values()):
-            return False
-        expiry = int(query["expires"][0])
-        current = int(time.time()) if now is None else now
-        if not current <= expiry <= current + GALLERY_PREVIEW_URL_TTL_SECONDS:
-            return False
-        expected = _cdn_token(parsed.path, expires=expiry, secret=secret)
-        return hmac.compare_digest(query["md5"][0], expected)
-    except (ValueError, KeyError):
-        return False

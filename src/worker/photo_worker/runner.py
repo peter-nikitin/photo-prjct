@@ -86,7 +86,6 @@ class WorkerClient(Protocol):
         processor_type: str = PROCESSOR_TYPE,
         processor_version: int | None = None,
         contract_version: int = 1,
-        job_id: str | None = None,
     ) -> Claim: ...
 
     def download(
@@ -140,16 +139,8 @@ class WorkerConfig:
     log_secrets: tuple[str, ...] = ()
     remote_pool: str | None = None
     runtime_telemetry_enabled: bool = False
-    target_job_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.target_job_id is not None:
-            from uuid import UUID
-
-            try:
-                UUID(self.target_job_id)
-            except ValueError:
-                raise ValueError("target job ID must be a UUID") from None
         if self.runtime_telemetry_enabled and self.remote_pool is None:
             raise ValueError("runtime telemetry requires remote worker transport")
         if self.concurrency not in {1, 2} or (self.concurrency == 2 and self.remote_pool != "bulk"):
@@ -342,7 +333,6 @@ class Worker:
         self.draining = self.drain.requested
         self.fleet: FleetLifecycle | None = None
         self.telemetry = telemetry
-        self.claimed_job_id: str | None = None
 
     def request_drain(self) -> None:
         self.drain.request()
@@ -359,7 +349,6 @@ class Worker:
         if claim is None or claim.job is None:
             return min(empty_delays)
         job = claim.job
-        self.claimed_job_id = job.id
         if job.configuration.heartbeat_interval_seconds >= self._config.lease_seconds:
             raise ApiError("invalid_api_response", retryable=False)
         self._next_poll_delay_seconds = job.configuration.poll_min_delay_seconds
@@ -424,7 +413,6 @@ class Worker:
             processor_type=processor_type,
             processor_version=processor_version,
             contract_version=contract_version,
-            **({"job_id": self._config.target_job_id} if self._config.target_job_id else {}),
         )
         if claim.job is None:
             assert claim.suggested_delay_seconds is not None

@@ -418,27 +418,6 @@ class WorkerApiTests(TestCase):
         self.assertLessEqual(grant.call_args.kwargs["max_ttl_seconds"], 119)
 
     @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
-    def test_explicit_job_claim_cannot_take_other_ready_work(self, grant) -> None:
-        grant.return_value.url = "https://storage.example.test/object?secret"
-        grant.return_value.expires_at = timezone.now() + timedelta(seconds=30)
-        older = self.photo("older-claim")
-        older.original_key = "originals/" + "a" * 32
-        older.save(update_fields=["original_key"])
-        target = self.photo("target-claim")
-        request_capture_metadata(older)
-        request_capture_metadata(target)
-        target_job = ProcessingJob.objects.get(photo=target)
-
-        response = self.post(
-            "/internal/photo-processing/v1/claim",
-            self.claim_body(job_id=str(target_job.id)),
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["job"]["id"], str(target_job.id))
-        self.assertEqual(ProcessingJob.objects.get(photo=older).status, ProcessingJob.Status.QUEUED)
-
-    @patch("processing.views.ExactObjectDownloadStorage.create_download_grant")
     def test_deployed_worker_identity_claims_cross_the_django_to_worker_boundary(
         self, grant
     ) -> None:

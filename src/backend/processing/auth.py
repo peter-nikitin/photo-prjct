@@ -12,8 +12,8 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 
 
 def local_worker_enabled() -> bool:
-    """The local worker is admitted when the remote pool coordinator is disabled."""
-    return not settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED
+    """Local protocol fixtures are restricted to development without a coordinator."""
+    return bool(settings.DEBUG and not settings.PHOTO_WORKER_POOL_COORDINATOR_ENABLED)
 
 
 def worker_endpoint_enabled() -> bool:

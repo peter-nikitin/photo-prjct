@@ -1,140 +1,1618 @@
 #!/bin/sh
+
 set -eu
 
-: "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
-case "$DEPLOY_ROOT" in /*) ;; *) echo 'DEPLOY_ROOT must be absolute' >&2; exit 2 ;; esac
-for value in "${DEPLOY_WEB:-false}" "${DEPLOY_PHOTO:-false}" "${DEPLOY_IMPORT:-false}" "${DEPLOY_COMMERCE:-false}"; do
-    case "$value" in true|false) ;; *) echo 'Deployment selection must be true or false' >&2; exit 2 ;; esac
-done
-[ -f "$DEPLOY_ROOT/.env" ] && [ ! -L "$DEPLOY_ROOT/.env" ] || {
-    echo 'Deployment environment is missing or symlinked' >&2; exit 2;
-}
-compose() {
-    docker compose --env-file "$DEPLOY_ROOT/.env" -f "$DEPLOY_ROOT/docker-compose.deployment.yml" "$@"
-}
-compose config --quiet
-if [ "${DEPLOY_WEB:-false}" = true ] || [ "${DEPLOY_COMMERCE:-false}" = true ]; then
-    # A regular app release must never turn a fresh PostgreSQL instance into an empty site.
-    schema=$(compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT to_regclass('\''public.django_migrations'\'') IS NOT NULL"' 2>/dev/null) || schema=
-    if [ "$schema" != t ]; then
-        echo 'Restore the database before starting an application deployment' >&2
-        exit 1
-    fi
-fi
+deployment_phase=validate
+deployment_started_at=$(date +%s)
 
-# Image refs are independent. Keep all other root-private dotenv lines byte-for-byte.
-saved_env=$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")
-cp "$DEPLOY_ROOT/.env" "$saved_env"
-cleanup() {
-    code=$?
-    trap - 0
-    if [ "$code" -eq 0 ]; then
-        rm -f "$saved_env"
-    else
-        mv -f "$saved_env" "$DEPLOY_ROOT/.env"
-    fi
-    exit "$code"
+elapsed_seconds() {
+    now=$(date +%s)
+    printf '%s' "$((now - deployment_started_at))"
 }
-trap cleanup 0
+
+write_literal_dotenv_value() {
+    dotenv_name="$1"
+    dotenv_value="$2"
+    printf '%s="' "$dotenv_name"
+    printf '%s' "$dotenv_value" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\$/\\$/g'
+    printf '"\n'
+}
+
+on_exit() {
+    status=$?
+    [ "$status" -ne 0 ] || status=2
+    trap - EXIT INT TERM HUP
+    printf 'DEPLOY_RESULT=failure phase=validate rollback=not-needed elapsed_seconds=%s\n' \
+        "$(elapsed_seconds)"
+    exit "$status"
+}
+
+trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-python3 - "$DEPLOY_ROOT/.env" <<'PY'
+trap 'exit 129' HUP
+
+printf 'DEPLOY_PHASE=validate elapsed_seconds=%s\n' "$(elapsed_seconds)"
+
+RECOVER_FORWARD="${RECOVER_FORWARD:-False}"
+case "$RECOVER_FORWARD" in True|False) ;; *) exit 2 ;; esac
+forward_verify_only=0
+case "$#:${1:-}" in
+    0:) ;;
+    1:--verify-forward-candidate)
+        [ "$RECOVER_FORWARD" = True ] || exit 2
+        forward_verify_only=1
+        ;;
+    *) exit 2 ;;
+esac
+if [ "$RECOVER_FORWARD" = True ] && [ "${FINDME_FORWARD_ENV_LOADED:-}" != 1 ]; then
+    : "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
+    if [ "${FINDME_CANONICAL_LOCK:-}" != 1 ]; then
+        exec 9>"$DEPLOY_ROOT/.deployment.lock"
+        flock -n 9 || exit 1
+        export FINDME_CANONICAL_LOCK=1
+    fi
+    # Read only the exact root-private retained inputs while holding the canonical lock.
+    # Do not source dotenv as shell code or replace its settings with current CI values.
+    python3 - "$0" "$@" <<'PY_FORWARD'
 import os
 import re
 import stat
 import sys
-import tempfile
 from pathlib import Path
 
-path = Path(sys.argv[1])
-if stat.S_IMODE(path.stat().st_mode) != 0o600:
-    raise SystemExit('Deployment environment must be mode 0600')
-selected = {
-    'APP_IMAGE': os.getenv('DEPLOY_WEB') == 'true' or os.getenv('DEPLOY_COMMERCE') == 'true',
-    'PHOTO_WORKER_IMAGE': os.getenv('DEPLOY_PHOTO') == 'true',
-    'IMPORT_WORKER_IMAGE': os.getenv('DEPLOY_IMPORT') == 'true',
-}
-updates = {}
-for name, enabled in selected.items():
-    if not enabled:
-        continue
-    image = os.getenv(name, '')
-    if not re.fullmatch(r'ghcr\.io/[a-z0-9._/-]+(?::[0-9a-f]{40}|@sha256:[0-9a-f]{64})', image):
-        raise SystemExit(f'{name} must be an immutable GHCR image ref')
-    updates[name] = image
-if selected['PHOTO_WORKER_IMAGE']:
-    build = os.getenv('PHOTO_WORKER_BUILD', '')
-    if not re.fullmatch(r'[0-9a-f]{40}', build):
-        raise SystemExit('PHOTO_WORKER_BUILD must be an immutable Git SHA')
-    updates['PHOTO_WORKER_BUILD'] = build
-lines = path.read_text().splitlines(keepends=True)
-values = {}
-for line in lines:
-    name, separator, value = line.partition('=')
-    if separator and name.isupper():
-        values[name] = value.strip().strip('"')
-if values.get('PHOTO_WORKER_ENABLED') == 'True':
-    if not values.get('PHOTO_PROCESSING_WORKER_TOKEN'):
-        print('PHOTO_PROCESSING_WORKER_TOKEN is required for active photo worker', file=sys.stderr)
-        raise SystemExit(2)
-    if values.get('PHOTO_PROCESSING_ENABLED') != 'True':
-        print('PHOTO_PROCESSING_ENABLED must be True for active photo worker', file=sys.stderr)
-        raise SystemExit(2)
-if values.get('PHOTO_IMPORT_WORKER_ENABLED') == 'True':
-    if not values.get('PHOTO_IMPORT_WORKER_TOKEN'):
-        print('PHOTO_IMPORT_WORKER_TOKEN is required for active import worker', file=sys.stderr)
-        raise SystemExit(2)
-    if values.get('PHOTO_IMPORT_ENABLED') != 'True':
-        print('PHOTO_IMPORT_ENABLED must be True for active import worker', file=sys.stderr)
-        raise SystemExit(2)
-if values.get('COMMERCE_PAYMENT_GATEWAY_FACTORY') == 'commerce.tbank_gateway.tbank_gateway_factory':
-    required = ('COMMERCE_PUBLIC_ORIGIN', 'TBANK_TERMINAL_KEY', 'TBANK_TERMINAL_PASSWORD',
-                'TBANK_API_ORIGIN', 'TBANK_RUB_ONLY', 'TBANK_PAY_TYPE', 'TBANK_RECEIPT_FFD',
-                'TBANK_RECEIPT_TAXATION', 'TBANK_RECEIPT_TAX', 'TBANK_RECEIPT_PAYMENT_METHOD',
-                'TBANK_RECEIPT_PAYMENT_OBJECT', 'TBANK_RECEIPT_MEASUREMENT_UNIT',
-                'TBANK_RECEIPT_CLOSING_REQUIRED')
-    for name in required:
-        if not values.get(name):
-            print(f'{name} is required for the selected bank', file=sys.stderr)
-            raise SystemExit(2)
-for name, value in updates.items():
-    replacement = f'{name}={value}\n'
-    matches = [index for index, line in enumerate(lines) if line.startswith(f'{name}=')]
-    if len(matches) > 1:
-        raise SystemExit(f'duplicate {name} in deployment environment')
-    if matches:
-        lines[matches[0]] = replacement
-    else:
-        lines.append(replacement)
-descriptor, temporary_name = tempfile.mkstemp(prefix='.env.pending.', dir=path.parent)
-temporary = Path(temporary_name)
-try:
-    with os.fdopen(descriptor, 'w') as stream:
-        stream.writelines(lines)
-    temporary.replace(path)
-finally:
-    temporary.unlink(missing_ok=True)
-PY
 
-compose config --quiet
-if [ "${DEPLOY_WEB:-false}" = true ] || [ "${DEPLOY_COMMERCE:-false}" = true ]; then
-    compose pull web
-    compose run --rm --no-deps --entrypoint python web manage.py migrate --noinput
-    compose up -d --wait --no-deps web imgproxy edge
+def private_file(path):
+    if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
+        raise ValueError
+    return path.read_text()
+
+
+def value(encoded):
+    if not encoded.startswith('"'):
+        return encoded
+    if len(encoded) < 2 or not encoded.endswith('"'):
+        raise ValueError
+    result = []
+    index = 1
+    while index < len(encoded) - 1:
+        character = encoded[index]
+        if character == '\\':
+            index += 1
+            if index >= len(encoded) - 1:
+                raise ValueError
+            character = {'n': '\n', 'r': '\r', 't': '\t'}.get(encoded[index], encoded[index])
+        result.append(character)
+        index += 1
+    return ''.join(result)
+
+
+try:
+    root = Path(os.environ['DEPLOY_ROOT']).resolve()
+    snapshot = root / '.deployment-recovery'
+    if snapshot.is_symlink() or not snapshot.is_dir() or stat.S_IMODE(snapshot.stat().st_mode) != 0o700:
+        raise ValueError
+    private_file(snapshot / 'previous.env')
+    predecessor = Path(private_file(snapshot / 'package-path').strip())
+    if (predecessor.is_symlink() or predecessor.parent != root
+            or not predecessor.name.startswith('.deployment-previous.')
+            or not predecessor.is_dir()):
+        raise ValueError
+    retained = {}
+    for line in private_file(snapshot / 'candidate.env').splitlines():
+        name, separator, encoded = line.partition('=')
+        if not separator or not re.fullmatch(r'[A-Z][A-Z0-9_]*', name) or name in retained:
+            raise ValueError
+        retained[name] = value(encoded)
+    sha = os.environ['RELEASE_SHA']
+    image = os.environ['APP_IMAGE']
+    if not re.fullmatch(r'[0-9a-f]{40}', sha):
+        raise ValueError
+    if not re.fullmatch(r'ghcr\.io/[a-z0-9_./-]+:(latest|[0-9a-f]{40})', image):
+        raise ValueError
+    environment = {**os.environ, **retained, 'APP_IMAGE': image,
+                   'RECOVER_FORWARD': 'True', 'FINDME_FORWARD_ENV_LOADED': '1',
+                   'DEPLOY_WEB': 'true',
+                   'DEPLOY_IMPORT': retained['DEPLOY_IMPORT'],
+                   'DEPLOY_COMMERCE': retained['DEPLOY_COMMERCE'],
+                   'COMPOSE_PROJECT_NAME': 'photo-prjct'}
+    environment.pop('PREVIOUS_DEPLOYMENT_PACKAGE_ROOT', None)
+except (OSError, KeyError, ValueError):
+    raise SystemExit('Invalid retained forward-recovery inputs') from None
+os.execve('/bin/sh', ['sh', *sys.argv[1:]], environment)
+PY_FORWARD
+    trap - EXIT INT TERM HUP
+    exit 0
 fi
-if [ "${DEPLOY_PHOTO:-false}" = true ]; then
-    compose --profile processing pull photo-worker
-    if grep -qx 'PHOTO_WORKER_ENABLED=True' "$DEPLOY_ROOT/.env"; then
-        compose --profile processing up -d --wait --no-deps photo-worker
+
+: "${DEPLOY_ROOT:?Set DEPLOY_ROOT}"
+: "${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME}"
+: "${APP_IMAGE:?Set APP_IMAGE}"
+: "${DEPLOY_WEB:?Set DEPLOY_WEB}"
+: "${DEPLOY_IMPORT:?Set DEPLOY_IMPORT}"
+: "${DEPLOY_COMMERCE:?Set DEPLOY_COMMERCE}"
+for component_selection in "$DEPLOY_WEB" "$DEPLOY_IMPORT" "$DEPLOY_COMMERCE"; do
+    case "$component_selection" in true|false) ;; *) exit 2 ;; esac
+done
+: "${SECRET_KEY:?Set SECRET_KEY}"
+: "${DEBUG:?Set DEBUG}"
+: "${ALLOWED_HOSTS:?Set ALLOWED_HOSTS}"
+: "${DB_NAME:?Set DB_NAME}"
+: "${DB_USER:?Set DB_USER}"
+: "${DB_PASSWORD:?Set DB_PASSWORD}"
+: "${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN}"
+: "${GUNICORN_WORKERS:?Set GUNICORN_WORKERS}"
+: "${GUNICORN_THREADS:?Set GUNICORN_THREADS}"
+: "${GUNICORN_TIMEOUT:?Set GUNICORN_TIMEOUT}"
+: "${GUNICORN_MAX_REQUESTS:?Set GUNICORN_MAX_REQUESTS}"
+: "${GUNICORN_MAX_REQUESTS_JITTER:?Set GUNICORN_MAX_REQUESTS_JITTER}"
+PUBLIC_DOMAIN_ALIAS="${PUBLIC_DOMAIN_ALIAS:-}"
+requested_gallery_cdn_origin="${GALLERY_CDN_ORIGIN:-}"
+if [ "$requested_gallery_cdn_origin" != https://img.findme-photo.ru ]; then
+    echo "GALLERY_CDN_ORIGIN must be https://img.findme-photo.ru" >&2
+    exit 2
+fi
+requested_gallery_cdn_token_secret="${GALLERY_CDN_TOKEN_SECRET:-}"
+requested_gallery_imgproxy_key="${GALLERY_IMGPROXY_KEY:-}"
+requested_gallery_imgproxy_salt="${GALLERY_IMGPROXY_SALT:-}"
+requested_image="$APP_IMAGE"
+requested_import_enabled="${PHOTO_IMPORT_ENABLED:-False}"
+case "$requested_import_enabled" in
+    True)
+        : "${IMPORT_WORKER_IMAGE:?Set IMPORT_WORKER_IMAGE}"
+        : "${PHOTO_IMPORT_WORKER_TOKEN:?Set PHOTO_IMPORT_WORKER_TOKEN}"
+        : "${PHOTO_IMPORT_BUILD:?Set PHOTO_IMPORT_BUILD}"
+        ;;
+    False) ;;
+    *) echo "PHOTO_IMPORT_ENABLED must be True or False" >&2; exit 2 ;;
+esac
+requested_processing_enabled="${PHOTO_PROCESSING_ENABLED:-False}"
+if [ "$requested_processing_enabled" != True ] || \
+    [ -z "${PHOTO_PROCESSING_FLEET_TOKEN:-}" ] || \
+    [ -z "${WORKER_POOL_PRIVATE_API_IPV4:-}" ]; then
+    echo "Remote deployment requires enabled API, fleet credential and private edge" >&2
+    exit 2
+fi
+requested_preview_enabled="${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}"
+requested_face_enabled="${PHOTO_PROCESSING_FACE_ENABLED:-False}"
+requested_bulk_processor_identities="${PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES:-1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,3/face_embedding/5,1/bib_recognition/1}"
+requested_selfie_processor_identities="${PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES:-1/selfie_query/2}"
+requested_selfie_feedback_enabled="${SELFIE_FEEDBACK_ENABLED:-False}"
+requested_bulk_processor_types="${PHOTO_WORKER_BULK_PROCESSOR_TYPES:-bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview}"
+requested_selfie_processor_types="${PHOTO_WORKER_SELFIE_PROCESSOR_TYPES:-selfie_query}"
+requested_bulk_http_timeout_seconds="${PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS:-180}"
+requested_selfie_http_timeout_seconds="${PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS:-900}"
+requested_commerce_worker_enabled="${COMMERCE_WORKER_ENABLED:-False}"
+requested_commerce_public_origin="${COMMERCE_PUBLIC_ORIGIN:-}"
+requested_commerce_payment_gateway_factory="${COMMERCE_PAYMENT_GATEWAY_FACTORY:-}"
+requested_tbank_terminal_key="${TBANK_TERMINAL_KEY:-}"
+requested_tbank_terminal_password="${TBANK_TERMINAL_PASSWORD:-}"
+requested_tbank_api_origin="${TBANK_API_ORIGIN:-}"
+requested_tbank_rub_only="${TBANK_RUB_ONLY:-}"
+requested_tbank_pay_type="${TBANK_PAY_TYPE:-}"
+requested_tbank_receipt_ffd="${TBANK_RECEIPT_FFD:-}"
+requested_tbank_receipt_taxation="${TBANK_RECEIPT_TAXATION:-}"
+requested_tbank_receipt_tax="${TBANK_RECEIPT_TAX:-}"
+requested_tbank_receipt_payment_method="${TBANK_RECEIPT_PAYMENT_METHOD:-}"
+requested_tbank_receipt_payment_object="${TBANK_RECEIPT_PAYMENT_OBJECT:-}"
+requested_tbank_receipt_measurement_unit="${TBANK_RECEIPT_MEASUREMENT_UNIT:-}"
+requested_tbank_receipt_closing_required="${TBANK_RECEIPT_CLOSING_REQUIRED:-}"
+requested_commerce_email_sender_factory="${COMMERCE_EMAIL_SENDER_FACTORY:-}"
+requested_commerce_worker_factory="${COMMERCE_WORKER_FACTORY:-}"
+requested_commerce_email_from_address="${COMMERCE_EMAIL_FROM_ADDRESS:-}"
+requested_commerce_postbox_api_key_id="${COMMERCE_POSTBOX_API_KEY_ID:-}"
+requested_commerce_postbox_api_key_secret="${COMMERCE_POSTBOX_API_KEY_SECRET:-}"
+requested_commerce_order_access_signing_secret="${COMMERCE_ORDER_ACCESS_SIGNING_SECRET:-}"
+requested_commerce_support_contact="${COMMERCE_SUPPORT_CONTACT:-}"
+requested_commerce_worker_health_max_ready_age_seconds="${COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS:-300}"
+
+
+case "$requested_commerce_worker_enabled" in
+    True|False)
+        ;;
+    *)
+        echo "COMMERCE_WORKER_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+for commerce_adapter_factory in \
+    "$requested_commerce_payment_gateway_factory" \
+    "$requested_commerce_email_sender_factory"; do
+    case "$commerce_adapter_factory" in
+        commerce.test_payment_gateway.*|commerce.test_email_sender.*)
+            echo "Deployed Commerce configuration must not select a local/test adapter" >&2
+            exit 2
+            ;;
+    esac
+done
+
+case "$requested_commerce_worker_health_max_ready_age_seconds" in
+    ''|*[!0-9]*)
+        echo "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS must be between 1 and 3600" >&2
+        exit 2
+        ;;
+esac
+if [ "$requested_commerce_worker_health_max_ready_age_seconds" -lt 1 ] || \
+    [ "$requested_commerce_worker_health_max_ready_age_seconds" -gt 3600 ]; then
+    echo "COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS must be between 1 and 3600" >&2
+    exit 2
+fi
+
+if [ "$requested_commerce_payment_gateway_factory" = commerce.tbank_gateway.tbank_gateway_factory ]; then
+    [ "$requested_commerce_public_origin" = "https://$PUBLIC_DOMAIN" ] || {
+        echo "COMMERCE_PUBLIC_ORIGIN must be https://$PUBLIC_DOMAIN for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_terminal_key" ] || {
+        echo "TBANK_TERMINAL_KEY is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_terminal_password" ] || {
+        echo "TBANK_TERMINAL_PASSWORD is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_api_origin" ] || {
+        echo "TBANK_API_ORIGIN is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_rub_only" ] || {
+        echo "TBANK_RUB_ONLY is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_pay_type" ] || {
+        echo "TBANK_PAY_TYPE is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_ffd" ] || {
+        echo "TBANK_RECEIPT_FFD is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_taxation" ] || {
+        echo "TBANK_RECEIPT_TAXATION is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_tax" ] || {
+        echo "TBANK_RECEIPT_TAX is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_payment_method" ] || {
+        echo "TBANK_RECEIPT_PAYMENT_METHOD is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_payment_object" ] || {
+        echo "TBANK_RECEIPT_PAYMENT_OBJECT is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_measurement_unit" ] || {
+        echo "TBANK_RECEIPT_MEASUREMENT_UNIT is required for T-Bank" >&2
+        exit 2
+    }
+    [ -n "$requested_tbank_receipt_closing_required" ] || {
+        echo "TBANK_RECEIPT_CLOSING_REQUIRED is required for T-Bank" >&2
+        exit 2
+    }
+    case "$requested_tbank_api_origin" in
+        https://rest-api-test.tinkoff.ru|https://securepay.tinkoff.ru) ;;
+        *) echo "TBANK_API_ORIGIN has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_rub_only" in
+        True) ;;
+        *) echo "TBANK_RUB_ONLY has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_pay_type" in
+        O) ;;
+        *) echo "TBANK_PAY_TYPE has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_receipt_closing_required" in
+        False) ;;
+        *) echo "TBANK_RECEIPT_CLOSING_REQUIRED has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_receipt_ffd" in
+        1.05|1.2) ;;
+        *) echo "TBANK_RECEIPT_FFD has an unsupported value" >&2; exit 2 ;;
+    esac
+    case "$requested_tbank_receipt_payment_method" in
+        full_payment) ;;
+        *) echo "TBANK_RECEIPT_PAYMENT_METHOD has an unsupported value" >&2; exit 2 ;;
+    esac
+fi
+
+if [ "$requested_commerce_worker_enabled" = True ]; then
+    [ -n "$requested_commerce_public_origin" ] || {
+        echo "Set COMMERCE_PUBLIC_ORIGIN before enabling the Commerce worker" >&2
+        exit 2
+    }
+    expected_commerce_public_origin="https://$PUBLIC_DOMAIN"
+    if [ "$requested_commerce_public_origin" != "$expected_commerce_public_origin" ]; then
+        echo "COMMERCE_PUBLIC_ORIGIN must be https://$PUBLIC_DOMAIN" >&2
+        exit 2
+    fi
+    [ -n "$requested_commerce_payment_gateway_factory" ] || {
+        echo "Set COMMERCE_PAYMENT_GATEWAY_FACTORY before enabling the Commerce worker" >&2
+        exit 2
+    }
+    case "$requested_commerce_payment_gateway_factory" in
+        commerce.payment_simulator.payment_simulator_gateway_factory|commerce.tbank_gateway.tbank_gateway_factory) ;;
+        *) echo "COMMERCE_PAYMENT_GATEWAY_FACTORY must use a reviewed deployed adapter" >&2; exit 2 ;;
+    esac
+    [ -n "$requested_commerce_email_sender_factory" ] || {
+        echo "Set COMMERCE_EMAIL_SENDER_FACTORY before enabling the Commerce worker" >&2
+        exit 2
+    }
+    if [ "$requested_commerce_email_sender_factory" != commerce.postbox_email_sender.postbox_email_sender_factory ]; then
+        echo "COMMERCE_EMAIL_SENDER_FACTORY must use the Yandex Postbox adapter" >&2
+        exit 2
+    fi
+    [ -n "$requested_commerce_worker_factory" ] || {
+        echo "Set COMMERCE_WORKER_FACTORY before enabling the Commerce worker" >&2
+        exit 2
+    }
+    if [ "$requested_commerce_worker_factory" != commerce.runtime.commerce_worker_factory ]; then
+        echo "COMMERCE_WORKER_FACTORY must use the reviewed Commerce worker factory" >&2
+        exit 2
+    fi
+    [ -n "$requested_commerce_email_from_address" ] || {
+        echo "Set COMMERCE_EMAIL_FROM_ADDRESS before enabling the Commerce worker" >&2
+        exit 2
+    }
+    case "$requested_commerce_email_from_address" in
+        *@localhost|*@localhost.*|localhost|*' '*|*@)
+            echo "COMMERCE_EMAIL_FROM_ADDRESS must be a non-local sender address" >&2
+            exit 2
+            ;;
+        *@*)
+            ;;
+        *)
+            echo "COMMERCE_EMAIL_FROM_ADDRESS must be a non-local sender address" >&2
+            exit 2
+            ;;
+    esac
+    [ -n "$requested_commerce_postbox_api_key_id" ] || {
+        echo "Set COMMERCE_POSTBOX_API_KEY_ID before enabling the Commerce worker" >&2
+        exit 2
+    }
+    [ -n "$requested_commerce_postbox_api_key_secret" ] || {
+        echo "Set COMMERCE_POSTBOX_API_KEY_SECRET before enabling the Commerce worker" >&2
+        exit 2
+    }
+    [ -n "$requested_commerce_order_access_signing_secret" ] || {
+        echo "Set COMMERCE_ORDER_ACCESS_SIGNING_SECRET before enabling the Commerce worker" >&2
+        exit 2
+    }
+    [ -n "$requested_commerce_support_contact" ] || {
+        echo "Set COMMERCE_SUPPORT_CONTACT before enabling the Commerce worker" >&2
+        exit 2
+    }
+fi
+
+command -v crontab >/dev/null 2>&1 || {
+    echo "crontab is required for cart cleanup" >&2
+    exit 1
+}
+command -v flock >/dev/null 2>&1 || {
+    echo "flock is required for cart cleanup" >&2
+    exit 1
+}
+
+case "$GUNICORN_WORKERS:$GUNICORN_THREADS:$GUNICORN_TIMEOUT:$GUNICORN_MAX_REQUESTS:$GUNICORN_MAX_REQUESTS_JITTER" in
+    5:2:180:0:0)
+        ;;
+    *)
+        echo "GUNICORN_PROFILE must be 5 workers, 2 threads, timeout 180, max requests 0, jitter 0" >&2
+        exit 2
+        ;;
+esac
+
+remaining_identities="$requested_bulk_processor_identities"
+seen_identities=","
+while :; do
+    case "$remaining_identities" in
+        *,*)
+            processor_identity="${remaining_identities%%,*}"
+            remaining_identities="${remaining_identities#*,}"
+            more_identities=True
+            ;;
+        *)
+            processor_identity="$remaining_identities"
+            remaining_identities=""
+            more_identities=False
+            ;;
+    esac
+    case "$processor_identity" in
+        1/capture_metadata/2|2/generate_preview/1|2/generate_watermarked_preview/1|3/face_embedding/5|1/bib_recognition/1)
+            ;;
+        *)
+            echo "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
+            exit 2
+            ;;
+    esac
+    case "$seen_identities" in
+        *",$processor_identity,"*)
+            echo "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must be a unique ordered list of supported processor identities" >&2
+            exit 2
+            ;;
+    esac
+    seen_identities="${seen_identities}${processor_identity},"
+    [ "$more_identities" = False ] && break
+done
+
+case "${PHOTO_UPLOAD_ENABLED:-False}" in
+    True)
+        : "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
+        : "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
+        : "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
+        : "${PRIVATE_MEDIA_ALLOWED_ORIGINS:?Set PRIVATE_MEDIA_ALLOWED_ORIGINS}"
+        ;;
+    False)
+        ;;
+    *)
+        echo "PHOTO_UPLOAD_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+case "$requested_preview_enabled" in
+    True|False)
+        ;;
+    *)
+        echo "PHOTO_PROCESSING_PREVIEW_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+case "$requested_face_enabled" in
+    True|False)
+        ;;
+    *)
+        echo "PHOTO_PROCESSING_FACE_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$requested_preview_enabled" = True ]; then
+    if [ "$requested_processing_enabled" != True ]; then
+        echo "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_ENABLED=True" >&2
+        exit 2
+    fi
+    if [ "$requested_face_enabled" != True ]; then
+        echo "PHOTO_PROCESSING_PREVIEW_ENABLED requires PHOTO_PROCESSING_FACE_ENABLED=True" >&2
+        exit 2
+    fi
+    for required_photo_identity in \
+        1/capture_metadata/2 \
+        2/generate_preview/1 \
+        2/generate_watermarked_preview/1 \
+        3/face_embedding/5 \
+        1/bib_recognition/1; do
+        case ",$requested_bulk_processor_identities," in
+            *",$required_photo_identity,"*)
+                ;;
+            *)
+                echo "PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES must include $required_photo_identity" >&2
+                exit 2
+                ;;
+        esac
+    done
+fi
+
+if [ "$requested_processing_enabled" != True ] || [ "$requested_face_enabled" != True ]; then
+    echo "Selfie search requires enabled photo processing and face embeddings" >&2
+    exit 2
+fi
+: "${PRIVATE_MEDIA_S3_BUCKET:?Set PRIVATE_MEDIA_S3_BUCKET}"
+: "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:?Set PRIVATE_MEDIA_S3_ACCESS_KEY_ID}"
+: "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:?Set PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY}"
+requested_selfie_search_max_upload_bytes=20971520
+requested_selfie_search_max_pixels=25000000
+requested_selfie_search_download_ttl_seconds=120
+requested_selfie_search_temporary_prefix=selfie-search/
+requested_selfie_search_lifecycle_max_age_hours=24
+
+case "$requested_selfie_feedback_enabled" in
+    True)
+        : "${SELFIE_FEEDBACK_S3_BUCKET:?Set SELFIE_FEEDBACK_S3_BUCKET}"
+        : "${SELFIE_FEEDBACK_S3_ACCESS_KEY_ID:?Set SELFIE_FEEDBACK_S3_ACCESS_KEY_ID}"
+        : "${SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY:?Set SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY}"
+        : "${SELFIE_FEEDBACK_KMS_KEY_ID:?Set SELFIE_FEEDBACK_KMS_KEY_ID}"
+        case "${SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED:-False}" in
+            True)
+                ;;
+            False)
+                echo "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED must be True before enabling feedback" >&2
+                exit 2
+                ;;
+            *)
+                echo "SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED must be True or False" >&2
+                exit 2
+                ;;
+        esac
+        requested_selfie_feedback_endpoint_url="${SELFIE_FEEDBACK_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}"
+        requested_selfie_feedback_region="${SELFIE_FEEDBACK_S3_REGION:-ru-central1}"
+        if [ "$requested_selfie_feedback_endpoint_url" != https://storage.yandexcloud.net ] || \
+            [ "$requested_selfie_feedback_region" != ru-central1 ]; then
+            echo "SELFIE_FEEDBACK_S3 endpoint and region must use Yandex Object Storage" >&2
+            exit 2
+        fi
+        requested_selfie_feedback_bucket="$SELFIE_FEEDBACK_S3_BUCKET"
+        requested_selfie_feedback_access_key_id="$SELFIE_FEEDBACK_S3_ACCESS_KEY_ID"
+        requested_selfie_feedback_secret_access_key="$SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY"
+        requested_selfie_feedback_kms_key_id="$SELFIE_FEEDBACK_KMS_KEY_ID"
+        requested_selfie_feedback_preflight_confirmed=True
+        ;;
+    False)
+        requested_selfie_feedback_endpoint_url=https://storage.yandexcloud.net
+        requested_selfie_feedback_region=ru-central1
+        requested_selfie_feedback_bucket=""
+        requested_selfie_feedback_access_key_id=""
+        requested_selfie_feedback_secret_access_key=""
+        requested_selfie_feedback_kms_key_id=""
+        requested_selfie_feedback_preflight_confirmed=False
+        ;;
+    *)
+        echo "SELFIE_FEEDBACK_ENABLED must be True or False" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$requested_bulk_processor_types" != "bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview" ]; then
+    echo "PHOTO_WORKER_BULK_PROCESSOR_TYPES must be bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview" >&2
+    exit 2
+fi
+if [ "$requested_selfie_processor_identities" != "1/selfie_query/2" ] || \
+    [ "$requested_selfie_processor_types" != "selfie_query" ]; then
+    echo "Selfie worker must own only 1/selfie_query/2" >&2
+    exit 2
+fi
+if [ "$requested_bulk_http_timeout_seconds" != 180 ] || \
+    [ "$requested_selfie_http_timeout_seconds" != 900 ]; then
+    echo "Worker HTTP timeouts must be bulk=180 and selfie=900" >&2
+    exit 2
+fi
+
+: "${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL}"
+overlay_file="$DEPLOY_ROOT/docker-compose.https.yml"
+health_port=443
+health_url="https://$PUBLIC_DOMAIN/health/"
+observability_helper=/usr/local/sbin/findme-selfie-observability
+observability_package=/usr/local/lib/findme-selfie-observability-package
+
+verify_observability_bootstrap() {
+    cmp -s "$DEPLOY_ROOT/deploy/selfie-observability/root-helper.sh" "$observability_helper" || return 1
+    for name in journald.conf selfie-search-summary.service selfie-search-summary.timer \
+        run-daily-summary.sh summarize.py; do
+        cmp -s "$DEPLOY_ROOT/deploy/selfie-observability/$name" "$observability_package/$name" || return 1
+    done
+}
+
+compose_with_env_file() {
+    compose_env_file="$1"
+    shift
+    APP_ENV_FILE="$compose_env_file" docker compose --project-name "$COMPOSE_PROJECT_NAME" \
+        --env-file "$compose_env_file" -f "$DEPLOY_ROOT/docker-compose.deployment.yml" \
+        -f "$overlay_file" -f "$DEPLOY_ROOT/deploy/worker-pools/private-edge.compose.yml" "$@"
+}
+
+compose() {
+    compose_with_env_file "$DEPLOY_ROOT/.env" "$@"
+}
+
+compose_with_requested_runtime_profiles() {
+    if [ "$requested_commerce_worker_enabled" = True ]; then
+        compose --profile commerce "$@"
+    else
+        compose "$@"
+    fi
+}
+
+compose_reconcile_requested_runtime_profiles() {
+    # Let the current bounded pass finish and release its advisory lock. Never
+    # let Compose's default stop timeout turn accepted payment/email work into
+    # a forced termination. A slow drain fails this release with the owner alive.
+    for commerce_container in $(docker ps -aq \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=commerce-worker"); do
+        if [ "$(docker inspect --format '{{.State.Running}}' "$commerce_container")" = true ]; then
+            docker kill --signal TERM "$commerce_container" >/dev/null || return 1
+            commerce_stop_deadline=$(($(date +%s) + 1800))
+            while [ "$(docker inspect --format '{{.State.Running}}' "$commerce_container")" = true ]; do
+                if [ "$(date +%s)" -ge "$commerce_stop_deadline" ]; then
+                    echo "Commerce worker still owns accepted work; left alive to finish" >&2
+                    return 1
+                fi
+                sleep 2
+            done
+        fi
+    done
+    if [ "$requested_commerce_worker_enabled" = True ]; then
+        compose --profile commerce up -d --no-deps commerce-worker || return 1
+    else
+        compose --profile commerce rm -sf commerce-worker || return 1
+    fi
+}
+
+diagnostics() {
+    compose ps || true
+    compose logs --tail=100 web nginx || true
+}
+
+commerce_worker_runtime_diagnostics() {
+    echo "Commerce worker runtime verification diagnostics:" >&2
+    compose_with_requested_runtime_profiles ps || true
+    compose_with_requested_runtime_profiles logs --tail=100 commerce-worker || true
+}
+
+fail_commerce_worker_runtime_verification() {
+    commerce_worker_runtime_diagnostics
+    fail "Requested deployment failed Commerce worker runtime verification"
+}
+
+requested_env_tmp=""
+previous_env_tmp=""
+previous_deployed_image_tmp=""
+marker_tmp=""
+candidate_command_output_tmp=""
+mutation_started=0
+deployment_committed=0
+selected_slot=""
+candidate_slot=web
+switch_attempted=0
+predecessor_stopped=0
+workers_reconciled=0
+recovery_in_progress=0
+observability_installed=0
+
+cleanup() {
+    rm -f \
+        ${requested_env_tmp:+"$requested_env_tmp"} \
+        ${previous_env_tmp:+"$previous_env_tmp"} \
+        ${previous_deployed_image_tmp:+"$previous_deployed_image_tmp"} \
+        ${marker_tmp:+"$marker_tmp"} \
+        ${candidate_command_output_tmp:+"$candidate_command_output_tmp"}
+}
+
+clear_deployment_recovery_snapshot() {
+    rm -f "$DEPLOY_ROOT/.deployment-recovery/previous.env" \
+        "$DEPLOY_ROOT/.deployment-recovery/deployed-image" \
+        "$DEPLOY_ROOT/.deployment-recovery/package-path" \
+        "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
+    rmdir "$DEPLOY_ROOT/.deployment-recovery"
+}
+
+restore_previous_deployment_markers() {
+    if [ "$previous_deployed_image_exists" -eq 1 ]; then
+        mv "$previous_deployed_image_tmp" "$DEPLOY_ROOT/deployed-image" || return 1
+        previous_deployed_image_tmp=""
+    else
+        rm -f "$DEPLOY_ROOT/deployed-image" || return 1
+    fi
+}
+
+clear_candidate_compose_interpolation() {
+    unset \
+        APP_IMAGE \
+        SECRET_KEY \
+        DEBUG \
+        ALLOWED_HOSTS \
+        DB_NAME \
+        DB_USER \
+        DB_PASSWORD \
+        DB_HOST \
+        DB_PORT \
+        PUBLIC_DOMAIN \
+        PUBLIC_DOMAIN_ALIAS \
+        GALLERY_CDN_ORIGIN \
+        GALLERY_CDN_TOKEN_SECRET \
+        GALLERY_IMGPROXY_KEY \
+        GALLERY_IMGPROXY_SALT \
+        LETSENCRYPT_EMAIL \
+        MEDIA_STORAGE_BACKEND \
+        MEDIA_S3_ENDPOINT_URL \
+        MEDIA_S3_REGION \
+        MEDIA_S3_PUBLIC_BUCKET \
+        MEDIA_S3_ACCESS_KEY_ID \
+        MEDIA_S3_SECRET_ACCESS_KEY \
+        PHOTO_UPLOAD_ENABLED \
+        PRIVATE_MEDIA_S3_BUCKET \
+        PRIVATE_MEDIA_S3_ACCESS_KEY_ID \
+        PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY \
+        PRIVATE_MEDIA_ALLOWED_ORIGINS \
+        PHOTO_WORKER_POOL_COORDINATOR_ENABLED \
+        PHOTO_PROCESSING_FLEET_TOKEN \
+        WORKER_POOL_PRIVATE_API_IPV4 \
+        PHOTO_PROCESSING_ENABLED \
+        PHOTO_PROCESSING_PREVIEW_ENABLED \
+        PHOTO_PROCESSING_FACE_ENABLED \
+        PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS \
+        PHOTO_PROCESSING_MAX_REQUEST_BYTES \
+        PHOTO_WORKER_LEASE_SECONDS \
+        PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES \
+        PHOTO_WORKER_BULK_PROCESSOR_TYPES \
+        PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS \
+        PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES \
+        PHOTO_WORKER_SELFIE_PROCESSOR_TYPES \
+        PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS \
+        PHOTO_WORKER_PROCESSOR_IDENTITIES \
+        PHOTO_WORKER_PROCESSOR_TYPES \
+        PREVIOUS_DEPLOYMENT_PACKAGE_ROOT \
+        PREVIOUS_DEPLOYMENT_WORKER_TOPOLOGY \
+        SELFIE_SEARCH_MAX_UPLOAD_BYTES \
+        SELFIE_SEARCH_MAX_PIXELS \
+        SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS \
+        SELFIE_SEARCH_TEMPORARY_PREFIX \
+        SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS \
+        SELFIE_FEEDBACK_ENABLED \
+        SELFIE_FEEDBACK_S3_BUCKET \
+        SELFIE_FEEDBACK_S3_ACCESS_KEY_ID \
+        SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY \
+        SELFIE_FEEDBACK_S3_ENDPOINT_URL \
+        SELFIE_FEEDBACK_S3_REGION \
+        SELFIE_FEEDBACK_KMS_KEY_ID \
+        SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED \
+        COMMERCE_PUBLIC_ORIGIN \
+        COMMERCE_PAYMENT_GATEWAY_FACTORY \
+        TBANK_TERMINAL_KEY \
+        TBANK_TERMINAL_PASSWORD \
+        TBANK_API_ORIGIN \
+        TBANK_RUB_ONLY \
+        TBANK_PAY_TYPE \
+        TBANK_RECEIPT_FFD \
+        TBANK_RECEIPT_TAXATION \
+        TBANK_RECEIPT_TAX \
+        TBANK_RECEIPT_PAYMENT_METHOD \
+        TBANK_RECEIPT_PAYMENT_OBJECT \
+        TBANK_RECEIPT_MEASUREMENT_UNIT \
+        TBANK_RECEIPT_CLOSING_REQUIRED \
+        COMMERCE_EMAIL_SENDER_FACTORY \
+        COMMERCE_WORKER_FACTORY \
+        COMMERCE_EMAIL_FROM_ADDRESS \
+        COMMERCE_POSTBOX_API_KEY_ID \
+        COMMERCE_POSTBOX_API_KEY_SECRET \
+        COMMERCE_ORDER_ACCESS_SIGNING_SECRET \
+        COMMERCE_SUPPORT_CONTACT \
+        COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS \
+        COMMERCE_WORKER_ENABLED \
+        PHOTO_IMPORT_ENABLED \
+        PHOTO_IMPORT_WORKER_TOKEN \
+        PHOTO_IMPORT_BUILD \
+        IMPORT_WORKER_IMAGE
+}
+
+import_lease_remaining_seconds() {
+    compose exec -T db sh -ec '
+        psql -XAt -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "
+            SELECT COALESCE(
+                CEIL(EXTRACT(EPOCH FROM MAX(lease_expires_at) - clock_timestamp()))::int,
+                0
+            )
+            FROM ingestion_importattempt
+            WHERE status = '\''active'\'' AND lease_expires_at > clock_timestamp()
+        "
+    '
+}
+
+stop_import_before_web_change() {
+    import_enabled="$1"
+    # Container identity remains available even when disabled configuration has no image.
+    # Do not activate the import profile merely to remove an existing worker.
+    import_containers="$(docker ps -aq \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=import-worker")" || return 1
+    for import_container in $import_containers; do
+        if [ "$(docker inspect --format '{{.State.Running}}' "$import_container")" = true ]; then
+            docker exec "$import_container" python -c 'from import_worker.runner import Runner; assert hasattr(Runner, "request_stop")' || return 1
+            docker kill --signal TERM "$import_container" >/dev/null || return 1
+            import_stop_deadline=$(($(date +%s) + 300))
+            while [ "$(docker inspect --format '{{.State.Running}}' "$import_container")" = true ]; do
+                if [ "$(date +%s)" -ge "$import_stop_deadline" ]; then
+                    echo "Import worker still owns accepted work; left alive to finish" >&2
+                    return 1
+                fi
+                sleep 2
+            done
+        fi
+        docker rm "$import_container" || return 1
+    done
+    if [ "$import_enabled" = True ]; then
+        # The stopped worker cannot renew leases; API v1 bounds each lease to 300 seconds.
+        import_lease_deadline=$(($(date +%s) + 300))
+        while :; do
+            import_lease_remaining="$(import_lease_remaining_seconds)" || return 1
+            case "$import_lease_remaining" in
+                ''|*[!0-9]*) echo "Invalid import lease probe result" >&2; return 1 ;;
+                0) return 0 ;;
+            esac
+            import_lease_now=$(date +%s)
+            if [ "$import_lease_now" -ge "$import_lease_deadline" ]; then
+                echo "Import leases did not expire within 300 seconds" >&2
+                return 1
+            fi
+            import_lease_sleep=5
+            if [ "$import_lease_remaining" -lt "$import_lease_sleep" ]; then
+                import_lease_sleep="$import_lease_remaining"
+            fi
+            if [ "$((import_lease_deadline - import_lease_now))" -lt "$import_lease_sleep" ]; then
+                import_lease_sleep="$((import_lease_deadline - import_lease_now))"
+            fi
+            sleep "$import_lease_sleep"
+        done
+    fi
+}
+
+run_private_candidate_command() {
+    candidate_command_output_tmp="$(
+        mktemp "$DEPLOY_ROOT/.candidate-command-output.XXXXXX"
+    )" || return 1
+    if "$@" >"$candidate_command_output_tmp" 2>&1; then
+        rm -f "$candidate_command_output_tmp"
+        candidate_command_output_tmp=""
+        return 0
+    fi
+    rm -f "$candidate_command_output_tmp"
+    candidate_command_output_tmp=""
+    return 1
+}
+
+start_import_after_web_ready() {
+    import_env_file="$1"
+    compose_with_env_file "$import_env_file" --profile import run --rm --no-deps -T \
+        import-worker python -m import_worker --check-ready || return 1
+    compose_with_env_file "$import_env_file" --profile import up -d --no-deps import-worker || return 1
+    import_container="$(compose_with_env_file "$import_env_file" --profile import ps -q import-worker)" || return 1
+    [ -n "$import_container" ] || return 1
+    [ "$(docker inspect --format '{{.State.Running}} {{.State.Restarting}} {{.State.OOMKilled}}' "$import_container")" = 'true false false' ] || return 1
+    compose_with_env_file "$import_env_file" --profile import exec -T \
+        import-worker python -m import_worker --check-ready
+}
+
+previous_web_matches_processing_schema() (
+    # Probe the predecessor model against the actual DB even if migrate failed after
+    # committing processing.0016. Do not output rows or restore any canonical state.
+    [ -n "$previous_env_tmp" ] && [ -f "$previous_env_tmp" ] || return 1
+    clear_candidate_compose_interpolation
+    run_private_candidate_command compose_with_env_file "$previous_env_tmp" \
+        run --rm --no-deps -T --entrypoint python web manage.py shell --no-imports -c '
+from django.db import connection, transaction
+from processing.models import ProcessingAttempt
+with transaction.atomic():
+    with connection.cursor() as cursor:
+        cursor.execute("SET TRANSACTION READ ONLY")
+        cursor.execute("SET LOCAL statement_timeout = '\''5s'\''")
+    list(ProcessingAttempt.objects.all()[:1])
+'
+)
+
+recover_previous_deployment() {
+    # Never disturb live traffic when recovery is uncertain. The retained snapshot
+    # fences the next ordinary release until the explicit forward path succeeds.
+    [ "$RECOVER_FORWARD" = False ] || return 1
+    [ "$predecessor_stopped" -eq 0 ] || return 1
+    [ "$deployment_phase" != predecessor-drain ] || return 1
+    [ "$workers_reconciled" -eq 0 ] || return 1
+    if [ -n "$selected_slot" ]; then
+        previous_web_matches_processing_schema || {
+            echo "Previous web is incompatible with the current processing schema; recover forward" >&2
+            return 1
+        }
+        if [ "$switch_attempted" -eq 1 ]; then
+            web_slot switch "$selected_slot" || return 1
+            verify_recovered_public_edge || return 1
+            web_slot drain || return 1
+        fi
+        [ "$(web_slot selected)" = "$selected_slot" ] || return 1
+        compose rm -sf "$candidate_slot" || return 1
+        restore_previous_deployment_markers || return 1
+        cp -p "$previous_env_tmp" "$DEPLOY_ROOT/.env" || return 1
+        # Keep the new deployment machinery: the live edge bind mount and
+        # selection are authoritative; no container is recreated for rollback.
+        return 0
+    fi
+    # Fresh installation has no predecessor. Once edge activation is attempted,
+    # retain the healthy candidate for forward recovery instead of taking it down.
+    [ "$switch_attempted" -eq 0 ] || return 1
+    rm -f "$DEPLOY_ROOT/.env" || return 1
+    restore_previous_deployment_markers
+}
+
+verify_recovered_public_edge() {
+    recovered_public_domain="$(sed -n 's/^PUBLIC_DOMAIN=//p' "$previous_env_tmp" | head -n 1)"
+    [ -n "$recovered_public_domain" ] || return 1
+    recovered_public_domain_alias="$(sed -n 's/^PUBLIC_DOMAIN_ALIAS=//p' "$previous_env_tmp" | head -n 1)"
+    PUBLIC_DOMAIN="$recovered_public_domain" PUBLIC_DOMAIN_ALIAS="$recovered_public_domain_alias" \
+        sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"
+}
+
+on_exit() {
+    status=$?
+    rollback_result=not-needed
+    set +e
+    trap - EXIT INT TERM HUP
+
+    if [ "$forward_verify_only" -eq 1 ] && [ "$status" -eq 0 ]; then
+        cleanup
+        exit 0
+    fi
+    if [ "$mutation_started" -eq 1 ] && [ "$deployment_committed" -eq 0 ]; then
+        [ "$status" -ne 0 ] || status=1
+        if [ "$recovery_in_progress" -eq 0 ]; then
+            recovery_in_progress=1
+            if [ "$RECOVER_FORWARD" = True ]; then
+                rollback_result=failed
+                echo "Forward recovery failed; selected traffic and original snapshot retained" >&2
+            elif ! recover_previous_deployment; then
+                rollback_result=failed
+                echo "Previous deployment recovery failed" >&2
+                diagnostics
+            else
+                rollback_result=succeeded
+                if [ -d "$DEPLOY_ROOT/.deployment-recovery" ]; then
+                    clear_deployment_recovery_snapshot || rollback_result=failed
+                fi
+                # Pre-commit recovery has not changed the cleanup schedules.
+            fi
+        fi
+        if [ "$observability_installed" -eq 1 ]; then
+            sudo -n "$observability_helper" rollback || \
+                {
+                    rollback_result=failed
+                    echo "Observability managed-file rollback failed" >&2
+                }
+        fi
+    fi
+
+    cleanup
+    if [ "$deployment_committed" -eq 1 ] && [ "$status" -eq 0 ]; then
+        printf 'DEPLOY_RESULT=success phase=commit rollback=not-needed elapsed_seconds=%s\n' \
+            "$(elapsed_seconds)"
+    else
+        printf 'DEPLOY_RESULT=failure phase=%s rollback=%s elapsed_seconds=%s\n' \
+            "$deployment_phase" "$rollback_result" "$(elapsed_seconds)"
+    fi
+    exit "$status"
+}
+
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+fail() {
+    echo "$1" >&2
+    exit 1
+}
+
+phase() {
+    case "$1" in
+        validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|vector-database-preflight|projection-preflight|certificate|compose-reconcile|local-health|edge-switch|predecessor-drain|gallery-media-smoke|worker-health|public-health|observability-verify|commit)
+            deployment_phase="$1"
+            printf 'DEPLOY_PHASE=%s elapsed_seconds=%s\n' "$1" "$(elapsed_seconds)"
+            ;;
+        *)
+            exit 2
+            ;;
+    esac
+}
+
+phase snapshot
+if [ "${FINDME_CANONICAL_LOCK:-}" != 1 ]; then
+    exec 9>"$DEPLOY_ROOT/.deployment.lock"
+    flock -n 9 || fail "Canonical deployment is already active"
+    FINDME_CANONICAL_LOCK=1
+    export FINDME_CANONICAL_LOCK
+fi
+if [ "$RECOVER_FORWARD" = True ]; then
+    [ -f "$DEPLOY_ROOT/.deployment-recovery/candidate.env" ] || fail "Forward recovery inputs missing"
+else
+    [ ! -e "$DEPLOY_ROOT/.deployment-recovery" ] || fail "Canonical recovery remains unfinished"
+fi
+previous_import_enabled="False"
+previous_env_exists=0
+previous_deployed_image_exists=0
+has_established_deployment=0
+install -d -m 0755 "$DEPLOY_ROOT"
+if [ -f "$DEPLOY_ROOT/.env" ]; then
+    has_established_deployment=1
+    previous_env_exists=1
+    previous_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.previous.XXXXXX")" || fail "Could not snapshot previous deployment environment"
+    cp -p "$DEPLOY_ROOT/.env" "$previous_env_tmp" || fail "Could not snapshot previous deployment environment"
+    previous_import_enabled="$(sed -n 's/^PHOTO_IMPORT_ENABLED=//p' "$DEPLOY_ROOT/.env" | head -n 1)"
+    case "$previous_import_enabled" in True|False) ;; *) previous_import_enabled=False ;; esac
+fi
+if [ -f "$DEPLOY_ROOT/deployed-image" ]; then
+    previous_deployed_image_exists=1
+    previous_deployed_image_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.previous.XXXXXX")" || fail "Could not snapshot deployed image marker"
+    cp -p "$DEPLOY_ROOT/deployed-image" "$previous_deployed_image_tmp" || fail "Could not snapshot deployed image marker"
+fi
+
+postgres_volume="${COMPOSE_PROJECT_NAME}_pgdata"
+if postgres_volume_inspect_error="$(docker volume inspect "$postgres_volume" 2>&1 >/dev/null)"; then
+    has_established_deployment=1
+else
+    case "$postgres_volume_inspect_error" in
+        *": no such volume")
+            ;;
+        *)
+            fail "PostgreSQL deployment volume inspection failed"
+            ;;
+    esac
+fi
+unset postgres_volume_inspect_error
+
+web_slot() {
+    python3 "$DEPLOY_ROOT/deploy/web-slot.py" --root "$DEPLOY_ROOT" "$@"
+}
+if [ "$previous_env_exists" -eq 1 ]; then
+    if [ "$RECOVER_FORWARD" = True ]; then
+        if [ "$forward_verify_only" -eq 1 ]; then
+            selected_slot="$(web_slot installed)" || fail "Cannot inspect the installed Django selection"
+        else
+            selected_slot="$(web_slot reconcile)" || fail "Cannot reconcile the installed Django selection"
+        fi
+    else
+        selected_slot="$(web_slot selected)" || fail "Cannot prove the selected Django slot; explicit forward reconciliation required"
+    fi
+    case "$selected_slot" in
+        web) candidate_slot=web-next ;;
+        web-next) candidate_slot=web ;;
+        *) fail "Invalid selected Django slot" ;;
+    esac
+    if [ "$RECOVER_FORWARD" = True ]; then
+        selected_container="$(compose ps -a -q "$selected_slot")"
+    else
+        selected_container="$(compose ps -q "$selected_slot")"
+    fi
+    [ -n "$selected_container" ] || fail "Selected Django container is absent"
+    selected_image="$(docker inspect --format '{{.Image}}' "$selected_container")" || \
+        fail "Selected Django image is unavailable"
+    python3 - "$previous_env_tmp" "$selected_image" <<'PY_PIN_PREVIOUS'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_text('\n'.join(
+    f'APP_IMAGE={sys.argv[2]}' if line.startswith('APP_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_PREVIOUS
+    # Any workers left by an interrupted reload still own accepted requests.
+    web_slot drain || fail "Previous edge handoff remains undrained"
+    # Old import images do not handle TERM gracefully. Refuse their replacement
+    # before migrations or web selection; first activation needs an idle/disabled
+    # import cutover or a separately approved worker upgrade.
+    if [ "$DEPLOY_IMPORT" = true ]; then
+    for import_container in $(docker ps -q \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        --filter "label=com.docker.compose.service=import-worker"); do
+        run_private_candidate_command docker exec "$import_container" python -c \
+            'from import_worker.runner import Runner; assert hasattr(Runner, "request_stop")' || \
+            fail "Existing import worker cannot drain accepted work; explicit first-activation import cutover required"
+    done
+    fi
+    if [ "$DEPLOY_COMMERCE" = true ]; then
+        for commerce_container in $(docker ps -q \
+            --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+            --filter "label=com.docker.compose.service=commerce-worker"); do
+            run_private_candidate_command docker exec "$commerce_container" python manage.py \
+                shell --no-imports -c \
+                'from commerce.management.commands.run_commerce_worker import Command; assert getattr(Command, "supports_graceful_stop", False)' || \
+                fail "Existing Commerce worker cannot drain accepted work; explicit first-activation Commerce cutover required"
+        done
     fi
 fi
-if [ "${DEPLOY_IMPORT:-false}" = true ]; then
-    compose --profile import pull import-worker
-    if grep -qx 'PHOTO_IMPORT_WORKER_ENABLED=True' "$DEPLOY_ROOT/.env"; then
-        compose --profile import up -d --wait --no-deps import-worker
+
+ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}web,web-next,$PUBLIC_DOMAIN"
+if [ -n "$PUBLIC_DOMAIN_ALIAS" ]; then
+    ALLOWED_HOSTS="$ALLOWED_HOSTS,$PUBLIC_DOMAIN_ALIAS"
+fi
+
+umask 077
+requested_env_tmp="$(mktemp "$DEPLOY_ROOT/.env.requested.XXXXXX")"
+{
+    printf 'APP_IMAGE=%s\n' "$requested_image"
+    printf 'IMPORT_WORKER_IMAGE=%s\n' "${IMPORT_WORKER_IMAGE:-}"
+    printf 'DEPLOY_IMPORT=%s\n' "$DEPLOY_IMPORT"
+    printf 'DEPLOY_COMMERCE=%s\n' "$DEPLOY_COMMERCE"
+    printf 'PHOTO_IMPORT_ENABLED=%s\n' "$requested_import_enabled"
+    printf 'PHOTO_IMPORT_WORKER_TOKEN=%s\n' "${PHOTO_IMPORT_WORKER_TOKEN:-}"
+    printf 'PHOTO_IMPORT_BUILD=%s\n' "${PHOTO_IMPORT_BUILD:-}"
+
+    printf 'SECRET_KEY=%s\n' "$SECRET_KEY"
+    printf 'DEBUG=%s\n' "$DEBUG"
+    printf 'ALLOWED_HOSTS=%s\n' "$ALLOWED_HOSTS"
+    printf 'DB_NAME=%s\n' "$DB_NAME"
+    printf 'DB_USER=%s\n' "$DB_USER"
+    printf 'DB_PASSWORD=%s\n' "$DB_PASSWORD"
+    printf 'DB_HOST=db\n'
+    printf 'DB_PORT=5432\n'
+    printf 'GUNICORN_WORKERS=%s\n' "$GUNICORN_WORKERS"
+    printf 'GUNICORN_THREADS=%s\n' "$GUNICORN_THREADS"
+    printf 'GUNICORN_TIMEOUT=%s\n' "$GUNICORN_TIMEOUT"
+    printf 'GUNICORN_MAX_REQUESTS=%s\n' "$GUNICORN_MAX_REQUESTS"
+    printf 'GUNICORN_MAX_REQUESTS_JITTER=%s\n' "$GUNICORN_MAX_REQUESTS_JITTER"
+    printf 'PUBLIC_DOMAIN=%s\n' "$PUBLIC_DOMAIN"
+    printf 'PUBLIC_DOMAIN_ALIAS=%s\n' "$PUBLIC_DOMAIN_ALIAS"
+    write_literal_dotenv_value GALLERY_CDN_ORIGIN "$requested_gallery_cdn_origin"
+    write_literal_dotenv_value GALLERY_CDN_TOKEN_SECRET "$requested_gallery_cdn_token_secret"
+    write_literal_dotenv_value GALLERY_IMGPROXY_KEY "$requested_gallery_imgproxy_key"
+    write_literal_dotenv_value GALLERY_IMGPROXY_SALT "$requested_gallery_imgproxy_salt"
+    printf 'MEDIA_STORAGE_BACKEND=%s\n' "${MEDIA_STORAGE_BACKEND:-filesystem}"
+    printf 'MEDIA_S3_ENDPOINT_URL=%s\n' "${MEDIA_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}"
+    printf 'MEDIA_S3_REGION=%s\n' "${MEDIA_S3_REGION:-ru-central1}"
+    printf 'MEDIA_S3_PUBLIC_BUCKET=%s\n' "${MEDIA_S3_PUBLIC_BUCKET:-}"
+    printf 'MEDIA_S3_ACCESS_KEY_ID=%s\n' "${MEDIA_S3_ACCESS_KEY_ID:-}"
+    printf 'MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${MEDIA_S3_SECRET_ACCESS_KEY:-}"
+    printf 'PHOTO_UPLOAD_ENABLED=%s\n' "${PHOTO_UPLOAD_ENABLED:-False}"
+    printf 'PRIVATE_MEDIA_S3_BUCKET=%s\n' "${PRIVATE_MEDIA_S3_BUCKET:-}"
+    printf 'PRIVATE_MEDIA_S3_ACCESS_KEY_ID=%s\n' "${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}"
+    printf 'PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=%s\n' "${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:-}"
+    printf 'PRIVATE_MEDIA_ALLOWED_ORIGINS=%s\n' "${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}"
+    printf 'COMMERCE_PUBLIC_ORIGIN=%s\n' "$requested_commerce_public_origin"
+    printf 'COMMERCE_PAYMENT_GATEWAY_FACTORY=%s\n' "$requested_commerce_payment_gateway_factory"
+    write_literal_dotenv_value TBANK_TERMINAL_KEY "$requested_tbank_terminal_key"
+    write_literal_dotenv_value TBANK_TERMINAL_PASSWORD "$requested_tbank_terminal_password"
+    printf 'TBANK_API_ORIGIN=%s\n' "$requested_tbank_api_origin"
+    printf 'TBANK_RUB_ONLY=%s\n' "$requested_tbank_rub_only"
+    printf 'TBANK_PAY_TYPE=%s\n' "$requested_tbank_pay_type"
+    printf 'TBANK_RECEIPT_FFD=%s\n' "$requested_tbank_receipt_ffd"
+    printf 'TBANK_RECEIPT_TAXATION=%s\n' "$requested_tbank_receipt_taxation"
+    printf 'TBANK_RECEIPT_TAX=%s\n' "$requested_tbank_receipt_tax"
+    printf 'TBANK_RECEIPT_PAYMENT_METHOD=%s\n' "$requested_tbank_receipt_payment_method"
+    printf 'TBANK_RECEIPT_PAYMENT_OBJECT=%s\n' "$requested_tbank_receipt_payment_object"
+    printf 'TBANK_RECEIPT_MEASUREMENT_UNIT=%s\n' "$requested_tbank_receipt_measurement_unit"
+    printf 'TBANK_RECEIPT_CLOSING_REQUIRED=%s\n' "$requested_tbank_receipt_closing_required"
+    printf 'COMMERCE_EMAIL_SENDER_FACTORY=%s\n' "$requested_commerce_email_sender_factory"
+    printf 'COMMERCE_WORKER_FACTORY=%s\n' "$requested_commerce_worker_factory"
+    printf 'COMMERCE_EMAIL_FROM_ADDRESS=%s\n' "$requested_commerce_email_from_address"
+    printf 'COMMERCE_POSTBOX_API_KEY_ID=%s\n' "$requested_commerce_postbox_api_key_id"
+    printf 'COMMERCE_POSTBOX_API_KEY_SECRET=%s\n' "$requested_commerce_postbox_api_key_secret"
+    printf 'COMMERCE_ORDER_ACCESS_SIGNING_SECRET=%s\n' "$requested_commerce_order_access_signing_secret"
+    printf 'COMMERCE_SUPPORT_CONTACT=%s\n' "$requested_commerce_support_contact"
+    printf 'COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS=%s\n' "$requested_commerce_worker_health_max_ready_age_seconds"
+    printf 'COMMERCE_WORKER_ENABLED=%s\n' "$requested_commerce_worker_enabled"
+    printf 'PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True\n'
+    write_literal_dotenv_value PHOTO_PROCESSING_FLEET_TOKEN "$PHOTO_PROCESSING_FLEET_TOKEN"
+    printf 'WORKER_POOL_PRIVATE_API_IPV4=%s\n' "$WORKER_POOL_PRIVATE_API_IPV4"
+    printf 'PHOTO_PROCESSING_ENABLED=%s\n' "$requested_processing_enabled"
+    printf 'PHOTO_PROCESSING_PREVIEW_ENABLED=%s\n' "$requested_preview_enabled"
+    printf 'PHOTO_PROCESSING_FACE_ENABLED=%s\n' "$requested_face_enabled"
+    printf 'PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=%s\n' "${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}"
+    printf 'PHOTO_PROCESSING_MAX_REQUEST_BYTES=%s\n' "${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}"
+    printf 'PHOTO_WORKER_LEASE_SECONDS=%s\n' "${PHOTO_WORKER_LEASE_SECONDS:-120}"
+    printf 'PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES=%s\n' "$requested_bulk_processor_identities"
+    printf 'PHOTO_WORKER_BULK_PROCESSOR_TYPES=%s\n' "$requested_bulk_processor_types"
+    printf 'PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS=%s\n' "$requested_bulk_http_timeout_seconds"
+    printf 'PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES=%s\n' "$requested_selfie_processor_identities"
+    printf 'PHOTO_WORKER_SELFIE_PROCESSOR_TYPES=%s\n' "$requested_selfie_processor_types"
+    printf 'PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS=%s\n' "$requested_selfie_http_timeout_seconds"
+    printf 'SELFIE_SEARCH_MAX_UPLOAD_BYTES=%s\n' "$requested_selfie_search_max_upload_bytes"
+    printf 'SELFIE_SEARCH_MAX_PIXELS=%s\n' "$requested_selfie_search_max_pixels"
+    printf 'SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS=%s\n' "$requested_selfie_search_download_ttl_seconds"
+    printf 'SELFIE_SEARCH_TEMPORARY_PREFIX=%s\n' "$requested_selfie_search_temporary_prefix"
+    printf 'SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS=%s\n' "$requested_selfie_search_lifecycle_max_age_hours"
+    printf 'SELFIE_FEEDBACK_ENABLED=%s\n' "$requested_selfie_feedback_enabled"
+    printf 'SELFIE_FEEDBACK_S3_BUCKET=%s\n' "$requested_selfie_feedback_bucket"
+    printf 'SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=%s\n' "$requested_selfie_feedback_access_key_id"
+    printf 'SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY=%s\n' "$requested_selfie_feedback_secret_access_key"
+    printf 'SELFIE_FEEDBACK_S3_ENDPOINT_URL=%s\n' "$requested_selfie_feedback_endpoint_url"
+    printf 'SELFIE_FEEDBACK_S3_REGION=%s\n' "$requested_selfie_feedback_region"
+    printf 'SELFIE_FEEDBACK_KMS_KEY_ID=%s\n' "$requested_selfie_feedback_kms_key_id"
+    printf 'SELFIE_FEEDBACK_STORAGE_PREFLIGHT_CONFIRMED=%s\n' "$requested_selfie_feedback_preflight_confirmed"
+} > "$requested_env_tmp"
+chmod 600 "$requested_env_tmp"
+
+phase candidate-pull
+if [ -n "${GHCR_READ_TOKEN:-}" ]; then
+    if ! printf '%s\n' "$GHCR_READ_TOKEN" | \
+        docker login ghcr.io -u "${GHCR_USERNAME:?Set GHCR_USERNAME}" --password-stdin; then
+        fail "Container registry login failed"
     fi
 fi
-if [ "${DEPLOY_COMMERCE:-false}" = true ] && grep -qx 'COMMERCE_WORKER_ENABLED=True' "$DEPLOY_ROOT/.env"; then
-    compose --profile commerce up -d --wait --no-deps commerce-worker
+
+if [ "$DEPLOY_WEB" = true ] && ! compose_with_env_file "$requested_env_tmp" pull web; then
+    fail "Candidate application image pull failed"
 fi
-printf 'DEPLOY_RESULT=success\n'
+if [ "$DEPLOY_WEB" = true ]; then
+    requested_image="$(docker image inspect --format '{{.Id}}' "$requested_image")" || fail "Pulled application image identity unavailable"
+    [ -n "$requested_image" ] || fail "Pulled application image identity unavailable"
+    python3 - "$requested_env_tmp" "$requested_image" <<'PY_PIN_IMAGE'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+image = sys.argv[2]
+path.write_text('\n'.join(
+    f'APP_IMAGE={image}' if line.startswith('APP_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_IMAGE
+    APP_IMAGE="$requested_image"
+    export APP_IMAGE
+fi
+
+if [ "$DEPLOY_IMPORT" = true ] && [ "$requested_import_enabled" = True ]; then
+    if [ "$RECOVER_FORWARD" = False ]; then
+        compose_with_env_file "$requested_env_tmp" --profile import pull import-worker || fail "Import image pull failed"
+    fi
+    IMPORT_WORKER_IMAGE="$(docker image inspect --format '{{.Id}}' "$IMPORT_WORKER_IMAGE")" || fail "Selected import image identity unavailable"
+    [ -n "$IMPORT_WORKER_IMAGE" ] || fail "Selected import image identity unavailable"
+    export IMPORT_WORKER_IMAGE
+    python3 - "$requested_env_tmp" "$IMPORT_WORKER_IMAGE" <<'PY_PIN_IMPORT'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_text('\n'.join(
+    f'IMPORT_WORKER_IMAGE={sys.argv[2]}' if line.startswith('IMPORT_WORKER_IMAGE=') else line
+    for line in path.read_text().splitlines()
+) + '\n')
+PY_PIN_IMPORT
+fi
+
+if [ "$DEPLOY_WEB" = false ]; then
+    [ -n "$selected_slot" ] || fail "Import activation requires an established Django deployment"
+    # Import has its own compatible HTTP contract; it does not perform Django
+    # release setup or change the selected edge. Retain the serving configuration.
+    python3 - "$previous_env_tmp" "$requested_env_tmp" <<'PY_IMPORT_ENV'
+from pathlib import Path
+import sys
+previous, requested = map(Path, sys.argv[1:])
+updates = {
+    line.partition('=')[0]: line
+    for line in requested.read_text().splitlines()
+    if line.partition('=')[0] in {
+        'IMPORT_WORKER_IMAGE', 'PHOTO_IMPORT_ENABLED', 'PHOTO_IMPORT_WORKER_TOKEN', 'PHOTO_IMPORT_BUILD'
+    }
+}
+lines = []
+for line in previous.read_text().splitlines():
+    name = line.partition('=')[0]
+    lines.append(updates.pop(name, line))
+requested.write_text('\n'.join([*lines, *updates.values()]) + '\n')
+PY_IMPORT_ENV
+    phase worker-health
+    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker drain failed"
+    if [ "$requested_import_enabled" = True ]; then
+        start_import_after_web_ready "$requested_env_tmp" || fail "Import API protocol readiness failed"
+    fi
+    mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
+    requested_env_tmp=""
+    phase commit
+    deployment_committed=1
+    exit 0
+fi
+
+if [ "$RECOVER_FORWARD" = True ]; then
+    candidate_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$requested_image")" || fail "Forward image revision unavailable"
+    [ "$candidate_revision" = "$RELEASE_SHA" ] || fail "Forward image does not match the approved SHA"
+    if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+        run --rm --no-deps -T --entrypoint python web manage.py shell --no-imports -c '
+# FORWARD_RECOVERY_PROTOCOL: schema and claim protocol must both be build-independent.
+from inspect import signature
+from django.db import connection, transaction
+from processing.models import ProcessingAttempt, WorkerPool
+from processing.services.jobs import claim_job
+assert "worker_build" not in {field.name for field in ProcessingAttempt._meta.fields}
+assert "worker_build" not in signature(claim_job).parameters
+with transaction.atomic():
+    with connection.cursor() as cursor:
+        cursor.execute("SET TRANSACTION READ ONLY")
+        cursor.execute("SET LOCAL statement_timeout = '\''5s'\''")
+    list(ProcessingAttempt.objects.order_by("pk")[:1])
+    assert dict(WorkerPool.objects.filter(name__in=["bulk", "selfie"]).values_list("name", "claims_paused")) == {"bulk": True, "selfie": True}
+'; then
+        fail "Forward candidate schema/protocol or paused-claims probe failed"
+    fi
+    [ "$forward_verify_only" -eq 0 ] || exit 0
+fi
+
+
+gallery_media_preflight='
+from contextlib import closing
+from ingestion.storage import PrivateUploadStorage
+from picflow.models import Event, Photo
+try:
+    original_key = Photo.objects.filter(
+        event__publication_status=Event.PublicationStatus.PUBLISHED,
+        event__access_type=Event.AccessType.FREE,
+        src="",
+        original_key__isnull=False,
+    ).order_by("id").values_list("original_key", flat=True).first()
+except Exception:
+    raise SystemExit("Gallery private-media read prerequisite failed") from None
+if original_key is None:
+    print("gallery-private-media-preflight-skipped:no-eligible-photo")
+else:
+    try:
+        opened = PrivateUploadStorage().open_final(key=original_key)
+        with closing(opened.body) as body:
+            if not body.read(1):
+                raise RuntimeError
+    except Exception:
+        raise SystemExit("Gallery private-media read prerequisite failed") from None
+    print("gallery-private-media-preflight-ok")
+'
+phase private-media-preflight
+if [ -z "$selected_slot" ]; then
+    echo "gallery-private-media-preflight-skipped:no-existing-deployment"
+else
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py shell --no-imports -c "$gallery_media_preflight"; then
+        fail "Candidate image failed private-media read prerequisite"
+    fi
+fi
+
+phase migration-preflight
+if [ "$has_established_deployment" -eq 0 ]; then
+    echo "migration-preflight-skipped:no-established-deployment"
+else
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py verify_migration_history; then
+        fail "Candidate migration preflight failed"
+    fi
+    if ! compose_with_env_file "$requested_env_tmp" run --rm --no-deps -T \
+        --entrypoint python web manage.py showmigrations --plan; then
+        fail "Candidate migration preflight failed"
+    fi
+fi
+
+phase observability-preflight
+verify_observability_bootstrap || fail "Selfie observability bootstrap is missing or stale; run deploy/bootstrap-selfie-observability.sh as an operator"
+phase observability-reconcile
+# Retain the prior web package and environment until commit or verified recovery.
+if [ "$RECOVER_FORWARD" = False ]; then
+    mkdir -m 0700 "$DEPLOY_ROOT/.deployment-recovery"
+    install -m 0600 "$previous_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/previous.env"
+    if [ "$previous_deployed_image_exists" -eq 1 ]; then
+        install -m 0600 "$previous_deployed_image_tmp" "$DEPLOY_ROOT/.deployment-recovery/deployed-image"
+    fi
+    (umask 077; printf '%s\n' "${PREVIOUS_DEPLOYMENT_PACKAGE_ROOT:-}" > "$DEPLOY_ROOT/.deployment-recovery/package-path")
+fi
+observability_installed=1
+mutation_started=1
+# Retain exact candidate inputs before the first database mutation as well as
+# before activation, so incompatible setup failure has the same forward path.
+if [ "$RECOVER_FORWARD" = False ]; then
+    install -m 0600 "$requested_env_tmp" "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
+fi
+sudo -n "$observability_helper" install || fail "Selfie observability host reconciliation failed"
+
+phase vector-database-preflight
+if [ "$has_established_deployment" -eq 0 ]; then
+    compose_with_env_file "$requested_env_tmp" pull db || fail "Vector database image pull failed"
+    compose_with_env_file "$requested_env_tmp" up -d --wait --no-deps db || fail "Vector database start failed"
+fi
+if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
+    collation_mismatches=$(psql -At -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "SELECT count(*) FROM (
+            SELECT 1 FROM pg_database
+            WHERE datname = current_database()
+              AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
+            UNION ALL
+            SELECT 1 FROM pg_collation
+            WHERE collversion IS NOT NULL
+              AND collversion IS DISTINCT FROM pg_collation_actual_version(oid)
+        ) AS collation_mismatches ")
+    [ "$collation_mismatches" = 0 ]
+'; then
+    fail "Vector database collation versions are incompatible; restore the previous database image"
+fi
+if ! compose_with_env_file "$requested_env_tmp" exec -T db sh -ec '
+    psql -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "CREATE EXTENSION IF NOT EXISTS vector"
+    installed_version=$(psql -At --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "SELECT extversion FROM pg_extension WHERE extname = '\''vector'\''")
+    [ "$installed_version" = 0.8.6 ]
+'; then
+    fail "Vector database capability preflight failed (requires pgvector 0.8.6)"
+fi
+
+phase projection-preflight
+if [ -n "$selected_slot" ]; then
+    web_slot seed-static "$selected_slot" || fail "Predecessor static preservation failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput; then
+    fail "Candidate migration failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py sync_feature_flags; then
+    fail "Candidate feature synchronization failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py bootstrap_photographer_group; then
+    fail "Candidate photographer group bootstrap failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py collectstatic --noinput; then
+    fail "Candidate static collection failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py \
+    drain_gallery_media_publications --all-events; then
+    fail "Gallery media publication drain failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py \
+    rebuild_gallery_media_projection --all-events --apply; then
+    fail "Gallery media projection rebuild failed"
+fi
+if ! run_private_candidate_command compose_with_env_file "$requested_env_tmp" \
+    run --rm --no-deps -T --entrypoint python web manage.py \
+    verify_gallery_media_projection --all-events --require-clean; then
+    fail "Gallery media projection verification failed"
+fi
+
+mv "$requested_env_tmp" "$DEPLOY_ROOT/.env"
+requested_env_tmp=""
+
+phase certificate
+if [ -z "$selected_slot" ]; then
+    sh "$DEPLOY_ROOT/deploy/certbot/reconcile-certificate.sh" || fail "Certificate bootstrap failed"
+fi
+
+# Retain candidate inputs before it can accept native-only writes. Any failure
+# from activation onward requires forward recovery, even while JSON still exists.
+if [ "$RECOVER_FORWARD" = False ]; then
+    install -m 0600 "$DEPLOY_ROOT/.env" "$DEPLOY_ROOT/.deployment-recovery/candidate.env"
+fi
+phase compose-reconcile
+compose_up_status=0
+attempt=1
+max_compose_attempts=3
+compose_wait_seconds=5
+while [ "$attempt" -le "$max_compose_attempts" ]; do
+    compose_up_status=0
+    compose_up_command() {
+        compose up -d --wait --wait-timeout 120 --no-deps "$candidate_slot"
+    }
+    if compose_up_command; then
+        break
+    else
+        compose_up_status=$?
+    fi
+    if [ "$attempt" -ge "$max_compose_attempts" ]; then
+        echo "docker compose up exit status after attempt $attempt: $compose_up_status" >&2
+        diagnostics
+        fail "Deployment Compose reconciliation failed"
+    fi
+    echo "docker compose up attempt $attempt failed with status $compose_up_status; retrying after ${compose_wait_seconds}s" >&2
+    attempt=$((attempt + 1))
+    sleep "$compose_wait_seconds"
+done
+
+echo "docker compose up exit status: $compose_up_status" >&2
+
+if [ -n "$selected_slot" ] && [ "$RECOVER_FORWARD" = False ]; then
+    previous_web_matches_processing_schema || fail "Predecessor schema compatibility failed; recover forward"
+fi
+phase edge-switch
+if [ -z "$selected_slot" ]; then
+    compose up -d --no-deps nginx certbot || fail "Initial edge bootstrap failed"
+fi
+switch_attempted=1
+web_slot switch "$candidate_slot" || fail "Django edge switch failed"
+[ "$(web_slot selected)" = "$candidate_slot" ] || fail "Django edge selection read-back failed"
+
+phase local-health
+attempt=1
+max_attempts=12
+while [ "$attempt" -le "$max_attempts" ]; do
+    web_container="$(compose ps -q "$candidate_slot")"
+    running_image=""
+    if [ -n "$web_container" ]; then
+        running_image="$(
+            docker inspect --format '{{.Config.Image}}' "$web_container" 2>/dev/null || true
+        )"
+    fi
+    if [ "$running_image" = "$requested_image" ] && \
+        curl --fail-with-body --silent --show-error --max-time 15 \
+            --resolve "$PUBLIC_DOMAIN:$health_port:127.0.0.1" "$health_url"; then
+        break
+    fi
+    if [ "$attempt" -eq "$max_attempts" ]; then
+        fail "Requested deployment failed local health verification"
+    fi
+    echo "Deployment health check attempt $attempt failed; retrying" >&2
+    attempt=$((attempt + 1))
+    sleep 5
+done
+
+phase gallery-media-smoke
+if ! run_private_candidate_command compose exec -T "$candidate_slot" python manage.py \
+    smoke_gallery_media_projection; then
+    fail "Candidate gallery media smoke failed"
+fi
+
+phase worker-health
+sudo -n /usr/local/sbin/findme-worker-pool-metrics verify || fail "Native collector is not active"
+
+commerce_worker_is_ready() {
+    commerce_worker_containers="$(compose_with_requested_runtime_profiles ps -q commerce-worker)"
+    commerce_worker_container_count="$(
+        printf '%s\n' "$commerce_worker_containers" | sed '/^$/d' | wc -l | tr -d '[:space:]'
+    )"
+    if [ "$commerce_worker_container_count" -ne 1 ]; then
+        return 1
+    fi
+    commerce_worker_container="$commerce_worker_containers"
+    commerce_worker_state="$(
+        docker inspect \
+            --format '{{.State.Running}} {{.State.Restarting}} {{.State.OOMKilled}}' \
+            "$commerce_worker_container" 2>/dev/null || true
+    )"
+    if [ "$commerce_worker_state" != 'true false false' ]; then
+        return 1
+    fi
+    compose exec -T "$candidate_slot" python manage.py commerce_worker_health \
+        --max-ready-age-seconds "$requested_commerce_worker_health_max_ready_age_seconds"
+}
+
+phase public-health
+sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh" || fail "Requested deployment failed public HTTPS smoke verification"
+phase predecessor-drain
+web_slot drain || fail "Predecessor requests did not drain; selected traffic retained"
+
+# Only now reconcile the other application processes; photo-worker pools remain
+# under their independent release authority.
+phase worker-health
+if [ "$DEPLOY_COMMERCE" = true ]; then
+    workers_reconciled=1
+    compose_reconcile_requested_runtime_profiles || fail "Application worker reconciliation failed"
+fi
+if [ "$DEPLOY_IMPORT" = true ]; then
+    workers_reconciled=1
+    stop_import_before_web_change "$previous_import_enabled" || fail "Import worker stop failed"
+    if [ "$requested_import_enabled" = True ]; then
+        start_import_after_web_ready "$DEPLOY_ROOT/.env" || fail "Import API protocol readiness failed"
+    fi
+fi
+
+if [ "$DEPLOY_COMMERCE" = true ] && [ "$requested_commerce_worker_enabled" = True ]; then
+    commerce_worker_attempt=1
+    max_commerce_worker_attempts=6
+    commerce_worker_wait_seconds=5
+    while [ "$commerce_worker_attempt" -le "$max_commerce_worker_attempts" ]; do
+        if commerce_worker_is_ready; then
+            break
+        fi
+        if [ "$commerce_worker_attempt" -eq "$max_commerce_worker_attempts" ]; then
+            echo "Commerce worker readiness exhausted after ${max_commerce_worker_attempts} attempts" >&2
+            fail_commerce_worker_runtime_verification
+        fi
+        echo "Commerce worker readiness check attempt ${commerce_worker_attempt} failed; retrying after ${commerce_worker_wait_seconds}s" >&2
+        commerce_worker_attempt=$((commerce_worker_attempt + 1))
+        sleep "$commerce_worker_wait_seconds"
+    done
+fi
+
+phase public-health
+if ! sh "$DEPLOY_ROOT/deploy/verify-public-edge.sh"; then
+    fail "Requested deployment failed public HTTPS smoke verification"
+fi
+phase observability-verify
+if ! sudo -n "$observability_helper" verify; then
+    fail "Requested deployment failed selfie observability verification"
+fi
+if ! sh "$DEPLOY_ROOT/deploy/verify-selfie-observability.sh"; then
+    fail "Requested deployment failed application observability verification"
+fi
+
+phase commit
+if [ -n "$selected_slot" ]; then
+    compose stop "$selected_slot" || fail "Drained predecessor stop failed"
+    predecessor_stopped=1
+fi
+if [ "${PHOTO_UPLOAD_ENABLED:-False}" = True ]; then
+    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" install
+else
+    sh "$DEPLOY_ROOT/deploy/install-upload-cleanup-cron.sh" remove
+fi
+sh "$DEPLOY_ROOT/deploy/install-cart-cleanup-cron.sh" install
+
+marker_tmp="$(mktemp "$DEPLOY_ROOT/.deployed-image.XXXXXX")"
+printf '%s\n' "$requested_image" > "$marker_tmp"
+sudo -n "$observability_helper" commit
+mv "$marker_tmp" "$DEPLOY_ROOT/deployed-image"
+marker_tmp=""
+deployment_committed=1
+clear_deployment_recovery_snapshot || fail "Committed recovery gate cleanup failed"
+if ! docker image prune -a -f >/dev/null; then
+    echo "Unused Docker image cleanup failed after deployment commit" >&2
+    printf 'DEPLOY_IMAGE_PRUNE_RESULT=failure\n'
+else
+    printf 'DEPLOY_IMAGE_PRUNE_RESULT=success\n'
+fi

@@ -159,7 +159,7 @@ def test_deployment_commerce_worker_uses_the_web_app_without_photo_or_private_me
     environment = commerce_worker["environment"]
     web_environment = compose["services"]["web"]["environment"]
 
-    assert commerce_worker["image"] == "${APP_IMAGE:-not-configured}"
+    assert commerce_worker["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
     assert commerce_worker["entrypoint"] == ["python", "manage.py", "run_commerce_worker"]
     assert commerce_worker["command"] == []
     assert commerce_worker["profiles"] == ["commerce"]

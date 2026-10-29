@@ -1,43 +1,74 @@
-name: photo-prjct
 services:
   db:
+    shm_size: "256m"
     image: pgvector/pgvector:0.8.6-pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
     environment:
       POSTGRES_DB: ${DB_NAME:-app}
       POSTGRES_USER: ${DB_USER:-app}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-app}
     volumes:
-    - /var/lib/findme-photo/postgres:/var/lib/postgresql/data
-    shm_size: 256m
+      - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test:
-      - CMD-SHELL
-      - pg_isready -U ${DB_USER:-app} -d ${DB_NAME:-app}
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-app} -d ${DB_NAME:-app}"]
       interval: 10s
       timeout: 5s
       retries: 5
-    cpus: '0.5'
-    mem_limit: 256m
-    pids_limit: 64
-  web:
-    image: ${APP_IMAGE:-not-configured}
-    working_dir: /app/src/backend
+
+  postgres-exporter:
+    profiles: [observability]
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
     environment:
-      SECRET_KEY: ${SECRET_KEY:-}
-      DEBUG: ${DEBUG:-}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+      DATA_SOURCE_URI: db:5432/app?sslmode=disable&connect_timeout=2
+      DATA_SOURCE_USER: findme_monitor
+      DATA_SOURCE_PASS_FILE: /run/secrets/postgres_exporter_password
+    secrets:
+      - postgres_exporter_password
+    command:
+      - --no-collector.stat_activity
+      - --no-collector.stat_user_tables
+      - --no-collector.statio_user_tables
+      - --no-collector.statio_user_indexes
+      - --no-collector.stat_statements
+      - --no-collector.replication
+      - --no-collector.replication_slots
+      - --no-collector.stat_replication
+      - --no-collector.stat_archiver
+      - --no-collector.stat_progress_vacuum
+      - --no-collector.settings
+      - --no-collector.roles
+      - --no-collector.database_wraparound
+      - --collector.long_running_transactions
+    ports:
+      - "127.0.0.1:9187:9187"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "0.2"
+    mem_limit: 128m
+    pids_limit: 32
+
+  web: &web_slot
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      DEBUG: ${DEBUG:?DEBUG must be set}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set}
       DB_NAME: ${DB_NAME:?DB_NAME must be set}
       DB_USER: ${DB_USER:?DB_USER must be set}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
       DB_HOST: db
-      DB_PORT: '5432'
-      GUNICORN_WORKERS: '1'
-      GUNICORN_THREADS: ${GUNICORN_THREADS:-}
-      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-}
-      GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-}
-      GUNICORN_MAX_REQUESTS_JITTER: ${GUNICORN_MAX_REQUESTS_JITTER:-}
-      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
+      DB_PORT: "5432"
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:?GUNICORN_WORKERS must be set}
+      GUNICORN_THREADS: ${GUNICORN_THREADS:?GUNICORN_THREADS must be set}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:?GUNICORN_TIMEOUT must be set}
+      GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:?GUNICORN_MAX_REQUESTS must be set}
+      GUNICORN_MAX_REQUESTS_JITTER: ${GUNICORN_MAX_REQUESTS_JITTER:?GUNICORN_MAX_REQUESTS_JITTER must be set}
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?PUBLIC_DOMAIN must be set}
       PUBLIC_DOMAIN_ALIAS: ${PUBLIC_DOMAIN_ALIAS:-}
       MEDIA_STORAGE_BACKEND: ${MEDIA_STORAGE_BACKEND:-filesystem}
       MEDIA_S3_ENDPOINT_URL: ${MEDIA_S3_ENDPOINT_URL:-https://storage.yandexcloud.net}
@@ -52,17 +83,19 @@ services:
       PRIVATE_MEDIA_S3_ACCESS_KEY_ID: ${PRIVATE_MEDIA_S3_ACCESS_KEY_ID:-}
       PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: ${PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY:-}
       PRIVATE_MEDIA_ALLOWED_ORIGINS: ${PRIVATE_MEDIA_ALLOWED_ORIGINS:-}
-      GALLERY_CDN_ORIGIN: ${GALLERY_CDN_ORIGIN:-}
+      GALLERY_CDN_ORIGIN: ${GALLERY_CDN_ORIGIN:?GALLERY_CDN_ORIGIN must be set}
       GALLERY_CDN_TOKEN_SECRET: ${GALLERY_CDN_TOKEN_SECRET:-}
       GALLERY_IMGPROXY_KEY: ${GALLERY_IMGPROXY_KEY:-}
       GALLERY_IMGPROXY_SALT: ${GALLERY_IMGPROXY_SALT:-}
       PHOTO_PROCESSING_ENABLED: ${PHOTO_PROCESSING_ENABLED:-False}
       PHOTO_PROCESSING_PREVIEW_ENABLED: ${PHOTO_PROCESSING_PREVIEW_ENABLED:-False}
       PHOTO_PROCESSING_FACE_ENABLED: ${PHOTO_PROCESSING_FACE_ENABLED:-False}
-      PHOTO_WORKER_POOL_COORDINATOR_ENABLED: 'False'
+      PHOTO_PROCESSING_FLEET_TOKEN: ${PHOTO_PROCESSING_FLEET_TOKEN:-}
+      PHOTO_WORKER_POOL_COORDINATOR_ENABLED: ${PHOTO_WORKER_POOL_COORDINATOR_ENABLED:-False}
       PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS: ${PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS:-120}
       PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}
       PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
+      PHOTO_WORKER_REPLICAS: ${PHOTO_WORKER_REPLICAS:-1}
       SELFIE_SEARCH_MAX_UPLOAD_BYTES: ${SELFIE_SEARCH_MAX_UPLOAD_BYTES:-20971520}
       SELFIE_SEARCH_MAX_PIXELS: ${SELFIE_SEARCH_MAX_PIXELS:-25000000}
       SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS: ${SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS:-120}
@@ -95,190 +128,72 @@ services:
       COMMERCE_ORDER_ACCESS_SIGNING_SECRET: ${COMMERCE_ORDER_ACCESS_SIGNING_SECRET:-}
       COMMERCE_SUPPORT_CONTACT: ${COMMERCE_SUPPORT_CONTACT:-}
       COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS: ${COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS:-300}
-      PHOTO_PROCESSING_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
     expose:
-    - '8000'
+      - "8000"
     volumes:
-    - staticfiles:/app/src/backend/staticfiles
+      - staticfiles:/app/src/backend/staticfiles
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
       test:
-      - CMD
-      - python
-      - -c
-      - import urllib.request; urllib.request.urlopen('http://localhost:8000/ready/', timeout=3)
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:8000/health/', timeout=3)
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 30s
     restart: unless-stopped
-    cpus: '0.5'
-    mem_limit: 256m
-    pids_limit: 64
-  imgproxy:
-    image: ghcr.io/imgproxy/imgproxy:v4.0.12@sha256:3a6ee565a29a1b1e44079fe01fd931f72bf4057f4a7e18158f6497569450bd5e
-    entrypoint:
-    - /bin/sh
-    - /etc/imgproxy/start.sh
-    volumes:
-    - ./deploy/image-origin/imgproxy-start.sh:/etc/imgproxy/start.sh:ro
-    - ./deploy/image-origin/presets.txt:/etc/imgproxy/presets.txt:ro
-    environment:
-      IMGPROXY_KEY: ${GALLERY_IMGPROXY_KEY:-}
-      IMGPROXY_SALT: ${GALLERY_IMGPROXY_SALT:-}
-      IMGPROXY_ONLY_PRESETS: 'true'
-      IMGPROXY_PRESETS_PATH: /etc/imgproxy/presets.txt
-      IMGPROXY_WORKERS: '1'
-      IMGPROXY_REQUESTS_QUEUE_SIZE: '16'
-      IMGPROXY_MAX_CLIENTS: '8'
-      IMGPROXY_TIMEOUT: '3'
-      IMGPROXY_DOWNLOAD_TIMEOUT: '2'
-      IMGPROXY_MAX_SRC_FILE_SIZE: '10485760'
-      IMGPROXY_MAX_SRC_RESOLUTION: '25'
-      IMGPROXY_MAX_RESULT_DIMENSION: '960'
-      IMGPROXY_MAX_REDIRECTS: '0'
-      IMGPROXY_USE_S3: 'true'
-      IMGPROXY_S3_ENDPOINT: https://storage.yandexcloud.net
-      IMGPROXY_S3_REGION: ru-central1
-      IMGPROXY_S3_ENDPOINT_USE_PATH_STYLE: 'true'
-      IMGPROXY_S3_ALLOWED_BUCKETS: ${PRIVATE_MEDIA_S3_BUCKET:-}
-      IMGPROXY_ALLOWED_SOURCES: s3://${PRIVATE_MEDIA_S3_BUCKET:-}/derivatives/previews/,https://storage.yandexcloud.net/${MEDIA_S3_PUBLIC_BUCKET:-}/event-covers/
-      AWS_ACCESS_KEY_ID: ${IMAGE_ORIGIN_S3_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY:-}
-      AWS_EC2_METADATA_DISABLED: 'true'
-      IMGPROXY_JPEG_PROGRESSIVE: 'true'
-      IMGPROXY_AUTO_ROTATE: 'true'
-      IMGPROXY_STRIP_METADATA: 'true'
-      IMGPROXY_KEEP_COPYRIGHT: 'false'
-      IMGPROXY_STRIP_COLOR_PROFILE: 'true'
-      IMGPROXY_LOG_LEVEL: error
-      IMGPROXY_FAIL_ON_DEPRECATION: 'true'
-    read_only: true
-    tmpfs:
-    - /tmp:size=33554432,mode=1777
-    cap_drop:
-    - ALL
-    security_opt:
-    - no-new-privileges:true
-    cpus: '0.25'
-    mem_limit: 192m
-    pids_limit: 64
-    restart: unless-stopped
-    healthcheck:
-      test:
-      - CMD
-      - imgproxy
-      - health
-      interval: 10s
-      timeout: 5s
-      retries: 5
-  edge:
-    image: nginx:1.28.2-alpine@sha256:5b4900b042ccfa8b0a73df622c3a60f2322faeb2be800cbee5aa7b44d241649e
-    user: '101:101'
-    volumes:
-    - ./deploy/nginx/recovery-nginx.conf:/etc/nginx/nginx.conf:ro
-    - ./deploy/nginx/recovery-http.conf:/etc/nginx/conf.d/default.conf:ro
-    - staticfiles:/static:ro
-    ports:
-    - 80:8080
-    depends_on:
-      web:
-        condition: service_healthy
-      imgproxy:
-        condition: service_healthy
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-    - /var/cache/nginx:size=16777216,uid=101,gid=101
-    - /var/run:size=1048576,uid=101,gid=101
-    cap_drop:
-    - ALL
-    security_opt:
-    - no-new-privileges:true
-    cpus: '0.1'
-    mem_limit: 64m
-    pids_limit: 32
-    healthcheck:
-      test:
-      - CMD
-      - wget
-      - -q
-      - -O
-      - /dev/null
-      - --header
-      - 'Host: localhost'
-      - http://127.0.0.1:8080/ready/
-      interval: 10s
-      timeout: 5s
-      retries: 5
-  photo-worker:
-    image: ${PHOTO_WORKER_IMAGE:-not-configured}
-    profiles:
-    - processing
-    environment:
-      PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1/
-      PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
-      PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-}
-      PHOTO_WORKER_TRANSPORT: local
-      PHOTO_WORKER_PROCESSOR_IDENTITIES: 1/selfie_query/2,1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,3/face_embedding/5,1/bib_recognition/1
-      PHOTO_WORKER_HTTP_TIMEOUT_SECONDS: ${PHOTO_WORKER_HTTP_TIMEOUT_SECONDS:-900}
-    depends_on:
-      web:
-        condition: service_healthy
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-    - /tmp:size=134217728,mode=1777
-    cap_drop:
-    - ALL
-    security_opt:
-    - no-new-privileges:true
-    cpus: '0.5'
-    mem_limit: 512m
-    pids_limit: 128
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=web"
+
+  web-next:
+    <<: *web_slot
+    logging:
+      driver: journald
+      options:
+        tag: "findme.service=web-next"
+
   import-worker:
-    image: ${IMPORT_WORKER_IMAGE:-not-configured}
+    image: ${IMPORT_WORKER_IMAGE:-}
     profiles:
-    - import
+      - import
     environment:
-      PHOTO_IMPORT_API_URL: http://web:8000/internal/photo-import/v1/
+      PHOTO_IMPORT_API_URL: http://nginx:8080/internal/photo-import/v1/
       PHOTO_IMPORT_WORKER_TOKEN: ${PHOTO_IMPORT_WORKER_TOKEN:-}
       PHOTO_IMPORT_BUILD: ${PHOTO_IMPORT_BUILD:-local}
     restart: unless-stopped
     read_only: true
     tmpfs:
-    - /tmp/photo-import:size=67108864,uid=10002,gid=10002,mode=0700
-    cap_drop:
-    - ALL
-    security_opt:
-    - no-new-privileges:true
-    cpus: '0.5'
+      - /tmp/photo-import:size=67108864,uid=10002,gid=10002,mode=0700
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "0.5"
     mem_limit: 256m
     pids_limit: 32
-    depends_on:
-      web:
-        condition: service_healthy
+
   commerce-worker:
-    image: ${APP_IMAGE:-not-configured}
-    entrypoint:
-    - python
-    - manage.py
-    - run_commerce_worker
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    entrypoint: ["python", "manage.py", "run_commerce_worker"]
     command: []
     profiles:
-    - commerce
+      - commerce
     environment:
-      SECRET_KEY: ${SECRET_KEY:-}
-      DEBUG: ${DEBUG:-}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      DEBUG: ${DEBUG:?DEBUG must be set}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set}
       DB_NAME: ${DB_NAME:?DB_NAME must be set}
       DB_USER: ${DB_USER:?DB_USER must be set}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
       DB_HOST: db
-      DB_PORT: '5432'
-      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
+      DB_PORT: "5432"
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?PUBLIC_DOMAIN must be set}
       COMMERCE_PUBLIC_ORIGIN: ${COMMERCE_PUBLIC_ORIGIN:-}
       TBANK_TERMINAL_KEY: ${TBANK_TERMINAL_KEY:-}
       TBANK_TERMINAL_PASSWORD: ${TBANK_TERMINAL_PASSWORD:-}
@@ -306,13 +221,18 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
-    cpus: '0.25'
+    cpus: "0.25"
     mem_limit: 256m
     pids_limit: 64
     logging:
       driver: journald
       options:
-        tag: findme.service=commerce-worker
-    working_dir: /app/src/backend
+        tag: "findme.service=commerce-worker"
+
 volumes:
+  pgdata:
   staticfiles:
+
+secrets:
+  postgres_exporter_password:
+    file: /opt/photo-prjct/secrets/postgres-exporter-password

@@ -127,14 +127,13 @@ def claim_search_job(
     processor_version: int,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     now: timezone.datetime | None = None,
-    job_id: UUID | None = None,
 ) -> ClaimedSearchJob | EmptySearchClaim:
     """Lease one ready selfie job without changing the photo-processing queue."""
     now = now or timezone.now()
     if not _processor_matches(contract_version, processor_type, processor_version):
         return EmptySearchClaim()
     with transaction.atomic():
-        candidates = (
+        job = (
             SelfieSearchJob.objects.select_for_update(skip_locked=True)
             .select_related("search")
             .filter(
@@ -143,10 +142,9 @@ def claim_search_job(
                 search__status=SelfieSearch.Status.QUEUED,
                 search__temporary_object_key__gt="",
             )
+            .order_by("available_at", "created_at", "id")
+            .first()
         )
-        if job_id is not None:
-            candidates = candidates.filter(pk=job_id)
-        job = candidates.order_by("available_at", "created_at", "id").first()
         if job is None:
             return EmptySearchClaim()
         _validate_lease_seconds(lease_seconds, job.search)

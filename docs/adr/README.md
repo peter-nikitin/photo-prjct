@@ -81,6 +81,6 @@ ADR фиксирует долговременный выбор, причины, 
 | 0054 | [Retire SFace and fix the AdaFace vector dimension](0054-retire-sface-and-fix-adaface-vector-dimension.md) | Accepted |
 | 0055 | [Хранить принятые решения, а не рабочие спецификации и планы](0055-keep-accepted-decisions-not-working-documents.md) | Accepted |
 | 0056 | [Минимизировать затраты через минимально жизнеспособную конфигурацию](0056-minimum-viable-infrastructure.md) | Accepted |
-| 0057 | [Хранить желаемое состояние инфраструктуры в IaC и обеспечивать её переносимость](0057-declarative-cloud-infrastructure.md) | Accepted |
+| 0057 | [Описывать инфраструктуру в IaC и применять проверенный план](0057-declarative-cloud-infrastructure.md) | Accepted |
 | 0058 | [Сохранять публичный адрес при изменении вычислительных ресурсов](0058-stable-public-entrypoint-nlb.md) | Accepted |
 | 0063 | [Воспроизводить конфигурацию ОС из кода и выпускать её через общий пайплайн](0063-repeatable-host-configuration.md) | Accepted |

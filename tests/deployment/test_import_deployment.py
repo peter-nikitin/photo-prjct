@@ -1,71 +1,316 @@
-"""Current one-VM import release boundaries, without the retired slot/lease gate."""
+"""Canonical deploy import stop/readiness ordering; no real host mutations."""
 
-import os
-import subprocess
-from pathlib import Path
+import json
 
-from tests.deployment.test_deployment_scripts import ROOT
+import pytest
 
-IMPORT_IMAGE = "ghcr.io/example/import-worker:" + "a" * 40
+from tests.deployment.test_deployment_scripts import (  # noqa: F401
+    ROOT,
+    _apply_env,
+    _apply_log,
+    _run,
+)
 
 
-def run_import_release(
-    tmp_path: Path, env_lines: str
-) -> tuple[subprocess.CompletedProcess[str], str, Path]:
-    root = tmp_path / "release"
-    root.mkdir()
-    env_file = root / ".env"
-    env_file.write_text(env_lines)
-    env_file.chmod(0o600)
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    docker = bin_dir / "docker"
-    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\n')
-    docker.chmod(0o755)
-    log = tmp_path / "commands"
-    result = subprocess.run(
-        ["sh", str(ROOT / "deploy/apply-deployment.sh")],
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "COMMAND_LOG": str(log),
-            "DEPLOY_ROOT": str(root),
-            "DEPLOY_IMPORT": "true",
-            "IMPORT_WORKER_IMAGE": IMPORT_IMAGE,
-        },
+@pytest.fixture
+def fake_bin(tmp_path):
+    path = tmp_path / "bin"
+    path.mkdir()
+    return path
+
+
+def test_disabled_import_needs_no_token_and_is_not_started(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert "label=com.docker.compose.service=import-worker" in commands
+    assert "--no-deps import-worker" not in commands
+
+
+def test_enabled_import_missing_token_fails_before_mutation(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        PHOTO_IMPORT_ENABLED="True", IMPORT_WORKER_IMAGE="new-image", PHOTO_IMPORT_BUILD="test"
+    )
+    env.pop("PHOTO_IMPORT_WORKER_TOKEN", None)
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    assert "PHOTO_IMPORT_WORKER_TOKEN" in result.stderr
+    assert not (tmp_path / "apply.log").exists()
+
+
+def test_enabled_import_checks_protocol_after_web_then_starts(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        PHOTO_IMPORT_ENABLED="True",
+        IMPORT_WORKER_IMAGE="import:new-image",
+        PHOTO_IMPORT_BUILD="release",
+        PHOTO_IMPORT_WORKER_TOKEN="import-secret",
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert commands.index("--check-ready") < commands.index("up -d --no-deps import-worker")
+    assert "import-secret" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "lease_result", ["6\n0\n", "error\n"], ids=["lease-expiry", "probe-failure"]
+)
+def test_failed_candidate_stops_import_before_stopping_web_for_forward_recovery(
+    tmp_path, fake_bin, lease_result
+):
+    env = _apply_env(tmp_path, fake_bin, scenario="public-failure")
+    env.update(
+        PHOTO_IMPORT_ENABLED="True",
+        IMPORT_WORKER_IMAGE="import:new-image",
+        PHOTO_IMPORT_BUILD="release",
+        PHOTO_IMPORT_WORKER_TOKEN="import-secret",
+    )
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text(lease_result)
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    commands = "\n".join(_apply_log(tmp_path))
+    assert "up -d --no-deps import-worker" not in commands
+    assert "import-lease-probe" not in commands
+    assert "slot switch web" in commands
+    assert "phase=public-health rollback=succeeded" in result.stdout
+    assert not (tmp_path / ".deployment-recovery").exists()
+
+
+def test_import_token_projection_is_optional_and_edge_denies_internal_api():
+    manifest = json.loads((ROOT / "deploy/environment-secrets.json").read_text())
+    token = next(e for e in manifest["entries"] if e["key"] == "PHOTO_IMPORT_WORKER_TOKEN")
+    assert token["required"] is False
+    assert {name for name, keys in manifest["consumers"].items() if token["key"] in keys} == {
+        "local-web",
+        "deploy",
+    }
+    assert (
+        "location ^~ /internal/photo-import/ {\n        return 404;"
+        in (ROOT / "deploy/nginx/https.conf.template").read_text()
+    )
+
+
+def test_protocol_readiness_failure_keeps_candidate_without_starting_import(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(
+        PHOTO_IMPORT_ENABLED="True",
+        IMPORT_WORKER_IMAGE="import:new-image",
+        PHOTO_IMPORT_BUILD="release",
+        PHOTO_IMPORT_WORKER_TOKEN="import-secret",
+    )
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu", 'set -eu\ncase "$*" in *--check-ready*) exit 1 ;; esac', 1
+        )
+    )
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text("error\n")
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    assert "Import API protocol readiness failed" in result.stderr
+    assert "up -d --no-deps import-worker" not in "\n".join(_apply_log(tmp_path))
+    assert "import-lease-probe" not in "\n".join(_apply_log(tmp_path))
+    commands = "\n".join(_apply_log(tmp_path))
+    assert commands.count("up -d --wait --wait-timeout 120 --no-deps web-next") == 1
+    assert " stop web" not in commands
+    assert "previous-web-processing-schema-probe" in commands
+    assert (tmp_path / ".env").read_bytes() != (tmp_path / "previous-env.expected").read_bytes()
+    assert (tmp_path / ".deployment-recovery/candidate.env").read_bytes() == (
+        tmp_path / ".env"
+    ).read_bytes()
+
+
+def test_disabled_import_without_image_uses_valid_compose_configuration(tmp_path, fake_bin):
+    import os
+    import subprocess
+
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    env.update(IMPORT_WORKER_IMAGE="", PHOTO_IMPORT_ENABLED="False", PHOTO_IMPORT_WORKER_TOKEN="")
+    # Read-only real Compose reproduction for the exact profile used by removal.
+    script = (ROOT / "deploy/apply-deployment.sh").read_text()
+    stop = script.split("stop_import_before_web_change() {", 1)[1].split("\n}", 1)[0]
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        ".env.example",
+        "-f",
+        "docker-compose.deployment.yml",
+        "-f",
+        "docker-compose.https.yml",
+    ]
+    if "--profile import" in stop:
+        command += ["--profile", "import"]
+    command += ["config", "--services"]
+    actual = subprocess.run(
+        command,
+        cwd=ROOT,
+        env={**os.environ, **env, "PATH": os.environ["PATH"]},
         capture_output=True,
         text=True,
     )
-    return result, log.read_text() if log.exists() else "", env_file
-
-
-def test_disabled_import_pulls_image_but_does_not_start_worker(tmp_path: Path) -> None:
-    result, commands, env_file = run_import_release(tmp_path, "PHOTO_IMPORT_WORKER_ENABLED=False\n")
+    assert actual.returncode == 0, actual.stderr
+    result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode == 0, result.stderr
-    assert "--profile import pull import-worker" in commands
-    assert "--profile import up -d" not in commands
-    assert f"IMPORT_WORKER_IMAGE={IMPORT_IMAGE}" in env_file.read_text()
 
 
-def test_active_import_requires_its_private_token_before_pull(tmp_path: Path) -> None:
-    original = "PHOTO_IMPORT_WORKER_ENABLED=True\nPHOTO_IMPORT_ENABLED=True\n"
-    result, commands, env_file = run_import_release(tmp_path, original)
-    assert result.returncode == 2
-    assert "PHOTO_IMPORT_WORKER_TOKEN" in result.stderr
-    assert "pull import-worker" not in commands
-    assert env_file.read_text() == original
+def test_previous_enabled_import_container_with_no_live_lease_proceeds_without_sleep(
+    tmp_path, fake_bin
+):
+    from tests.deployment.test_deployment_scripts import _write_executable
 
-
-def test_active_import_starts_only_after_image_pull(tmp_path: Path) -> None:
-    result, commands, env_file = run_import_release(
-        tmp_path,
-        "PHOTO_IMPORT_WORKER_ENABLED=True\nPHOTO_IMPORT_ENABLED=True\n"
-        "PHOTO_IMPORT_WORKER_TOKEN=private-test-token\n",
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    with (tmp_path / ".env").open("a") as stream:
+        stream.write("PHOTO_IMPORT_ENABLED=True\nIMPORT_WORKER_IMAGE=import:old-release\n")
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            'set -eu\ncase "$*" in *"label=com.docker.compose.service=import-worker"*) '
+            'printf "import-fixture-id\\n" ;; esac',
+            1,
+        )
     )
+    _write_executable(fake_bin / "sleep", 'printf "sleep %s\\n" "$*" >> "$COMMAND_LOG"')
+    result = _run("deploy/apply-deployment.sh", env=env)
     assert result.returncode == 0, result.stderr
-    assert commands.index("--profile import pull import-worker") < commands.index(
-        "--profile import up -d --wait --no-deps import-worker"
+    commands = "\n".join(_apply_log(tmp_path))
+    assert commands.index("slot switch web-next") < commands.index("rm import-fixture-id")
+    assert "yandex-disk-import" not in commands
+
+
+def test_previous_enabled_import_waits_only_while_a_lease_is_live(tmp_path, fake_bin):
+    from tests.deployment.test_deployment_scripts import _write_executable
+
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    with (tmp_path / ".env").open("a") as stream:
+        stream.write("PHOTO_IMPORT_ENABLED=True\nIMPORT_WORKER_IMAGE=import:old-release\n")
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text("6\n0\n")
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
+    _write_executable(fake_bin / "sleep", 'printf "sleep %s\\n" "$*" >> "$COMMAND_LOG"')
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert commands.index("import-lease-probe") < commands.index("sleep 5")
+    assert commands.index("sleep 5") < commands.index(
+        "import-lease-probe", commands.index("sleep 5")
     )
-    assert "pull web" not in commands and "exec -T db" not in commands
-    assert "private-test-token" not in result.stdout + result.stderr
-    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert commands.index("slot switch web-next") < commands.index("import-lease-probe")
+
+
+def test_import_lease_probe_failure_blocks_web_replacement(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="private-media-no-photo")
+    with (tmp_path / ".env").open("a") as stream:
+        stream.write("PHOTO_IMPORT_ENABLED=True\nIMPORT_WORKER_IMAGE=import:old-release\n")
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text("error\nerror\n")
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Import worker stop failed" in result.stderr
+    assert "up -d --no-deps web nginx" not in "\n".join(_apply_log(tmp_path))
+
+
+def test_failed_candidate_before_import_start_needs_no_lease_probe(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="vector-capability-failure")
+    env.update(
+        PHOTO_IMPORT_ENABLED="True",
+        IMPORT_WORKER_IMAGE="import:new-image",
+        PHOTO_IMPORT_BUILD="release",
+        PHOTO_IMPORT_WORKER_TOKEN="import-secret",
+    )
+    probe_file = tmp_path / "import-lease-probes"
+    probe_file.write_text("error\n")
+    env["IMPORT_LEASE_PROBE_FILE"] = str(probe_file)
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "Vector database capability preflight failed" in result.stderr
+    assert "import-lease-probe" not in "\n".join(_apply_log(tmp_path))
+    assert (tmp_path / ".env").read_bytes() == (tmp_path / "previous-env.expected").read_bytes()
+
+
+def test_failed_import_deploy_does_not_override_operator_gate(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="public-failure")
+    with (tmp_path / ".env").open("a") as stream:
+        stream.write("PHOTO_IMPORT_ENABLED=True\nIMPORT_WORKER_IMAGE=import:old-release\n")
+    (tmp_path / "previous-env.expected").write_bytes((tmp_path / ".env").read_bytes())
+    env.update(
+        PHOTO_IMPORT_ENABLED="True",
+        IMPORT_WORKER_IMAGE="import:new-image",
+        PHOTO_IMPORT_BUILD="release",
+        PHOTO_IMPORT_WORKER_TOKEN="import-secret",
+    )
+
+    result = _run("deploy/apply-deployment.sh", env=env)
+
+    assert result.returncode != 0
+    assert "yandex-disk-import" not in "\n".join(_apply_log(tmp_path))
+
+
+def test_legacy_import_worker_refuses_first_activation_before_database_or_edge_mutation(
+    tmp_path, fake_bin
+):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            'set -eu\ncase "$*" in\n'
+            '  *"label=com.docker.compose.service=import-worker"*) echo legacy-import; exit 0 ;;\n'
+            '  "exec legacy-import "*) exit 1 ;;\nesac',
+            1,
+        )
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode != 0
+    assert "explicit first-activation import cutover required" in result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert "candidate-migrate" not in commands
+    assert "slot switch" not in commands
+    assert (tmp_path / "deployed-image").read_text() == "old-image\n"
+
+
+def test_modern_import_worker_receives_term_and_finishes_before_removal(tmp_path, fake_bin):
+    env = _apply_env(tmp_path, fake_bin, scenario="success")
+    docker = fake_bin / "docker"
+    docker.write_text(
+        docker.read_text().replace(
+            "set -eu",
+            """set -eu
+case "$*" in
+  *"label=com.docker.compose.service=import-worker"*) echo modern-import; exit 0 ;;
+  "exec modern-import "*) exit 0 ;;
+  "inspect --format {{.State.Running}} modern-import")
+    if [ -f "$DEPLOY_ROOT/import-finished" ]; then echo false; else echo true; fi
+    exit 0 ;;
+  "kill --signal TERM modern-import")
+    printf 'import-term-finished\\n' >> "$COMMAND_LOG"
+    touch "$DEPLOY_ROOT/import-finished"; exit 0 ;;
+  "rm modern-import") test -f "$DEPLOY_ROOT/import-finished" ;;
+esac""",
+            1,
+        )
+    )
+    result = _run("deploy/apply-deployment.sh", env=env)
+    assert result.returncode == 0, result.stderr
+    commands = "\n".join(_apply_log(tmp_path))
+    assert commands.index("slot switch web-next") < commands.index("import-term-finished")
+    assert commands.index("import-term-finished") < commands.index("rm modern-import")
+    assert "rm -f modern-import" not in commands

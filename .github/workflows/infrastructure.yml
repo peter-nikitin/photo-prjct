@@ -21,9 +21,8 @@ jobs:
     permissions:
       contents: read
     outputs:
-      terraform: ${{ steps.paths.outputs.terraform }}
-      ansible: ${{ steps.paths.outputs.ansible }}
-      runtime: ${{ steps.paths.outputs.runtime }}
+      terraform_changed: ${{ steps.paths.outputs.terraform_changed }}
+      ansible_changed: ${{ steps.paths.outputs.ansible_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,11 +36,11 @@ jobs:
           HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          git diff --name-only "$BASE" "$HEAD" | python infra/ci/classify.py >> "$GITHUB_OUTPUT"
+          python deploy/classify-release.py --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
 
   validate:
     name: Infrastructure validation
-    if: github.event_name == 'pull_request' && (needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true')
+    if: github.event_name == 'pull_request' && (needs.classify.outputs.terraform_changed == 'true' || needs.classify.outputs.ansible_changed == 'true')
     needs: [classify]
     runs-on: ubuntu-latest
     permissions:
@@ -71,7 +70,7 @@ jobs:
           ansible-playbook -i /tmp/findme-inventory infra/ansible/install-backup-agent.yml --syntax-check
 
   plan:
-    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
     needs: [classify, validate]
     runs-on: ubuntu-latest
     environment: infrastructure
@@ -150,7 +149,7 @@ jobs:
             -f description="Approve this plan run in the PR after reviewing resources and cost" >/dev/null
 
   no-resource-plan:
-    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform != 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed != 'true'
     needs: [classify]
     runs-on: ubuntu-latest
     permissions:
@@ -192,7 +191,7 @@ jobs:
             -f description="Current plan artifact approved by a write-authorized collaborator" >/dev/null
 
   release:
-    if: github.event_name == 'push' && (needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true' || needs.classify.outputs.runtime == 'true')
+    if: github.event_name == 'push' && (needs.classify.outputs.terraform_changed == 'true' || needs.classify.outputs.ansible_changed == 'true')
     needs: [classify]
     runs-on: ubuntu-latest
     environment: infrastructure
@@ -200,7 +199,6 @@ jobs:
       actions: read
       contents: read
       id-token: write
-      packages: write
       pull-requests: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -213,109 +211,24 @@ jobs:
         with:
           persist-credentials: false
       - name: Resolve approved saved plan after merge
-        if: needs.classify.outputs.terraform == 'true'
-        run: |
-          set -euo pipefail
-          python infra/ci/release.py verify-merge "$GITHUB_SHA" > /tmp/approved-plan.json
+        if: needs.classify.outputs.terraform_changed == 'true'
+        run: python infra/ci/release.py verify-merge "$GITHUB_SHA" > /tmp/approved-plan.json
       - name: Download exactly the approved run artifact
-        if: needs.classify.outputs.terraform == 'true'
+        if: needs.classify.outputs.terraform_changed == 'true'
         run: |
           set -euo pipefail
           artifact_id="$(python -c 'import json; print(json.load(open("/tmp/approved-plan.json"))["artifact_id"])')"
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > /tmp/approved-plan.zip
           unzip -j /tmp/approved-plan.zip plan.tfplan -d infra/terraform
-      - name: Log in to GHCR for immutable stage-one images
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-buildx-action@v3
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-      - name: Resolve worker base content key
-        id: images
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-        run: |
-          key="$(git ls-tree -r HEAD -- Dockerfile.worker-base .dockerignore src/worker/requirements.txt src/worker/requirements.cpu.txt | sha256sum | cut -d ' ' -f 1)"
-          echo "base=ghcr.io/${GITHUB_REPOSITORY}-worker-base:$key" >> "$GITHUB_OUTPUT"
-      - name: Build and publish web
-        id: web
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          build-args: RELEASE_SHA=${{ github.sha }}
-          push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
-      - name: Build and publish import worker
-        id: import
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile.import-worker
-          push: true
-          tags: ghcr.io/${{ github.repository }}-import-worker:${{ github.sha }}
-      - name: Check worker base registry presence
-        id: base_present
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-        env:
-          BASE_IMAGE: ${{ steps.images.outputs.base }}
-        run: |
-          if docker buildx imagetools inspect "$BASE_IMAGE" >/dev/null 2>&1; then echo 'missing=false' >> "$GITHUB_OUTPUT"; else echo 'missing=true' >> "$GITHUB_OUTPUT"; fi
-      - name: Build and publish worker base if absent
-        if: steps.base_present.outputs.missing == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile.worker-base
-          push: true
-          tags: ${{ steps.images.outputs.base }}
-      - name: Resolve immutable worker base
-        id: worker_base
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-        env:
-          BASE_IMAGE: ${{ steps.images.outputs.base }}
-        run: |
-          digest="$(docker buildx imagetools inspect "$BASE_IMAGE" --format '{{.Manifest.Digest}}')"
-          case "$digest" in sha256:*) ;; *) exit 2 ;; esac
-          echo "ref=${BASE_IMAGE%:*}@$digest" >> "$GITHUB_OUTPUT"
-      - name: Build and publish photo worker
-        id: worker
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile.worker
-          build-args: |
-            RELEASE_SHA=${{ github.sha }}
-            WORKER_BASE_IMAGE=${{ steps.worker_base.outputs.ref }}
-          push: true
-          tags: ghcr.io/${{ github.repository }}-worker:${{ github.sha }}
-      - name: Check published image imports
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.runtime == 'true'
-        env:
-          WEB: ${{ steps.web.outputs.digest }}
-          IMPORT: ${{ steps.import.outputs.digest }}
-          WORKER: ${{ steps.worker.outputs.digest }}
-        run: |
-          docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}@${WEB}" -c 'import django, gunicorn, psycopg, PIL'
-          docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}-import-worker@${IMPORT}" -c 'import import_worker.__main__'
-          docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}-worker@${WORKER}" -c 'import photo_worker.client, photo_worker.contracts'
       - name: Exchange short-lived infrastructure OIDC token
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
         run: python infra/ci/identity.py
       - uses: hashicorp/setup-terraform@v3
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
         with:
           terraform_version: 1.17.0
           terraform_wrapper: false
       - name: Open locked state and apply approved saved plan only
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
         env:
-          TERRAFORM_CHANGED: ${{ needs.classify.outputs.terraform }}
+          TERRAFORM_CHANGED: ${{ needs.classify.outputs.terraform_changed }}
         run: |
           set -euo pipefail
           terraform -chdir=infra/terraform init -input=false -lockfile=readonly
@@ -324,10 +237,8 @@ jobs:
           fi
           terraform -chdir=infra/terraform output -json > /tmp/findme-outputs.json
       - name: Install Ansible 2.19.3
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
         run: python -m pip install ansible-core==2.19.3
       - name: Trust public host key from authenticated VM serial output
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
         env:
           VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
         run: |
@@ -339,8 +250,7 @@ jobs:
           umask 077
           : > /tmp/findme-ssh-key
           printf '%s' "$VM_SSH_KEY" > /tmp/findme-ssh-key
-      - name: Configure host OS; never start app or restore data
-        if: needs.classify.outputs.terraform == 'true' || needs.classify.outputs.ansible == 'true'
+      - name: Configure host OS with Ansible only
         env:
           FINDME_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
         run: |
@@ -354,26 +264,4 @@ jobs:
             --private-key /tmp/findme-ssh-key \
             --ssh-common-args '-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes' \
             infra/ansible/site.yml
-      - name: Stage runtime package and pull images without starting services
-        if: needs.classify.outputs.terraform == 'true'
-        env:
-          WEB: ${{ steps.web.outputs.digest }}
-          IMPORT: ${{ steps.import.outputs.digest }}
-          WORKER: ${{ steps.worker.outputs.digest }}
-          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-        run: |
-          set -euo pipefail
-          host="$(cat /tmp/findme-host)"
-          sh deploy/package-deployment.sh /tmp/findme-runtime.tar
-          ssh_opts='-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes'
-          scp $ssh_opts -i /tmp/findme-ssh-key /tmp/findme-runtime.tar "findme@$host:/tmp/findme-runtime.tar"
-          ssh $ssh_opts -i /tmp/findme-ssh-key "findme@$host" \
-            'sudo tar -xf /tmp/findme-runtime.tar -C /opt/photo-prjct && rm /tmp/findme-runtime.tar'
-          printf '%s' "$GHCR_READ_TOKEN" | ssh $ssh_opts -i /tmp/findme-ssh-key "findme@$host" \
-            "sudo docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin" >/dev/null
-          for image in "ghcr.io/${GITHUB_REPOSITORY}@${WEB}" "ghcr.io/${GITHUB_REPOSITORY}-import-worker@${IMPORT}" "ghcr.io/${GITHUB_REPOSITORY}-worker@${WORKER}"; do
-            ssh $ssh_opts -i /tmp/findme-ssh-key "findme@$host" "sudo docker pull '$image'" >/dev/null
-            echo "$image" >> /tmp/findme-image-refs
-          done
-          { echo 'Runtime package staged and three immutable images pulled. PostgreSQL, web and workers remain stopped.'; cat /tmp/findme-image-refs; } >> "$GITHUB_STEP_SUMMARY"
+          echo 'Terraform apply and host OS preparation completed. Application services and data restore were not started.' >> "$GITHUB_STEP_SUMMARY"

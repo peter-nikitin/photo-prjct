@@ -18,8 +18,6 @@ urlpatterns = [
     path("", include("commerce.urls")),
     path("", include("selfie_search.urls")),
     path("health/", views.health, name="health"),
-    path("ready/", views.ready, name="ready"),
-    path("internal/gallery-token/", views.direct_ip_image_token, name="direct_ip_image_token"),
     path("metrics/", views.metrics, name="metrics"),
     path(
         "worker-diagnostics/metrics/", worker_diagnostic_metrics, name="worker_diagnostic_metrics"

@@ -572,6 +572,80 @@ def _initial_deployment_environment(
     return environment, sentinel
 
 
+def test_installer_accepts_web_release_without_legacy_fleet_marker(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    helper, apply_log, _candidate_compose = _initial_deployment_helper(tmp_path, apply_status=0)
+    environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
+    result = _run_helper(["deploy"], environment, helper=helper)
+    assert result.returncode == 0, result.stderr
+    assert apply_log.exists()
+    remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
+    assert (remote_root / "docker-compose.deployment.yml").exists()
+    assert (remote_root / "deploy").exists()
+
+
+def test_first_remote_only_upgrade_installs_candidate_with_legacy_helper(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    helper, apply_log, candidate_compose = _initial_deployment_helper(tmp_path, apply_status=0)
+    environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
+    remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
+    legacy = remote_root / "deploy/worker-pools"
+    legacy.mkdir(parents=True)
+    (legacy / "release.py").write_text("LEGACY_RELEASE = True\n")
+    (remote_root / "deploy/package-version").write_text("previous\n")
+    (remote_root / "docker-compose.deployment.yml").write_text("previous-compose\n")
+    (remote_root / "docker-compose.https.yml").write_text("previous-overlay\n")
+    (remote_root / "worker-pools-current.json").write_text("{}")
+    (remote_root / "worker-pools-release.json").write_text('{"phase":"committed"}')
+    result = _run_helper(["deploy"], environment, helper=helper)
+    assert result.returncode == 0, result.stderr
+    assert apply_log.exists()
+    assert (remote_root / "docker-compose.deployment.yml").read_bytes() == (candidate_compose)
+    assert not list(remote_root.glob(".deployment-*"))
+
+
+def test_partial_candidate_install_failure_preserves_untouched_predecessor_entries(
+    tmp_path: Path, remote_boundary: Path
+) -> None:
+    helper, apply_log, _candidate_compose = _initial_deployment_helper(tmp_path, apply_status=0)
+    environment, _sentinel = _initial_deployment_environment(tmp_path, remote_boundary)
+    remote_root = Path(environment["REMOTE_DEPLOY_ROOT"])
+    remote_deploy = remote_root / "deploy"
+    remote_deploy.mkdir()
+    (remote_deploy / "worker-pools").mkdir()
+    (remote_deploy / "worker-pools/release.py").write_text(
+        "def require_native_compatible_release(*args): pass\n"
+    )
+    (remote_root / "worker-pools-current.json").write_text("{}")
+    (remote_root / "worker-pools-release.json").write_text('{"phase":"committed"}')
+    previous_compose = b"previous main compose\n"
+    previous_overlay = b"previous https compose\n"
+    previous_helper = b"previous helpers\n"
+    (remote_root / "docker-compose.deployment.yml").write_bytes(previous_compose)
+    (remote_root / "docker-compose.https.yml").write_bytes(previous_overlay)
+    (remote_deploy / "package-version").write_bytes(previous_helper)
+    _write_executable(
+        remote_boundary / "mv",
+        """
+        case "${1-}" in
+          */.deployment-candidate.*/docker-compose.deployment.yml) exit 61 ;;
+        esac
+        exec /bin/mv "$@"
+        """,
+    )
+
+    result = _run_helper(["deploy"], environment, helper=helper)
+
+    assert result.returncode == 2
+    assert not apply_log.exists()
+    assert (remote_root / "docker-compose.deployment.yml").read_bytes() == previous_compose
+    assert (remote_root / "docker-compose.https.yml").read_bytes() == previous_overlay
+    assert (remote_root / "deploy" / "package-version").read_bytes() == previous_helper
+    assert list(remote_root.glob(".deployment-*")) == []
+
+
 def test_failed_deploy_relays_only_safe_phase_markers_before_sanitized_error(
     tmp_path: Path, remote_boundary: Path
 ) -> None:

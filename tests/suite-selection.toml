@@ -26,8 +26,6 @@ patterns = [
   "scripts/monitor_public_health.py",
   "scripts/monitor_commerce.py",
   "scripts/reconcile_deploy_issue.py",
-  "scripts/rehearse-recovery.sh",
-  "scripts/restore-recovery-database.sh",
   "scripts/run-with-environment-secrets.py",
   "scripts/verify-environment-secret-projection.py",
   "tests/deployment/**",

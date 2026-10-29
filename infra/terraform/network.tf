@@ -18,7 +18,7 @@ resource "yandex_vpc_security_group" "vm" {
 
   ingress {
     protocol       = "TCP"
-    description    = "Direct-IP HTTP for recovery; NLB is a later stage."
+    description    = "HTTP backend port for the future NLB; application is not started in this stage."
     port           = 80
     v4_cidr_blocks = ["0.0.0.0/0"]
   }

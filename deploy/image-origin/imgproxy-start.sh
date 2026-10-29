@@ -19,12 +19,6 @@ for name in $(env | cut -d= -f1); do
     esac
 done
 
-: "${IMGPROXY_KEY:?IMGPROXY_KEY is required}"
-: "${IMGPROXY_SALT:?IMGPROXY_SALT is required}"
-: "${IMGPROXY_S3_ALLOWED_BUCKETS:?IMGPROXY_S3_ALLOWED_BUCKETS is required}"
-: "${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID is required}"
-: "${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY is required}"
-
 # v4 errors include source paths. No raw imgproxy logs reach Docker or disk.
 # Startup errors are reported by the mandatory health and signed-image gates.
 exec /usr/local/bin/entrypoint.sh imgproxy >/dev/null 2>&1

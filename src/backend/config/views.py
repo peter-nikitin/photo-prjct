@@ -9,7 +9,6 @@ from commerce.views import (
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.core.paginator import InvalidPage
-from django.db import OperationalError, connection
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -45,7 +44,6 @@ from picflow.gallery_image_delivery import (
     EventCoverImageDeliverySettings,
     GalleryImageDeliverySettings,
     GalleryImageUrlSigner,
-    valid_direct_ip_image_token,
 )
 from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, EventFolder, Photo
@@ -58,26 +56,6 @@ from config.metrics import generate_metrics
 
 def health(request):  # noqa: ARG001
     return JsonResponse({"status": "ok"})
-
-
-@require_GET
-def ready(request):  # noqa: ARG001
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT 1")
-    except OperationalError:
-        return JsonResponse({"status": "unavailable"}, status=503)
-    return JsonResponse({"status": "ok"})
-
-
-@require_GET
-def direct_ip_image_token(request):
-    if valid_direct_ip_image_token(
-        request.headers.get("X-FindMe-Image-Uri", ""),
-        secret=settings.GALLERY_CDN_TOKEN_SECRET,
-    ):
-        return HttpResponse(status=204)
-    return HttpResponse(status=403)
 
 
 @require_GET

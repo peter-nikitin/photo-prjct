@@ -112,7 +112,19 @@ def classify_observability(paths):
 
 def classify(paths):
     web = worker = base = importer = commerce = False
+    terraform = ansible = False
     for path in paths:
+        if path.startswith(("infra/terraform/", "infra/ci/")) or path in {
+            ".github/workflows/infrastructure.yml",
+            "deploy/classify-release.py",
+        }:
+            terraform = True
+            continue
+        if path.startswith("infra/ansible/"):
+            ansible = True
+            continue
+        if path.startswith("infra/"):
+            continue
         if path.startswith(("docs/", "tests/", ".agents/", ".superpowers/")) or path.endswith(
             ".md"
         ):
@@ -170,6 +182,8 @@ def classify(paths):
         "worker_base_changed": base,
         "import_changed": importer,
         "commerce_changed": commerce,
+        "terraform_changed": terraform,
+        "ansible_changed": ansible,
     }
 
 

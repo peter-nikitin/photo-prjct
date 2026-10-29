@@ -83,14 +83,10 @@ class Runner:
     def request_stop(self) -> None:
         self.stopping = True
 
-    def run_once(self, *, batch_id: str | None = None) -> bool:
+    def run_once(self) -> bool:
         if self.stopping:
             return False
-        result = self.client.call(
-            "claim",
-            lease_seconds=Config.lease_seconds,
-            **({"batch_id": batch_id} if batch_id is not None else {}),
-        )
+        result = self.client.call("claim", lease_seconds=Config.lease_seconds)
         work = result["work"]
         if work is None:
             return False

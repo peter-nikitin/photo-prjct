@@ -1,5 +1,8 @@
 import importlib.util
+import json
+import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,11 +14,112 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_recovery_database_is_private_and_has_no_implicit_exporter() -> None:
+def test_exporter_is_pinned_private_and_reads_password_file(tmp_path):
     services = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())["services"]
-    assert "postgres-exporter" not in services
-    assert "ports" not in services["db"]
-    assert services["db"]["volumes"] == ["/var/lib/findme-photo/postgres:/var/lib/postgresql/data"]
+    exporter = services["postgres-exporter"]
+
+    assert exporter["image"].startswith(
+        "quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:"
+    )
+    assert exporter["profiles"] == ["observability"]
+    assert exporter["ports"] == ["127.0.0.1:9187:9187"]
+    assert exporter["environment"]["DATA_SOURCE_USER"] == "findme_monitor"
+    assert (
+        exporter["environment"]["DATA_SOURCE_PASS_FILE"]
+        == "/run/secrets/postgres_exporter_password"
+    )
+    assert exporter["secrets"] == ["postgres_exporter_password"]
+    assert "POSTGRES_PASSWORD" not in exporter["environment"]
+    assert "DB_PASSWORD" not in exporter["environment"]
+    assert "postgres-exporter" not in services["web"].get("depends_on", {})
+
+    # Match a clean CI checkout: neither its project directory nor cwd has a .env.
+    compose_file = tmp_path / "docker-compose.deployment.yml"
+    compose_file.write_bytes((ROOT / "docker-compose.deployment.yml").read_bytes())
+    compose_environment = {
+        "PATH": os.environ["PATH"],
+        "HOME": os.environ["HOME"],
+        "APP_IMAGE": "example.invalid/findme/app:dev",
+        "SECRET_KEY": "compose-contract-test-secret",
+        "DEBUG": "False",
+        "ALLOWED_HOSTS": "example.invalid",
+        "DB_NAME": "app",
+        "DB_USER": "app",
+        "DB_PASSWORD": "compose-contract-test-password",
+        "GUNICORN_WORKERS": "1",
+        "GUNICORN_THREADS": "1",
+        "GUNICORN_TIMEOUT": "30",
+        "GUNICORN_MAX_REQUESTS": "100",
+        "GUNICORN_MAX_REQUESTS_JITTER": "10",
+        "GALLERY_CDN_ORIGIN": "https://images.example.invalid",
+        "PUBLIC_DOMAIN": "example.invalid",
+    }
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "observability",
+            "-f",
+            "docker-compose.deployment.yml",
+            "config",
+            "--no-interpolate",
+            "--format",
+            "json",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=compose_environment,
+    )
+    default_command = list(result.args)
+    del default_command[2:4]  # Ordinary product deployment enables no monitoring profile.
+    default_command.remove("--no-interpolate")
+    default = json.loads(
+        subprocess.run(
+            default_command,
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=compose_environment,
+        ).stdout
+    )
+    assert "postgres-exporter" not in default["services"]
+    assert "postgres_exporter_password" not in default.get("secrets", {})
+    rendered = json.loads(result.stdout)["services"]["postgres-exporter"]
+    assert rendered["secrets"] == [
+        {
+            "source": "postgres_exporter_password",
+            "target": exporter["environment"]["DATA_SOURCE_PASS_FILE"],
+        }
+    ]
+
+
+def test_exporter_collectors_exclude_unbounded_and_sensitive_dimensions():
+    services = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())["services"]
+    flags = set(services["postgres-exporter"]["command"])
+
+    for disabled in (
+        "stat_user_tables",
+        "statio_user_tables",
+        "statio_user_indexes",
+        "stat_statements",
+        "stat_activity",
+        "replication",
+        "replication_slots",
+        "stat_replication",
+        "stat_archiver",
+        "stat_progress_vacuum",
+        "roles",
+        "database_wraparound",
+    ):
+        assert f"--no-collector.{disabled}" in flags
+    assert "--collector.long_running_transactions" in flags
+    assert "--collector.stat_checkpointer" not in flags  # PostgreSQL 16 uses pg_stat_bgwriter.
+    assert "--no-collector.wal" not in flags
+    assert "--no-collector.stat_database" not in flags
 
 
 def _role_helper():

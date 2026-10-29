@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from copy import deepcopy
 
 import yaml
 
@@ -43,8 +44,6 @@ def _render_all_deployment_profiles(extra_environment: dict[str, str]) -> dict:
             "--profile",
             "import",
             "--profile",
-            "processing",
-            "--profile",
             "commerce",
             "config",
         ],
@@ -58,19 +57,44 @@ def _render_all_deployment_profiles(extra_environment: dict[str, str]) -> dict:
     return yaml.safe_load(result.stdout)
 
 
-def test_gallery_delivery_keeps_cdn_secret_on_web_and_source_keys_on_imgproxy() -> None:
-    configured = _render_all_deployment_profiles(GALLERY_DELIVERY_ENVIRONMENT)["services"]
-    web = configured["web"]["environment"]
-    imgproxy = configured["imgproxy"]["environment"]
-    for name, value in GALLERY_DELIVERY_ENVIRONMENT.items():
-        assert web[name] == value
-    assert imgproxy["IMGPROXY_KEY"] == GALLERY_DELIVERY_ENVIRONMENT["GALLERY_IMGPROXY_KEY"]
-    assert imgproxy["IMGPROXY_SALT"] == GALLERY_DELIVERY_ENVIRONMENT["GALLERY_IMGPROXY_SALT"]
-    for name in ("photo-worker", "import-worker", "commerce-worker", "edge"):
-        environment = configured[name].get("environment") or {}
-        assert "GALLERY_CDN_TOKEN_SECRET" not in environment
-        assert "GALLERY_IMGPROXY_KEY" not in environment
-        assert "GALLERY_IMGPROXY_SALT" not in environment
+def test_gallery_delivery_configuration_changes_only_the_web_environment() -> None:
+    """A deployment setting must not alter worker topology or grant it signing material."""
+    configured = _render_all_deployment_profiles(GALLERY_DELIVERY_ENVIRONMENT)
+    dark = _render_all_deployment_profiles(
+        {
+            "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
+            "GALLERY_CDN_TOKEN_SECRET": "",
+            "GALLERY_IMGPROXY_KEY": "",
+            "GALLERY_IMGPROXY_SALT": "",
+        }
+    )
+
+    configured_without_gallery = deepcopy(configured)
+    dark_without_gallery = deepcopy(dark)
+    for slot in ("web", "web-next"):
+        configured_web = configured["services"][slot]["environment"]
+        assert {name: configured_web[name] for name in GALLERY_DELIVERY_ENVIRONMENT} == (
+            GALLERY_DELIVERY_ENVIRONMENT
+        )
+        assert {
+            name: dark["services"][slot]["environment"][name]
+            for name in GALLERY_DELIVERY_ENVIRONMENT
+        } == {
+            "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
+            "GALLERY_CDN_TOKEN_SECRET": "",
+            "GALLERY_IMGPROXY_KEY": "",
+            "GALLERY_IMGPROXY_SALT": "",
+        }
+        for name in GALLERY_DELIVERY_ENVIRONMENT:
+            configured_without_gallery["services"][slot]["environment"].pop(name)
+            dark_without_gallery["services"][slot]["environment"].pop(name)
+    assert configured_without_gallery == dark_without_gallery
+
+    for service_name, service in configured["services"].items():
+        if service_name in {"web", "web-next"}:
+            continue
+        environment = service.get("environment") or {}
+        assert not GALLERY_DELIVERY_ENVIRONMENT.keys() & environment.keys(), service_name
 
 
 def test_deployment_compose_projects_postbox_credentials_only_to_commerce_worker() -> None:

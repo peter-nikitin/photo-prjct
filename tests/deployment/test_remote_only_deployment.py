@@ -40,24 +40,27 @@ def test_package_replacement_and_restore_keep_live_nginx_directory_inode(tmp_pat
         assert not (current / "obsolete").exists()
 
 
-def test_single_vm_runtime_has_private_local_photo_worker() -> None:
+def test_production_compose_has_no_local_photo_workers():
     services = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())["services"]
-    assert {"web", "db", "photo-worker", "import-worker", "commerce-worker", "edge"} <= set(
-        services
-    )
-    assert services["photo-worker"]["environment"]["PHOTO_WORKER_TOKEN"] == (
-        "${PHOTO_PROCESSING_WORKER_TOKEN:-}"
-    )
-    assert "DB_PASSWORD" not in services["photo-worker"]["environment"]
-    assert "ports" not in services["photo-worker"]
-    assert "ports" not in services["db"]
+    assert not {"worker", "worker-bulk", "worker-selfie"} & services.keys()
+    assert {"web", "db", "import-worker", "commerce-worker"} <= services.keys()
+    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in services["web"]["environment"]
+    assert "nginx" in yaml.safe_load((ROOT / "docker-compose.https.yml").read_text())["services"]
 
 
-def test_single_vm_apply_has_no_implicit_restore_or_fleet_activation() -> None:
+def test_production_deploy_has_no_local_placement_or_restore_path():
     source = (ROOT / "deploy/apply-deployment.sh").read_text()
-    assert "restore-recovery-database.sh" not in source
-    assert "deploy/worker-pools/activate.py" not in source
-    assert "DEPLOY_PHOTO" in source and "PHOTO_PROCESSING_WORKER_TOKEN" in source
+    assert "PHOTO_WORKER_PLACEMENT" not in source
+    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in source
+    assert "worker-bulk" not in source
+    assert "worker-selfie" not in source
+    assert "fleet_phase" not in source
+    assert "verify-native-release.py" not in source
+    assert not (ROOT / "deploy/verify-native-release.py").exists()
+    workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
+    assert "PHOTO_WORKER_REPLICAS:" not in workflow
+    assert "PHOTO_WORKER_CPUS:" not in workflow
+    assert "PHOTO_WORKER_MEMORY_LIMIT:" not in workflow
 
 
 def test_obsolete_fleet_release_and_finalizer_are_removed():

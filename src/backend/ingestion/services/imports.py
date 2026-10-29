@@ -301,26 +301,24 @@ def finish_manifest(
         )
 
 
-def claim_import_work(
-    *, lease_seconds: int = 120, now: datetime | None = None, batch_id: UUID | None = None
-) -> ClaimedImport:
+def claim_import_work(*, lease_seconds: int = 120, now: datetime | None = None) -> ClaimedImport:
     if not 1 <= lease_seconds <= 300:
         raise ValueError("lease_seconds must be between 1 and 300")
     now = now or timezone.now()
     with transaction.atomic():
-        if batch_id is None:
-            _expire_attempts(now)
-        batches = ImportBatch.objects.filter(
-            status__in=(
-                ImportBatch.Status.QUEUED,
-                ImportBatch.Status.ENUMERATING,
-                ImportBatch.Status.TRANSFERRING,
-                ImportBatch.Status.PAUSED,
+        _expire_attempts(now)
+        batch_ids = list(
+            ImportBatch.objects.filter(
+                status__in=(
+                    ImportBatch.Status.QUEUED,
+                    ImportBatch.Status.ENUMERATING,
+                    ImportBatch.Status.TRANSFERRING,
+                    ImportBatch.Status.PAUSED,
+                )
             )
+            .order_by("created_at", "id")
+            .values_list("id", flat=True)
         )
-        if batch_id is not None:
-            batches = batches.filter(pk=batch_id)
-        batch_ids = list(batches.order_by("created_at", "id").values_list("id", flat=True))
         for batch_id in batch_ids:
             batch = (
                 ImportBatch.objects.select_for_update(skip_locked=True).filter(pk=batch_id).first()

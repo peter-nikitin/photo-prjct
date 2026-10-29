@@ -79,20 +79,6 @@ def test_claim_sends_only_semantic_identity_and_lease() -> None:
     }
 
 
-def test_exact_claim_sends_one_job_id() -> None:
-    requests = []
-
-    def opener(request, *, timeout: float):
-        requests.append(request)
-        return Response(b'{"empty": true, "suggested_delay_seconds": 5}')
-
-    client = HttpClient(
-        "http://web:8000/internal/photo-processing/v1/", "worker-secret", opener=opener
-    )
-    client.claim_job(lease_seconds=120, job_id="00000000-0000-0000-0000-000000000001")
-    assert json.loads(requests[0].data)["job_id"] == "00000000-0000-0000-0000-000000000001"
-
-
 @pytest.mark.parametrize("timeout", (0, -1, float("inf"), float("nan")))
 def test_http_client_rejects_non_positive_or_non_finite_timeout(timeout: float) -> None:
     with pytest.raises(ValueError, match="timeout"):

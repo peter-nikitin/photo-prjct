@@ -21,19 +21,12 @@ FindMe Photo помогает участникам мероприятий нах
 ```text
 GitHub Actions Infrastructure → Terraform (VPC, диски, одна VM)
                               → Ansible (пользователь, SSH, Docker, PG mount)
-                              → GHCR images + runtime package без запуска приложения
-
-После ручного восстановления БД:
-Браузер → Nginx HTTP edge → Django/Gunicorn → PostgreSQL на той же VM
-                            │
-                            ├→ закрытые медиа в существующем Object Storage
-                            ├→ приватный API → локальные photo/import worker
-                            └→ Commerce worker и платёжный шлюз
+                              → подготовленная ОС; приложение не запускается
 ```
 
 Django — модульный монолит: он владеет HTTP-интерфейсом, полномочиями и правилами продукта.
 PostgreSQL — источник истины для состояний и результатов. Object Storage хранит байты медиа.
-Обработчики работают отдельно через закрытый API без прямого доступа к базе. Основу закрепляют
+Инфраструктурный PR не меняет приложение, обработчики или их текущие границы. Основу закрепляют
 [ADR 0001](adr/0001-django-modular-monolith.md),
 [0002](adr/0002-postgresql-system-of-record.md),
 [0003](adr/0003-docker-compose-yandex-cloud.md) и
@@ -42,40 +35,30 @@ PostgreSQL — источник истины для состояний и рез
 <a id="deployment-domain-assignment--accepted"></a>
 ## Развёртывание
 
-В коде подготовлен один Docker Compose runtime на VM. `Infrastructure` после согласованного
-PR plan применяет Terraform, повторяемо конфигурирует ОС через Ansible, публикует независимые
-immutable web/photo/import images в GHCR и размещает runtime package. Он не запускает БД,
-миграции или приложение до отдельного ручного восстановления. Старые автоматические пути
-Deploy, image-origin, worker pools и monitoring для прежней топологии отключены.
-Общий `deploy/apply-deployment.sh` выпускает выбранные образы только после появления схемы БД;
-полное автоматическое приложение merge → release завершается на следующем этапе. Конкретный
-порядок — в [bootstrap runbook](runbooks/single-vm-infrastructure-bootstrap.md) и
-[runbook восстановления](runbooks/single-vm-recovery.md). Этот код ещё не применён к облаку:
-live restore, запуск, публичный HTTP/HTTPS и стоимость не подтверждены.
+`Infrastructure` создаёт и подготавливает одну VM: PR проверяет Terraform, строит сохранённый
+plan и стоимость, а merge применяет одобренный plan и запускает Ansible для подготовки ОС.
+Workflow не строит образы, не размещает runtime package и не запускает базу, приложение,
+обработчики или восстановление данных. Существующий application Deploy не активирован этим PR.
+Terraform apply не выполнялся, поэтому VM и live-сервисы не созданы и не проверены.
 
 <a id="accepted-recovery-target"></a>
 ## Принятые решения и следующие этапы
 
-25 октября 2026 года владелец принял следующие решения для восстановления:
+Принятые решения задают целевую конфигурацию и сохраняются независимо от состава текущего PR:
 
-- [ADR 0056](adr/0056-minimum-viable-infrastructure.md): минимально жизнеспособная
-  конфигурация без запаса под предполагаемую нагрузку; первоначально одна минимальная VM
-  для приложения, БД, обработчиков и image origin, без второго прогретого экземпляра.
-- [ADR 0057](adr/0057-declarative-cloud-infrastructure.md): IaC в Git — источник истины
-  для желаемого состояния облачных ресурсов; Terraform и его выкатка через «merge → release».
-  Перенос к другому поставщику требует адаптации provider-ресурсов и отдельного переноса данных.
-- [ADR 0058](adr/0058-stable-public-entrypoint-nlb.md): постоянный публичный IP принадлежит
-  NLB, backend размещается в `ru-central1-d`; TLS остаётся на Nginx.
-- [ADR 0063](adr/0063-repeatable-host-configuration.md): конфигурация ОС воспроизводится
-  из кода Ansible и выпускается через тот же пайплайн, включая изменения только ОС.
+- [ADR 0056](adr/0056-minimum-viable-infrastructure.md): начинать с минимально жизнеспособной
+  конфигурации без неподтверждённого запаса мощности.
+- [ADR 0057](adr/0057-declarative-cloud-infrastructure.md): описывать ресурсы в IaC и применять
+  рассмотренный Terraform plan.
+- [ADR 0058](adr/0058-stable-public-entrypoint-nlb.md): сохранить публичный вход при замене VM;
+  NLB и TLS edge не реализуются этим PR.
+- [ADR 0063](adr/0063-repeatable-host-configuration.md): управлять конфигурацией ОС через Ansible.
 
-Код stage 1 реализует Terraform, Ansible и единый runtime без NLB. NLB, постоянный
-публичный IP, HTTPS и полный app CI release относятся к следующим этапам; их наличие в ADR
-не означает готовый код или live активацию. Постоянный мониторинг новой VM
-отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md);
-проверки готовности и приёмка после выпуска сохраняются. По уточнению владельца 26 октября восстановление использует
-существующие media/feedback buckets с текущими именами; [их миграция](future-work/2026-10-26-canonical-media-bucket-migration.md)
-отложена на следующий этап.
+Текущий код реализует Terraform для одной VM и Ansible-подготовку ОС. Здесь нет приложения,
+постоянного публичного входа и автоматического восстановления данных; Terraform apply ещё не
+выполнялся. Постоянный мониторинг отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md).
+По уточнению владельца восстановление использует существующие media/feedback buckets; их миграция
+отложена в [отдельную задачу](future-work/2026-10-26-canonical-media-bucket-migration.md).
 
 <a id="target-mvp-architecture--proposed"></a>
 ## Ответственность модулей

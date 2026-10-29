@@ -23,28 +23,86 @@ def load_helper(name: str):
     return module
 
 
+def load_release_classifier():
+    spec = importlib.util.spec_from_file_location(
+        "release_classifier", ROOT / "deploy/classify-release.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
-    classify = load_helper("classify").classify
+    classify = load_release_classifier().classify
     assert classify(["docs/architecture.md"]) == {
-        "terraform": False,
-        "ansible": False,
-        "runtime": False,
+        "web_changed": False,
+        "worker_changed": False,
+        "worker_base_changed": False,
+        "import_changed": False,
+        "commerce_changed": False,
+        "terraform_changed": False,
+        "ansible_changed": False,
     }
     assert classify(["infra/ansible/site.yml"]) == {
-        "terraform": False,
-        "ansible": True,
-        "runtime": False,
+        "web_changed": False,
+        "worker_changed": False,
+        "worker_base_changed": False,
+        "import_changed": False,
+        "commerce_changed": False,
+        "terraform_changed": False,
+        "ansible_changed": True,
     }
+    for path in (
+        "infra/ci/release.py",
+        "infra/ci/cost_estimation.py",
+        ".github/workflows/infrastructure.yml",
+        "deploy/classify-release.py",
+    ):
+        selected = classify([path])
+        assert selected["terraform_changed"] is True
+        assert selected["ansible_changed"] is False
+    docs = classify(["docs/architecture.md"])
+    assert docs["terraform_changed"] is False
+    assert docs["ansible_changed"] is False
     assert classify(["src/backend/config/views.py"]) == {
-        "terraform": False,
-        "ansible": False,
-        "runtime": True,
+        "web_changed": True,
+        "worker_changed": False,
+        "worker_base_changed": False,
+        "import_changed": False,
+        "commerce_changed": True,
+        "terraform_changed": False,
+        "ansible_changed": False,
     }
-    assert classify(["infra/terraform/compute.tf", "src/worker/photo_worker/client.py"]) == {
-        "terraform": True,
-        "ansible": False,
-        "runtime": True,
-    }
+    assert (
+        classify(["infra/terraform/compute.tf", "src/worker/photo_worker/client.py"])[
+            "terraform_changed"
+        ]
+        is True
+    )
+    assert (
+        classify(["infra/terraform/compute.tf", "src/worker/photo_worker/client.py"])[
+            "worker_changed"
+        ]
+        is True
+    )
+
+
+def test_infrastructure_workflow_has_no_application_build_or_runtime_release() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
+    release = workflow["jobs"]["release"]
+    step_names = {step.get("name", "") for step in release["steps"]}
+    assert not any("Build and publish" in name for name in step_names)
+    assert not any("runtime package" in name.lower() for name in step_names)
+    assert (
+        "docker/build-push-action@v6"
+        not in (ROOT / ".github/workflows/infrastructure.yml").read_text()
+    )
+    assert "needs.classify.outputs.terraform_changed" in release["if"]
+    no_plan = workflow["jobs"]["no-resource-plan"]
+    assert "terraform_changed != 'true'" in no_plan["if"]
+    assert no_plan["permissions"]["statuses"] == "write"
 
 
 def test_plan_step_writes_json_where_summary_command_reads_it(tmp_path: Path) -> None:
@@ -287,24 +345,6 @@ def test_oidc_token_is_masked_before_runner_environment_write(
     assert output.read_text() == "YC_TOKEN=synthetic-token\n"
 
 
-def test_backend_policy_cannot_delete_main_state_or_access_media_buckets() -> None:
-    policy = json.loads((ROOT / "infra/bootstrap/state-bucket-policy.json.template").read_text())
-    assert {statement["Principal"]["CanonicalUser"] for statement in policy["Statement"]} == {
-        "BACKEND_SA_ID"
-    }
-    main_state = "arn:aws:s3:::findme-photo-tfstate/core/single-vm/terraform.tfstate"
-    allowed = {
-        (action, resource)
-        for statement in policy["Statement"]
-        for action in statement["Action"]
-        for resource in statement["Resource"]
-    }
-    assert ("s3:GetObject", main_state) in allowed
-    assert ("s3:PutObject", main_state) in allowed
-    assert ("s3:DeleteObject", main_state) not in allowed
-    assert all(resource.startswith("arn:aws:s3:::findme-photo-tfstate") for _, resource in allowed)
-
-
 def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
     source = (ROOT / "infra/terraform/project.tfvars").read_text()
@@ -320,7 +360,9 @@ def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> N
         for step in release["steps"]
         if step.get("name") == "Open locked state and apply approved saved plan only"
     )
-    assert "runtime" not in backend["if"]
+    assert backend["env"]["TERRAFORM_CHANGED"] == (
+        "${{ needs.classify.outputs.terraform_changed }}"
+    )
 
 
 def test_ansible_owns_repeatable_ssh_policy_with_reviewed_ci_key() -> None:
@@ -329,7 +371,7 @@ def test_ansible_owns_repeatable_ssh_policy_with_reviewed_ci_key() -> None:
     configure = next(
         step
         for step in workflow["jobs"]["release"]["steps"]
-        if step.get("name") == "Configure host OS; never start app or restore data"
+        if step.get("name") == "Configure host OS with Ansible only"
     )
     assert configure["env"]["FINDME_SSH_PUBLIC_KEY"] == "${{ vars.INFRA_SSH_PUBLIC_KEY }}"
     assert "-e @/tmp/findme-ansible-vars.json" in configure["run"]

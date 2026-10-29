@@ -288,8 +288,6 @@ def test_worker_image_dockerfiles_select_only_operational_suite(path: str) -> No
         "infra/ansible/site.yml",
         "infra/ci/release.py",
         ".github/workflows/infrastructure.yml",
-        "scripts/rehearse-recovery.sh",
-        "scripts/restore-recovery-database.sh",
     ],
 )
 def test_single_vm_infrastructure_paths_select_operational_only(path: str) -> None:

@@ -12,8 +12,6 @@ for setting_name in dir(production_settings):
 VISUAL_DIR = Path(__file__).resolve().parent
 
 DEBUG = True
-SESSION_COOKIE_SECURE = False
-CSRF_COOKIE_SECURE = False
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
 YANDEX_METRIKA_COUNTER_ID = None
 ROOT_URLCONF = "tests.visual.urls"

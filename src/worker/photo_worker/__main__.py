@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import logging
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
 from threading import Barrier
-from uuid import UUID
 
 from photo_worker.face_embedding import warm_models
 from photo_worker.lifecycle import FleetLifecycle, HostIdentity, install_signal_handlers
@@ -17,20 +14,7 @@ from photo_worker.telemetry import RuntimeTelemetry, start_runtime_server
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    arguments = sys.argv[1:]
-    target_job_id = None
-    if arguments:
-        if len(arguments) != 2 or arguments[0] != "--job-id":
-            raise SystemExit("Usage: python -m photo_worker [--job-id UUID]")
-        try:
-            target_job_id = str(UUID(arguments[1]))
-        except ValueError:
-            raise SystemExit("Job ID must be a UUID") from None
     config, client = WorkerConfig.from_env()
-    if target_job_id is not None:
-        if config.remote_pool is not None:
-            raise SystemExit("Exact job execution requires local transport")
-        config = replace(config, target_job_id=target_job_id)
     worker = Worker(client, config)
     install_signal_handlers(worker)
     runtime_server = None
@@ -53,11 +37,6 @@ def main() -> None:
             future.result()
 
     try:
-        if target_job_id is not None:
-            worker.run_once()
-            if worker.claimed_job_id != target_job_id:
-                raise SystemExit("Exact job is not eligible")
-            return
         if config.remote_pool is not None:
             identity = HostIdentity.read(pool=config.remote_pool, build=config.worker_build)
             worker.fleet = FleetLifecycle(

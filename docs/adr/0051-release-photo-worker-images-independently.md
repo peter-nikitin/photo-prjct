@@ -6,7 +6,7 @@
   existing-key reuse accepted on 2026-10-05
 - Supersedes: ADR 0028, ADR 0042 and ADR 0049 for shared web/worker SHA, coupled image rollout,
   and SHA-tagged web release selection
-- Superseded by: none
+- Superseded by: [ADR 0056](0056-minimum-viable-infrastructure.md) — только для одновременного размещения двух прогретых экземпляров; независимые образы и выпуск изменённых компонентов сохраняются
 
 ## Context
 

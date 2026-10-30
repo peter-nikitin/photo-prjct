@@ -1,0 +1,15 @@
+#cloud-config
+users:
+  - name: findme
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+disable_root: true
+ssh_pwauth: false
+runcmd:
+  - |
+    key=$(awk '{print $1 " " $2}' /etc/ssh/ssh_host_ed25519_key.pub)
+    printf 'FINDME_HOST_ED25519 %s\n' "$key" > /dev/ttyS0

@@ -1,0 +1,273 @@
+name: Infrastructure
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created]
+  push:
+    branches: [main]
+
+concurrency:
+  group: findme-infrastructure-state-and-host
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  classify:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      terraform_changed: ${{ steps.paths.outputs.terraform_changed }}
+      ansible_changed: ${{ steps.paths.outputs.ansible_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify exact changed paths
+        id: paths
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python deploy/classify-release.py --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Infrastructure validation
+    if: github.event_name == 'pull_request' && (needs.classify.outputs.terraform_changed == 'true' || needs.classify.outputs.ansible_changed == 'true')
+    needs: [classify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.0
+          terraform_wrapper: false
+      - name: Validate Terraform without backend or cloud identity
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform fmt -check -recursive
+          terraform -chdir=infra/terraform init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infra/terraform validate
+          terraform -chdir=infra/terraform test -no-color
+      - name: Validate Ansible syntax without a VM
+        run: |
+          set -euo pipefail
+          python -m pip install ansible-core==2.19.3
+          printf '[recovery]\nrecovery-vm ansible_connection=local\n' > /tmp/findme-inventory
+          ansible-playbook -i /tmp/findme-inventory infra/ansible/site.yml --syntax-check
+          ansible-playbook -i /tmp/findme-inventory infra/ansible/install-backup-agent.yml --syntax-check
+
+  plan:
+    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: [classify, validate]
+    runs-on: ubuntu-latest
+    environment: infrastructure
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
+      TF_VAR_ssh_public_key: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+      YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Require a trusted write-authorized PR author
+        run: python infra/ci/release.py authorize-actor '${{ github.event.pull_request.user.login }}'
+      - name: Exchange short-lived infrastructure OIDC token
+        run: python infra/ci/identity.py
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.0
+          terraform_wrapper: false
+      - name: Create saved resource plan
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform init -input=false -lockfile=readonly
+          terraform -chdir=infra/terraform fmt -check -recursive
+          terraform -chdir=infra/terraform validate
+          terraform -chdir=infra/terraform plan -input=false -var-file=project.tfvars -out=plan.tfplan
+          terraform -chdir=infra/terraform show -json plan.tfplan > infra/terraform/plan.json
+          python infra/ci/plan_summary.py infra/terraform/plan.json | tee resource-diff.txt
+      - name: Estimate supported Yandex resources locally
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/yc-cost.tar.gz https://github.com/terraform-yc-modules/terraform-yc-cost-estimation/archive/7a74a71c72d7f49cae58ebc626658f5c2c816df1.tar.gz
+          mkdir -p /tmp/yc-cost
+          tar -xzf /tmp/yc-cost.tar.gz -C /tmp/yc-cost --strip-components=1
+          python -m pip install -r /tmp/yc-cost/functions/requirements.txt
+          cd /tmp/yc-cost/functions
+          python - <<'PY'
+          import os, runpy, sys
+          sys.argv = ['get-sku.py', os.environ['YC_TOKEN'], '--output', 'sku.json']
+          runpy.run_path('get-sku.py', run_name='__main__')
+          PY
+          python "$GITHUB_WORKSPACE/infra/ci/cost_estimation.py" \
+            "$GITHUB_WORKSPACE/infra/terraform/plan.json" \
+            --estimator-dir "$PWD" | tee "$GITHUB_WORKSPACE/cost.txt"
+      - name: Publish reviewable summary without plan values
+        run: |
+          {
+            echo '## Изменения ресурсов Terraform'
+            echo
+            sed 's/^/- /' resource-diff.txt
+            echo
+            echo '## Оценка стоимости'
+            echo
+            cat cost.txt
+            printf '\nНе включены: backup-agent, трафик, Object Storage и восстановление данных. Это оценка, не лимит счёта.\n'
+            echo
+            echo "[Запуск CI и сохранённый plan]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+            printf '\nПосле проверки оставьте комментарий `/infra approve %s`. Для нового push потребуется новый план и подтверждение.\n' "$GITHUB_RUN_ID"
+          } | tee /tmp/infra-review.txt >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment '${{ github.event.pull_request.number }}' --body-file /tmp/infra-review.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.event.pull_request.number }}
+          path: infra/terraform/plan.tfplan
+          retention-days: 7
+          if-no-files-found: error
+      - name: Keep infra approval pending until an authorized plan comment
+        env:
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD" \
+            -f state=pending -f context=infra/approved \
+            -f description="Approve this plan run in the PR after reviewing resources and cost" >/dev/null
+
+  no-resource-plan:
+    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed != 'true'
+    needs: [classify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Mark non-Terraform PR as needing no resource-plan approval
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD" \
+            -f state=success -f context=infra/approved \
+            -f description="No Terraform or infrastructure CI resource change" >/dev/null
+
+  approve:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/infra approve ')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify latest write-authorized approval and exact plan artifact
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          python infra/ci/release.py verify-pr "$PR_NUMBER" > /tmp/approved-plan.json
+          head_sha="$(python -c 'import json; print(json.load(open("/tmp/approved-plan.json"))["head_sha"])')"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$head_sha" \
+            -f state=success -f context=infra/approved \
+            -f description="Current plan artifact approved by a write-authorized collaborator" >/dev/null
+
+  release:
+    if: github.event_name == 'push' && (needs.classify.outputs.terraform_changed == 'true' || needs.classify.outputs.ansible_changed == 'true')
+    needs: [classify]
+    runs-on: ubuntu-latest
+    environment: infrastructure
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
+      TF_VAR_ssh_public_key: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+      YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve approved saved plan after merge
+        if: needs.classify.outputs.terraform_changed == 'true'
+        run: python infra/ci/release.py verify-merge "$GITHUB_SHA" > /tmp/approved-plan.json
+      - name: Download exactly the approved run artifact
+        if: needs.classify.outputs.terraform_changed == 'true'
+        run: |
+          set -euo pipefail
+          artifact_id="$(python -c 'import json; print(json.load(open("/tmp/approved-plan.json"))["artifact_id"])')"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > /tmp/approved-plan.zip
+          unzip -j /tmp/approved-plan.zip plan.tfplan -d infra/terraform
+      - name: Exchange short-lived infrastructure OIDC token
+        run: python infra/ci/identity.py
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.0
+          terraform_wrapper: false
+      - name: Open locked state and apply approved saved plan only
+        env:
+          TERRAFORM_CHANGED: ${{ needs.classify.outputs.terraform_changed }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform init -input=false -lockfile=readonly
+          if [ "$TERRAFORM_CHANGED" = true ]; then
+            terraform -chdir=infra/terraform apply -input=false -auto-approve plan.tfplan
+          fi
+          terraform -chdir=infra/terraform output -json > /tmp/findme-outputs.json
+      - name: Install Ansible 2.19.3
+        run: python -m pip install ansible-core==2.19.3
+      - name: Trust public host key from authenticated VM serial output
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          host="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["ssh_host"]["value"])')"
+          vm="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["vm_id"]["value"])')"
+          python infra/ci/known_hosts.py "$vm" "$host" /tmp/findme-known-hosts
+          echo "$host" > /tmp/findme-host
+          umask 077
+          : > /tmp/findme-ssh-key
+          printf '%s' "$VM_SSH_KEY" > /tmp/findme-ssh-key
+      - name: Configure host OS with Ansible only
+        env:
+          FINDME_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          host="$(cat /tmp/findme-host)"
+          printf '[recovery]\nrecovery-vm ansible_host=%s\n' "$host" > /tmp/findme-inventory
+          umask 077
+          python -c 'import json,os; print(json.dumps({"findme_ssh_public_key": os.environ["FINDME_SSH_PUBLIC_KEY"]}))' > /tmp/findme-ansible-vars.json
+          ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook -i /tmp/findme-inventory -u findme \
+            -e @/tmp/findme-ansible-vars.json \
+            --private-key /tmp/findme-ssh-key \
+            --ssh-common-args '-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes' \
+            infra/ansible/site.yml
+          echo 'Terraform apply and host OS preparation completed. Application services and data restore were not started.' >> "$GITHUB_STEP_SUMMARY"

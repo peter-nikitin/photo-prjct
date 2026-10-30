@@ -1,0 +1,26 @@
+---
+- name: Opt-in temporary Cloud Backup agent for recovery
+  hosts: recovery
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check actual installed agent identity on this boot disk
+      ansible.builtin.shell: |
+        command -v acropsh >/dev/null &&
+        acropsh -m dmldump -s mms -vs 'Msp::Agent::Dto::Configuration' | grep -q AgentID
+      register: backup_agent_installed
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Download official Cloud Backup installer
+      ansible.builtin.get_url:
+        url: https://storage.yandexcloud.net/backup-distributions/agent_installer.sh
+        dest: /root/findme-backup-agent-installer.sh
+        mode: '0700'
+      when: backup_agent_installed.rc != 0
+
+    - name: Install backup agent with no application workloads running
+      ansible.builtin.command: bash /root/findme-backup-agent-installer.sh
+      no_log: true
+      when: backup_agent_installed.rc != 0

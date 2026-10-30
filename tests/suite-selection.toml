@@ -14,6 +14,8 @@ suites = []
 name = "operational"
 patterns = [
   "deploy/**",
+  "infra/**",
+  ".github/workflows/infrastructure.yml",
   ".env.example",
   "docker-compose*.yml",
   ".github/workflows/deploy.yml",
@@ -108,7 +110,15 @@ suites = ["visual"]
 
 [[categories]]
 name = "workflow"
-patterns = [".github/workflows/**"]
+patterns = [
+  ".github/workflows/ci.yml",
+  ".github/workflows/deploy.yml",
+  ".github/workflows/deploy-image-origin.yml",
+  ".github/workflows/deploy-public-probe.yml",
+  ".github/workflows/monitor-public-health.yml",
+  ".github/workflows/monitoring.yml",
+  ".github/workflows/visual-test-image.yml",
+]
 suites = ["operational", "migrations", "visual"]
 
 [[categories]]

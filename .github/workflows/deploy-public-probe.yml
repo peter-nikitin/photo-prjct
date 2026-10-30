@@ -1,20 +1,6 @@
 name: Deploy public health probe
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - deploy/monitoring/probe-vm/**
-      - deploy/monitoring/prometheus/exporter.py
-      - deploy/monitoring/prometheus/install.py
-      - deploy/monitoring/prometheus/render_agent.py
-      - deploy/monitoring/prometheus/units/findme-prometheus-public.service
-      - deploy/observability/**
-      - scripts/monitor_public_health.py
-      - scripts/monitor_commerce.py
-      - deploy/classify-release.py
-      - .github/workflows/deploy-public-probe.yml
-      - "!**/*.md"
   workflow_dispatch:
     inputs:
       action:

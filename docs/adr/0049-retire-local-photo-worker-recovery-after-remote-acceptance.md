@@ -5,6 +5,7 @@
 - Deciders: project maintainer; explicitly accepted in conversation on 2026-10-02
 - Supersedes: ADR 0042 and ADR 0046 only for post-acceptance recovery through on-host photo workers
 - Superseded by: [ADR 0051](0051-release-photo-worker-images-independently.md) for shared web/worker SHA and coupled image rollout only
+- Superseded by: [ADR 0056](0056-minimum-viable-infrastructure.md) — для размещения worker и возврата к удалённому флоту
 
 ## Context
 

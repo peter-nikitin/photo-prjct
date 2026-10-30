@@ -1,0 +1,15 @@
+---
+- name: Validate installed SSH configuration
+  ansible.builtin.command: /usr/sbin/sshd -t -f /etc/ssh/sshd_config
+  changed_when: false
+  listen: Validate and reload SSH
+
+- name: Reload validated SSH service
+  ansible.builtin.service:
+    name: ssh
+    state: reloaded
+  listen: Validate and reload SSH
+
+- name: Reload Docker unit
+  ansible.builtin.systemd:
+    daemon_reload: true

@@ -52,8 +52,7 @@ def test_generic_workflows_use_only_the_canonical_secret_consumers() -> None:
     deploy = _workflow("deploy.yml")
     monitor = _workflow("monitor-public-health.yml")
 
-    assert set(deploy[True]) == {"push", "workflow_dispatch"}
-    assert deploy[True]["push"] == {"branches": ["main"]}
+    assert set(deploy[True]) == {"workflow_dispatch"}
     assert deploy["name"] == "Deploy"
     assert deploy["concurrency"]["group"] == "deploy"
     assert all("environment" not in job for job in deploy["jobs"].values())

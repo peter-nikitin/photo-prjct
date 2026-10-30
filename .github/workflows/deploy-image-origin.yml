@@ -1,12 +1,6 @@
 name: Deploy isolated image origin
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - deploy/image-origin/monitoring/**
-      - .github/workflows/deploy-image-origin.yml
-      - "!**/*.md"
   workflow_dispatch:
     inputs:
       deployment_sha:

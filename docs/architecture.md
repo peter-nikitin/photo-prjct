@@ -16,21 +16,17 @@ FindMe Photo помогает участникам мероприятий нах
 зависит от правил галереи и подтверждённой покупки.
 
 <a id="current-architecture--implemented"></a>
-## Текущая схема
+## Текущая схема кода
 
 ```text
-Браузер → Nginx/HTTPS → Django/Gunicorn → PostgreSQL
-                           │
-                           ├→ закрытые оригиналы и производные в Object Storage
-                           ├→ приватный API обработки → пулы photo-worker
-                           └→ платёжный шлюз и доставка писем через Commerce worker
-
-GitHub Actions → GHCR → каноническая VM и пулы worker
+GitHub Actions Infrastructure → Terraform (VPC, диски, одна VM)
+                              → Ansible (пользователь, SSH, Docker, PG mount)
+                              → подготовленная ОС; приложение не запускается
 ```
 
 Django — модульный монолит: он владеет HTTP-интерфейсом, полномочиями и правилами продукта.
 PostgreSQL — источник истины для состояний и результатов. Object Storage хранит байты медиа.
-Обработчики работают отдельно через закрытый API без прямого доступа к базе. Основу закрепляют
+Инфраструктурный PR не меняет приложение, обработчики или их текущие границы. Основу закрепляют
 [ADR 0001](adr/0001-django-modular-monolith.md),
 [0002](adr/0002-postgresql-system-of-record.md),
 [0003](adr/0003-docker-compose-yandex-cloud.md) и
@@ -39,16 +35,30 @@ PostgreSQL — источник истины для состояний и рез
 <a id="deployment-domain-assignment--accepted"></a>
 ## Развёртывание
 
-Публичный адрес — `https://findme-photo.ru/`. Один канонический сервис на VM выпускается через
-Docker Compose и workflow **Deploy**; пулы обработчиков отделены от него, но используют его
-очередь и полномочия. Образы web и photo-worker выпускаются независимо; для web в репозитории
-реализовано переключение между слотами, а для worker — активация образа через CI. Наличие этого
-пути в коде не подтверждает его активацию на VM. Актуальный
-порядок и состояние приведены в [runbook развёртывания](runbooks/deployment.md) и
-[runbook пулов](runbooks/worker-pools.md). Границы закрепляют
-[ADR 0028](adr/0028-operate-one-canonical-deployment.md),
-[0042](adr/0042-isolate-autoscaled-photo-worker-pools.md) и
-[0051](adr/0051-release-photo-worker-images-independently.md).
+`Infrastructure` создаёт и подготавливает одну VM: PR проверяет Terraform, строит сохранённый
+plan и стоимость, а merge применяет одобренный plan и запускает Ansible для подготовки ОС.
+Workflow не строит образы, не размещает runtime package и не запускает базу, приложение,
+обработчики или восстановление данных. Существующий application Deploy не активирован этим PR.
+Terraform apply не выполнялся, поэтому VM и live-сервисы не созданы и не проверены.
+
+<a id="accepted-recovery-target"></a>
+## Принятые решения и следующие этапы
+
+Принятые решения задают целевую конфигурацию и сохраняются независимо от состава текущего PR:
+
+- [ADR 0056](adr/0056-minimum-viable-infrastructure.md): начинать с минимально жизнеспособной
+  конфигурации без неподтверждённого запаса мощности.
+- [ADR 0057](adr/0057-declarative-cloud-infrastructure.md): описывать ресурсы в IaC и применять
+  рассмотренный Terraform plan.
+- [ADR 0058](adr/0058-stable-public-entrypoint-nlb.md): сохранить публичный вход при замене VM;
+  NLB и TLS edge не реализуются этим PR.
+- [ADR 0063](adr/0063-repeatable-host-configuration.md): управлять конфигурацией ОС через Ansible.
+
+Текущий код реализует Terraform для одной VM и Ansible-подготовку ОС. Здесь нет приложения,
+постоянного публичного входа и автоматического восстановления данных; Terraform apply ещё не
+выполнялся. Постоянный мониторинг отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md).
+По уточнению владельца восстановление использует существующие media/feedback buckets; их миграция
+отложена в [отдельную задачу](future-work/2026-10-26-canonical-media-bucket-migration.md).
 
 <a id="target-mvp-architecture--proposed"></a>
 ## Ответственность модулей

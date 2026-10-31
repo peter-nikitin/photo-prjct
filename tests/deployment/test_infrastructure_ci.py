@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -193,6 +194,187 @@ def test_cost_plan_normalizes_referenced_boot_disk_without_double_counting() -> 
     ]["references"] = []
     id_only_normalized = cost_estimation.normalize_plan(id_only_plan)
     assert len(id_only_normalized["planned_values"]["root_module"]["resources"]) == 2
+
+
+def test_cost_plan_deduplicates_attached_disks_with_valid_prior_inline_params() -> None:
+    cost_estimation = load_helper("cost_estimation")
+    disks = [
+        {
+            "address": "yandex_compute_disk.boot",
+            "type": "yandex_compute_disk",
+            "name": "boot",
+            "values": {"id": "managed-boot-id", "size": 30, "type": "network-hdd"},
+        },
+        {
+            "address": "data.yandex_compute_disk.legacy_boot",
+            "mode": "data",
+            "type": "yandex_compute_disk",
+            "name": "legacy_boot",
+            "values": {"id": "data-boot-id", "size": 100, "type": "network-ssd"},
+        },
+    ]
+    instances = [
+        {
+            "address": "yandex_compute_instance.app",
+            "type": "yandex_compute_instance",
+            "name": "app",
+            "values": {
+                "boot_disk": [
+                    {
+                        "disk_id": "managed-boot-id",
+                        "initialize_params": [{"size": 30, "type": "network-hdd"}],
+                    }
+                ]
+            },
+        },
+        {
+            "address": "yandex_compute_instance.legacy_ip_holder",
+            "type": "yandex_compute_instance",
+            "name": "legacy_ip_holder",
+            "values": {
+                "boot_disk": [
+                    {
+                        "disk_id": "data-boot-id",
+                        "initialize_params": [{"size": 100, "type": "network-ssd"}],
+                    }
+                ]
+            },
+        },
+    ]
+    planned_resources = json.loads(json.dumps(disks + instances))
+    for resource in planned_resources:
+        if resource["type"] == "yandex_compute_instance":
+            resource["values"]["boot_disk"][0]["initialize_params"] = []
+    plan = {
+        "prior_state": {
+            "values": {"root_module": {"resources": json.loads(json.dumps(disks + instances))}}
+        },
+        "planned_values": {"root_module": {"resources": planned_resources}},
+        "configuration": {
+            "root_module": {
+                "resources": [
+                    {
+                        "address": "yandex_compute_instance.app",
+                        "expressions": {
+                            "boot_disk": [
+                                {"disk_id": {"references": ["yandex_compute_disk.boot.id"]}}
+                            ]
+                        },
+                    },
+                    {
+                        "address": "yandex_compute_instance.legacy_ip_holder",
+                        "expressions": {
+                            "boot_disk": [
+                                {
+                                    "disk_id": {
+                                        "references": ["data.yandex_compute_disk.legacy_boot.id"]
+                                    }
+                                }
+                            ]
+                        },
+                    },
+                ]
+            }
+        },
+    }
+    original = json.loads(json.dumps(plan))
+
+    normalized = cost_estimation.normalize_plan(plan)
+
+    expected_inline = {
+        "yandex_compute_instance.app": [{"size": 30, "type": "network-hdd"}],
+        "yandex_compute_instance.legacy_ip_holder": [{"size": 100, "type": "network-ssd"}],
+    }
+    for root in (
+        normalized["prior_state"]["values"]["root_module"],
+        normalized["planned_values"]["root_module"],
+    ):
+        resources = {resource["address"]: resource for resource in root["resources"]}
+        assert set(resources) == set(expected_inline)
+        for address, params in expected_inline.items():
+            assert resources[address]["values"]["boot_disk"][0]["initialize_params"] == params
+    assert plan == original
+
+
+def test_cost_plan_does_not_double_count_reserved_nat_ip_or_legacy_boot_data_source() -> None:
+    cost_estimation = load_helper("cost_estimation")
+    resources = [
+        {
+            "address": "yandex_vpc_address.site",
+            "type": "yandex_vpc_address",
+            "name": "site",
+            "values": {
+                "external_ipv4_address": [{"address": "111.88.151.64", "zone_id": "ru-central1-b"}]
+            },
+        },
+        {
+            "address": "data.yandex_compute_disk.legacy_boot",
+            "mode": "data",
+            "type": "yandex_compute_disk",
+            "name": "legacy_boot",
+            "values": {"id": "legacy-boot-id", "size": 100, "type": "network-ssd"},
+        },
+        {
+            "address": "yandex_compute_instance.legacy_ip_holder",
+            "type": "yandex_compute_instance",
+            "name": "legacy_ip_holder",
+            "values": {
+                "boot_disk": [
+                    {"auto_delete": True, "disk_id": "legacy-boot-id", "initialize_params": None}
+                ],
+                "network_interface": [{"nat": True, "nat_ip_address": "111.88.151.64"}],
+                "resources": [{"cores": 8, "core_fraction": 100, "memory": 16}],
+                "scheduling_policy": None,
+            },
+        },
+    ]
+    plan = {
+        "prior_state": {
+            "values": {"root_module": {"resources": json.loads(json.dumps(resources))}}
+        },
+        "planned_values": {"root_module": {"resources": json.loads(json.dumps(resources))}},
+        "configuration": {
+            "root_module": {
+                "resources": [
+                    {
+                        "address": "yandex_compute_instance.legacy_ip_holder",
+                        "expressions": {
+                            "boot_disk": [
+                                {
+                                    "disk_id": {
+                                        "references": ["data.yandex_compute_disk.legacy_boot.id"]
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        },
+    }
+
+    normalized = cost_estimation.normalize_plan(plan)
+
+    for root in (
+        normalized["prior_state"]["values"]["root_module"],
+        normalized["planned_values"]["root_module"],
+    ):
+        normalized_resources = {resource["address"]: resource for resource in root["resources"]}
+        instance = normalized_resources["yandex_compute_instance.legacy_ip_holder"]
+        assert instance["values"]["network_interface"][0]["nat"] is False
+        assert instance["values"]["network_interface"][0]["nat_ip_address"] is None
+        assert instance["values"]["boot_disk"][0]["initialize_params"] == [
+            {"size": 100, "type": "network-ssd"}
+        ]
+        assert "data.yandex_compute_disk.legacy_boot" not in normalized_resources
+        assert "yandex_vpc_address.site" in normalized_resources
+
+    assert (
+        plan["planned_values"]["root_module"]["resources"][2]["values"]["network_interface"][0][
+            "nat"
+        ]
+        is True
+    )
 
 
 def test_cost_estimator_rejects_upstream_error_printed_with_success_exit_code(
@@ -387,9 +569,9 @@ def test_oidc_token_is_masked_before_runner_environment_write(
 def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
     source = (ROOT / "infra/terraform/project.tfvars").read_text()
-    assert "boot_disk_gb     = 30" in source
-    assert "postgres_disk_gb = 10" in source
-    assert 'ssh_cidrs        = ["0.0.0.0/0"]' in source
+    assert re.search(r"^boot_disk_gb\s*=\s*30$", source, re.MULTILINE)
+    assert re.search(r"^postgres_disk_gb\s*=\s*10$", source, re.MULTILINE)
+    assert re.search(r'^ssh_cidrs\s*=\s*\["0\.0\.0\.0/0"\]$', source, re.MULTILINE)
     release = workflow["jobs"]["release"]
     assert "TF_VAR_boot_disk_gb" not in release["env"]
     assert "TF_VAR_postgres_disk_gb" not in release["env"]
@@ -402,6 +584,16 @@ def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> N
     assert backend["env"]["TERRAFORM_CHANGED"] == (
         "${{ needs.classify.outputs.terraform_changed }}"
     )
+    summary = next(
+        step
+        for step in workflow["jobs"]["plan"]["steps"]
+        if step.get("name") == "Publish reviewable summary without plan values"
+    )["run"]
+    assert "VM считаются работающими 24/7" in summary
+    assert "прежняя VM сейчас остановлена" in summary
+    assert "импорт не запустит её" in summary
+    assert "Network Load Balancer и его трафик" in summary
+    assert "https://yandex.cloud/en/docs/network-load-balancer/pricing" in summary
 
 
 def test_ansible_owns_repeatable_ssh_policy_with_reviewed_ci_key() -> None:

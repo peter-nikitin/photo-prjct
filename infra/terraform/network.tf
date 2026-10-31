@@ -25,9 +25,23 @@ resource "yandex_vpc_security_group" "vm" {
 
   ingress {
     protocol       = "TCP"
+    description    = "HTTPS backend port for the stable NLB frontend."
+    port           = 443
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    protocol       = "TCP"
     description    = "Operator and CI SSH sources reviewed in project inputs."
     port           = 22
     v4_cidr_blocks = var.ssh_cidrs
+  }
+
+  ingress {
+    protocol          = "TCP"
+    description       = "Network Load Balancer TCP/22 health checks."
+    port              = 22
+    predefined_target = "loadbalancer_healthchecks"
   }
 
   egress {

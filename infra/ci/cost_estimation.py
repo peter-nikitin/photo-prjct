@@ -92,12 +92,23 @@ def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any
         for resource in resources
         if resource.get("type") == "yandex_compute_disk"
     }
+    reserved_public_addresses = {
+        address.get("address")
+        for resource in resources
+        if resource.get("type") == "yandex_vpc_address"
+        for address in resource.get("values", {}).get("external_ipv4_address") or []
+        if isinstance(address.get("address"), str)
+    }
     attached_boot_disks: set[str] = set()
 
     for resource in resources:
         if resource.get("type") != "yandex_compute_instance":
             continue
         values = resource.get("values", {})
+        for interface in values.get("network_interface") or []:
+            if interface.get("nat_ip_address") in reserved_public_addresses:
+                interface["nat"] = False
+                interface["nat_ip_address"] = None
         if values.get("scheduling_policy") is None:
             values["scheduling_policy"] = [{}]
         boot_disks = values.get("boot_disk") or []
@@ -105,37 +116,41 @@ def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any
             continue
 
         initialize_params = boot_disks[0].get("initialize_params")
-        if (
+        has_inline_disk_details = (
             isinstance(initialize_params, list)
             and initialize_params
             and initialize_params[0].get("size", 0) > 0
             and initialize_params[0].get("type")
-        ):
-            continue
+        )
 
         configuration = config_resources.get(resource.get("address"), {})
         boot_expressions = configuration.get("expressions", {}).get("boot_disk") or []
         references = (
             boot_expressions[0].get("disk_id", {}).get("references", []) if boot_expressions else []
         )
-        disk_address = _resource_address_from_reference(
-            references,
-            set(disk_by_address),
-            boot_disks[0].get("disk_id"),
-            disk_by_address,
-        )
+        try:
+            disk_address = _resource_address_from_reference(
+                references,
+                set(disk_by_address),
+                boot_disks[0].get("disk_id"),
+                disk_by_address,
+            )
+        except ValueError:
+            if has_inline_disk_details:
+                continue
+            raise
         if disk_address in attached_boot_disks:
             raise ValueError("Terraform plan references one boot disk from multiple VMs")
         disk_resource = disk_by_address[disk_address]
         disk_values = disk_resource.get("values", {})
         disk_size = disk_values.get("size")
         disk_type = disk_values.get("type")
-        if not isinstance(disk_size, (int, float)) or disk_size <= 0:
-            raise ValueError("referenced VM boot disk has no known positive size")
-        if not isinstance(disk_type, str) or not disk_type:
-            raise ValueError("referenced VM boot disk has no known type")
-
-        boot_disks[0]["initialize_params"] = [{"size": disk_size, "type": disk_type}]
+        if not has_inline_disk_details:
+            if not isinstance(disk_size, (int, float)) or disk_size <= 0:
+                raise ValueError("referenced VM boot disk has no known positive size")
+            if not isinstance(disk_type, str) or not disk_type:
+                raise ValueError("referenced VM boot disk has no known type")
+            boot_disks[0]["initialize_params"] = [{"size": disk_size, "type": disk_type}]
         attached_boot_disks.add(disk_address)
 
     if attached_boot_disks:

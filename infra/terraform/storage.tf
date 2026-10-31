@@ -18,3 +18,7 @@ resource "yandex_compute_disk" "postgres" {
     prevent_destroy = true
   }
 }
+
+data "yandex_compute_disk" "legacy_boot" {
+  disk_id = "epdrviptgj09r7ac478d"
+}

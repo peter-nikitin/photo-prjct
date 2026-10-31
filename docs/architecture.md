@@ -19,7 +19,7 @@ FindMe Photo помогает участникам мероприятий нах
 ## Текущая схема кода
 
 ```text
-GitHub Actions Infrastructure → Terraform (VPC, диски, одна VM)
+GitHub Actions Infrastructure → Terraform (VPC, диски, VM, NLB и закреплённый публичный IP)
                               → Ansible (пользователь, SSH, Docker, PG mount)
                               → подготовленная ОС; приложение не запускается
 ```
@@ -35,11 +35,13 @@ PostgreSQL — источник истины для состояний и рез
 <a id="deployment-domain-assignment--accepted"></a>
 ## Развёртывание
 
-`Infrastructure` создаёт и подготавливает одну VM: PR проверяет Terraform, строит сохранённый
-plan и стоимость, а merge применяет одобренный plan и запускает Ansible для подготовки ОС.
+`Infrastructure` управляет VM и внешним TCP NLB с постоянным зарезервированным IP: PR проверяет
+Terraform, строит сохранённый plan и ограниченную оценку стоимости, а merge применяет одобренный
+plan и запускает Ansible для подготовки ОС.
 Workflow не строит образы, не размещает runtime package и не запускает базу, приложение,
-обработчики или восстановление данных. Существующий application Deploy не активирован этим PR.
-Terraform apply не выполнялся, поэтому VM и live-сервисы не созданы и не проверены.
+обработчики или восстановление данных. Recovery VM уже запущена; первая настройка Ansible не
+прошла из-за SSH. NLB этого PR ещё не применён, приложение не восстановлено, а существующий
+application Deploy не активирован этим PR.
 
 <a id="accepted-recovery-target"></a>
 ## Принятые решения и следующие этапы
@@ -51,12 +53,14 @@ Terraform apply не выполнялся, поэтому VM и live-серви�
 - [ADR 0057](adr/0057-declarative-cloud-infrastructure.md): описывать ресурсы в IaC и применять
   рассмотренный Terraform plan.
 - [ADR 0058](adr/0058-stable-public-entrypoint-nlb.md): сохранить публичный вход при замене VM;
-  NLB и TLS edge не реализуются этим PR.
+  Terraform задаёт NLB и постоянный IP, а TLS edge остаётся на Nginx/Certbot следующего этапа.
 - [ADR 0063](adr/0063-repeatable-host-configuration.md): управлять конфигурацией ОС через Ansible.
 
-Текущий код реализует Terraform для одной VM и Ansible-подготовку ОС. Здесь нет приложения,
-постоянного публичного входа и автоматического восстановления данных; Terraform apply ещё не
-выполнялся. Постоянный мониторинг отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md).
+Текущий код реализует Terraform для VM, закреплённого IP и NLB, а также Ansible-подготовку ОС.
+Новая recovery VM уже запущена, но SSH-подключение для Ansible пока не завершено. Ранее вручную
+созданные NLB и target group удалены; ресурсы этого PR ещё не применены, поэтому публичный вход
+через NLB не активирован и подключение через него не проверено. Здесь нет приложения, TLS edge и
+автоматического восстановления данных. Постоянный мониторинг отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md).
 По уточнению владельца восстановление использует существующие media/feedback buckets; их миграция
 отложена в [отдельную задачу](future-work/2026-10-26-canonical-media-bucket-migration.md).
 

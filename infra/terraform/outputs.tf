@@ -1,4 +1,8 @@
 output "ssh_host" {
+  value = yandex_vpc_address.site.external_ipv4_address[0].address
+}
+
+output "direct_ssh_host" {
   value = yandex_compute_instance.app.network_interface[0].nat_ip_address
 }
 

@@ -134,7 +134,8 @@ jobs:
             echo '## Оценка стоимости'
             echo
             cat cost.txt
-            printf '\nНе включены: backup-agent, трафик, Object Storage и восстановление данных. Это оценка, не лимит счёта.\n'
+            printf '\nДопущение модели: VM считаются работающими 24/7; прежняя VM сейчас остановлена, и её импорт не запустит её.\n'
+            printf '\nНе включены: Network Load Balancer и его трафик (проверяются вручную по [официальному тарифу](https://yandex.cloud/en/docs/network-load-balancer/pricing)), backup-agent, Object Storage и восстановление данных. Это оценка, не лимит счёта.\n'
             echo
             echo "[Запуск CI и сохранённый plan]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
             printf '\nПосле проверки оставьте комментарий `/infra approve %s`. Для нового push потребуется новый план и подтверждение.\n' "$GITHUB_RUN_ID"

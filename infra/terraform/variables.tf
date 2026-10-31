@@ -14,6 +14,15 @@ variable "folder_id" {
   }
 }
 
+variable "infrastructure_service_account_id" {
+  type        = string
+  description = "Existing CI service account authorized to plan and release infrastructure."
+  validation {
+    condition     = var.infrastructure_service_account_id == "ajema849qjho2lgjaqvo"
+    error_message = "Review infrastructure service account identity explicitly before changing it."
+  }
+}
+
 variable "zone" {
   type = string
   validation {

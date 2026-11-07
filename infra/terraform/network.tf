@@ -51,7 +51,7 @@ resource "yandex_vpc_security_group" "vm" {
   }
 }
 
-# Existing reserved address and its stopped holder are imported by the reviewed plan.
+# Existing reserved address remains managed and protected.
 import {
   to = yandex_vpc_address.edge
   id = "e2lq0aldvqrp4uebr75l"
@@ -108,5 +108,4 @@ resource "yandex_lb_network_load_balancer" "edge" {
       }
     }
   }
-  depends_on = [yandex_compute_instance.legacy_holder]
 }

@@ -44,37 +44,3 @@ resource "yandex_compute_instance" "app" {
 
   depends_on = [yandex_resourcemanager_folder_iam_member.backup_agent]
 }
-
-# Preserve the stopped legacy VM and its boot disk. Only detach its public NAT.
-import {
-  to = yandex_compute_instance.legacy_holder
-  id = "epdr5g3p24tdns9890nr"
-}
-
-resource "yandex_compute_instance" "legacy_holder" {
-  name               = "dev-photo-prjct"
-  folder_id          = var.folder_id
-  zone               = "ru-central1-b"
-  platform_id        = "standard-v3"
-  service_account_id = "aje62dg0p7tpn6tqu67d"
-  resources {
-    cores         = 8
-    core_fraction = 100
-    memory        = 16
-  }
-  boot_disk {
-    disk_id     = "epdrviptgj09r7ac478d"
-    auto_delete = true
-    device_name = "epdrviptgj09r7ac478d"
-  }
-  network_interface {
-    subnet_id          = "e2l18k26thgtq8vobbq7"
-    ip_address         = "10.129.0.34"
-    nat                = false
-    security_group_ids = ["enp2dpjqa3i8cttdsnpp"]
-  }
-  lifecycle {
-    prevent_destroy = true
-    ignore_changes  = [metadata]
-  }
-}

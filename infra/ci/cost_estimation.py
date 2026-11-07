@@ -69,14 +69,7 @@ def format_summary(report: str) -> str:
 
 
 def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any]) -> None:
-    # The imported stopped holder references an unmanaged legacy boot disk; the
-    # estimator assumes running compute and cannot resolve or price it reliably.
-    resources = [
-        resource
-        for resource in root.get("resources", [])
-        if resource.get("address") != "yandex_compute_instance.legacy_holder"
-    ]
-    root["resources"] = resources
+    resources = root.get("resources", [])
     disk_by_address = {
         resource["address"]: resource
         for resource in resources
@@ -239,11 +232,6 @@ def unpriced_notice(plan: dict[str, Any]) -> str:
             "исходящий трафик VPC оплачивается отдельно. Объём трафика неизвестен; "
             "общая разница не рассчитана. "
             "[Тариф](https://yandex.cloud/ru/docs/network-load-balancer/pricing)"
-        )
-    if "yandex_compute_instance.legacy_holder" in addresses:
-        lines.append(
-            "- legacy_holder и его boot-диск не включены в оценку: VM остановлена, "
-            "а диск не управляется этим планом. Их стоимость проверить отдельно."
         )
     return "\n".join(lines) + ("\n" if lines else "")
 

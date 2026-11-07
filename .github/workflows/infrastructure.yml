@@ -85,6 +85,7 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
       TF_VAR_ssh_public_key: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+      TF_VAR_admin_ssh_public_key: ${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}
       YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
@@ -134,7 +135,7 @@ jobs:
             echo '## Оценка стоимости'
             echo
             cat cost.txt
-            printf '\nНе включены: backup-agent, трафик, Object Storage и восстановление данных. Это оценка, не лимит счёта.\n'
+            printf '\nОценка охватывает только управляемые Terraform ресурсы. Она не включает существующую неуправляемую тестовую VM и два bootstrap Lockbox secret; Lockbox стоит около 40,77 RUB за 744 часа плюс запросы чтения. Backup-agent, трафик, Object Storage и восстановление данных также не включены. Это оценка, не лимит счёта.\n'
             echo
             echo "[Запуск CI и сохранённый plan]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
             printf '\nПосле проверки оставьте комментарий `/infra approve %s`. Для нового push потребуется новый план и подтверждение.\n' "$GITHUB_RUN_ID"
@@ -211,6 +212,7 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
       TF_VAR_ssh_public_key: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+      TF_VAR_admin_ssh_public_key: ${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}
       YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
@@ -245,29 +247,39 @@ jobs:
       - name: Install Ansible 2.19.3
         run: python -m pip install ansible-core==2.19.3
       - name: Trust public host key from authenticated VM serial output
-        env:
-          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
         run: |
           set -euo pipefail
           host="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["ssh_host"]["value"])')"
           vm="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["vm_id"]["value"])')"
           python infra/ci/known_hosts.py "$vm" "$host" /tmp/findme-known-hosts
           echo "$host" > /tmp/findme-host
-          umask 077
-          : > /tmp/findme-ssh-key
-          printf '%s' "$VM_SSH_KEY" > /tmp/findme-ssh-key
+      - name: Fetch the deploy SSH key from its Lockbox secret
+        env:
+          FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          secret_id="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["deploy_ssh_secret_id"]["value"])')"
+          python infra/ci/lockbox.py "$secret_id" deploy "$FINDME_DEPLOY_SSH_PUBLIC_KEY" /tmp/findme-ssh-key
       - name: Configure host OS with Ansible only
         env:
-          FINDME_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+          FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+          FINDME_ADMIN_SSH_PUBLIC_KEY: ${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           host="$(cat /tmp/findme-host)"
           printf '[recovery]\nrecovery-vm ansible_host=%s\n' "$host" > /tmp/findme-inventory
           umask 077
-          python -c 'import json,os; print(json.dumps({"findme_ssh_public_key": os.environ["FINDME_SSH_PUBLIC_KEY"]}))' > /tmp/findme-ansible-vars.json
-          ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook -i /tmp/findme-inventory -u findme \
+          python -c 'import json,os; print(json.dumps({"findme_deploy_ssh_public_key": os.environ["FINDME_DEPLOY_SSH_PUBLIC_KEY"], "findme_admin_ssh_public_key": os.environ["FINDME_ADMIN_SSH_PUBLIC_KEY"]}))' > /tmp/findme-ansible-vars.json
+          ssh -i /tmp/findme-ssh-key \
+            -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
+            -o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
+            "deploy@$host" 'test "$(id -un)" = deploy && sudo -n true'
+          ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook -i /tmp/findme-inventory -u deploy \
             -e @/tmp/findme-ansible-vars.json \
             --private-key /tmp/findme-ssh-key \
             --ssh-common-args '-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes' \
             infra/ansible/site.yml
           echo 'Terraform apply and host OS preparation completed. Application services and data restore were not started.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove temporary SSH credential files
+        if: always()
+        run: rm -f /tmp/findme-ssh-key /tmp/findme-known-hosts /tmp/findme-host /tmp/findme-ansible-vars.json

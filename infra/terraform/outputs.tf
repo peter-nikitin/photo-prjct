@@ -21,3 +21,8 @@ output "postgres_disk_id" {
 output "postgres_disk_device" {
   value = "/dev/disk/by-id/virtio-pgdata"
 }
+
+output "deploy_ssh_secret_id" {
+  value       = var.deploy_ssh_secret_id
+  description = "Existing Lockbox secret containing the CI deploy identity."
+}

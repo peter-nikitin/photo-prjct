@@ -38,8 +38,11 @@ PostgreSQL — источник истины для состояний и рез
 `Infrastructure` создаёт и подготавливает одну VM: PR проверяет Terraform, строит сохранённый
 plan и стоимость, а merge применяет одобренный plan и запускает Ansible для подготовки ОС.
 Workflow не строит образы, не размещает runtime package и не запускает базу, приложение,
-обработчики или восстановление данных. Существующий application Deploy не активирован этим PR.
-Terraform apply не выполнялся, поэтому VM и live-сервисы не созданы и не проверены.
+обработчики или восстановление данных. Cloud-init и Ansible задают отдельные SSH-ключи для
+технического `deploy` и оператора `petrnikitin`; Actions получает только ключ `deploy` из Lockbox.
+Для настройки требуется внешний узкий `lockbox.payloadViewer` grant на технический секрет.
+Terraform apply не выполнялся, поэтому новая recovery VM и live-сервисы не созданы и не проверены;
+ранее существовавшая тестовая VM остаётся отдельной. См. [runbook recovery VM](runbooks/recovery-vm-infrastructure.md).
 
 <a id="accepted-recovery-target"></a>
 ## Принятые решения и следующие этапы

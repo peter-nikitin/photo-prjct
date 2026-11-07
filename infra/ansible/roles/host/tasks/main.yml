@@ -1,39 +1,52 @@
 ---
-- name: Require the reviewed public SSH key
+- name: Require both reviewed SSH public keys
   ansible.builtin.assert:
-    that: findme_ssh_public_key is defined and findme_ssh_public_key | trim | length > 0
-    fail_msg: Pass the existing INFRA_SSH_PUBLIC_KEY to Ansible.
+    that:
+      - findme_deploy_ssh_public_key is defined and findme_deploy_ssh_public_key | trim | length > 0
+      - findme_admin_ssh_public_key is defined and findme_admin_ssh_public_key | trim | length > 0
+    fail_msg: Pass both reviewed SSH public keys to Ansible.
 
-- name: Keep the non-root administrative user with a locked password
+- name: Keep both non-root SSH users with locked passwords
   ansible.builtin.user:
-    name: findme
+    name: "{{ item }}"
     shell: /bin/bash
     groups: sudo
     append: false
     create_home: true
     password_lock: true
     state: present
+  loop:
+    - deploy
+    - petrnikitin
 
-- name: Keep a private SSH directory
+- name: Keep private SSH directories
   ansible.builtin.file:
-    path: /home/findme/.ssh
+    path: "/home/{{ item }}/.ssh"
     state: directory
-    owner: findme
-    group: findme
+    owner: "{{ item }}"
+    group: "{{ item }}"
     mode: '0700'
+  loop:
+    - deploy
+    - petrnikitin
 
-- name: Replace authorized keys with the reviewed CI public key
+- name: Replace authorized keys with the reviewed identities
   ansible.builtin.copy:
-    dest: /home/findme/.ssh/authorized_keys
-    content: "{{ findme_ssh_public_key | trim }}\n"
-    owner: findme
-    group: findme
+    dest: "/home/{{ item.user }}/.ssh/authorized_keys"
+    content: "{{ item.key | trim }}\n"
+    owner: "{{ item.user }}"
+    group: "{{ item.user }}"
     mode: '0600'
+  loop:
+    - user: deploy
+      key: "{{ findme_deploy_ssh_public_key }}"
+    - user: petrnikitin
+      key: "{{ findme_admin_ssh_public_key }}"
 
-- name: Keep passwordless sudo for the bootstrap administrator
+- name: Keep passwordless sudo for host preparation and operator administration
   ansible.builtin.copy:
-    dest: /etc/sudoers.d/90-findme
-    content: "findme ALL=(ALL) NOPASSWD:ALL\n"
+    dest: /etc/sudoers.d/90-findme-recovery
+    content: "deploy ALL=(ALL) NOPASSWD:ALL\npetrnikitin ALL=(ALL) NOPASSWD:ALL\n"
     owner: root
     group: root
     mode: '0440'
@@ -47,7 +60,7 @@
       PasswordAuthentication no
       KbdInteractiveAuthentication no
       PubkeyAuthentication yes
-      AllowUsers findme
+      AllowUsers deploy petrnikitin
     owner: root
     group: root
     mode: '0644'
@@ -55,7 +68,7 @@
   notify: Validate and reload SSH
 
 - name: Read effective SSH policy before reload
-  ansible.builtin.command: /usr/sbin/sshd -T -C user=findme,host=localhost,addr=127.0.0.1
+  ansible.builtin.command: /usr/sbin/sshd -T -C user=deploy,host=localhost,addr=127.0.0.1
   register: findme_sshd_policy
   changed_when: false
 
@@ -66,7 +79,7 @@
       - "'passwordauthentication no' in findme_sshd_policy.stdout_lines"
       - "'kbdinteractiveauthentication no' in findme_sshd_policy.stdout_lines"
       - "'pubkeyauthentication yes' in findme_sshd_policy.stdout_lines"
-      - "'allowusers findme' in findme_sshd_policy.stdout_lines"
+      - "'allowusers deploy petrnikitin' in findme_sshd_policy.stdout_lines"
     fail_msg: The effective sshd configuration does not match the reviewed access policy.
 
 - name: Activate a validated SSH policy

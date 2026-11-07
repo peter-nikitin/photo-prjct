@@ -1,6 +1,7 @@
 """Trust the new VM host key through authenticated Yandex serial output."""
 
 import base64
+import ipaddress
 import json
 import os
 import re
@@ -8,24 +9,35 @@ import sys
 import time
 from urllib.request import Request, urlopen
 
-MARKER = re.compile(r"FINDME_HOST_ED25519 (ssh-ed25519) ([A-Za-z0-9+/=]+)")
+BEGIN = "-----BEGIN SSH HOST KEY KEYS-----"
+END = "-----END SSH HOST KEY KEYS-----"
+PUBLIC_KEY = re.compile(r"(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) ([A-Za-z0-9+/=]+)(?: .*)?")
 
 
 def known_host(serial: str, host: str) -> str:
-    if not re.fullmatch(r"[0-9.]+", host) or len(host.split(".")) != 4:
-        raise ValueError("expected Terraform's public IPv4 address")
-    keys = {
-        match.groups()
-        for line in serial.splitlines()
-        if (match := MARKER.fullmatch(line.rstrip("\r")))
-    }
-    if len(keys) != 1:
+    try:
+        ipaddress.IPv4Address(host)
+    except ipaddress.AddressValueError:
+        raise ValueError("expected Terraform's public IPv4 address") from None
+    lines = [line.rstrip("\r") for line in serial.splitlines()]
+    begins = [index for index, line in enumerate(lines) if line == BEGIN]
+    ends = [index for index, line in enumerate(lines) if line == END]
+    if len(begins) != 1 or len(ends) != 1 or begins[0] >= ends[0]:
         raise ValueError("missing or conflicting VM host key in authenticated serial output")
-    algorithm, encoded = keys.pop()
+    block = [line for line in lines[begins[0] + 1 : ends[0]] if line]
+    matches = [PUBLIC_KEY.fullmatch(line) for line in block]
+    if not block or any(match is None for match in matches):
+        raise ValueError("missing or conflicting VM host key in authenticated serial output")
+    ed25519_keys = [
+        match for match in matches if match is not None and match.group(1) == "ssh-ed25519"
+    ]
+    if len(ed25519_keys) != 1:
+        raise ValueError("missing or conflicting VM host key in authenticated serial output")
+    encoded = ed25519_keys[0].group(2)
     key = base64.b64decode(encoded, validate=True)
     if not key.startswith(b"\x00\x00\x00\x0bssh-ed25519"):
         raise ValueError("invalid ED25519 host public key")
-    return f"{host} {algorithm} {encoded}\n"
+    return f"{host} ssh-ed25519 {encoded}\n"
 
 
 def main() -> None:

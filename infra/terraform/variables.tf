@@ -29,12 +29,31 @@ variable "ubuntu_image_id" {
 
 variable "ssh_public_key" {
   type        = string
-  description = "Public OpenSSH key only; supply through TF_VAR_ssh_public_key or an untracked local tfvars file."
+  description = "Technical deploy public key only, supplied through the infrastructure GitHub environment."
   validation {
-    condition     = can(regex("^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/]+={0,3}( .*)?$", trimspace(var.ssh_public_key)))
-    error_message = "Provide one public OpenSSH key."
+    condition     = can(regex("^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$", trimspace(var.ssh_public_key)))
+    error_message = "Provide one ED25519 deploy public key."
   }
 }
+
+variable "admin_ssh_public_key" {
+  type        = string
+  description = "Operator public OpenSSH key only, supplied through the infrastructure GitHub environment."
+  validation {
+    condition     = can(regex("^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$", trimspace(var.admin_ssh_public_key)))
+    error_message = "Provide one ED25519 operator public key."
+  }
+}
+
+variable "deploy_ssh_secret_id" {
+  type        = string
+  description = "Existing Lockbox secret holding only the CI deploy SSH credentials."
+  validation {
+    condition     = can(regex("^[a-z0-9]{20}$", var.deploy_ssh_secret_id))
+    error_message = "Provide the reviewed deploy Lockbox secret ID."
+  }
+}
+
 
 variable "ssh_cidrs" {
   type        = list(string)

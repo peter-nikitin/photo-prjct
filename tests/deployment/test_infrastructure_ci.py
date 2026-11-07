@@ -1,6 +1,5 @@
 """Offline execution of the resource release boundaries."""
 
-import base64
 import importlib.util
 import json
 import os
@@ -91,6 +90,7 @@ def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
 
 def test_infrastructure_workflow_has_no_application_build_or_runtime_release() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
+    source = (ROOT / ".github/workflows/infrastructure.yml").read_text()
     release = workflow["jobs"]["release"]
     step_names = {step.get("name", "") for step in release["steps"]}
     assert not any("Build and publish" in name for name in step_names)
@@ -100,6 +100,8 @@ def test_infrastructure_workflow_has_no_application_build_or_runtime_release() -
         not in (ROOT / ".github/workflows/infrastructure.yml").read_text()
     )
     assert "needs.classify.outputs.terraform_changed" in release["if"]
+    assert "secrets.VM_SSH_KEY" not in source
+    assert "vars.INFRA_ADMIN_SSH_PUBLIC_KEY" in source
     no_plan = workflow["jobs"]["no-resource-plan"]
     assert "terraform_changed != 'true'" in no_plan["if"]
     assert no_plan["permissions"]["statuses"] == "write"
@@ -344,13 +346,105 @@ def test_github_old_run_mutable_pr_relation_cannot_approve_new_head() -> None:
 
 def test_serial_host_key_is_bound_to_terraform_ip() -> None:
     known_hosts = load_helper("known_hosts")
-    key = base64.b64encode(b"\x00\x00\x00\x0bssh-ed25519" + b"x" * 32).decode()
-    serial = f"boot output\r\nFINDME_HOST_ED25519 ssh-ed25519 {key}\r\n"
+    key = "AAAAC3NzaC1lZDI1NTE5AAAAIPmAFnVmG3NroaJujT4zRBVqKFVNH9cChVKYwYFtmlNt"
+    serial = (
+        "boot output\r\n-----BEGIN SSH HOST KEY KEYS-----\r\n"
+        "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAI"
+        "bmlzdHAyNTYAAABBBK+HM/K21PsGR+7xn/bbyU3KEAh+dn4joM+SPmLHe"
+        "jg1tPtVMd3BHt/moxV/7tjDRmWyFOP7QcIMA8X0D5e3GEE= root@vm\r\n"
+        f"ssh-ed25519 {key} root@vm\r\n"
+        "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDfhmyq root@vm\r\n"
+        "-----END SSH HOST KEY KEYS-----\r\n"
+    )
     assert known_hosts.known_host(serial, "192.0.2.44") == (f"192.0.2.44 ssh-ed25519 {key}\n")
     with pytest.raises(ValueError, match="missing or conflicting"):
         known_hosts.known_host(
-            serial + f"FINDME_HOST_ED25519 ssh-ed25519 {key[:-2]}AA\n", "192.0.2.44"
+            serial.replace(
+                "-----END SSH HOST KEY KEYS-----",
+                f"ssh-ed25519 {key[:-2]}AA\n-----END SSH HOST KEY KEYS-----",
+            ),
+            "192.0.2.44",
         )
+
+
+def test_lockbox_deploy_key_requires_exact_expected_credentials(tmp_path: Path) -> None:
+    lockbox = load_helper("lockbox")
+    private_key = "private-key-material"
+    payload = {
+        "entries": [
+            {"key": "ssh_private_key", "textValue": private_key},
+            {"key": "ssh_public_key", "textValue": "ssh-ed25519 AAAA public"},
+            {"key": "ssh_user", "textValue": "deploy"},
+        ]
+    }
+    target = tmp_path / "deploy-key"
+    lockbox.write_private_key(
+        payload,
+        expected_user="deploy",
+        expected_public_key="ssh-ed25519 AAAA public",
+        target=target,
+        derive_public_key=lambda path: "ssh-ed25519 AAAA public",
+    )
+    assert target.read_text() == private_key
+    assert target.stat().st_mode & 0o777 == 0o600
+
+    with pytest.raises(ValueError, match="credentials do not match"):
+        lockbox.write_private_key(
+            payload,
+            expected_user="petrnikitin",
+            expected_public_key="ssh-ed25519 AAAA public",
+            target=target,
+            derive_public_key=lambda path: "ssh-ed25519 AAAA public",
+        )
+
+
+def test_lockbox_deploy_key_checks_the_private_key_with_ssh_keygen(tmp_path: Path) -> None:
+    lockbox = load_helper("lockbox")
+    generated = tmp_path / "generated"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    private_key = generated.read_text()
+    public_key = " ".join(generated.with_suffix(".pub").read_text().split()[:2])
+    payload = {
+        "entries": [
+            {"key": "ssh_private_key", "textValue": private_key},
+            {"key": "ssh_public_key", "textValue": public_key},
+            {"key": "ssh_user", "textValue": "deploy"},
+        ]
+    }
+    target = tmp_path / "deploy-key"
+    lockbox.write_private_key(
+        payload,
+        expected_user="deploy",
+        expected_public_key=public_key,
+        target=target,
+    )
+    assert target.read_text() == private_key
+    assert target.stat().st_mode & 0o777 == 0o600
+
+    with pytest.raises(ValueError, match="credentials do not match"):
+        lockbox.write_private_key(
+            payload,
+            expected_user="deploy",
+            expected_public_key="ssh-ed25519 AAAA wrong",
+            target=tmp_path / "wrong-key",
+        )
+
+
+def test_lockbox_api_failure_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    lockbox = load_helper("lockbox")
+
+    def fail_request(*args, **kwargs):
+        raise OSError("synthetic-token leaked by transport")
+
+    monkeypatch.setattr(lockbox, "urlopen", fail_request)
+    with pytest.raises(ValueError, match="unable to read") as error:
+        lockbox.fetch_payload("e6q12ru8opfn2sl91so3", "synthetic-token")
+    assert "synthetic-token" not in str(error.value)
 
 
 def test_infrastructure_identity_loads_real_helper_before_network(
@@ -387,9 +481,10 @@ def test_oidc_token_is_masked_before_runner_environment_write(
 def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
     source = (ROOT / "infra/terraform/project.tfvars").read_text()
-    assert "boot_disk_gb     = 30" in source
-    assert "postgres_disk_gb = 10" in source
-    assert 'ssh_cidrs        = ["0.0.0.0/0"]' in source
+    assert "boot_disk_gb         = 30" in source
+    assert "postgres_disk_gb     = 10" in source
+    assert 'ssh_cidrs            = ["0.0.0.0/0"]' in source
+    assert 'deploy_ssh_secret_id = "e6q12ru8opfn2sl91so3"' in source
     release = workflow["jobs"]["release"]
     assert "TF_VAR_boot_disk_gb" not in release["env"]
     assert "TF_VAR_postgres_disk_gb" not in release["env"]
@@ -404,7 +499,7 @@ def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> N
     )
 
 
-def test_ansible_owns_repeatable_ssh_policy_with_reviewed_ci_key() -> None:
+def test_ansible_owns_both_reviewed_ssh_identities() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
     assert workflow["jobs"]["validate"]["name"] == "Infrastructure validation"
     configure = next(
@@ -412,8 +507,34 @@ def test_ansible_owns_repeatable_ssh_policy_with_reviewed_ci_key() -> None:
         for step in workflow["jobs"]["release"]["steps"]
         if step.get("name") == "Configure host OS with Ansible only"
     )
-    assert configure["env"]["FINDME_SSH_PUBLIC_KEY"] == "${{ vars.INFRA_SSH_PUBLIC_KEY }}"
+    assert configure["env"]["FINDME_DEPLOY_SSH_PUBLIC_KEY"] == ("${{ vars.INFRA_SSH_PUBLIC_KEY }}")
+    assert configure["env"]["FINDME_ADMIN_SSH_PUBLIC_KEY"] == (
+        "${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}"
+    )
     assert "-e @/tmp/findme-ansible-vars.json" in configure["run"]
+    run = configure["run"]
+    preflight_at = run.index("ssh -i /tmp/findme-ssh-key")
+    assert "-o ConnectTimeout=10" in run
+    assert "-o ConnectionAttempts=1" in run
+    assert "-o StrictHostKeyChecking=yes" in run
+    assert "-o IdentitiesOnly=yes" in run
+    assert 'test "$(id -un)" = deploy && sudo -n true' in run
+    assert preflight_at < run.index("ansible-playbook")
+    release = workflow["jobs"]["release"]
+    assert release["env"]["TF_VAR_ssh_public_key"] == "${{ vars.INFRA_SSH_PUBLIC_KEY }}"
+    assert release["env"]["TF_VAR_admin_ssh_public_key"] == (
+        "${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}"
+    )
+    fetch = next(
+        step
+        for step in release["steps"]
+        if step.get("name") == "Fetch the deploy SSH key from its Lockbox secret"
+    )
+    assert "deploy_ssh_secret_id" in fetch["run"]
+    assert "VM_SSH_KEY" not in fetch["env"]
+    cleanup = release["steps"][-1]
+    assert cleanup["if"] == "always()"
+    assert "/tmp/findme-ssh-key" in cleanup["run"]
 
     tasks = yaml.safe_load((ROOT / "infra/ansible/roles/host/tasks/main.yml").read_text())
     copies = {
@@ -421,10 +542,22 @@ def test_ansible_owns_repeatable_ssh_policy_with_reviewed_ci_key() -> None:
         for task in tasks
         if "ansible.builtin.copy" in task
     }
-    assert copies["/home/findme/.ssh/authorized_keys"]["ansible.builtin.copy"]["content"] == (
-        "{{ findme_ssh_public_key | trim }}\n"
+    authorized_keys_task = next(
+        task
+        for task in tasks
+        if task.get("name") == "Replace authorized keys with the reviewed identities"
     )
-    assert copies["/etc/sudoers.d/90-findme"]["ansible.builtin.copy"]["validate"] == (
+    authorized_keys = authorized_keys_task["ansible.builtin.copy"]
+    assert authorized_keys["dest"] == "/home/{{ item.user }}/.ssh/authorized_keys"
+    assert authorized_keys["content"] == "{{ item.key | trim }}\n"
+    assert authorized_keys_task["loop"] == [
+        {"user": "deploy", "key": "{{ findme_deploy_ssh_public_key }}"},
+        {"user": "petrnikitin", "key": "{{ findme_admin_ssh_public_key }}"},
+    ]
+    assert copies["/etc/sudoers.d/90-findme-recovery"]["ansible.builtin.copy"]["content"] == (
+        "deploy ALL=(ALL) NOPASSWD:ALL\npetrnikitin ALL=(ALL) NOPASSWD:ALL\n"
+    )
+    assert copies["/etc/sudoers.d/90-findme-recovery"]["ansible.builtin.copy"]["validate"] == (
         "/usr/sbin/visudo -cf %s"
     )
     ssh = copies["/etc/ssh/sshd_config.d/00-findme-recovery.conf"]
@@ -435,10 +568,17 @@ def test_ansible_owns_repeatable_ssh_policy_with_reviewed_ci_key() -> None:
             "PasswordAuthentication no",
             "KbdInteractiveAuthentication no",
             "PubkeyAuthentication yes",
-            "AllowUsers findme",
+            "AllowUsers deploy petrnikitin",
         )
     )
     assert ssh["notify"] == "Validate and reload SSH"
     handlers = yaml.safe_load((ROOT / "infra/ansible/roles/host/handlers/main.yml").read_text())
     assert handlers[0]["ansible.builtin.command"] == "/usr/sbin/sshd -t -f /etc/ssh/sshd_config"
     assert handlers[1]["ansible.builtin.service"]["state"] == "reloaded"
+
+
+def test_cost_comment_discloses_unmanaged_vm_and_lockbox_exclusions() -> None:
+    workflow = (ROOT / ".github/workflows/infrastructure.yml").read_text()
+    assert "только управляемые Terraform ресурсы" in workflow
+    assert "тестовую VM" in workflow
+    assert "40,77 RUB за 744 часа" in workflow

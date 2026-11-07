@@ -372,7 +372,7 @@ def test_oidc_token_is_masked_before_runner_environment_write(
     assert output.read_text() == "YC_TOKEN=synthetic-token\n"
 
 
-def test_ansible_receives_both_public_keys_using_the_deploy_identity(tmp_path):
+def test_ansible_receives_both_public_keys_using_the_configured_ssh_user(tmp_path):
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
     configure = next(
         step
@@ -398,7 +398,7 @@ os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
         f"#!{sys.executable}\n"
         + """
 import os, pathlib, sys
-assert "deploy@192.0.2.10" in sys.argv
+assert "configured-deployer@192.0.2.10" in sys.argv
 assert pathlib.Path(os.environ["VM_SSH_KEY_FILE"]).is_file()
 pathlib.Path(os.environ["SSH_MARKER"]).touch()
 """
@@ -409,7 +409,7 @@ pathlib.Path(os.environ["SSH_MARKER"]).touch()
         + """
 import os, pathlib, sys
 assert pathlib.Path(os.environ["SSH_MARKER"]).exists()
-assert sys.argv[sys.argv.index("-u") + 1] == "deploy"
+assert sys.argv[sys.argv.index("-u") + 1] == "configured-deployer"
 assert sys.argv[sys.argv.index("--private-key") + 1] == os.environ["VM_SSH_KEY_FILE"]
 variables = pathlib.Path(sys.argv[sys.argv.index("-e") + 1].removeprefix("@"))
 pathlib.Path(os.environ["ANSIBLE_CAPTURE"]).write_bytes(variables.read_bytes())
@@ -428,6 +428,7 @@ pathlib.Path(os.environ["ANSIBLE_CAPTURE"]).write_bytes(variables.read_bytes())
         "FINDME_DEPLOY_SSH_PUBLIC_KEY": "ssh-ed25519 technical-public-test",
         "FINDME_ADMIN_SSH_PUBLIC_KEY": "ssh-ed25519 admin-public-test",
         "VM_SSH_KEY_FILE": str(key),
+        "VM_USER": "configured-deployer",
         "SSH_MARKER": str(tmp_path / "ssh-checked"),
         "ANSIBLE_CAPTURE": str(captured),
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),

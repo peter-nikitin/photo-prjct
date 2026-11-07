@@ -290,6 +290,7 @@ jobs:
           printf '%s\n' "$host" > /tmp/findme-host
       - name: Configure host OS with Ansible only
         env:
+          VM_USER: ${{ vars.VM_USER }}
           FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
           FINDME_ADMIN_SSH_PUBLIC_KEY: ${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}
         run: |
@@ -306,8 +307,8 @@ jobs:
               ssh -i "$VM_SSH_KEY_FILE" \
                 -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
                 -o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
-                "deploy@$host" '\''test "$(id -un)" = deploy && sudo -n true'\''
-              ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook -i /tmp/findme-inventory -u deploy \
+                "$VM_USER@$host" '\''sudo -n true'\''
+              ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook -i /tmp/findme-inventory -u "$VM_USER" \
                 -e @/tmp/findme-ansible-vars.json \
                 --private-key "$VM_SSH_KEY_FILE" \
                 --ssh-common-args '\''-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes'\'' \

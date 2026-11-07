@@ -312,6 +312,7 @@ def test_copied_and_edited_dotenv_remains_the_web_service_environment() -> None:
     )
 
 
+@pytest.mark.django_db
 def test_worker_compose_hostname_is_accepted_by_django_tracked_defaults() -> None:
     """The private Compose hostname must pass Django's host validation before API auth runs."""
     values = _dotenv_values(ROOT / ".env.example")

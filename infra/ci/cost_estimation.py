@@ -68,25 +68,15 @@ def format_summary(report: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _resource_address_from_reference(
-    references: list[str], addresses: set[str], disk_id: str | None, disk_by_address: dict
-) -> str:
-    matches = {
-        address for address in addresses if address in references or f"{address}.id" in references
-    }
-    if not matches and disk_id:
-        matches = {
-            address
-            for address, resource in disk_by_address.items()
-            if resource.get("values", {}).get("id") == disk_id
-        }
-    if len(matches) != 1:
-        raise ValueError("cannot resolve the VM boot disk reference in Terraform configuration")
-    return matches.pop()
-
-
 def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any]) -> None:
-    resources = root.get("resources", [])
+    # The imported stopped holder references an unmanaged legacy boot disk; the
+    # estimator assumes running compute and cannot resolve or price it reliably.
+    resources = [
+        resource
+        for resource in root.get("resources", [])
+        if resource.get("address") != "yandex_compute_instance.legacy_holder"
+    ]
+    root["resources"] = resources
     disk_by_address = {
         resource["address"]: resource
         for resource in resources
@@ -105,25 +95,34 @@ def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any
             continue
 
         initialize_params = boot_disks[0].get("initialize_params")
-        if (
+        has_inline_boot = bool(
             isinstance(initialize_params, list)
             and initialize_params
             and initialize_params[0].get("size", 0) > 0
             and initialize_params[0].get("type")
-        ):
-            continue
-
+        )
         configuration = config_resources.get(resource.get("address"), {})
         boot_expressions = configuration.get("expressions", {}).get("boot_disk") or []
         references = (
             boot_expressions[0].get("disk_id", {}).get("references", []) if boot_expressions else []
         )
-        disk_address = _resource_address_from_reference(
-            references,
-            set(disk_by_address),
-            boot_disks[0].get("disk_id"),
-            disk_by_address,
-        )
+        matches = {
+            address
+            for address in disk_by_address
+            if address in references or f"{address}.id" in references
+        }
+        disk_id = boot_disks[0].get("disk_id")
+        if not matches and disk_id:
+            matches = {
+                address
+                for address, disk in disk_by_address.items()
+                if disk.get("values", {}).get("id") == disk_id
+            }
+        if not matches and has_inline_boot:
+            continue
+        if len(matches) != 1:
+            raise ValueError("cannot resolve the VM boot disk reference in Terraform configuration")
+        disk_address = matches.pop()
         if disk_address in attached_boot_disks:
             raise ValueError("Terraform plan references one boot disk from multiple VMs")
         disk_resource = disk_by_address[disk_address]
@@ -135,7 +134,8 @@ def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any
         if not isinstance(disk_type, str) or not disk_type:
             raise ValueError("referenced VM boot disk has no known type")
 
-        boot_disks[0]["initialize_params"] = [{"size": disk_size, "type": disk_type}]
+        if not has_inline_boot:
+            boot_disks[0]["initialize_params"] = [{"size": disk_size, "type": disk_type}]
         attached_boot_disks.add(disk_address)
 
     if attached_boot_disks:
@@ -225,13 +225,40 @@ def estimate(plan_path: Path, estimator_dir: Path) -> str:
     return output
 
 
+def unpriced_notice(plan: dict[str, Any]) -> str:
+    planned = plan.get("planned_values", {}).get("root_module", {}).get("resources", [])
+    current = (
+        plan.get("prior_state", {}).get("values", {}).get("root_module", {}).get("resources", [])
+    )
+    addresses = {resource.get("address") for resource in [*planned, *current]}
+    lines = []
+    if "yandex_lb_network_load_balancer.edge" in addresses:
+        lines.append(
+            "- NLB не входит в итоги выше: 0,92 RUB/ч, 684,48 RUB за 744 ч; "
+            "обработка входящего трафика 0,0559 RUB/GB, исходящего 0,0711 RUB/GB; "
+            "исходящий трафик VPC оплачивается отдельно. Объём трафика неизвестен; "
+            "общая разница не рассчитана. "
+            "[Тариф](https://yandex.cloud/ru/docs/network-load-balancer/pricing)"
+        )
+    if "yandex_compute_instance.legacy_holder" in addresses:
+        lines.append(
+            "- legacy_holder и его boot-диск не включены в оценку: VM остановлена, "
+            "а диск не управляется этим планом. Их стоимость проверить отдельно."
+        )
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("plan", type=Path)
     parser.add_argument("--estimator-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
+        with args.plan.open() as source:
+            original_plan = json.load(source)
+        sys.stdout.write("Неполная оценка: только поддерживаемые ресурсы, без NLB и трафика:\n")
         sys.stdout.write(format_summary(estimate(args.plan, args.estimator_dir)))
+        sys.stdout.write(unpriced_notice(original_plan))
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
         print(f"Cost estimation failed: {exc}", file=sys.stderr)
         return 1

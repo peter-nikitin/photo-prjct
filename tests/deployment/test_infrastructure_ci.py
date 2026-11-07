@@ -442,3 +442,79 @@ pathlib.Path(os.environ["ANSIBLE_CAPTURE"]).write_bytes(variables.read_bytes())
         "findme_deploy_ssh_public_key": environment["FINDME_DEPLOY_SSH_PUBLIC_KEY"],
         "findme_admin_ssh_public_key": environment["FINDME_ADMIN_SSH_PUBLIC_KEY"],
     }
+
+
+@pytest.mark.parametrize("boot_shape", ["fresh", "refreshed", "inline-only"])
+def test_cost_cli_keeps_app_and_disks_and_marks_partial_estimate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    boot_shape: str,
+) -> None:
+    cost_estimation = load_helper("cost_estimation")
+    plan = json.loads((ROOT / "tests/fixtures/infrastructure/cost_plan.json").read_text())
+    for resources in (
+        plan["prior_state"]["values"]["root_module"]["resources"],
+        plan["planned_values"]["root_module"]["resources"],
+    ):
+        if boot_shape != "fresh":
+            app = next(r for r in resources if r["address"] == "yandex_compute_instance.app")
+            app["values"]["boot_disk"][0]["initialize_params"] = [
+                {"size": 30, "type": "network-hdd"}
+            ]
+        if boot_shape == "inline-only":
+            resources[:] = [r for r in resources if r["address"] != "yandex_compute_disk.boot"]
+        resources.extend(
+            [
+                {
+                    "address": "yandex_compute_instance.legacy_holder",
+                    "type": "yandex_compute_instance",
+                },
+                {
+                    "address": "yandex_lb_network_load_balancer.edge",
+                    "type": "yandex_lb_network_load_balancer",
+                },
+            ]
+        )
+    if boot_shape == "inline-only":
+        plan["configuration"]["root_module"]["resources"][0]["expressions"] = {}
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan))
+    received = []
+
+    def fake_estimator(_directory: Path, path: Path) -> str:
+        received.append(json.loads(path.read_text()))
+        return """CURRENT INFRASTRUCTURE:
+Hourly: 1 RUB
+Monthly: 744 RUB
+PLANNED INFRASTRUCTURE:
+Hourly: 1 RUB
+Monthly: 744 RUB
+DIFFERENCE:
+Hourly: 0 RUB
+Monthly: 0 RUB
+=== CURRENT USAGE DETAILS ===
+app yandex_compute_instance postgres boot yandex_compute_disk
+=== PLANNED USAGE DETAILS ===
+app yandex_compute_instance postgres boot yandex_compute_disk
+"""
+
+    monkeypatch.setattr(cost_estimation, "run_estimator", fake_estimator)
+    monkeypatch.setattr(
+        sys, "argv", ["cost_estimation.py", str(plan_path), "--estimator-dir", str(tmp_path)]
+    )
+    assert cost_estimation.main() == 0
+    assert "Неполная оценка" in capsys.readouterr().out
+    assert len(received) == 1
+    for resources in (
+        received[0]["prior_state"]["values"]["root_module"]["resources"],
+        received[0]["planned_values"]["root_module"]["resources"],
+    ):
+        by_address = {resource["address"]: resource for resource in resources}
+        assert "yandex_compute_instance.legacy_holder" not in by_address
+        assert "yandex_compute_disk.boot" not in by_address
+        assert by_address["yandex_compute_instance.app"]["values"]["boot_disk"][0][
+            "initialize_params"
+        ] == [{"size": 30, "type": "network-hdd"}]
+        postgres = by_address["yandex_compute_disk.postgres"]["values"]
+        assert postgres["size"] == 10 and postgres["type"] == "network-hdd"

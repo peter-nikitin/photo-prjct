@@ -9,6 +9,7 @@ from commerce.views import (
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.core.paginator import InvalidPage
+from django.db import DatabaseError, connection
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -55,6 +56,11 @@ from config.metrics import generate_metrics
 
 
 def health(request):  # noqa: ARG001
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+    except DatabaseError:
+        return JsonResponse({"status": "unavailable"}, status=503)
     return JsonResponse({"status": "ok"})
 
 

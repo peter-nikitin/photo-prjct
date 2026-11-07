@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 8d1056fc3867dcd638daff810e4905fcaf2eeb53
+          ref: 8f1d5750d973554f1ca2fd19a309458afa7ccd10
           persist-credentials: false
       - name: Exchange infrastructure OIDC identity
         run: python infra/ci/identity.py
@@ -26,20 +26,11 @@ jobs:
           import importlib.util,os
           spec=importlib.util.spec_from_file_location('registrar','infra/ci/register_vm_ssh.py')
           module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-          import subprocess,tempfile
-          data=module.request_json('GET',module.API+'/instances/fv4lac9q76a3m7209gjp:serialPortOutput',os.environ['YC_TOKEN'])
-          serial=data.get('contents','')
-          print('Serial bytes:',len(serial),'ED25519 text:', 'ssh-ed25519 ' in serial)
-          with tempfile.NamedTemporaryFile(mode='w') as f:
-              f.write(serial);f.flush()
-              result=subprocess.run(['ssh-keygen','-l','-E','sha256','-f',f.name],capture_output=True,text=True)
-              print('OpenSSH result:',result.returncode,repr(result.stdout))
           key=module.discover_host_key('fv4lac9q76a3m7209gjp','158.160.130.235',os.environ['YC_TOKEN'])
           assert key=='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPmAFnVmG3NroaJujT4zRBVqKFVNH9cChVKYwYFtmlNt'
           print('Authenticated ED25519 discovery verified; no metadata update or VM login')
           CHECK
       - name: Verify shared technical credential resolver without SSH login
-        if: always()
         run: |
           python scripts/run-with-environment-secrets.py --consumer infrastructure-ansible --identity iam-token -- \
             bash -c 'test "$(stat -c %a "$VM_SSH_KEY_FILE")" = 600 && ssh-keygen -y -f "$VM_SSH_KEY_FILE" >/dev/null && echo "Shared technical key verified; no VM login"'

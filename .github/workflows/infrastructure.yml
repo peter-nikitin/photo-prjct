@@ -6,29 +6,31 @@ permissions:
   contents: read
   id-token: write
 jobs:
-  verify-reviewed-ssh-helpers:
+  verify-reviewed-ssh-paths:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 4
     environment: infrastructure
     env:
       YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
-      EXPECTED_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+      FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 209c6179e3eac280c4e8d7b224a902f8e0fed10e
+          ref: 8d1056fc3867dcd638daff810e4905fcaf2eeb53
           persist-credentials: false
       - name: Exchange infrastructure OIDC identity
         run: python infra/ci/identity.py
-      - name: Verify actual release credential and host-key helpers read-only
+      - name: Verify host discovery without registering or modifying test VM
         run: |
-          set -euo pipefail
-          python infra/ci/lockbox.py e6q12ru8opfn2sl91so3 deploy "$EXPECTED_PUBLIC_KEY" "$RUNNER_TEMP/findme-reviewed-key"
-          test "$(stat -c %a "$RUNNER_TEMP/findme-reviewed-key")" = 600
-          ssh-keygen -lf "$RUNNER_TEMP/findme-reviewed-key"
-          python infra/ci/known_hosts.py fv4lac9q76a3m7209gjp 158.160.130.235 "$RUNNER_TEMP/findme-reviewed-hosts"
-          test -s "$RUNNER_TEMP/findme-reviewed-hosts"
-          echo 'Reviewed Lockbox credential helper and authenticated cloud-init host-key parser verified. No VM login or mutation performed.'
-      - name: Remove temporary credential files
-        if: always()
-        run: rm -f "$RUNNER_TEMP/findme-reviewed-key" "$RUNNER_TEMP/findme-reviewed-hosts"
+          python - <<'CHECK'
+          import importlib.util,os
+          spec=importlib.util.spec_from_file_location('registrar','infra/ci/register_vm_ssh.py')
+          module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+          key=module.discover_host_key('fv4lac9q76a3m7209gjp','158.160.130.235',os.environ['YC_TOKEN'])
+          assert key=='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPmAFnVmG3NroaJujT4zRBVqKFVNH9cChVKYwYFtmlNt'
+          print('Authenticated ED25519 discovery verified; no metadata update or VM login')
+          CHECK
+      - name: Verify shared technical credential resolver without SSH login
+        run: |
+          python scripts/run-with-environment-secrets.py --consumer infrastructure-ansible --identity iam-token -- \
+            bash -c 'test "$(stat -c %a "$VM_SSH_KEY_FILE")" = 600 && ssh-keygen -y -f "$VM_SSH_KEY_FILE" >/dev/null && echo "Shared technical key verified; no VM login"'

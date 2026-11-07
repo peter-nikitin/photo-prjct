@@ -8,9 +8,10 @@ does not authorize a live cloud, credential, or deployment mutation.
 - [Environment secrets operator runbook](runbooks/environment-secrets.md)
 - [Environment secrets inventory](runbooks/environment-secrets-inventory.md)
 
-The current scope is the canonical deployment. One manifest and Lockbox authority serve the
-repository consumers; repository variables hold non-secret configuration, and neither the VM nor
-the runtime reads Lockbox.
+Эти документы описывают секреты развёртывания приложения: один manifest и один Lockbox secret
+обслуживают потребителей приложения; VM и runtime не читают Lockbox. Для подготовки
+инфраструктуры предназначены отдельные SSH-идентичности и отдельная граница Lockbox, описанные в
+[инвентаре секретов](runbooks/environment-secrets-inventory.md#infrastructure-ssh-access).
 
 ## Other runbooks
 

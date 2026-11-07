@@ -1,8 +1,10 @@
 # Canonical deployment secrets inventory
 
 [`deploy/environment-secrets.json`](../../deploy/environment-secrets.json) is the non-secret
-schema authority for the single canonical deployment. This inventory makes its ownership and
-consumer boundaries reviewable; it never proves that a payload was populated or a workflow ran.
+schema authority for the single canonical application deployment. This inventory makes its
+ownership and consumer boundaries reviewable; it never proves that a payload was populated or a
+workflow ran. Этот manifest описывает только секреты application deployment. SSH-идентичности
+Infrastructure хранятся отдельно и не входят в него.
 Never record a payload, credential fragment, Lockbox version ID, or resolved environment file in
 the repository, a ticket, command line, CI output, or shell history.
 
@@ -19,7 +21,7 @@ the repository, a ticket, command line, CI output, or shell history.
 | GitHub repository/ref | `peter-nikitin/photo-prjct` / `refs/heads/main` | Workflow checkout and OIDC claim check |
 | Workflow | `Deploy` / `.github/workflows/deploy.yml` | `gh workflow view deploy.yml` |
 | Compose project | `photo-prjct` | deployed-VM Compose health command |
-| GitHub Environment | none | workflow jobs have no `environment:` key |
+| Application GitHub Environment | none | application workflow jobs have no `environment:` key |
 | CI service account ID | `ajeaekiue94ogksguh0h` | `yc iam service-account get --id ajeaekiue94ogksguh0h --format json` |
 | OIDC federation ID | `ajeula3gd46omgf9jiko` | `yc iam workload-identity oidc federation get --id ajeula3gd46omgf9jiko --format json` |
 
@@ -32,9 +34,37 @@ The resolver permits only these exact main-branch workflow identities:
 - `peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main`
 
 It validates the full `workflow_ref` claim before exchange. A matching path from another repository
-or ref is not authorized. Every reader needs both exact-secret roles: `lockbox.viewer` for metadata
-and access-binding view, and `lockbox.payloadViewer` for payload retrieval. Do not replace those
-resource-level bindings with folder-wide access.
+or ref is not authorized. For this application secret, every reader needs both exact-secret roles:
+`lockbox.viewer` for metadata and access-binding view, and `lockbox.payloadViewer` for payload
+retrieval. Do not replace those resource-level bindings with folder-wide access.
+
+<a id="infrastructure-ssh-access"></a>
+## SSH-идентичности Infrastructure
+
+Для подготовки VM используются отдельные SSH-идентичности: технический пользователь `deploy` для
+Infrastructure Actions и оператор `petrnikitin` для административного доступа. Эти секреты не
+относятся к manifest приложения или к OIDC-идентичности main-branch Deploy.
+
+| Секрет Lockbox | ID | Пользователь SSH | Доступ |
+| --- | --- | --- | --- |
+| `findme-photo-vm-deploy` | `e6q12ru8opfn2sl91so3` | `deploy` | CI Infrastructure |
+| `findme-photo-vm-admin` | `e6qes463bl6r09r72580` | `petrnikitin` | Оператор; CI не имеет payload grant |
+
+Каждый секрет содержит ровно три текстовых поля: `ssh_private_key`, `ssh_public_key` и
+`ssh_user`. В GitHub Environment `infrastructure` хранятся только открытые ключи:
+`INFRA_SSH_PUBLIC_KEY` и `INFRA_ADMIN_SSH_PUBLIC_KEY`. Приватные ключи не хранятся в Git,
+GitHub Secrets, Terraform state/output, логах или артефактах. Приватный ключ `deploy` временно
+материализуется в Actions в файл `0600` для SSH/Ansible; ключ оператора в Actions не передаётся.
+Infrastructure Actions использует service account `ajema849qjho2lgjaqvo` с OIDC subject
+`repo:peter-nikitin/photo-prjct:environment:infrastructure`. Ему выдаётся только ресурсная роль
+`lockbox.payloadViewer` на `findme-photo-vm-deploy`; доступ к metadata Lockbox и управление IAM ему
+не нужны. На операторском секрете CI payload grant не выдаётся.
+
+Оператору нужен `lockbox.payloadViewer` на `findme-photo-vm-admin`. Инструкции по безопасному
+получению ключа находятся в [процедуре оператора](environment-secrets.md#ssh-keys-infrastructure).
+
+Существующая запись `VM_SSH_KEY` и её потребители приложения остаются отдельными; это не fallback
+для Infrastructure.
 
 ## Manifest key schema and consumer projections
 
@@ -83,13 +113,14 @@ action reject a missing required subset before their own mutation. The Commerce 
 keys may be absent only while the deployed Commerce worker remains disabled; an enabled deploy
 rejects their absence before mutation.
 
-## Repository variables
+## Application repository variables
 
-Non-secret configuration belongs to repository variables, not a GitHub Environment. Inspect names
-only with `gh variable list --repo peter-nikitin/photo-prjct --json name,updatedAt`. The current
-workflow reads repository variables such as `VM_HOST`, `VM_USER`, `VM_SSH_KNOWN_HOSTS`, `DB_NAME`,
-`DB_USER`, `GHCR_USERNAME`, and public/processing configuration. Any schema change needs a reviewed
-manifest, workflow, and inventory update; do not create an alternate secret authority.
+Для application deployment несекретная конфигурация хранится в repository variables, а не в GitHub
+Environment. Просматривать имена можно командой
+`gh variable list --repo peter-nikitin/photo-prjct --json name,updatedAt`. Application workflow
+читает переменные `VM_HOST`, `VM_USER`, `VM_SSH_KNOWN_HOSTS`, `DB_NAME`, `DB_USER`, `GHCR_USERNAME`
+и публичную конфигурацию. Изменение схемы требует согласованно обновить manifest, workflow и
+инвентарь; не создавайте альтернативный источник секретов.
 
 ## Lockbox entry ownership and rotation
 

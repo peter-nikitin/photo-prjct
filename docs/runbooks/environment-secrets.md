@@ -1,10 +1,12 @@
 # Canonical deployment secrets operator runbook
 
-This runbook operates one Lockbox authority for the canonical deployment:
+This runbook operates one Lockbox authority for the canonical application deployment:
 [`deploy/environment-secrets.json`](../../deploy/environment-secrets.json). It implements
 [ADR 0028](../adr/0028-operate-one-canonical-deployment.md) and the Lockbox boundary in
 [ADR 0026](../adr/0026-use-lockbox-for-environment-secrets.md). It does not create another
-environment, make the runtime read Lockbox, or expose payload values.
+environment, make the runtime read Lockbox, or expose payload values. Its scope is the existing
+application secret manifest; Infrastructure SSH keys use separate Lockbox secrets described in
+the [environment secrets inventory](environment-secrets-inventory.md#infrastructure-ssh-access).
 
 ## Scope and safety rules
 
@@ -25,7 +27,8 @@ environment, make the runtime read Lockbox, or expose payload values.
 - Commerce order-link signing and Postbox SMTP credentials are `deploy` projection entries only.
   The application workflow supplies Commerce factory paths, sender address, public origin, support
   contact, and worker-enable state as repository variables; do not add provider credentials there.
-- No GitHub Environment participates. Do not use GitHub Environment secret or variable commands.
+- No GitHub Environment participates in the application secret resolver. Do not use GitHub
+  Environment secret or variable commands for entries in its manifest.
 - Do not run `yc config list`, `yc lockbox payload get`, `set -x`, `env`, or `printenv` while
   handling this procedure.
 
@@ -428,6 +431,33 @@ request approved recovery. Never restart, SSH to, or mutate the VM merely to pro
 
 Do not share raw CLI output, payloads, tokens, SSH keys, database passwords, Object Storage keys,
 or environment dumps.
+
+<a id="ssh-keys-infrastructure"></a>
+## SSH-ключи инфраструктуры
+
+Эти SSH-ключи относятся к созданию и подготовке VM, а не к manifest приложения. Технический
+пользователь `deploy` нужен Infrastructure workflow для Ansible; оператор `petrnikitin` получает
+отдельный ключ из Lockbox. Имена секретов, их ID и точный OIDC grant указаны в
+[инвентаре секретов](environment-secrets-inventory.md#infrastructure-ssh-access).
+
+Получайте приватный ключ оператора по необходимости с защищённой рабочей станции, используя
+собственную аутентифицированную учётную запись Яндекс Облака. ID секрета указан в
+[инвентаре](environment-secrets-inventory.md#infrastructure-ssh-access). Helper принимает
+аргументы в порядке: ID секрета, пользователь, ожидаемый открытый ключ и новый локальный путь.
+Он сверяет пару, создаёт файл с правами `0600` и не выводит payload. Пример:
+
+```sh
+umask 077
+YC_TOKEN="$(yc iam create-token)" .venv/bin/python infra/ci/lockbox.py "$ADMIN_SECRET_ID" petrnikitin \
+  "$INFRA_ADMIN_SSH_PUBLIC_KEY" "$ADMIN_KEY_FILE"
+```
+
+Перед запуском установите `ADMIN_SECRET_ID` по инвентарю, `INFRA_ADMIN_SSH_PUBLIC_KEY` — из
+защищённой конфигурации, а `ADMIN_KEY_FILE` — новый защищённый путь. Не включайте shell tracing и
+не передавайте token аргументом. Не помещайте приватный ключ в Git, GitHub или вывод команд. Перед
+SSH проверьте host key по аутентифицированному serial output; после сеанса удалите временный
+приватный файл. Старая manifest-запись `VM_SSH_KEY` остаётся для указанных в инвентаре потребителей
+приложения и не является fallback-ключом Infrastructure.
 
 ## References
 

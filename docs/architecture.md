@@ -38,11 +38,10 @@ PostgreSQL — источник истины для состояний и рез
 `Infrastructure` создаёт и подготавливает одну VM: PR проверяет Terraform, строит сохранённый
 plan и стоимость, а merge применяет одобренный plan и запускает Ansible для подготовки ОС.
 Workflow не строит образы, не размещает runtime package и не запускает базу, приложение,
-обработчики или восстановление данных. Cloud-init и Ansible задают отдельные SSH-ключи для
-технического `deploy` и оператора `petrnikitin`; Actions получает только ключ `deploy` из Lockbox.
-Для настройки требуется внешний узкий `lockbox.payloadViewer` grant на технический секрет.
-Terraform apply не выполнялся, поэтому новая recovery VM и live-сервисы не созданы и не проверены;
-ранее существовавшая тестовая VM остаётся отдельной. См. [runbook recovery VM](runbooks/recovery-vm-infrastructure.md).
+обработчики или восстановление данных. Cloud-init и Ansible создают отдельные SSH-идентичности
+для технического пользователя `deploy` и оператора `petrnikitin`; Actions получает только
+технический ключ из Lockbox. Границы доступа и выдача операторского ключа описаны в
+[инвентаре секретов](runbooks/environment-secrets-inventory.md#infrastructure-ssh-access).
 
 <a id="accepted-recovery-target"></a>
 ## Принятые решения и следующие этапы
@@ -54,12 +53,12 @@ Terraform apply не выполнялся, поэтому новая recovery VM
 - [ADR 0057](adr/0057-declarative-cloud-infrastructure.md): описывать ресурсы в IaC и применять
   рассмотренный Terraform plan.
 - [ADR 0058](adr/0058-stable-public-entrypoint-nlb.md): сохранить публичный вход при замене VM;
-  NLB и TLS edge не реализуются этим PR.
+  постоянный NLB и TLS edge остаются следующим архитектурным этапом.
 - [ADR 0063](adr/0063-repeatable-host-configuration.md): управлять конфигурацией ОС через Ansible.
 
 Текущий код реализует Terraform для одной VM и Ansible-подготовку ОС. Здесь нет приложения,
-постоянного публичного входа и автоматического восстановления данных; Terraform apply ещё не
-выполнялся. Постоянный мониторинг отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md).
+постоянного публичного входа и автоматического восстановления данных. Постоянный мониторинг
+отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md).
 По уточнению владельца восстановление использует существующие media/feedback buckets; их миграция
 отложена в [отдельную задачу](future-work/2026-10-26-canonical-media-bucket-migration.md).
 

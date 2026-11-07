@@ -110,10 +110,10 @@ Name-only listings are the maximum GitHub evidence allowed here.
 
 ### Preflight
 
-Use an isolated worktree and a protected local path. The candidate is a JSON array for `yc lockbox`:
-text entries use `text_value`; binary `VM_SSH_KEY` uses base64 `binary_value`. Validate the complete
-manifest key set before mutation and never put a payload in argv or output. The editor must not
-create swap, backup, or cloud-synced copies.
+Используйте изолированный worktree и защищённый локальный путь. Candidate — JSON-массив для
+`yc lockbox`: текстовые поля используют `text_value`; типы и полный набор полей берите из manifest.
+Перед изменением проверьте схему; не передавайте payload через argv и не выводите его. Редактор
+не должен создавать swap, резервные копии или копии в облачной синхронизации.
 
 ```bash
 candidate_payload=""
@@ -198,9 +198,9 @@ Never display, `cat`, upload, commit, attach, or retain `candidate_payload`, and
 
 ### Preflight
 
-Build a complete candidate including unchanged entries and `VM_SSH_KEY`. Payload rotation is not
-identity revocation. **STOP — obtain fresh approval** before a new version, downstream credential
-change, or destruction schedule.
+Подготовьте полный candidate по актуальному manifest, включая неизменяемые поля. Ротация payload
+не отзывает учётные данные у их поставщика. Перед новой версией, изменением внешних credentials
+или расписания уничтожения получите согласование, если эти действия ещё не входят в поручение.
 
 ### Success evidence
 
@@ -433,31 +433,46 @@ Do not share raw CLI output, payloads, tokens, SSH keys, database passwords, Obj
 or environment dumps.
 
 <a id="ssh-keys-infrastructure"></a>
-## SSH-ключи инфраструктуры
+## Административный SSH-доступ
 
-Эти SSH-ключи относятся к созданию и подготовке VM, а не к manifest приложения. Технический
-пользователь `deploy` нужен Infrastructure workflow для Ansible; оператор `petrnikitin` получает
-отдельный ключ из Lockbox. Имена секретов, их ID и точный OIDC grant указаны в
-[инвентаре секретов](environment-secrets-inventory.md#infrastructure-ssh-access).
+Все пайплайны используют одну техническую пару `deploy`; оператор — отдельную пару `petrnikitin`.
+Источники и потребители заданы в `ssh_credentials` файла
+[`deploy/environment-secrets.json`](../../deploy/environment-secrets.json).
+Прежнее поле `VM_SSH_KEY` в секрете приложения больше не выбирается resolver. Физически его
+удаляют после релиза переведённых потребителей: создают полную версию секрета по актуальному
+manifest без этого поля. До релиза старый `main` ещё использует эту запись.
+Приватные ключи
+получает общий resolver; административный секрет не доступен service accounts CI.
+Оператору нужны `lockbox.viewer` и `lockbox.payloadViewer` на `findme-photo-vm-admin`
+(`e6qes463bl6r09r72580`).
 
-Получайте приватный ключ оператора по необходимости с защищённой рабочей станции, используя
-собственную аутентифицированную учётную запись Яндекс Облака. ID секрета указан в
-[инвентаре](environment-secrets-inventory.md#infrastructure-ssh-access). Helper принимает
-аргументы в порядке: ID секрета, пользователь, ожидаемый открытый ключ и новый локальный путь.
-Он сверяет пару, создаёт файл с правами `0600` и не выводит payload. Пример:
+После создания ВМ Infrastructure регистрирует проверенный открытый host key в её metadata
+`findme-ssh-host-key`. Для обычного подключения берите текущий адрес и эту запись через
+аутентифицированный API ЯО; повторно читать serial output не требуется. Если запись отсутствует
+или не проходит проверку OpenSSH, завершите регистрацию ВМ штатным Infrastructure workflow.
+Не подтверждайте новый ключ через отключение `StrictHostKeyChecking`.
+
+Укажите `VM_ID` нужной ВМ и задайте `INFRA_ADMIN_SSH_PUBLIC_KEY` значением одноимённой variable
+GitHub Environment `infrastructure`. На своей защищённой рабочей станции выполните:
 
 ```sh
 umask 077
-YC_TOKEN="$(yc iam create-token)" .venv/bin/python infra/ci/lockbox.py "$ADMIN_SECRET_ID" petrnikitin \
-  "$INFRA_ADMIN_SSH_PUBLIC_KEY" "$ADMIN_KEY_FILE"
+VM_INFO=$(yc compute instance get --id "$VM_ID" --full --format json)
+export VM_IP=$(jq -er '.network_interfaces[0].primary_v4_address.one_to_one_nat.address' <<< "$VM_INFO")
+export VM_KNOWN_HOSTS_FILE=$(mktemp "${TMPDIR:-/tmp}/findme-known-hosts.XXXXXX")
+HOST_KEY=$(jq -er '.metadata["findme-ssh-host-key"] | select(length > 0)' <<< "$VM_INFO")
+printf '%s %s\n' "$VM_IP" "$HOST_KEY" > "$VM_KNOWN_HOSTS_FILE"
+ssh-keygen -l -E sha256 -f "$VM_KNOWN_HOSTS_FILE"
+INFRA_ADMIN_SSH_PUBLIC_KEY="$INFRA_ADMIN_SSH_PUBLIC_KEY" \
+  .venv/bin/python scripts/run-with-environment-secrets.py \
+  --consumer operator-admin-key --identity yc -- sh -c \
+  'exec ssh -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o UserKnownHostsFile="$VM_KNOWN_HOSTS_FILE" -i "$ADMIN_SSH_KEY_FILE" "petrnikitin@$VM_IP"'
+rm -f -- "$VM_KNOWN_HOSTS_FILE"
 ```
 
-Перед запуском установите `ADMIN_SECRET_ID` по инвентарю, `INFRA_ADMIN_SSH_PUBLIC_KEY` — из
-защищённой конфигурации, а `ADMIN_KEY_FILE` — новый защищённый путь. Не включайте shell tracing и
-не передавайте token аргументом. Не помещайте приватный ключ в Git, GitHub или вывод команд. Перед
-SSH проверьте host key по аутентифицированному serial output; после сеанса удалите временный
-приватный файл. Старая manifest-запись `VM_SSH_KEY` остаётся для указанных в инвентаре потребителей
-приложения и не является fallback-ключом Infrastructure.
+При ошибке проверки остановитесь; не продолжайте SSH. Resolver сверяет пользователя и пару с
+ожидаемым публичным ключом, создаёт приватный файл `0600` только на время дочерней команды и
+удаляет его при завершении. Не копируйте этот файл в постоянное хранилище или GitHub.
 
 ## References
 

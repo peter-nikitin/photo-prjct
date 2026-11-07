@@ -1,11 +1,10 @@
-cloud_id             = "b1gmcsmr51o5kvp86l55"
-folder_id            = "b1g2qttgfhb4gdunvlge"
-zone                 = "ru-central1-d"
-ubuntu_image_id      = "fd8p50cvjmb6fo0ik4hk"
-boot_disk_gb         = 30
-postgres_disk_gb     = 10
-ssh_cidrs            = ["0.0.0.0/0"]
-deploy_ssh_secret_id = "e6q12ru8opfn2sl91so3"
+cloud_id         = "b1gmcsmr51o5kvp86l55"
+folder_id        = "b1g2qttgfhb4gdunvlge"
+zone             = "ru-central1-d"
+ubuntu_image_id  = "fd8p50cvjmb6fo0ik4hk"
+boot_disk_gb     = 30
+postgres_disk_gb = 10
+ssh_cidrs        = ["0.0.0.0/0"]
 # Explicit provisional bootstrap sizes, not measured restore capacity. Boot 30 GiB
 # covers current heavy image pulls, 2 GiB swap and agent install beyond Ubuntu's
 # 10 GiB image minimum; review measured peak and cost before live plan. PG 10 GiB

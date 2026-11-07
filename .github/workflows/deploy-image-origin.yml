@@ -1,5 +1,8 @@
 name: Deploy isolated image origin
 
+env:
+  FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -47,10 +50,10 @@ jobs:
           IMAGE_ORIGIN_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
           IMAGE_ORIGIN_MONITORING_ONLY: ${{ github.event_name == 'push' && 'true' || inputs.monitoring_only }}
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           IMAGE_ORIGIN_VM_HOST: ${{ vars.IMAGE_ORIGIN_VM_HOST }}
-          IMAGE_ORIGIN_VM_USER: ${{ vars.IMAGE_ORIGIN_VM_USER }}
+          IMAGE_ORIGIN_VM_USER: deploy
           IMAGE_ORIGIN_SSH_KNOWN_HOSTS: ${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}
           PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}
           MEDIA_S3_PUBLIC_BUCKET: ${{ vars.MEDIA_S3_PUBLIC_BUCKET }}

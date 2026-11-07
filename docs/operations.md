@@ -8,9 +8,9 @@ does not authorize a live cloud, credential, or deployment mutation.
 - [Environment secrets operator runbook](runbooks/environment-secrets.md)
 - [Environment secrets inventory](runbooks/environment-secrets-inventory.md)
 
-Эти документы описывают секреты развёртывания приложения: один manifest и один Lockbox secret
-обслуживают потребителей приложения; VM и runtime не читают Lockbox. Для подготовки
-инфраструктуры предназначены отдельные SSH-идентичности и отдельная граница Lockbox, описанные в
+Общий manifest описывает источники и потребителей секретов приложения и SSH. Resolver читает
+секреты приложения и общую техническую SSH-пару из разных Lockbox secrets; VM и runtime
+не читают Lockbox. Административная пара доступна только оператору. Границы доступа описаны в
 [инвентаре секретов](runbooks/environment-secrets-inventory.md#infrastructure-ssh-access).
 
 ## Other runbooks

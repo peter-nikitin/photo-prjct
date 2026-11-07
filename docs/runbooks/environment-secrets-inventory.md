@@ -3,8 +3,7 @@
 [`deploy/environment-secrets.json`](../../deploy/environment-secrets.json) is the non-secret
 schema authority for the single canonical application deployment. This inventory makes its
 ownership and consumer boundaries reviewable; it never proves that a payload was populated or a
-workflow ran. Этот manifest описывает только секреты application deployment. SSH-идентичности
-Infrastructure хранятся отдельно и не входят в него.
+workflow ran. Источники приложения и SSH раздельны в Lockbox; общий resolver выбирает их по manifest.
 Never record a payload, credential fragment, Lockbox version ID, or resolved environment file in
 the repository, a ticket, command line, CI output, or shell history.
 
@@ -39,37 +38,34 @@ or ref is not authorized. For this application secret, every reader needs both e
 retrieval. Do not replace those resource-level bindings with folder-wide access.
 
 <a id="infrastructure-ssh-access"></a>
-## SSH-идентичности Infrastructure
+## Общий технический и административный SSH-доступ
 
-Для подготовки VM используются отдельные SSH-идентичности: технический пользователь `deploy` для
-Infrastructure Actions и оператор `petrnikitin` для административного доступа. Эти секреты не
-относятся к manifest приложения или к OIDC-идентичности main-branch Deploy.
+Используются ровно две пары: `deploy` для всех GitHub-пайплайнов, включая Ansible и прикладной
+деплой, и `petrnikitin` для оператора. Все Terraform VM получают оба публичных ключа.
+Источники и потребители задаются разделом `ssh_credentials` в manifest. Технический секрет —
+`findme-photo-vm-deploy` (`e6q12ru8opfn2sl91so3`), административный — `findme-photo-vm-admin`
+(`e6qes463bl6r09r72580`). Оба содержат текстовые `ssh_private_key`, `ssh_public_key`, `ssh_user`.
 
-| Секрет Lockbox | ID | Пользователь SSH | Доступ |
-| --- | --- | --- | --- |
-| `findme-photo-vm-deploy` | `e6q12ru8opfn2sl91so3` | `deploy` | CI Infrastructure |
-| `findme-photo-vm-admin` | `e6qes463bl6r09r72580` | `petrnikitin` | Оператор; CI не имеет payload grant |
+Общий resolver проверяет пользователя и пару, создаёт временный файл `0600` для выбранного
+потребителя и удаляет его после команды. Приватные ключи не хранятся в Git, GitHub Secrets,
+Terraform state, логах или артефактах. CI не получает административный ключ.
+Открытый `INFRA_SSH_PUBLIC_KEY` доступен как repository variable и в Environment `infrastructure`;
+`INFRA_ADMIN_SSH_PUBLIC_KEY` — в том Environment для настройки VM.
 
-Каждый секрет содержит ровно три текстовых поля: `ssh_private_key`, `ssh_public_key` и
-`ssh_user`. В GitHub Environment `infrastructure` хранятся только открытые ключи:
-`INFRA_SSH_PUBLIC_KEY` и `INFRA_ADMIN_SSH_PUBLIC_KEY`. Приватные ключи не хранятся в Git,
-GitHub Secrets, Terraform state/output, логах или артефактах. Приватный ключ `deploy` временно
-материализуется в Actions в файл `0600` для SSH/Ansible; ключ оператора в Actions не передаётся.
-Infrastructure Actions использует service account `ajema849qjho2lgjaqvo` с OIDC subject
-`repo:peter-nikitin/photo-prjct:environment:infrastructure`. Ему выдаётся только ресурсная роль
-`lockbox.payloadViewer` на `findme-photo-vm-deploy`; доступ к metadata Lockbox и управление IAM ему
-не нужны. На операторском секрете CI payload grant не выдаётся.
+Service accounts Infrastructure `ajema849qjho2lgjaqvo` и приложения `ajeaekiue94ogksguh0h` имеют
+`lockbox.viewer` и `lockbox.payloadViewer` только на техническом секрете. На административном
+секрете grants CI отсутствуют. Оператор получает свой ключ через `--identity yc`; процедура —
+[административный SSH-доступ](environment-secrets.md#ssh-keys-infrastructure).
 
-Оператору нужен `lockbox.payloadViewer` на `findme-photo-vm-admin`. Инструкции по безопасному
-получению ключа находятся в [процедуре оператора](environment-secrets.md#ssh-keys-infrastructure).
-
-Существующая запись `VM_SSH_KEY` и её потребители приложения остаются отдельными; это не fallback
-для Infrastructure.
+При создании VM Infrastructure сверяет ED25519 host key через OpenSSH с аутентифицированным
+serial output и сохраняет открытый ключ в metadata `findme-ssh-host-key`. Обычные запуски читают
+текущий адрес и сохранённый ключ из структурированного Compute API. Terraform игнорирует только
+это вычисленное поле; остальная metadata управляется конфигурацией.
 
 ## Manifest key schema and consumer projections
 
 `local` permits the supported local launcher to materialize a key; it does not make a value
-local-only. `VM_SSH_KEY` is binary and becomes only `VM_SSH_KEY_FILE`.
+local-only. SSH-проекция задаётся отдельно в `ssh_credentials`; путь технического ключа — `VM_SSH_KEY_FILE`.
 
 | Manifest key | Target | Type | Local | Consumers |
 | --- | --- | --- | --- | --- |
@@ -86,7 +82,6 @@ local-only. `VM_SSH_KEY` is binary and becomes only `VM_SSH_KEY_FILE`.
 | `PHOTO_PROCESSING_WORKER_TOKEN` | `PHOTO_PROCESSING_WORKER_TOKEN` | text | yes | `local-web`, `deploy` |
 | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | text | yes | `local-web`, `deploy` |
 | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | text | yes | `local-web`, `deploy` |
-| `VM_SSH_KEY` | `VM_SSH_KEY_FILE` | binary | no | `deploy`, `remote-check`, `image-origin`, `public-probe-deploy` (transport only) |
 | `GHCR_READ_TOKEN` | `GHCR_READ_TOKEN` | text | no | `deploy` |
 | `YANDEX_MONITORING_API_KEY` | `YANDEX_MONITORING_API_KEY` | text | no | `public-monitor` |
 | `GALLERY_CDN_TOKEN_SECRET` | `GALLERY_CDN_TOKEN_SECRET` | text | no | `local-web`, `deploy`, `image-delivery-provision` |
@@ -101,7 +96,7 @@ The fixed resolver boundary is:
 ```text
 scripts/run-with-environment-secrets.py \
   --consumer <local-web|deploy|remote-check|public-monitor|image-origin|image-delivery-provision|public-probe-deploy> \
-  --identity <yc|github-oidc> -- <child command>
+  --identity <yc|github-oidc|iam-token> -- <child command>
 ```
 
 It reads the active metadata and one matching payload version, validates every required key plus
@@ -118,7 +113,7 @@ rejects their absence before mutation.
 Для application deployment несекретная конфигурация хранится в repository variables, а не в GitHub
 Environment. Просматривать имена можно командой
 `gh variable list --repo peter-nikitin/photo-prjct --json name,updatedAt`. Application workflow
-читает переменные `VM_HOST`, `VM_USER`, `VM_SSH_KNOWN_HOSTS`, `DB_NAME`, `DB_USER`, `GHCR_USERNAME`
+читает переменные `VM_HOST`, `VM_SSH_KNOWN_HOSTS`, `INFRA_SSH_PUBLIC_KEY`, `DB_NAME`, `DB_USER`, `GHCR_USERNAME`
 и публичную конфигурацию. Изменение схемы требует согласованно обновить manifest, workflow и
 инвентарь; не создавайте альтернативный источник секретов.
 
@@ -143,7 +138,6 @@ not necessarily the only permitted reader.
 | `PHOTO_PROCESSING_WORKER_TOKEN` | Processing maintainer | Worker-token rotation, access removal, or suspected disclosure |
 | `SELFIE_FEEDBACK_S3_ACCESS_KEY_ID` | Selfie feedback maintainer | Object Storage key rotation, scope change, or suspected disclosure |
 | `SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY` | Selfie feedback maintainer | Object Storage key rotation, scope change, or suspected disclosure |
-| `VM_SSH_KEY` | Deployment operations maintainer | SSH key rotation, lost runner access, VM replacement, or suspected disclosure |
 | `GHCR_READ_TOKEN` | Registry maintainer | Token expiry, scope change, suspected disclosure, or registry access removal |
 | `YANDEX_MONITORING_API_KEY` | Monitoring maintainer | Monitoring API-key rotation, scope change, or suspected disclosure |
 | `GALLERY_CDN_TOKEN_SECRET` | Gallery delivery maintainer | CDN token-key rotation, CDN replacement, or suspected disclosure |
@@ -159,5 +153,5 @@ After an approved operation, protected evidence may contain only secret ID, non-
 key names, timestamps, operator identity, consumer, and sanitized stage code. It must never contain
 a payload value, token, key material, response body, or temporary-file path.
 
-The manual public-probe deployment projects only `VM_SSH_KEY`. Its probe runtime uses the
+The manual public-probe deployment projects the common technical SSH credential. Its probe runtime uses the
 existing VM metadata identity; no Lockbox payload or API key is copied to the host package.

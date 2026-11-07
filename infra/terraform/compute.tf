@@ -37,5 +37,9 @@ resource "yandex_compute_instance" "app" {
     enable-oslogin     = "false"
   }
 
+  lifecycle {
+    ignore_changes = [metadata["findme-ssh-host-key"]]
+  }
+
   depends_on = [yandex_resourcemanager_folder_iam_member.backup_agent]
 }

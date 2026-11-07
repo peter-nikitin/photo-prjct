@@ -74,7 +74,7 @@ def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_
     assert remote_preflight["name"] == "Verify read-only remote preflight"
     assert remote_preflight["env"] == {
         "VM_HOST": "${{ vars.VM_HOST }}",
-        "VM_USER": "${{ vars.VM_USER }}",
+        "VM_USER": "deploy",
         "VM_SSH_KNOWN_HOSTS": "${{ vars.VM_SSH_KNOWN_HOSTS }}",
     }
     assert remote_preflight["run"].strip() == "\n".join(

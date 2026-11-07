@@ -51,7 +51,19 @@ def _resolver_step(
 def test_generic_workflows_use_only_the_canonical_secret_consumers() -> None:
     deploy = _workflow("deploy.yml")
     monitor = _workflow("monitor-public-health.yml")
+    image_origin = _workflow("deploy-image-origin.yml")
+    public_probe = _workflow("deploy-public-probe.yml")
 
+    for workflow in (deploy, image_origin, public_probe):
+        assert workflow["env"]["FINDME_DEPLOY_SSH_PUBLIC_KEY"] == (
+            "${{ vars.INFRA_SSH_PUBLIC_KEY }}"
+        )
+        serialized = str(workflow)
+        assert "VM_USER'" in serialized and "'deploy'" in serialized
+        assert "${{ vars.VM_USER }}" not in serialized
+        assert "${{ vars.IMAGE_ORIGIN_VM_USER }}" not in serialized
+    for workflow in (image_origin, public_probe):
+        assert "IMAGE_ORIGIN_VM_USER'" in str(workflow)
     assert set(deploy[True]) == {"workflow_dispatch"}
     assert deploy["name"] == "Deploy"
     assert deploy["concurrency"]["group"] == "deploy"

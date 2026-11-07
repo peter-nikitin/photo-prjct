@@ -39,9 +39,15 @@ PostgreSQL — источник истины для состояний и рез
 plan и стоимость, а merge применяет одобренный plan и запускает Ansible для подготовки ОС.
 Workflow не строит образы, не размещает runtime package и не запускает базу, приложение,
 обработчики или восстановление данных. Cloud-init и Ansible создают отдельные SSH-идентичности
-для технического пользователя `deploy` и оператора `petrnikitin`; Actions получает только
-технический ключ из Lockbox. Границы доступа и выдача операторского ключа описаны в
-[инвентаре секретов](runbooks/environment-secrets-inventory.md#infrastructure-ssh-access).
+для технического пользователя `deploy` и оператора `petrnikitin`. Все пайплайны используют
+одну техническую пару через общий `scripts/run-with-environment-secrets.py`; административный
+ключ доступен только оператору. Источники и потребители закреплены в `deploy/environment-secrets.json`.
+Границы доступа описаны в [инвентаре секретов](runbooks/environment-secrets-inventory.md#infrastructure-ssh-access).
+
+Завершение создания VM регистрирует её ED25519 host key: стандартные OpenSSH-утилиты сверяют
+ключ SSH с аутентифицированным serial output. Проверенный открытый ключ сохраняется в metadata
+VM; обычные запуски получают текущий IP и сохранённый ключ через Compute API, без повторного
+разбора консоли. Terraform игнорирует только это вычисленное поле metadata.
 
 <a id="accepted-recovery-target"></a>
 ## Принятые решения и следующие этапы

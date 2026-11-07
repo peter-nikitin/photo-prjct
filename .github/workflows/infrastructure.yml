@@ -246,20 +246,45 @@ jobs:
           terraform -chdir=infra/terraform output -json > /tmp/findme-outputs.json
       - name: Install Ansible 2.19.3
         run: python -m pip install ansible-core==2.19.3
-      - name: Trust public host key from authenticated VM serial output
+      - name: Inspect VM SSH registration
+        id: host_metadata
         run: |
           set -euo pipefail
-          host="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["ssh_host"]["value"])')"
           vm="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["vm_id"]["value"])')"
-          python infra/ci/known_hosts.py "$vm" "$host" /tmp/findme-known-hosts
-          echo "$host" > /tmp/findme-host
-      - name: Fetch the deploy SSH key from its Lockbox secret
-        env:
-          FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+          response="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $YC_TOKEN" \
+            "https://compute.api.cloud.yandex.net/compute/v1/instances/$vm?view=FULL")"
+          present="$(jq -r '(.metadata // {}) | has("findme-ssh-host-key")' <<< "$response")"
+          if [ "$present" = false ]; then
+            echo 'registration_required=true' >> "$GITHUB_OUTPUT"
+          else
+            key="$(jq -r '.metadata["findme-ssh-host-key"]' <<< "$response")"
+            umask 077
+            printf '%s\n' "$key" > /tmp/findme-saved-host-key
+            fingerprints="$(ssh-keygen -l -E sha256 -f /tmp/findme-saved-host-key)"
+            [ "$(printf '%s\n' "$fingerprints" | wc -l | tr -d ' ')" = 1 ]
+            [[ "$fingerprints" == *'(ED25519)'* ]]
+            echo 'registration_required=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Register VM SSH host key
+        if: steps.host_metadata.outputs.registration_required == 'true'
+        run: python infra/ci/register_vm_ssh.py "$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["vm_id"]["value"])')"
+      - name: Load VM SSH host key
         run: |
           set -euo pipefail
-          secret_id="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["deploy_ssh_secret_id"]["value"])')"
-          python infra/ci/lockbox.py "$secret_id" deploy "$FINDME_DEPLOY_SSH_PUBLIC_KEY" /tmp/findme-ssh-key
+          vm="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["vm_id"]["value"])')"
+          response="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $YC_TOKEN" \
+            "https://compute.api.cloud.yandex.net/compute/v1/instances/$vm?view=FULL")"
+          host="$(jq -er '.networkInterfaces[0].primaryV4Address.oneToOneNat.address' <<< "$response")"
+          key="$(jq -er '.metadata["findme-ssh-host-key"]' <<< "$response")"
+          umask 077
+          printf '%s\n' "$key" > /tmp/findme-saved-host-key
+          fingerprints="$(ssh-keygen -l -E sha256 -f /tmp/findme-saved-host-key)"
+          [ "$(printf '%s\n' "$fingerprints" | wc -l | tr -d ' ')" = 1 ]
+          [[ "$fingerprints" == *'(ED25519)'* ]]
+          printf '%s %s\n' "$host" "$key" > /tmp/findme-known-hosts
+          printf '%s\n' "$host" > /tmp/findme-host
       - name: Configure host OS with Ansible only
         env:
           FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
@@ -267,19 +292,25 @@ jobs:
         run: |
           set -euo pipefail
           host="$(cat /tmp/findme-host)"
+          export host
           printf '[recovery]\nrecovery-vm ansible_host=%s\n' "$host" > /tmp/findme-inventory
           umask 077
           python -c 'import json,os; print(json.dumps({"findme_deploy_ssh_public_key": os.environ["FINDME_DEPLOY_SSH_PUBLIC_KEY"], "findme_admin_ssh_public_key": os.environ["FINDME_ADMIN_SSH_PUBLIC_KEY"]}))' > /tmp/findme-ansible-vars.json
-          ssh -i /tmp/findme-ssh-key \
-            -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
-            -o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
-            "deploy@$host" 'test "$(id -un)" = deploy && sudo -n true'
-          ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook -i /tmp/findme-inventory -u deploy \
-            -e @/tmp/findme-ansible-vars.json \
-            --private-key /tmp/findme-ssh-key \
-            --ssh-common-args '-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes' \
-            infra/ansible/site.yml
-          echo 'Terraform apply and host OS preparation completed. Application services and data restore were not started.' >> "$GITHUB_STEP_SUMMARY"
+          python scripts/run-with-environment-secrets.py \
+            --consumer infrastructure-ansible \
+            --identity iam-token \
+            -- bash -euo pipefail -c '
+              ssh -i "$VM_SSH_KEY_FILE" \
+                -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 \
+                -o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
+                "deploy@$host" '\''test "$(id -un)" = deploy && sudo -n true'\''
+              ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook -i /tmp/findme-inventory -u deploy \
+                -e @/tmp/findme-ansible-vars.json \
+                --private-key "$VM_SSH_KEY_FILE" \
+                --ssh-common-args '\''-o UserKnownHostsFile=/tmp/findme-known-hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes'\'' \
+                infra/ansible/site.yml
+              echo '\''Terraform apply and host OS preparation completed. Application services and data restore were not started.'\'' >> "$GITHUB_STEP_SUMMARY"
+            '
       - name: Remove temporary SSH credential files
         if: always()
-        run: rm -f /tmp/findme-ssh-key /tmp/findme-known-hosts /tmp/findme-host /tmp/findme-ansible-vars.json
+        run: rm -f /tmp/findme-saved-host-key /tmp/findme-known-hosts /tmp/findme-host /tmp/findme-ansible-vars.json

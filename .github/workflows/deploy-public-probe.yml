@@ -1,5 +1,8 @@
 name: Deploy public health probe
 
+env:
+  FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -66,10 +69,10 @@ jobs:
           PUBLIC_PROBE_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
           PUBLIC_PROBE_ACTION: ${{ github.event_name == 'push' && 'install' || inputs.action }}
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           IMAGE_ORIGIN_VM_HOST: ${{ vars.IMAGE_ORIGIN_VM_HOST }}
-          IMAGE_ORIGIN_VM_USER: ${{ vars.IMAGE_ORIGIN_VM_USER }}
+          IMAGE_ORIGIN_VM_USER: deploy
           IMAGE_ORIGIN_SSH_KNOWN_HOSTS: ${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}
         run: |
           python scripts/run-with-environment-secrets.py \
@@ -117,10 +120,10 @@ jobs:
           PUBLIC_PROBE_RELEASE: ${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}
           PUBLIC_PROBE_ACTION: reconcile-prometheus
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           IMAGE_ORIGIN_VM_HOST: ${{ vars.IMAGE_ORIGIN_VM_HOST }}
-          IMAGE_ORIGIN_VM_USER: ${{ vars.IMAGE_ORIGIN_VM_USER }}
+          IMAGE_ORIGIN_VM_USER: deploy
           IMAGE_ORIGIN_SSH_KNOWN_HOSTS: ${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}
         run: |
           python scripts/run-with-environment-secrets.py \

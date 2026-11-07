@@ -42,7 +42,6 @@ EXPECTED_SECRET_KEYS = {
     "PHOTO_IMPORT_WORKER_TOKEN",
     "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID",
     "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY",
-    "VM_SSH_KEY",
     "GHCR_READ_TOKEN",
     "YANDEX_MONITORING_API_KEY",
     "GALLERY_CDN_TOKEN_SECRET",
@@ -97,14 +96,13 @@ IMAGE_ORIGIN_KEYS = {
     "IMAGE_ORIGIN_HEADER_SECRET",
     "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
     "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
-    "VM_SSH_KEY",
 }
 IMAGE_DELIVERY_PROVISION_KEYS = {
     "GALLERY_CDN_TOKEN_SECRET",
     "IMAGE_ORIGIN_HEADER_SECRET",
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
 }
-IMAGE_ORIGIN_PROJECTED_KEYS = (IMAGE_ORIGIN_KEYS - {"VM_SSH_KEY"}) | {"VM_SSH_KEY_FILE"}
+IMAGE_ORIGIN_PROJECTED_KEYS = IMAGE_ORIGIN_KEYS | {"VM_SSH_KEY_FILE"}
 
 
 @pytest.fixture(scope="module")
@@ -150,17 +148,19 @@ def _metadata(
     *,
     version: str | None = "version-exact",
     payload_entry_keys: set[str] | None = None,
+    secret_id: str = "e6q85jjl76r45maigtfb",
+    folder_id: str = "b1g2qttgfhb4gdunvlge",
     **overrides: Any,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
-        "id": "e6q85jjl76r45maigtfb",
-        "folderId": "b1g2qttgfhb4gdunvlge",
+        "id": secret_id,
+        "folderId": folder_id,
         "status": "ACTIVE",
     }
     if version is not None:
         result["currentVersion"] = {
             "id": version,
-            "secretId": "e6q85jjl76r45maigtfb",
+            "secretId": secret_id,
             "status": "ACTIVE",
             "payloadEntryKeys": sorted(
                 EXPECTED_SECRET_KEYS if payload_entry_keys is None else payload_entry_keys
@@ -230,6 +230,33 @@ def _run_main(
     command: list[str] | None = None,
     binary_dir: Path | None = None,
 ) -> int:
+    credentials = json.loads(MANIFEST_PATH.read_text()).get("ssh_credentials", {})
+    credential_name = credentials.get("consumers", {}).get(consumer)
+    if credential_name is not None:
+        if not json.loads(MANIFEST_PATH.read_text())["consumers"].get(consumer):
+            http.responses.clear()
+        source = credentials["sources"][credential_name]
+        public_key = "ssh-ed25519 reviewed-test-key"
+        monkeypatch.setenv(source["public_key_environment"], public_key)
+        monkeypatch.setattr(resolver, "_derive_public_key", lambda _private: public_key)
+        secret_id = source["secret_id"]
+        folder_id = source["folder_id"]
+        http.responses.extend(
+            [
+                _metadata(
+                    payload_entry_keys={"ssh_private_key", "ssh_public_key", "ssh_user"},
+                    secret_id=secret_id,
+                    folder_id=folder_id,
+                ),
+                _payload(
+                    {
+                        "ssh_private_key": "test-private-key",
+                        "ssh_public_key": public_key,
+                        "ssh_user": source["expected_user"],
+                    }
+                ),
+            ]
+        )
     binary_dir = binary_dir or _fake_yc(tmp_path)
     monkeypatch.setenv("PATH", f"{binary_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(resolver, "urlopen", http)
@@ -275,12 +302,24 @@ def test_manifest_declares_complete_schema_and_closed_projections(
     assert {
         key for key, entry in entries.items() if entry["required"] is True
     } == REQUIRED_SECRET_KEYS
-    assert entries["VM_SSH_KEY"] == {
-        "key": "VM_SSH_KEY",
+    assert "VM_SSH_KEY" not in entries
+    assert manifest["ssh_credentials"]["sources"]["technical-deploy"] == {
+        "secret_id": "e6q12ru8opfn2sl91so3",
+        "folder_id": "b1g2qttgfhb4gdunvlge",
+        "expected_user": "deploy",
+        "public_key_environment": "FINDME_DEPLOY_SSH_PUBLIC_KEY",
         "target": "VM_SSH_KEY_FILE",
-        "type": "binary",
-        "required": True,
-        "local": False,
+    }
+    assert manifest["ssh_credentials"]["sources"]["personal-admin"]["secret_id"] == (
+        "e6qes463bl6r09r72580"
+    )
+    assert manifest["ssh_credentials"]["consumers"] == {
+        "deploy": "technical-deploy",
+        "remote-check": "technical-deploy",
+        "image-origin": "technical-deploy",
+        "public-probe-deploy": "technical-deploy",
+        "infrastructure-ansible": "technical-deploy",
+        "operator-admin-key": "personal-admin",
     }
     for key in (
         "PHOTO_PROCESSING_FLEET_TOKEN",
@@ -301,9 +340,9 @@ def test_manifest_declares_complete_schema_and_closed_projections(
     assert {name: set(keys) for name, keys in manifest["consumers"].items()} == {
         "local-web": LOCAL_WEB_KEYS,
         "deploy": DEPLOY_KEYS,
-        "remote-check": {"VM_SSH_KEY"},
+        "remote-check": set(),
         "public-monitor": {"YANDEX_MONITORING_API_KEY"},
-        "public-probe-deploy": {"VM_SSH_KEY"},
+        "public-probe-deploy": set(),
         "image-origin": IMAGE_ORIGIN_KEYS,
         "image-delivery-provision": IMAGE_DELIVERY_PROVISION_KEYS,
     }
@@ -492,10 +531,6 @@ def test_deploy_consumer_accepts_dark_payload_without_optional_entries(
         (lambda payload: payload["entries"].pop(0), "missing_entry"),
         (lambda payload: payload["entries"].append(dict(payload["entries"][0])), "duplicate_entry"),
         (
-            lambda payload: payload["entries"].append({"key": "UNREVIEWED", "textValue": "x"}),
-            "unknown_entry",
-        ),
-        (
             lambda payload: payload["entries"].__setitem__(
                 0, {"key": payload["entries"][0]["key"], "textValue": ""}
             ),
@@ -556,6 +591,91 @@ def test_invalid_payload_schema_fails_before_child(
     assert not any(str(value) in captured.err for value in values.values())
 
 
+def test_removed_application_ssh_entry_is_ignored_and_not_projected(
+    resolver: ModuleType,
+    manifest: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    values = _sentinel_values(manifest)
+    values["VM_SSH_KEY"] = "obsolete application credential"
+    result_path = tmp_path / "projected.json"
+    http = _HttpBoundary(
+        [
+            _metadata(payload_entry_keys=EXPECTED_SECRET_KEYS | {"VM_SSH_KEY"}),
+            _payload(values),
+        ]
+    )
+    checker = (
+        "import json,os,pathlib,sys; "
+        "pathlib.Path(sys.argv[1]).write_text(pathlib.Path(os.environ['FINDME_ENV_FILE']).read_text())"
+    )
+
+    assert (
+        _run_main(
+            resolver,
+            monkeypatch,
+            tmp_path,
+            http,
+            consumer="deploy",
+            command=[sys.executable, "-c", checker, str(result_path)],
+        )
+        == 0
+    )
+    projection = result_path.read_text()
+    assert 'VM_SSH_KEY="obsolete application credential"' not in projection
+    assert "VM_SSH_KEY_FILE=" in projection
+
+
+@pytest.mark.parametrize(
+    ("stored_user", "stored_public", "derived_public"),
+    [
+        ("unexpected-user", "ssh-ed25519 reviewed-test-key", "ssh-ed25519 reviewed-test-key"),
+        ("deploy", "ssh-ed25519 other-key", "ssh-ed25519 reviewed-test-key"),
+        ("deploy", "ssh-ed25519 reviewed-test-key", "ssh-ed25519 other-key"),
+    ],
+)
+def test_ssh_credential_requires_the_reviewed_user_and_public_key(
+    resolver: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    stored_user: str,
+    stored_public: str,
+    derived_public: str,
+) -> None:
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    source = manifest["ssh_credentials"]["sources"]["technical-deploy"]
+    public_key = "ssh-ed25519 reviewed-test-key"
+    monkeypatch.setenv(source["public_key_environment"], public_key)
+    monkeypatch.setattr(resolver, "_derive_public_key", lambda _private: derived_public)
+    payload = _payload(
+        {
+            "ssh_private_key": "private-key",
+            "ssh_public_key": stored_public,
+            "ssh_user": stored_user,
+        }
+    )
+    http = _HttpBoundary(
+        [
+            _metadata(
+                payload_entry_keys={"ssh_private_key", "ssh_public_key", "ssh_user"},
+                secret_id=source["secret_id"],
+            ),
+            payload,
+        ]
+    )
+    binary_dir = _fake_yc(tmp_path)
+    monkeypatch.setenv("PATH", f"{binary_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(resolver, "urlopen", http)
+
+    assert (
+        resolver.main(["--consumer", "infrastructure-ansible", "--identity", "yc", "--", "true"])
+        == 2
+    )
+    assert "ssh_identity_mismatch" in capsys.readouterr().err
+
+
 def test_text_and_binary_values_preserve_boundaries_without_shell_evaluation(
     resolver: ModuleType,
     manifest: dict[str, Any],
@@ -576,7 +696,6 @@ def test_text_and_binary_values_preserve_boundaries_without_shell_evaluation(
             "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID": "# hash ; semicolon & amp | pipe < >",
             "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY": "tabs\tand newlines\n",
             "GHCR_READ_TOKEN": " $(touch nope) `id` * ? [ ] ! ",
-            "VM_SSH_KEY": b"\x00binary\n'\"=$HOME;$(touch nope)\xff",
         }
     )
     compose_path = tmp_path / "compose.yml"
@@ -630,7 +749,7 @@ def test_text_and_binary_values_preserve_boundaries_without_shell_evaluation(
         if completed.returncode != 0:
             raise SystemExit(completed.returncode)
         environment = json.loads(completed.stdout)["services"]["parser"]["environment"]
-        binary_path = next(environment_path.parent.glob("binary-*"))
+        binary_path = pathlib.Path(os.environ["VM_SSH_KEY_FILE"])
         binary_result = {
             "value": base64.b64encode(binary_path.read_bytes()).decode(),
             "mode": stat.S_IMODE(binary_path.stat().st_mode),
@@ -677,10 +796,8 @@ def test_text_and_binary_values_preserve_boundaries_without_shell_evaluation(
     }
     assert compose_environment == canonical_expected
     binary_result = json.loads(binary_result_path.read_text())
-    binary_value = values["VM_SSH_KEY"]
-    assert isinstance(binary_value, bytes)
     assert binary_result == {
-        "value": base64.b64encode(binary_value).decode(),
+        "value": base64.b64encode(b"test-private-key").decode(),
         "mode": 0o600,
         "environment_mode": 0o600,
     }
@@ -701,6 +818,9 @@ def test_child_environment_cannot_bypass_projection_or_environment_files(
     target_names = {entry["target"] for entry in manifest["entries"]}
     override_names = set(manifest["local_overrides"])
     scrubbed_names = entry_names | target_names | override_names
+    scrubbed_names.add("YC_TOKEN")
+    scrubbed_names.add("FINDME_DEPLOY_SSH_PUBLIC_KEY")
+    scrubbed_names.add("INFRA_ADMIN_SSH_PUBLIC_KEY")
     for name in scrubbed_names:
         monkeypatch.setenv(name, f"stale-parent-{name}")
     monkeypatch.setenv("SAFE_PARENT_VALUE", "preserved-non-secret")
@@ -744,7 +864,7 @@ def test_child_environment_cannot_bypass_projection_or_environment_files(
     ("consumer", "expected"),
     [
         ("local-web", LOCAL_WEB_KEYS),
-        ("deploy", (DEPLOY_KEYS - {"VM_SSH_KEY"}) | {"VM_SSH_KEY_FILE"}),
+        ("deploy", DEPLOY_KEYS | {"VM_SSH_KEY_FILE"}),
         ("remote-check", {"VM_SSH_KEY_FILE"}),
         ("public-monitor", {"YANDEX_MONITORING_API_KEY"}),
         ("image-origin", IMAGE_ORIGIN_PROJECTED_KEYS),
@@ -955,6 +1075,7 @@ def _signal_wrapper(tmp_path: Path) -> Path:
             module = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = module
             spec.loader.exec_module(module)
+            module._derive_public_key = lambda _private: os.environ["TEST_PUBLIC_KEY"]
             metadata = json.loads(os.environ["TEST_METADATA"])
             payload = json.loads(os.environ["TEST_PAYLOAD"])
             class Response:
@@ -988,7 +1109,13 @@ def test_signal_is_forwarded_and_private_files_are_removed(
     tmp_path: Path,
     signal_number: signal.Signals,
 ) -> None:
-    values = _sentinel_values(manifest)
+    source = manifest["ssh_credentials"]["sources"]["technical-deploy"]
+    public_key = "ssh-ed25519 signal-test-key"
+    credential_values = {
+        "ssh_private_key": "signal-test-private-key",
+        "ssh_public_key": public_key,
+        "ssh_user": "deploy",
+    }
     wrapper = _signal_wrapper(tmp_path)
     binary_dir = _fake_yc(tmp_path)
     ready_path = tmp_path / "ready.json"
@@ -1022,8 +1149,16 @@ def test_signal_is_forwarded_and_private_files_are_removed(
         **os.environ,
         "PATH": f"{binary_dir}{os.pathsep}{os.environ['PATH']}",
         "TMPDIR": str(tmp_path),
-        "TEST_METADATA": json.dumps(_metadata()),
-        "TEST_PAYLOAD": json.dumps(_payload(values)),
+        "TEST_METADATA": json.dumps(
+            _metadata(
+                payload_entry_keys=set(credential_values),
+                secret_id=source["secret_id"],
+                folder_id=source["folder_id"],
+            )
+        ),
+        "TEST_PAYLOAD": json.dumps(_payload(credential_values)),
+        "TEST_PUBLIC_KEY": public_key,
+        "FINDME_DEPLOY_SSH_PUBLIC_KEY": public_key,
     }
     process = subprocess.Popen(
         command, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -1040,7 +1175,7 @@ def test_signal_is_forwarded_and_private_files_are_removed(
     assert process.returncode == 128 + signal_number
     assert all(not Path(path).exists() for path in json.loads(ready_path.read_text()))
     assert list(tmp_path.glob("findme-environment-*")) == []
-    for value in values.values():
+    for value in credential_values.values():
         sentinel = value.decode(errors="ignore") if isinstance(value, bytes) else value
         assert sentinel not in stdout
         assert sentinel not in stderr
@@ -1091,7 +1226,13 @@ def test_signal_between_materialization_and_child_start_removes_private_files(
     manifest: dict[str, Any],
     tmp_path: Path,
 ) -> None:
-    values = _sentinel_values(manifest)
+    source = manifest["ssh_credentials"]["sources"]["technical-deploy"]
+    public_key = "ssh-ed25519 signal-test-key"
+    credential_values = {
+        "ssh_private_key": "signal-test-private-key",
+        "ssh_public_key": public_key,
+        "ssh_user": "deploy",
+    }
     wrapper = _signal_wrapper(tmp_path)
     binary_dir = _fake_yc(tmp_path)
     ready_path = tmp_path / "materialized"
@@ -1111,8 +1252,16 @@ def test_signal_between_materialization_and_child_start_removes_private_files(
         **os.environ,
         "PATH": f"{binary_dir}{os.pathsep}{os.environ['PATH']}",
         "TMPDIR": str(tmp_path),
-        "TEST_METADATA": json.dumps(_metadata()),
-        "TEST_PAYLOAD": json.dumps(_payload(values)),
+        "TEST_METADATA": json.dumps(
+            _metadata(
+                payload_entry_keys=set(credential_values),
+                secret_id=source["secret_id"],
+                folder_id=source["folder_id"],
+            )
+        ),
+        "TEST_PAYLOAD": json.dumps(_payload(credential_values)),
+        "TEST_PUBLIC_KEY": public_key,
+        "FINDME_DEPLOY_SSH_PUBLIC_KEY": public_key,
         "TEST_MATERIALIZED_READY": str(ready_path),
     }
     process = subprocess.Popen(
@@ -1131,7 +1280,7 @@ def test_signal_between_materialization_and_child_start_removes_private_files(
         assert process.returncode == 128 + signal.SIGTERM
         assert not environment_path.exists()
         assert list(tmp_path.glob("findme-environment-*")) == []
-        assert all(str(value) not in stdout + stderr for value in values.values())
+        assert all(str(value) not in stdout + stderr for value in credential_values.values())
     finally:
         if process.poll() is None:
             process.kill()

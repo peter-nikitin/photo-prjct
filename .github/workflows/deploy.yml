@@ -1,5 +1,8 @@
 name: Deploy
 
+env:
+  FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -196,7 +199,7 @@ jobs:
       - name: Stage privileged observability source
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
           OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-release.outputs.observability_source_manifest_sha256 }}
@@ -416,7 +419,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_paused_observability_release }}
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
           OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-release.outputs.observability_source_manifest_sha256 }}
@@ -429,7 +432,7 @@ jobs:
         if: ${{ needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' }}
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           APP_IMAGE: ${{ needs.build.outputs.app_image }}
           DEPLOY_WEB: ${{ needs.classify-release.outputs.web_changed }}
@@ -511,7 +514,7 @@ jobs:
         if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           WORKER_POOL_FOLDER_ID: ${{ vars.WORKER_POOL_FOLDER_ID }}
           WORKER_POOL_BULK_GROUP_ID: ${{ vars.WORKER_POOL_BULK_GROUP_ID }}
@@ -527,7 +530,7 @@ jobs:
         if: ${{ inputs.verify_private_storage }}
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           PRIVATE_MEDIA_ALLOWED_ORIGINS: ${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}
         run: |
@@ -539,7 +542,7 @@ jobs:
         if: ${{ inputs.verify_selfie_search_storage }}
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
         run: |
           python scripts/run-with-environment-secrets.py \
@@ -550,7 +553,7 @@ jobs:
         if: ${{ inputs.verify_selfie_feedback_storage }}
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}
           SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}
@@ -710,7 +713,7 @@ jobs:
       - name: Configure Unified Agent
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
           YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
         run: |
@@ -754,7 +757,7 @@ jobs:
       - name: Verify read-only remote preflight
         env:
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
         run: |
           python scripts/run-with-environment-secrets.py \
@@ -779,7 +782,7 @@ jobs:
         env:
           RELEASE_SHA: ${{ github.sha }}
           VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
+          VM_USER: deploy
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
         run: |
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"

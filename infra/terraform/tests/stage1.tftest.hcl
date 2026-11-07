@@ -10,7 +10,6 @@ run "one_recovery_host" {
     ubuntu_image_id      = "fd8p50cvjmb6fo0ik4hk"
     ssh_public_key       = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKh9rmX/xkzdkVDBA+LTwNzH9MNjToOjzXvrYZuY7WmN test"
     admin_ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKh9rmX/xkzdkVDBA+LTwNzH9MNjToOjzXvrYZuY7WmN admin"
-    deploy_ssh_secret_id = "e6q12ru8opfn2sl91so3"
     ssh_cidrs            = ["203.0.113.8/32"]
     boot_disk_gb         = 30
     postgres_disk_gb     = 10

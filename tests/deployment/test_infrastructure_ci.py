@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -344,109 +345,6 @@ def test_github_old_run_mutable_pr_relation_cannot_approve_new_head() -> None:
         release.choose_plan(pr, [comment], run, artifacts, True)
 
 
-def test_serial_host_key_is_bound_to_terraform_ip() -> None:
-    known_hosts = load_helper("known_hosts")
-    key = "AAAAC3NzaC1lZDI1NTE5AAAAIPmAFnVmG3NroaJujT4zRBVqKFVNH9cChVKYwYFtmlNt"
-    serial = (
-        "boot output\r\n-----BEGIN SSH HOST KEY KEYS-----\r\n"
-        "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAI"
-        "bmlzdHAyNTYAAABBBK+HM/K21PsGR+7xn/bbyU3KEAh+dn4joM+SPmLHe"
-        "jg1tPtVMd3BHt/moxV/7tjDRmWyFOP7QcIMA8X0D5e3GEE= root@vm\r\n"
-        f"ssh-ed25519 {key} root@vm\r\n"
-        "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDfhmyq root@vm\r\n"
-        "-----END SSH HOST KEY KEYS-----\r\n"
-    )
-    assert known_hosts.known_host(serial, "192.0.2.44") == (f"192.0.2.44 ssh-ed25519 {key}\n")
-    with pytest.raises(ValueError, match="missing or conflicting"):
-        known_hosts.known_host(
-            serial.replace(
-                "-----END SSH HOST KEY KEYS-----",
-                f"ssh-ed25519 {key[:-2]}AA\n-----END SSH HOST KEY KEYS-----",
-            ),
-            "192.0.2.44",
-        )
-
-
-def test_lockbox_deploy_key_requires_exact_expected_credentials(tmp_path: Path) -> None:
-    lockbox = load_helper("lockbox")
-    private_key = "private-key-material"
-    payload = {
-        "entries": [
-            {"key": "ssh_private_key", "textValue": private_key},
-            {"key": "ssh_public_key", "textValue": "ssh-ed25519 AAAA public"},
-            {"key": "ssh_user", "textValue": "deploy"},
-        ]
-    }
-    target = tmp_path / "deploy-key"
-    lockbox.write_private_key(
-        payload,
-        expected_user="deploy",
-        expected_public_key="ssh-ed25519 AAAA public",
-        target=target,
-        derive_public_key=lambda path: "ssh-ed25519 AAAA public",
-    )
-    assert target.read_text() == private_key
-    assert target.stat().st_mode & 0o777 == 0o600
-
-    with pytest.raises(ValueError, match="credentials do not match"):
-        lockbox.write_private_key(
-            payload,
-            expected_user="petrnikitin",
-            expected_public_key="ssh-ed25519 AAAA public",
-            target=target,
-            derive_public_key=lambda path: "ssh-ed25519 AAAA public",
-        )
-
-
-def test_lockbox_deploy_key_checks_the_private_key_with_ssh_keygen(tmp_path: Path) -> None:
-    lockbox = load_helper("lockbox")
-    generated = tmp_path / "generated"
-    subprocess.run(
-        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    private_key = generated.read_text()
-    public_key = " ".join(generated.with_suffix(".pub").read_text().split()[:2])
-    payload = {
-        "entries": [
-            {"key": "ssh_private_key", "textValue": private_key},
-            {"key": "ssh_public_key", "textValue": public_key},
-            {"key": "ssh_user", "textValue": "deploy"},
-        ]
-    }
-    target = tmp_path / "deploy-key"
-    lockbox.write_private_key(
-        payload,
-        expected_user="deploy",
-        expected_public_key=public_key,
-        target=target,
-    )
-    assert target.read_text() == private_key
-    assert target.stat().st_mode & 0o777 == 0o600
-
-    with pytest.raises(ValueError, match="credentials do not match"):
-        lockbox.write_private_key(
-            payload,
-            expected_user="deploy",
-            expected_public_key="ssh-ed25519 AAAA wrong",
-            target=tmp_path / "wrong-key",
-        )
-
-
-def test_lockbox_api_failure_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
-    lockbox = load_helper("lockbox")
-
-    def fail_request(*args, **kwargs):
-        raise OSError("synthetic-token leaked by transport")
-
-    monkeypatch.setattr(lockbox, "urlopen", fail_request)
-    with pytest.raises(ValueError, match="unable to read") as error:
-        lockbox.fetch_payload("e6q12ru8opfn2sl91so3", "synthetic-token")
-    assert "synthetic-token" not in str(error.value)
-
-
 def test_infrastructure_identity_loads_real_helper_before_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -481,10 +379,10 @@ def test_oidc_token_is_masked_before_runner_environment_write(
 def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
     source = (ROOT / "infra/terraform/project.tfvars").read_text()
-    assert "boot_disk_gb         = 30" in source
-    assert "postgres_disk_gb     = 10" in source
-    assert 'ssh_cidrs            = ["0.0.0.0/0"]' in source
-    assert 'deploy_ssh_secret_id = "e6q12ru8opfn2sl91so3"' in source
+    assert re.search(r"(?m)^boot_disk_gb\s*=\s*30$", source)
+    assert re.search(r"(?m)^postgres_disk_gb\s*=\s*10$", source)
+    assert re.search(r'(?m)^ssh_cidrs\s*=\s*\["0\.0\.0\.0/0"\]$', source)
+    assert "deploy_ssh_secret_id" not in source
     release = workflow["jobs"]["release"]
     assert "TF_VAR_boot_disk_gb" not in release["env"]
     assert "TF_VAR_postgres_disk_gb" not in release["env"]
@@ -513,28 +411,29 @@ def test_ansible_owns_both_reviewed_ssh_identities() -> None:
     )
     assert "-e @/tmp/findme-ansible-vars.json" in configure["run"]
     run = configure["run"]
-    preflight_at = run.index("ssh -i /tmp/findme-ssh-key")
+    preflight_at = run.index('ssh -i "$VM_SSH_KEY_FILE"')
+    assert "--consumer infrastructure-ansible" in run
+    assert "--identity iam-token" in run
     assert "-o ConnectTimeout=10" in run
     assert "-o ConnectionAttempts=1" in run
     assert "-o StrictHostKeyChecking=yes" in run
     assert "-o IdentitiesOnly=yes" in run
     assert 'test "$(id -un)" = deploy && sudo -n true' in run
     assert preflight_at < run.index("ansible-playbook")
+    syntax = subprocess.run(["bash", "-n"], input=run, text=True, capture_output=True)
+    assert syntax.returncode == 0, syntax.stderr
     release = workflow["jobs"]["release"]
     assert release["env"]["TF_VAR_ssh_public_key"] == "${{ vars.INFRA_SSH_PUBLIC_KEY }}"
     assert release["env"]["TF_VAR_admin_ssh_public_key"] == (
         "${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}"
     )
-    fetch = next(
-        step
+    assert not any(
+        step.get("name") == "Fetch the deploy SSH key from its Lockbox secret"
         for step in release["steps"]
-        if step.get("name") == "Fetch the deploy SSH key from its Lockbox secret"
     )
-    assert "deploy_ssh_secret_id" in fetch["run"]
-    assert "VM_SSH_KEY" not in fetch["env"]
     cleanup = release["steps"][-1]
     assert cleanup["if"] == "always()"
-    assert "/tmp/findme-ssh-key" in cleanup["run"]
+    assert "/tmp/findme-saved-host-key" in cleanup["run"]
 
     tasks = yaml.safe_load((ROOT / "infra/ansible/roles/host/tasks/main.yml").read_text())
     copies = {

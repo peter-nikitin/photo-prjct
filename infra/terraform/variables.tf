@@ -45,16 +45,6 @@ variable "admin_ssh_public_key" {
   }
 }
 
-variable "deploy_ssh_secret_id" {
-  type        = string
-  description = "Existing Lockbox secret holding only the CI deploy SSH credentials."
-  validation {
-    condition     = can(regex("^[a-z0-9]{20}$", var.deploy_ssh_secret_id))
-    error_message = "Provide the reviewed deploy Lockbox secret ID."
-  }
-}
-
-
 variable "ssh_cidrs" {
   type        = list(string)
   description = "Reviewed administrative IPv4 source CIDRs in tracked project.tfvars. Stage 1 allows dynamic GitHub-hosted runner addresses with key-only SSH."

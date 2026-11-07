@@ -42,7 +42,6 @@ ORIGIN_KEYS = {
     "IMAGE_ORIGIN_HEADER_SECRET",
     "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
     "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
-    "VM_SSH_KEY",
 }
 IMAGE_DELIVERY_PROVISION_KEYS = {
     "GALLERY_CDN_TOKEN_SECRET",
@@ -397,6 +396,7 @@ def test_manifest_adds_exactly_six_optional_secrets_with_closed_consumers() -> N
     assert consumers["local-web"] & NEW_SECRET_KEYS == DJANGO_SIGNING_KEYS
     assert consumers["deploy"] & NEW_SECRET_KEYS == DJANGO_SIGNING_KEYS
     assert consumers["image-origin"] == ORIGIN_KEYS
+    assert manifest["ssh_credentials"]["consumers"]["image-origin"] == "technical-deploy"
     assert consumers["image-delivery-provision"] == IMAGE_DELIVERY_PROVISION_KEYS
 
 

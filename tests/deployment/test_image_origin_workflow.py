@@ -116,10 +116,10 @@ def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
         "IMAGE_ORIGIN_RELEASE": release,
         "IMAGE_ORIGIN_MONITORING_ONLY": monitoring,
         "VM_HOST": "${{ vars.VM_HOST }}",
-        "VM_USER": "${{ vars.VM_USER }}",
+        "VM_USER": "deploy",
         "VM_SSH_KNOWN_HOSTS": "${{ vars.VM_SSH_KNOWN_HOSTS }}",
         "IMAGE_ORIGIN_VM_HOST": "${{ vars.IMAGE_ORIGIN_VM_HOST }}",
-        "IMAGE_ORIGIN_VM_USER": "${{ vars.IMAGE_ORIGIN_VM_USER }}",
+        "IMAGE_ORIGIN_VM_USER": "deploy",
         "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}",
         "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
         "MEDIA_S3_PUBLIC_BUCKET": "${{ vars.MEDIA_S3_PUBLIC_BUCKET }}",
@@ -699,8 +699,8 @@ def test_manifest_allows_workflow_and_keeps_transport_key_out_of_runtime_contrac
         "IMAGE_ORIGIN_HEADER_SECRET",
         "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
         "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
-        "VM_SSH_KEY",
     }
+    assert manifest["ssh_credentials"]["consumers"]["image-origin"] == "technical-deploy"
     compose = (ROOT / "deploy/image-origin/compose.yml").read_text(encoding="utf-8")
     apply = (ROOT / "deploy/image-origin/apply.sh").read_text(encoding="utf-8")
     assert "VM_SSH_KEY" not in compose + apply

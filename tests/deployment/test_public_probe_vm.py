@@ -131,7 +131,8 @@ def test_service_and_workflow_contract():
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "--consumer public-probe-deploy" in workflow
     manifest = json.loads((ROOT / "deploy/environment-secrets.json").read_text())
-    assert manifest["consumers"]["public-probe-deploy"] == ["VM_SSH_KEY"]
+    assert manifest["consumers"]["public-probe-deploy"] == []
+    assert manifest["ssh_credentials"]["consumers"]["public-probe-deploy"] == "technical-deploy"
     assert (
         "peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main"
         in manifest["github_oidc"]["allowed_workflows"]

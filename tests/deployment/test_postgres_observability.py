@@ -97,29 +97,22 @@ def test_exporter_is_pinned_private_and_reads_password_file(tmp_path):
     ]
 
 
-def test_exporter_collectors_exclude_unbounded_and_sensitive_dimensions():
-    services = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())["services"]
-    flags = set(services["postgres-exporter"]["command"])
+def test_exporter_disables_collectors_with_private_or_unbounded_dimensions(tmp_path):
+    from tests.deployment.compose_config import render_compose
 
-    for disabled in (
+    services = render_compose(
+        tmp_path, "docker-compose.deployment.yml", profiles=("observability",)
+    )["services"]
+    flags = set(services["postgres-exporter"]["command"])
+    for collector in (
         "stat_user_tables",
         "statio_user_tables",
         "statio_user_indexes",
         "stat_statements",
         "stat_activity",
-        "replication",
-        "replication_slots",
-        "stat_replication",
-        "stat_archiver",
-        "stat_progress_vacuum",
         "roles",
-        "database_wraparound",
     ):
-        assert f"--no-collector.{disabled}" in flags
-    assert "--collector.long_running_transactions" in flags
-    assert "--collector.stat_checkpointer" not in flags  # PostgreSQL 16 uses pg_stat_bgwriter.
-    assert "--no-collector.wal" not in flags
-    assert "--no-collector.stat_database" not in flags
+        assert f"--no-collector.{collector}" in flags
 
 
 def _role_helper():

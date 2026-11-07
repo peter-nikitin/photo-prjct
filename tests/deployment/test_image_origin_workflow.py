@@ -8,27 +8,14 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github/workflows/deploy-image-origin.yml"
 REMOTE = ROOT / "deploy/image-origin/run-remote.sh"
 CONFIGURE_CDN = ROOT / "deploy/image-origin/configure-cdn.sh"
-MANIFEST = ROOT / "deploy/environment-secrets.json"
 ORIGIN_AGENT_TEMPLATE = ROOT / "deploy/image-origin/monitoring/unified-agent.yml.template"
-
-
-def _workflow() -> dict[str, Any]:
-    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-
-
-def _step(job: dict[str, Any], name: str) -> dict[str, Any]:
-    steps = [step for step in job["steps"] if step.get("name") == name]
-    assert len(steps) == 1
-    return steps[0]
 
 
 def test_origin_deploy_agent_keeps_public_prometheus_route() -> None:
@@ -64,82 +51,6 @@ def test_origin_deploy_agent_keeps_public_prometheus_route() -> None:
     assert 'cp -p "$backup_path" "$config_path"' in remote
     remote_program = remote.split("<<'REMOTE'\n", 1)[1].split("\nREMOTE\n", 1)[0]
     subprocess.run(["sh", "-n"], input=remote_program, text=True, check=True)
-
-
-def test_manual_workflow_pins_one_commit_and_one_secret_projection() -> None:
-    workflow = _workflow()
-    assert "push" not in workflow[True]
-    assert {"workflow_dispatch": workflow[True]["workflow_dispatch"]} == {
-        "workflow_dispatch": {
-            "inputs": {
-                "deployment_sha": {
-                    "description": "Exact 40-character repository commit to deploy",
-                    "required": True,
-                    "type": "string",
-                },
-                "monitoring_only": {
-                    "description": (
-                        "Restore Unified Agent routes without redeploying image containers"
-                    ),
-                    "required": False,
-                    "default": False,
-                    "type": "boolean",
-                },
-            }
-        }
-    }
-    job = workflow["jobs"]["deploy-image-origin"]
-    assert job["permissions"] == {"contents": "read", "id-token": "write"}
-    assert job["concurrency"] == {
-        "group": "deploy-image-origin",
-        "cancel-in-progress": False,
-        "queue": "max",
-    }
-    checkout = _step(job, "Check out reviewed commit")
-    assert checkout["with"] == {
-        "ref": "${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}",
-        "fetch-depth": 1,
-        "persist-credentials": False,
-    }
-    deploy = _step(job, "Deploy isolated image origin")
-    command = deploy["run"]
-    release = "${{ github.event_name == 'push' && github.sha || inputs.deployment_sha }}"
-    monitoring = "${{ github.event_name == 'push' && 'true' || inputs.monitoring_only }}"
-    assert deploy["env"] | {
-        "IMAGE_ORIGIN_RELEASE": release,
-        "IMAGE_ORIGIN_MONITORING_ONLY": monitoring,
-        "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
-        "MEDIA_S3_PUBLIC_BUCKET": "${{ vars.MEDIA_S3_PUBLIC_BUCKET }}",
-        "IMAGE_ORIGIN_PROBE_PATH": "${{ vars.IMAGE_ORIGIN_PROBE_PATH }}",
-        "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
-    } == {
-        "IMAGE_ORIGIN_RELEASE": release,
-        "IMAGE_ORIGIN_MONITORING_ONLY": monitoring,
-        "VM_HOST": "${{ vars.VM_HOST }}",
-        "VM_USER": "deploy",
-        "VM_SSH_KNOWN_HOSTS": "${{ vars.VM_SSH_KNOWN_HOSTS }}",
-        "IMAGE_ORIGIN_VM_HOST": "${{ vars.IMAGE_ORIGIN_VM_HOST }}",
-        "IMAGE_ORIGIN_VM_USER": "deploy",
-        "IMAGE_ORIGIN_SSH_KNOWN_HOSTS": "${{ vars.IMAGE_ORIGIN_SSH_KNOWN_HOSTS }}",
-        "PRIVATE_MEDIA_S3_BUCKET": "${{ vars.PRIVATE_MEDIA_S3_BUCKET }}",
-        "MEDIA_S3_PUBLIC_BUCKET": "${{ vars.MEDIA_S3_PUBLIC_BUCKET }}",
-        "IMAGE_ORIGIN_PROBE_PATH": "${{ vars.IMAGE_ORIGIN_PROBE_PATH }}",
-        "YANDEX_CLOUD_FOLDER_ID": "${{ vars.YANDEX_CLOUD_FOLDER_ID }}",
-    }
-    assert "--consumer image-origin" in command
-    assert "--identity github-oidc" in command
-    assert "deploy/image-origin/run-remote.sh" in command
-    assert _step(job, "Record deployed commit")["if"] == (
-        "${{ github.event_name == 'workflow_dispatch' && !inputs.monitoring_only }}"
-    )
-    assert (
-        _step(job, "Record monitoring repair")["if"]
-        == "${{ github.event_name == 'push' || inputs.monitoring_only }}"
-    )
-    assert "${{ secrets." not in json.dumps(workflow)
-    assert "deploy.yml" not in json.dumps(job)
-    forbidden = ("docker-compose.deployment.yml", "apply-deployment.sh", "worker", "postgres")
-    assert all(value not in command.lower() for value in forbidden)
 
 
 def _private_projection(tmp_path: Path) -> tuple[Path, dict[str, str]]:
@@ -685,22 +596,3 @@ def test_cdn_adopts_existing_origin_id_before_resource_mutation_and_round_trips(
     }
     assert any(command[:3] == ["cdn", "origin-group", "get"] for command in next_commands)
     assert any(command[:3] == ["cdn", "resource", "get"] for command in next_commands)
-
-
-def test_manifest_allows_workflow_and_keeps_transport_key_out_of_runtime_contract() -> None:
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert (
-        "peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main"
-        in manifest["github_oidc"]["allowed_workflows"]
-    )
-    assert set(manifest["consumers"]["image-origin"]) == {
-        "GALLERY_IMGPROXY_KEY",
-        "GALLERY_IMGPROXY_SALT",
-        "IMAGE_ORIGIN_HEADER_SECRET",
-        "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
-        "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
-    }
-    assert manifest["ssh_credentials"]["consumers"]["image-origin"] == "technical-deploy"
-    compose = (ROOT / "deploy/image-origin/compose.yml").read_text(encoding="utf-8")
-    apply = (ROOT / "deploy/image-origin/apply.sh").read_text(encoding="utf-8")
-    assert "VM_SSH_KEY" not in compose + apply

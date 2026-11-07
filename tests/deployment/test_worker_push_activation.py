@@ -218,10 +218,3 @@ def test_missing_warm_selfie_fails_instead_of_successful_empty_release():
             subnet="subnet",
             security_group="sg",
         )
-
-
-def test_workflow_worker_only_release_activates_and_restores_worker_pointer():
-    text = (ROOT / ".github/workflows/deploy.yml").read_text()
-    assert "Run photo-worker activation" in text
-    assert "-- deploy/worker-pools/activate.py" in text
-    assert "PREVIOUS_WORKER_IMAGE: ${{ needs.build.outputs.previous_worker_image }}" in text

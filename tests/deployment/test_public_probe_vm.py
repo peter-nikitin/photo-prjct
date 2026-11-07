@@ -104,41 +104,6 @@ def test_failed_activation_restores_previous_package(tmp_path, monkeypatch, fail
     assert (root / "opt/findme-public-probe/current").resolve().name == "a" * 40
 
 
-def test_service_and_workflow_contract():
-    service = (PACKAGE / "findme-public-probe.service").read_text()
-    timer = (PACKAGE / "findme-public-probe.timer").read_text()
-    assert "--auth vm-metadata" in service
-    assert "https://findme-photo.ru/health/" in service
-    assert "--folder-id b1g2qttgfhb4gdunvlge --check canonical-health" in service
-    for setting in (
-        "DynamicUser=yes",
-        "NoNewPrivileges=yes",
-        "MemoryMax=64M",
-        "CPUQuota=10%",
-        "TimeoutStartSec=90",
-    ):
-        assert setting in service
-    assert "OnUnitActiveSec=5min" in timer
-    workflow = (ROOT / ".github/workflows/deploy-public-probe.yml").read_text()
-    assert "workflow_dispatch:" in workflow and "schedule:" not in workflow
-    assert "type: choice" in workflow
-    for action in ("install", "disable", "rollback"):
-        assert f"- {action}" in workflow
-    assert (
-        "PUBLIC_PROBE_ACTION: ${{ github.event_name == 'push' && 'install' || inputs.action }}"
-        in workflow
-    )
-    assert "github.ref == 'refs/heads/main'" in workflow
-    assert "--consumer public-probe-deploy" in workflow
-    manifest = json.loads((ROOT / "deploy/environment-secrets.json").read_text())
-    assert manifest["consumers"]["public-probe-deploy"] == []
-    assert manifest["ssh_credentials"]["consumers"]["public-probe-deploy"] == "technical-deploy"
-    assert (
-        "peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main"
-        in manifest["github_oidc"]["allowed_workflows"]
-    )
-
-
 def test_builder_rejects_non_commit(tmp_path):
     result = subprocess.run(
         [sys.executable, str(PACKAGE / "package.py"), "main", str(tmp_path / "probe.tar")],

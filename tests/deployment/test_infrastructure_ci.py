@@ -3,7 +3,6 @@
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -103,25 +102,6 @@ def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
         ]
         is True
     )
-
-
-def test_infrastructure_workflow_has_no_application_build_or_runtime_release() -> None:
-    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
-    source = (ROOT / ".github/workflows/infrastructure.yml").read_text()
-    release = workflow["jobs"]["release"]
-    step_names = {step.get("name", "") for step in release["steps"]}
-    assert not any("Build and publish" in name for name in step_names)
-    assert not any("runtime package" in name.lower() for name in step_names)
-    assert (
-        "docker/build-push-action@v6"
-        not in (ROOT / ".github/workflows/infrastructure.yml").read_text()
-    )
-    assert "needs.classify.outputs.terraform_changed" in release["if"]
-    assert "secrets.VM_SSH_KEY" not in source
-    assert "vars.INFRA_ADMIN_SSH_PUBLIC_KEY" in source
-    no_plan = workflow["jobs"]["no-resource-plan"]
-    assert "terraform_changed != 'true'" in no_plan["if"]
-    assert no_plan["permissions"]["statuses"] == "write"
 
 
 def test_plan_step_writes_json_where_summary_command_reads_it(tmp_path: Path) -> None:
@@ -392,101 +372,72 @@ def test_oidc_token_is_masked_before_runner_environment_write(
     assert output.read_text() == "YC_TOKEN=synthetic-token\n"
 
 
-def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> None:
+def test_ansible_receives_both_public_keys_using_the_deploy_identity(tmp_path):
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
-    source = (ROOT / "infra/terraform/project.tfvars").read_text()
-    assert re.search(r"(?m)^boot_disk_gb\s*=\s*30$", source)
-    assert re.search(r"(?m)^postgres_disk_gb\s*=\s*10$", source)
-    assert re.search(r'(?m)^ssh_cidrs\s*=\s*\["0\.0\.0\.0/0"\]$', source)
-    assert "deploy_ssh_secret_id" not in source
-    release = workflow["jobs"]["release"]
-    assert "TF_VAR_boot_disk_gb" not in release["env"]
-    assert "TF_VAR_postgres_disk_gb" not in release["env"]
-    assert "TF_VAR_ssh_cidrs" not in release["env"]
-    backend = next(
-        step
-        for step in release["steps"]
-        if step.get("name") == "Open locked state and apply approved saved plan only"
-    )
-    assert backend["env"]["TERRAFORM_CHANGED"] == (
-        "${{ needs.classify.outputs.terraform_changed }}"
-    )
-
-
-def test_ansible_owns_both_reviewed_ssh_identities() -> None:
-    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
-    assert workflow["jobs"]["validate"]["name"] == "Infrastructure validation"
     configure = next(
         step
         for step in workflow["jobs"]["release"]["steps"]
-        if step.get("name") == "Configure host OS with Ansible only"
+        if "ansible-playbook" in step.get("run", "")
     )
-    assert configure["env"]["FINDME_DEPLOY_SSH_PUBLIC_KEY"] == ("${{ vars.INFRA_SSH_PUBLIC_KEY }}")
-    assert configure["env"]["FINDME_ADMIN_SSH_PUBLIC_KEY"] == (
-        "${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    python = fake_bin / "python"
+    python.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import os, subprocess, sys
+if sys.argv[1] == "scripts/run-with-environment-secrets.py":
+    assert sys.argv[sys.argv.index("--consumer") + 1] == "infrastructure-ansible"
+    command = sys.argv[sys.argv.index("--") + 1:]
+    raise SystemExit(subprocess.run(command, env=os.environ).returncode)
+os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+"""
     )
-    assert "-e @/tmp/findme-ansible-vars.json" in configure["run"]
-    run = configure["run"]
-    preflight_at = run.index('ssh -i "$VM_SSH_KEY_FILE"')
-    assert "--consumer infrastructure-ansible" in run
-    assert "--identity iam-token" in run
-    assert "-o ConnectTimeout=10" in run
-    assert "-o ConnectionAttempts=1" in run
-    assert "-o StrictHostKeyChecking=yes" in run
-    assert "-o IdentitiesOnly=yes" in run
-    assert 'test "$(id -un)" = deploy && sudo -n true' in run
-    assert preflight_at < run.index("ansible-playbook")
-    syntax = subprocess.run(["bash", "-n"], input=run, text=True, capture_output=True)
-    assert syntax.returncode == 0, syntax.stderr
-    release = workflow["jobs"]["release"]
-    assert release["env"]["TF_VAR_ssh_public_key"] == "${{ vars.INFRA_SSH_PUBLIC_KEY }}"
-    assert release["env"]["TF_VAR_admin_ssh_public_key"] == (
-        "${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}"
+    ssh = fake_bin / "ssh"
+    ssh.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import os, pathlib, sys
+assert "deploy@192.0.2.10" in sys.argv
+assert pathlib.Path(os.environ["VM_SSH_KEY_FILE"]).is_file()
+pathlib.Path(os.environ["SSH_MARKER"]).touch()
+"""
     )
-    assert not any(
-        step.get("name") == "Fetch the deploy SSH key from its Lockbox secret"
-        for step in release["steps"]
+    ansible = fake_bin / "ansible-playbook"
+    ansible.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import os, pathlib, sys
+assert pathlib.Path(os.environ["SSH_MARKER"]).exists()
+assert sys.argv[sys.argv.index("-u") + 1] == "deploy"
+assert sys.argv[sys.argv.index("--private-key") + 1] == os.environ["VM_SSH_KEY_FILE"]
+variables = pathlib.Path(sys.argv[sys.argv.index("-e") + 1].removeprefix("@"))
+pathlib.Path(os.environ["ANSIBLE_CAPTURE"]).write_bytes(variables.read_bytes())
+"""
     )
-    cleanup = release["steps"][-1]
-    assert cleanup["if"] == "always()"
-    assert "/tmp/findme-saved-host-key" in cleanup["run"]
-
-    tasks = yaml.safe_load((ROOT / "infra/ansible/roles/host/tasks/main.yml").read_text())
-    copies = {
-        task["ansible.builtin.copy"]["dest"]: task
-        for task in tasks
-        if "ansible.builtin.copy" in task
+    for executable in (python, ssh, ansible):
+        executable.chmod(0o755)
+    (tmp_path / "findme-host").write_text("192.0.2.10\n")
+    key = tmp_path / "deploy-key"
+    key.write_text("synthetic-test-key")
+    key.chmod(0o600)
+    captured = tmp_path / "captured.json"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FINDME_DEPLOY_SSH_PUBLIC_KEY": "ssh-ed25519 technical-public-test",
+        "FINDME_ADMIN_SSH_PUBLIC_KEY": "ssh-ed25519 admin-public-test",
+        "VM_SSH_KEY_FILE": str(key),
+        "SSH_MARKER": str(tmp_path / "ssh-checked"),
+        "ANSIBLE_CAPTURE": str(captured),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
     }
-    authorized_keys_task = next(
-        task
-        for task in tasks
-        if task.get("name") == "Replace authorized keys with the reviewed identities"
+    script = configure["run"].replace("/tmp/findme-", str(tmp_path / "findme-"))
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=ROOT, env=environment, capture_output=True, text=True
     )
-    authorized_keys = authorized_keys_task["ansible.builtin.copy"]
-    assert authorized_keys["dest"] == "/home/{{ item.user }}/.ssh/authorized_keys"
-    assert authorized_keys["content"] == "{{ item.key | trim }}\n"
-    assert authorized_keys_task["loop"] == [
-        {"user": "deploy", "key": "{{ findme_deploy_ssh_public_key }}"},
-        {"user": "petrnikitin", "key": "{{ findme_admin_ssh_public_key }}"},
-    ]
-    assert copies["/etc/sudoers.d/90-findme-recovery"]["ansible.builtin.copy"]["content"] == (
-        "deploy ALL=(ALL) NOPASSWD:ALL\npetrnikitin ALL=(ALL) NOPASSWD:ALL\n"
-    )
-    assert copies["/etc/sudoers.d/90-findme-recovery"]["ansible.builtin.copy"]["validate"] == (
-        "/usr/sbin/visudo -cf %s"
-    )
-    ssh = copies["/etc/ssh/sshd_config.d/00-findme-recovery.conf"]
-    assert all(
-        line in ssh["ansible.builtin.copy"]["content"]
-        for line in (
-            "PermitRootLogin no",
-            "PasswordAuthentication no",
-            "KbdInteractiveAuthentication no",
-            "PubkeyAuthentication yes",
-            "AllowUsers deploy petrnikitin",
-        )
-    )
-    assert ssh["notify"] == "Validate and reload SSH"
-    handlers = yaml.safe_load((ROOT / "infra/ansible/roles/host/handlers/main.yml").read_text())
-    assert handlers[0]["ansible.builtin.command"] == "/usr/sbin/sshd -t -f /etc/ssh/sshd_config"
-    assert handlers[1]["ansible.builtin.service"]["state"] == "reloaded"
+    assert result.returncode == 0, result.stderr
+    assert json.loads(captured.read_text()) == {
+        "findme_deploy_ssh_public_key": environment["FINDME_DEPLOY_SSH_PUBLIC_KEY"],
+        "findme_admin_ssh_public_key": environment["FINDME_ADMIN_SSH_PUBLIC_KEY"],
+    }

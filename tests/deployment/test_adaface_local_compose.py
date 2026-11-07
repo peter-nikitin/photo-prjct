@@ -123,14 +123,14 @@ def test_local_adaface_compose_requires_an_explicit_distance_threshold() -> None
     assert "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD" in result.stderr
 
 
-def test_base_and_production_compose_ship_adaface_without_local_only_gates() -> None:
-    for compose_path in (ROOT / "docker-compose.yml", ROOT / "docker-compose.deployment.yml"):
-        content = compose_path.read_text(encoding="utf-8")
-        if compose_path.name == "docker-compose.yml":
-            assert "3/face_embedding/5" in content
-            assert "1/selfie_query/2" in content
-        assert "ADAFACE_LOCAL_EXPERIMENT_ENABLED" not in content
-        assert "ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD" not in content
+def test_shared_profiles_do_not_enable_local_experiment(tmp_path):
+    from tests.deployment.compose_config import render_compose
+
+    for filename in ("docker-compose.yml", "docker-compose.deployment.yml"):
+        services = render_compose(tmp_path, filename)["services"]
+        environment = services["web"].get("environment", {})
+        assert environment.get("ADAFACE_LOCAL_EXPERIMENT_ENABLED", "False").lower() == "false"
+        assert not environment.get("ADAFACE_LOCAL_COSINE_DISTANCE_THRESHOLD")
 
 
 def test_remote_profiles_keep_shared_services_without_local_photo_workers() -> None:

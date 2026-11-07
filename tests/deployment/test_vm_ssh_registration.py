@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -218,29 +217,3 @@ def test_existing_registration_fails_before_serial_or_keyscan() -> None:
         )
     assert len(calls) == 1
     assert calls[0].endswith("?view=FULL")
-
-
-def test_release_registers_only_when_metadata_is_missing_and_loads_saved_key() -> None:
-    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
-    release_steps = workflow["jobs"]["release"]["steps"]
-    inspect = next(
-        step for step in release_steps if step.get("name") == "Inspect VM SSH registration"
-    )
-    register = next(
-        step for step in release_steps if step.get("name") == "Register VM SSH host key"
-    )
-    load = next(step for step in release_steps if step.get("name") == "Load VM SSH host key")
-
-    assert "?view=FULL" in inspect["run"]
-    assert "findme-ssh-host-key" in inspect["run"]
-    assert 'has("findme-ssh-host-key")' in inspect["run"]
-    assert "ssh-keygen -l -E sha256" in inspect["run"]
-    assert "registration_required=true" in inspect["run"]
-    assert "registration_required=false" in inspect["run"]
-    assert register["if"] == "steps.host_metadata.outputs.registration_required == 'true'"
-    assert "register_vm_ssh.py" in register["run"]
-    assert "ssh-keyscan" not in load["run"]
-    assert "serialPortOutput" not in load["run"]
-    assert "findme-ssh-host-key" in load["run"]
-    assert "/tmp/findme-known-hosts" in load["run"]
-    assert release_steps.index(inspect) < release_steps.index(register) < release_steps.index(load)

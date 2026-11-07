@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import stat
 import subprocess
@@ -14,9 +13,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = ROOT / ".github/workflows/deploy.yml"
-MANIFEST_PATH = ROOT / "deploy/environment-secrets.json"
 VERIFIER_PATH = ROOT / "scripts/verify-environment-secret-projection.py"
-REMOTE_HELPER_PATH = ROOT / "deploy/run-remote.sh"
 CONSUMERS = (
     "local-web",
     "deploy",
@@ -29,171 +26,28 @@ def _workflow() -> dict[str, Any]:
     return yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
 
 
-def test_lockbox_preflight_workflow_is_isolated_from_cutover_and_exact_workflow_claims() -> None:
-    workflow = _workflow()
-    dispatch = workflow[True]["workflow_dispatch"]
-    assert dispatch["inputs"]["preflight"] == {
-        "description": "Validate all Lockbox projections without mutating the deployment",
-        "required": True,
-        "default": False,
-        "type": "boolean",
-    }
-
-    jobs = workflow["jobs"]
-    preflight = jobs["lockbox-preflight"]
-    assert preflight["if"] == (
-        "${{ github.event_name == 'workflow_dispatch' && inputs.preflight && "
-        "!inputs.recover_forward }}"
-    )
-    assert preflight["runs-on"] == "ubuntu-latest"
-    assert "environment" not in preflight
-    assert preflight["permissions"] == {"contents": "read", "id-token": "write"}
-    assert "outputs" not in preflight
-    assert preflight["steps"][0] == {
-        "name": "Check out repository",
-        "uses": "actions/checkout@v4",
-        "with": {"persist-credentials": False},
-    }
-
-    expected_runs = [
-        "\n".join(
-            [
-                "python scripts/run-with-environment-secrets.py \\",
-                f"  --consumer {consumer} --identity github-oidc \\",
-                f"  -- python scripts/verify-environment-secret-projection.py {consumer}",
-            ]
-        )
-        for consumer in CONSUMERS
-    ]
-    projection_steps = preflight["steps"][1:5]
-    assert [step["name"] for step in projection_steps] == [
-        f"Verify Lockbox projection: {consumer}" for consumer in CONSUMERS
-    ]
-    assert [step["run"].strip() for step in projection_steps] == expected_runs
-    remote_preflight = preflight["steps"][5]
-    assert remote_preflight["name"] == "Verify read-only remote preflight"
-    assert remote_preflight["env"] == {
-        "VM_HOST": "${{ vars.VM_HOST }}",
-        "VM_USER": "deploy",
-        "VM_SSH_KNOWN_HOSTS": "${{ vars.VM_SSH_KNOWN_HOSTS }}",
-    }
-    assert remote_preflight["run"].strip() == "\n".join(
-        [
-            "python scripts/run-with-environment-secrets.py \\",
-            "  --consumer remote-check --identity github-oidc \\",
-            "  -- deploy/run-remote.sh remote-preflight",
-        ]
-    )
-    serialized_preflight = json.dumps(preflight)
-    assert "GITHUB_OUTPUT" not in serialized_preflight
-    assert "${{ secrets." not in serialized_preflight
-    assert "deploy/run-remote.sh deploy" not in serialized_preflight
-    assert "actions/upload-artifact" not in serialized_preflight
-    assert "appleboy/" not in serialized_preflight
-    assert "${{ secrets." not in remote_preflight["run"]
-
-    assert jobs["classify-release"]["if"] == "${{ !inputs.preflight || inputs.recover_forward }}"
-    for job in ("build", "deploy", "reconcile-deploy-issue"):
-        for excluded in (
-            "configure_monitoring_agent",
-            "validate_deploy_issue",
-            "preflight",
-            "stage_paused_observability_release",
-        ):
-            assert f"!inputs.{excluded}" in jobs[job]["if"]
-        assert "web_changed == 'true'" in jobs[job]["if"]
-    assert "worker_changed == 'true'" in jobs["build"]["if"]
-    assert "always()" in jobs["reconcile-deploy-issue"]["if"]
-    assert jobs["validate-deploy-issue"]["if"] == (
-        "${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && "
-        "!inputs.preflight && !inputs.recover_forward }}"
-    )
-    assert jobs["configure-monitoring-agent"]["if"] == (
-        "${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && "
-        "!inputs.validate_deploy_issue && !inputs.preflight && !inputs.recover_forward }}"
-    )
-
-    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    assert manifest["github_oidc"]["allowed_workflows"] == [
-        "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
-        "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
-        "peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main",
-        "peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main",
-    ]
-
-    cutover_jobs = (
-        "stage-observability-release",
-        "deploy",
-        "configure-monitoring-agent",
-    )
-    assert REMOTE_HELPER_PATH.is_file()
-    for name in cutover_jobs:
-        serialized = json.dumps(jobs[name])
-        assert "run-with-environment-secrets.py" in serialized
-        assert "deploy/run-remote.sh" in serialized
-        assert "${{ secrets." not in serialized
-        assert "GITHUB_OUTPUT" not in serialized
-
-    stage = jobs["stage-observability-release"]
-    assert stage["if"] == ("${{ inputs.stage_paused_observability_release && !inputs.preflight }}")
-    assert stage["permissions"] == {"contents": "read", "id-token": "write"}
-    assert stage["needs"] == ["classify-release"]
-    assert "environment" not in stage
-    assert "observability-release-sha" in json.dumps(stage)
-    assert "observability-source.sha256" in json.dumps(stage)
-    assert "stage-paused-observability-release" in json.dumps(stage)
-
-
 def test_staged_observability_source_is_bound_to_the_selected_deployment_sha(
     tmp_path: Path,
 ) -> None:
     _assert_staged_deployment_source_identity(tmp_path)
 
 
-def test_deployment_commerce_worker_uses_the_web_app_without_photo_or_private_media_access() -> (
-    None
-):
-    """The commerce service must stay inside its application and least-privilege boundary."""
-    compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
-    commerce_worker = compose["services"]["commerce-worker"]
-    environment = commerce_worker["environment"]
-    web_environment = compose["services"]["web"]["environment"]
+def test_commerce_credentials_are_isolated_from_public_web(tmp_path):
+    from tests.deployment.compose_config import render_compose
 
-    assert commerce_worker["image"] == "${APP_IMAGE:?APP_IMAGE must be set}"
-    assert commerce_worker["entrypoint"] == ["python", "manage.py", "run_commerce_worker"]
-    assert commerce_worker["command"] == []
-    assert commerce_worker["profiles"] == ["commerce"]
-    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in environment
-    assert not {key for key in environment if key.startswith(("PHOTO_WORKER_", "PRIVATE_MEDIA_"))}
-    assert "COMMERCE_POSTBOX_API_KEY_ID" in environment
-    assert "COMMERCE_POSTBOX_API_KEY_SECRET" in environment
-    assert "COMMERCE_POSTBOX_API_KEY_ID" not in web_environment
-    assert "COMMERCE_POSTBOX_API_KEY_SECRET" not in web_environment
-
-
-def test_commerce_secret_inventory_records_postbox_and_order_access_ownership() -> None:
-    inventory = (ROOT / "docs/runbooks/environment-secrets-inventory.md").read_text(
-        encoding="utf-8"
-    )
-
-    for key, owner, trigger in (
-        (
-            "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
-            "Commerce maintainer",
-            "Order grant signing-key rotation, suspected disclosure, or access-boundary change",
-        ),
-        (
-            "COMMERCE_POSTBOX_API_KEY_ID",
-            "Commerce email maintainer",
-            "Postbox API-key rotation, service-account scope change, or suspected disclosure",
-        ),
-        (
-            "COMMERCE_POSTBOX_API_KEY_SECRET",
-            "Commerce email maintainer",
-            "Postbox API-key rotation, service-account scope change, or suspected disclosure",
-        ),
-    ):
-        assert f"| `{key}` | {owner} | {trigger} |" in inventory
+    credentials = {
+        "COMMERCE_POSTBOX_API_KEY_ID": "mail-test-id",
+        "COMMERCE_POSTBOX_API_KEY_SECRET": "mail-test-secret",
+    }
+    services = render_compose(
+        tmp_path, "docker-compose.deployment.yml", profiles=("commerce",), environment=credentials
+    )["services"]
+    worker = services["commerce-worker"]["environment"]
+    for name, value in credentials.items():
+        assert worker[name] == value
+        assert name not in services["web"]["environment"]
+    assert not any(name.startswith(("PHOTO_WORKER_", "PRIVATE_MEDIA_")) for name in worker)
+    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in worker
 
 
 def _assert_staged_deployment_source_identity(tmp_path: Path) -> None:

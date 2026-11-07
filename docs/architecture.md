@@ -33,40 +33,34 @@ PostgreSQL — источник истины для состояний и рез
 [0017](adr/0017-use-django-polled-photo-processing-jobs.md).
 
 <a id="deployment-domain-assignment--accepted"></a>
-## Развёртывание
+## Инфраструктура и развёртывание
 
-`Infrastructure` создаёт и подготавливает одну VM: PR проверяет Terraform, строит сохранённый
-plan и стоимость, а merge применяет одобренный plan и запускает Ansible для подготовки ОС.
-Workflow не строит образы, не размещает runtime package и не запускает базу, приложение,
-обработчики или восстановление данных. Cloud-init и Ansible создают отдельные SSH-идентичности
-для технического пользователя `deploy` и оператора `petrnikitin`. Все пайплайны используют
-одну техническую пару через общий `scripts/run-with-environment-secrets.py`; административный
-ключ доступен только оператору. Источники и потребители закреплены в `deploy/environment-secrets.json`.
-Границы доступа описаны в [инвентаре секретов](runbooks/environment-secrets-inventory.md#infrastructure-ssh-access).
+Желаемое состояние инфраструктуры и ОС хранится в Git: код служит единым источником истины,
+по которому окружение можно воспроизвести и проверить. Изменения проходят общий процесс
+PR → merge → release. Этот принцип закреплён в [ADR 0057](adr/0057-declarative-cloud-infrastructure.md)
+и [ADR 0063](adr/0063-repeatable-host-configuration.md).
 
-Завершение создания VM регистрирует её ED25519 host key: стандартные OpenSSH-утилиты сверяют
-ключ SSH с аутентифицированным serial output. Проверенный открытый ключ сохраняется в metadata
-VM; обычные запуски получают текущий IP и сохранённый ключ через Compute API, без повторного
-разбора консоли. Terraform игнорирует только это вычисленное поле metadata.
+Ответственность разделена по слоям:
 
-<a id="accepted-recovery-target"></a>
-## Принятые решения и следующие этапы
+- **Terraform** описывает облачные ресурсы: сети, VM, диски и публичный вход. Provider связывает
+  конфигурацию с API облака; state учитывает созданные ресурсы и хранится вне VM.
+- **Ansible** описывает конфигурацию ОС: пользователей, SSH, пакеты, Docker, mounts и системные
+  службы. Один способ настройки применяется и к новой VM, и при дальнейшем обслуживании хоста.
+- **Docker Compose и Deploy** отвечают за выпуск контейнеров приложения и обработчиков.
+  Настройка ОС и выпуск приложения имеют отдельные границы ответственности.
 
-Принятые решения задают целевую конфигурацию и сохраняются независимо от состава текущего PR:
+GitHub Actions связывает эти слои в общий release. В PR проверяются конфигурация, Terraform plan
+и оценка стоимости; изменения ресурсов согласуются до merge. После merge автоматически
+применяется одобренный plan, затем необходимые изменения ОС и приложения. Для изменения
+только одного слоя выполняются соответствующие шаги. Фактический результат проверяется
+пайплайном; ошибка применения означает неуспешный release.
 
-- [ADR 0056](adr/0056-minimum-viable-infrastructure.md): начинать с минимально жизнеспособной
-  конфигурации без неподтверждённого запаса мощности.
-- [ADR 0057](adr/0057-declarative-cloud-infrastructure.md): описывать ресурсы в IaC и применять
-  рассмотренный Terraform plan.
-- [ADR 0058](adr/0058-stable-public-entrypoint-nlb.md): сохранить публичный вход при замене VM;
-  постоянный NLB и TLS edge остаются следующим архитектурным этапом.
-- [ADR 0063](adr/0063-repeatable-host-configuration.md): управлять конфигурацией ОС через Ansible.
-
-Текущий код реализует Terraform для одной VM и Ansible-подготовку ОС. Здесь нет приложения,
-постоянного публичного входа и автоматического восстановления данных. Постоянный мониторинг
-отложен в [отдельную задачу](future-work/2026-10-25-restore-production-monitoring.md).
-По уточнению владельца восстановление использует существующие media/feedback buckets; их миграция
-отложена в [отдельную задачу](future-work/2026-10-26-canonical-media-bucket-migration.md).
+Размещение следует принципу минимально жизнеспособной конфигурации: одна VM для PostgreSQL,
+Django и обработчиков, отдельный сохраняемый диск БД и Object Storage для медиа. Мощности
+увеличиваются по измеренной потребности ([ADR 0056](adr/0056-minimum-viable-infrastructure.md)).
+Для независимого от VM публичного адреса выбран NLB с TCP forwarding; TLS завершается на
+Nginx/Certbot ([ADR 0058](adr/0058-stable-public-entrypoint-nlb.md)). Секреты и SSH-доступ описаны
+в [отдельном разделе](#secrets-and-ssh-access).
 
 <a id="target-mvp-architecture--proposed"></a>
 ## Ответственность модулей
@@ -119,3 +113,31 @@ VM; обычные запуски получают текущий IP и сохр
 [ADR 0015](adr/0015-allow-anonymous-free-event-original-delivery.md),
 [0020](adr/0020-use-signed-direct-object-storage-media-delivery.md) и
 [0028](adr/0028-operate-one-canonical-deployment.md).
+
+<a id="secrets-and-ssh-access"></a>
+### Секреты приложения и SSH-доступ
+
+Схему секретов приложения, их потребителей и OIDC-идентичность задаёт
+[`deploy/environment-secrets.json`](../deploy/environment-secrets.json). Resolver
+[`scripts/run-with-environment-secrets.py`](../scripts/run-with-environment-secrets.py) получает
+из Lockbox только разрешённый выбранному потребителю набор. Приложение не обращается к Lockbox
+самостоятельно. Перечень полей и потребителей поддерживается в manifest без отдельной таблицы
+в документации.
+
+Для SSH используются ровно две пары: единая техническая для `deploy` во всех пайплайнах и
+административная для `petrnikitin`. Обе хранятся в отдельных Lockbox secrets и устанавливаются
+на все Terraform VM. Источники, ожидаемые пользователи и потребители заданы в `ssh_credentials`
+общего manifest; получение выполняет тот же resolver, что обслуживает приложение.
+
+Service accounts Infrastructure и приложения имеют `lockbox.viewer` и `lockbox.payloadViewer`
+только на техническом секрете. CI не получает административный ключ. Оператор использует свою
+учётную запись ЯО. Публичный `INFRA_SSH_PUBLIC_KEY` доступен как repository variable и в
+Environment `infrastructure`; административный публичный ключ — в этом Environment.
+Приватные ключи не попадают в Git, GitHub Secrets, Terraform state, логи или артефакты;
+resolver создаёт файлы `0600` только на время команды и удаляет их после завершения.
+
+Завершение создания VM сверяет её ED25519 host key через стандартные OpenSSH-утилиты с
+аутентифицированным serial output и сохраняет открытый ключ в metadata `findme-ssh-host-key`.
+Обычные запуски берут текущий IP и сохранённый ключ из структурированного Compute API;
+повторное обнаружение не выполняется. Terraform игнорирует только это вычисленное поле.
+Процедура оператора — [административный SSH-доступ](runbooks/environment-secrets.md#ssh-keys-infrastructure).

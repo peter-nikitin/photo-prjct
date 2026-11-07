@@ -289,7 +289,6 @@ def test_manifest_pins_the_reviewed_deployment_identity(manifest: dict[str, Any]
             "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main",
-            "peter-nikitin/photo-prjct/.github/workflows/deploy-public-probe.yml@refs/heads/main",
         ],
     }
 
@@ -317,7 +316,6 @@ def test_manifest_declares_complete_schema_and_closed_projections(
         "deploy": "technical-deploy",
         "remote-check": "technical-deploy",
         "image-origin": "technical-deploy",
-        "public-probe-deploy": "technical-deploy",
         "infrastructure-ansible": "technical-deploy",
         "operator-admin-key": "personal-admin",
     }
@@ -342,7 +340,6 @@ def test_manifest_declares_complete_schema_and_closed_projections(
         "deploy": DEPLOY_KEYS,
         "remote-check": set(),
         "public-monitor": {"YANDEX_MONITORING_API_KEY"},
-        "public-probe-deploy": set(),
         "image-origin": IMAGE_ORIGIN_KEYS,
         "image-delivery-provision": IMAGE_DELIVERY_PROVISION_KEYS,
     }

@@ -6,12 +6,11 @@ does not authorize a live cloud, credential, or deployment mutation.
 ## Canonical deployment secrets
 
 - [Environment secrets operator runbook](runbooks/environment-secrets.md)
-- [Environment secrets inventory](runbooks/environment-secrets-inventory.md)
 
-Общий manifest описывает источники и потребителей секретов приложения и SSH. Resolver читает
-секреты приложения и общую техническую SSH-пару из разных Lockbox secrets; VM и runtime
-не читают Lockbox. Административная пара доступна только оператору. Границы доступа описаны в
-[инвентаре секретов](runbooks/environment-secrets-inventory.md#infrastructure-ssh-access).
+Устройство хранения секретов и разделение доступа приложения, CI и оператора описаны в
+[архитектуре](architecture.md#secrets-and-ssh-access). Точная схема секретов приложения находится
+в [manifest](../deploy/environment-secrets.json), а порядок получения SSH-ключа — в
+[инструкции оператора](runbooks/environment-secrets.md#ssh-keys-infrastructure).
 
 ## Other runbooks
 

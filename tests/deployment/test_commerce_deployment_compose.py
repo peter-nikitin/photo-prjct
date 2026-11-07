@@ -71,7 +71,7 @@ def test_gallery_delivery_configuration_changes_only_the_web_environment() -> No
 
     configured_without_gallery = deepcopy(configured)
     dark_without_gallery = deepcopy(dark)
-    for slot in ("web", "web-next"):
+    for slot in ("web",):
         configured_web = configured["services"][slot]["environment"]
         assert {name: configured_web[name] for name in GALLERY_DELIVERY_ENVIRONMENT} == (
             GALLERY_DELIVERY_ENVIRONMENT

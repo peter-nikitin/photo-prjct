@@ -131,3 +131,18 @@ class WorkerTokenAuthenticationTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(json.loads(response.content)["error"]["code"], "worker_unauthorized")
+
+
+@override_settings(
+    DEBUG=False,
+    PHOTO_WORKER_POOL_COORDINATOR_ENABLED=False,
+    PHOTO_PROCESSING_ENABLED=True,
+    PHOTO_PROCESSING_WORKER_TOKEN="local-secret",
+    PHOTO_PROCESSING_FLEET_TOKEN="",
+)
+class ProductionLocalWorkerAuthenticationTests(SimpleTestCase):
+    def test_local_token_is_required(self):
+        for token, expected in (("local-secret", True), ("wrong", False), ("", False)):
+            with self.subTest(token=token):
+                request = RequestFactory().post("/", HTTP_AUTHORIZATION=f"Bearer {token}")
+                self.assertEqual(has_worker_token(request), expected)

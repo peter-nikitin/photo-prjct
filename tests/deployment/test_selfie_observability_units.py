@@ -5,10 +5,7 @@ import json
 import os
 import subprocess
 import sys
-import tarfile
 from pathlib import Path
-
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 OBSERVABILITY = ROOT / "deploy" / "selfie-observability"
@@ -138,65 +135,3 @@ def test_public_log_tags_do_not_include_runtime_secrets(tmp_path) -> None:
         assert logging["driver"] == "journald"
         assert logging["options"]["tag"] == f"findme.service={name}"
         assert sentinel not in json.dumps(logging)
-
-
-def test_deployment_workflow_uses_canonical_compose_tags(tmp_path: Path) -> None:
-    deployment = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
-    )
-    helper = (ROOT / "deploy" / "run-remote.sh").read_text(encoding="utf-8")
-    deploy_step = next(
-        step
-        for step in deployment["jobs"]["deploy"]["steps"]
-        if step.get("name") == "Run deployment"
-    )
-    projected_deployment_values = helper.partition("REMOTE_DEPLOYMENT_VALUES='")[2].partition(
-        "'\n"
-    )[0]
-
-    assert "DEPLOYMENT_TARGET" not in deploy_step["env"]
-    assert "scripts/run-with-environment-secrets.py" in deploy_step["run"]
-    assert "--consumer deploy" in deploy_step["run"]
-    assert "--identity github-oidc" in deploy_step["run"]
-    assert "deploy/run-remote.sh deploy" in deploy_step["run"]
-    assert "DEPLOYMENT_TARGET" not in projected_deployment_values
-    assert "'deploy': deployment_command" in helper
-    deploy_command = helper.partition("deployment_command = r'''")[2].partition("'''")[0]
-    candidate = tmp_path / "candidate"
-    (candidate / "deploy").mkdir(parents=True)
-    (candidate / "docker-compose.deployment.yml").write_text("candidate product\n")
-    (candidate / "docker-compose.https.yml").write_text("candidate https\n")
-    (candidate / "deploy" / "apply-deployment.sh").write_text(
-        "set -eu\n"
-        'test "$(cat "$DEPLOY_ROOT/docker-compose.deployment.yml")" = "candidate product"\n'
-        'test "$(cat "$DEPLOY_ROOT/docker-compose.https.yml")" = "candidate https"\n'
-        'printf "%s\\n%s\\n" "$DEPLOY_ROOT" "$COMPOSE_PROJECT_NAME"\n'
-    )
-    (candidate / "deploy" / "worker-pools").mkdir()
-    deployment_root = tmp_path / "deployment"
-    deployment_root.mkdir()
-    (deployment_root / "worker-pools-current.json").write_text("{}")
-    (deployment_root / "worker-pools-release.json").write_text('{"phase": "committed"}')
-    with tarfile.open(deployment_root / ".deployment-candidate.fixture.tar", "w") as archive:
-        for entry in candidate.iterdir():
-            archive.add(entry, arcname=entry.name)
-    binary = tmp_path / "bin"
-    binary.mkdir()
-    (binary / "flock").write_text("#!/bin/sh\nexit 0\n")
-    (binary / "flock").chmod(0o755)
-    result = subprocess.run(
-        ["sh", "-c", deploy_command.replace("/opt/photo-prjct", str(deployment_root))],
-        env={
-            **os.environ,
-            "PATH": str(binary) + ":" + os.environ["PATH"],
-            "DEPLOYMENT_ARCHIVE_NAME": ".deployment-candidate.fixture.tar",
-            "APP_IMAGE": "candidate-image",
-        },
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == [str(deployment_root), "photo-prjct"]
-    assert (deployment_root / "deploy" / "apply-deployment.sh").is_file()
-    assert not list(deployment_root.glob(".deployment-*"))

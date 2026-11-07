@@ -211,7 +211,7 @@ sudo python3 -B /usr/local/lib/findme-worker/updater.py \
 If the result is `recovered`, rerun the override after admitted journal reconciliation. Read back
 active image, readiness, serving generation and lease behavior. The next CI worker release follows
 the current `latest` pointer. Web recovery follows
-the [schema compatibility boundary](deployment.md#migration-preflight-or-deployment-failure): an
+the [schema compatibility boundary](deployment.md#проверка-и-ошибки): an
 old web SHA is not safe after `processing.0016` drops `ProcessingAttempt.worker_build`. After legacy-vector contraction, only an AdaFace-only compatible worker image can be selected;
 read back its build and readiness. Protocol-breaking rollback needs explicit pause/drain and
 compatible sequencing. Never rewrite durable work or restore queue-side build checks.

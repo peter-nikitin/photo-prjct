@@ -1,456 +1,111 @@
 name: Deploy
 
-env:
-  FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
-
 on:
   workflow_dispatch:
     inputs:
-      verify_private_storage:
-        description: Run the confirmed real-storage contract probe after disabled deployment
-        required: true
-        default: false
+      deploy:
+        description: "Deploy after database restore is verified"
         type: boolean
-      verify_selfie_search_storage:
-        description: Run the confirmed selfie-search temporary-storage preflight after disabled deployment
-        required: true
         default: false
-        type: boolean
-      configure_monitoring_agent:
-        description: Configure the Yandex Unified Agent without deploying the application
-        required: true
-        default: false
-        type: boolean
-      verify_selfie_feedback_storage:
-        description: Run the confirmed dedicated feedback-storage preflight while feedback remains disabled
-        required: true
-        default: false
-        type: boolean
-      validate_deploy_issue:
-        description: Exercise the bounded deployment issue notification drill
-        required: true
-        default: false
-        type: boolean
-      deployment_sha:
-        description: Exact 40-character commit SHA to deploy manually
-        required: false
-        default: ""
-        type: string
-      recover_forward:
-        description: Recover the retained canonical candidate with this exact compatible web SHA
-        required: true
-        default: false
-        type: boolean
-      verify_paused_observability_release:
-        description: Verify the staged privileged package for deployment_sha before deployment
-        required: true
-        default: false
-        type: boolean
-      stage_paused_observability_release:
-        description: Stage the checksum-bound privileged observability package for deployment_sha
-        required: true
-        default: false
-        type: boolean
-      preflight:
-        description: Validate all Lockbox projections without mutating the deployment
-        required: true
-        default: false
-        type: boolean
 
 concurrency:
   group: deploy
   cancel-in-progress: false
-  queue: max
 
 jobs:
-  classify-release:
-    name: Classify deployment release
-    if: ${{ !inputs.preflight || inputs.recover_forward }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      requires_observability_bootstrap: ${{ steps.classify.outputs.requires_observability_bootstrap }}
-      observability_source_manifest_sha256: ${{ steps.classify.outputs.observability_source_manifest_sha256 }}
-      release_sha: ${{ steps.classify.outputs.release_sha }}
-      canonical_changed: ${{ steps.classify.outputs.canonical_changed }}
-      web_changed: ${{ steps.classify.outputs.web_changed }}
-      worker_changed: ${{ steps.classify.outputs.worker_changed }}
-      worker_base_changed: ${{ steps.classify.outputs.worker_base_changed }}
-      import_changed: ${{ steps.classify.outputs.import_changed }}
-      commerce_changed: ${{ steps.classify.outputs.commerce_changed }}
-    steps:
-      - name: Check out release history
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Classify deployment release
-        id: classify
-        env:
-          DEPLOYMENT_SHA: ${{ inputs.deployment_sha }}
-        run: |
-          set -eu
-          release_sha="${{ github.sha }}"
-          requires_observability_bootstrap=${{ inputs.stage_paused_observability_release }}
-          manifest_sha256=
-          pause_reason=
-          if [ "${{ inputs.recover_forward }}" = true ]; then
-            test "${{ github.event_name }}" = workflow_dispatch
-            test "${{ inputs.preflight }}" != true
-            test "${{ inputs.configure_monitoring_agent }}" != true
-            test "${{ inputs.validate_deploy_issue }}" != true
-            test "${{ inputs.stage_paused_observability_release }}" != true
-            test "${{ inputs.verify_private_storage }}" != true
-            test "${{ inputs.verify_selfie_search_storage }}" != true
-            test "${{ inputs.verify_selfie_feedback_storage }}" != true
-          fi
-          if [ "${{ github.event_name }}" = workflow_dispatch ] && \
-             [ "${{ inputs.configure_monitoring_agent }}" != true ] && \
-             [ "${{ inputs.validate_deploy_issue }}" != true ]; then
-            release_sha="$DEPLOYMENT_SHA"
-            if [ "${#release_sha}" -ne 40 ] || [ -n "$(printf '%s' "$release_sha" | tr -d '0-9a-fA-F')" ]; then
-              echo "deployment_sha must be an exact 40-character commit SHA" >&2
-              exit 2
-            fi
-            release_sha="$(printf '%s' "$release_sha" | tr 'A-F' 'a-f')"
-            git cat-file -e "$release_sha^{commit}" || {
-              echo "deployment_sha must identify an available commit" >&2
-              exit 2
-            }
-            test "$(git rev-parse "$release_sha^{commit}")" = "$release_sha" || {
-              echo "deployment_sha must identify the commit object exactly" >&2
-              exit 2
-            }
-            if [ "${{ inputs.recover_forward }}" = true ]; then
-              echo 'web_changed=true' >> "$GITHUB_OUTPUT"
-              echo 'worker_changed=false' >> "$GITHUB_OUTPUT"
-              echo 'worker_base_changed=false' >> "$GITHUB_OUTPUT"
-              echo 'import_changed=false' >> "$GITHUB_OUTPUT"
-              echo 'commerce_changed=false' >> "$GITHUB_OUTPUT"
-            else
-              python deploy/classify-release.py --base "${release_sha}^" --head "$release_sha" >> "$GITHUB_OUTPUT"
-            fi
-          elif [ "${{ github.event_name }}" = push ]; then
-            python deploy/classify-release.py --base "${{ github.event.before }}" --head "$release_sha" >> "$GITHUB_OUTPUT"
-            python deploy/classify-release.py --observability --base "${{ github.event.before }}" --head "$release_sha" >> "$GITHUB_OUTPUT"
-          fi
-
-          if [ "$requires_observability_bootstrap" = true ] || \
-             [ "${{ inputs.verify_paused_observability_release }}" = true ]; then
-            git ls-tree -r --name-only "$release_sha" -- \
-              deploy/bootstrap-selfie-observability.sh deploy/selfie-observability \
-              | while IFS= read -r source_path; do
-                  source_digest="$(git show "$release_sha:$source_path" | sha256sum | cut -d ' ' -f 1)"
-                  printf '%s  %s\n' "$source_digest" "$source_path"
-                done \
-              > observability-source.sha256
-            manifest_sha256="$(sha256sum observability-source.sha256 | cut -d ' ' -f 1)"
-          fi
-          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
-          echo "requires_observability_bootstrap=$requires_observability_bootstrap" >> "$GITHUB_OUTPUT"
-          echo "observability_source_manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
-          if [ "$requires_observability_bootstrap" = true ]; then
-            {
-              echo "## Privileged observability package staged"
-              echo "Commit: ${release_sha}. ${pause_reason}"
-              echo
-              echo "Before deploying this package, complete these reviewed checks:"
-              echo "1. cd /opt/photo-prjct/privileged-observability-releases/${release_sha}"
-              echo "2. test \"\$(cat observability-release-sha)\" = \"${release_sha}\""
-              echo "4. printf '%s  observability-source.sha256\\n' '${manifest_sha256}' | sha256sum --check -"
-              echo "5. sha256sum --check observability-source.sha256"
-              echo "6. DEPLOY_ROOT=/opt/photo-prjct/privileged-observability-releases/${release_sha} sh /opt/photo-prjct/privileged-observability-releases/${release_sha}/deploy/bootstrap-selfie-observability.sh"
-              echo "7. sudo /usr/local/sbin/findme-selfie-observability verify"
-              echo "8. Manually run Deploy with deployment_sha=${release_sha} and verify_paused_observability_release=true."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-  stage-observability-release:
-    name: Stage privileged observability source
-    if: ${{ inputs.stage_paused_observability_release && !inputs.preflight }}
-    runs-on: ubuntu-latest
-    needs: [classify-release]
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Check out staged commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.classify-release.outputs.release_sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Bind source to staged commit
-        run: |
-          set -eu
-          release_sha="${{ needs.classify-release.outputs.release_sha }}"
-          test "$(git rev-parse HEAD)" = "$release_sha"
-          printf '%s\n' "$release_sha" > observability-release-sha
-      - name: Create staged source manifest
-        run: |
-          set -eu
-          git ls-tree -r --name-only "${{ needs.classify-release.outputs.release_sha }}" -- \
-            deploy/bootstrap-selfie-observability.sh deploy/selfie-observability \
-            | while IFS= read -r source_path; do sha256sum "$source_path"; done \
-            > observability-source.sha256
-          manifest_sha256="$(sha256sum observability-source.sha256 | cut -d ' ' -f 1)"
-          test "$manifest_sha256" = "${{ needs.classify-release.outputs.observability_source_manifest_sha256 }}"
-      - name: Stage privileged observability source
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
-          OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-release.outputs.observability_source_manifest_sha256 }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check \
-            --identity github-oidc \
-            -- deploy/run-remote.sh stage-paused-observability-release
-
   build:
-    name: Publish changed component images
-    if: ${{ !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && (needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' || needs.classify-release.outputs.worker_changed == 'true') }}
     runs-on: ubuntu-latest
-    needs: [classify-release]
     permissions:
       contents: read
       packages: write
     outputs:
-      app_image: ghcr.io/${{ github.repository }}:latest
-      import_worker_image: ghcr.io/${{ github.repository }}-import-worker:latest
-      previous_web_image: ${{ steps.previous.outputs.web }}
-      previous_import_image: ${{ steps.previous.outputs.import }}
-      previous_worker_image: ${{ steps.previous.outputs.worker }}
+      app: ${{ steps.web.outputs.digest }}
+      worker: ${{ steps.worker.outputs.digest }}
+      import: ${{ steps.import.outputs.digest }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.classify-release.outputs.release_sha }}
-          fetch-depth: 1
           persist-credentials: false
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-      - name: Select image references
-        id: image
-        run: |
-          release_sha="${{ needs.classify-release.outputs.release_sha }}"
-          echo "app_image=ghcr.io/${GITHUB_REPOSITORY}:${release_sha}" >> "$GITHUB_OUTPUT"
-          echo "worker_image=ghcr.io/${GITHUB_REPOSITORY}-worker:${release_sha}" >> "$GITHUB_OUTPUT"
-          base_key="$(git ls-tree -r HEAD -- Dockerfile.worker-base .dockerignore src/worker/requirements.txt src/worker/requirements.cpu.txt | sha256sum | cut -d ' ' -f 1)"
-          echo "worker_base=ghcr.io/${GITHUB_REPOSITORY}-worker-base:${base_key}" >> "$GITHUB_OUTPUT"
-          echo "import_worker_image=ghcr.io/${GITHUB_REPOSITORY}-import-worker:${release_sha}" >> "$GITHUB_OUTPUT"
-      - name: Retain previous registry targets for this run
-        id: previous
-        run: |
-          set -eu
-          for component in web import worker; do
-            case "$component" in
-              web) repository="ghcr.io/${GITHUB_REPOSITORY}" ;;
-              import) repository="ghcr.io/${GITHUB_REPOSITORY}-import-worker" ;;
-              worker) repository="ghcr.io/${GITHUB_REPOSITORY}-worker" ;;
-            esac
-            digest="$(docker buildx imagetools inspect "$repository:latest" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
-            target=
-            case "$digest" in sha256:*) target="$repository@$digest" ;; esac
-            echo "$component=$target" >> "$GITHUB_OUTPUT"
-          done
-      - name: Build and push import image
-        id: import
-        if: ${{ needs.classify-release.outputs.import_changed == 'true' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile.import-worker
-          push: true
-          tags: ${{ steps.image.outputs.import_worker_image }}
-          cache-from: type=gha,scope=import-worker
-          cache-to: type=gha,mode=max,scope=import-worker,ignore-error=true
-      - name: Build and push image
+      - uses: docker/setup-buildx-action@v3
+      - name: Build application
         id: web
-        if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
-          build-args: RELEASE_SHA=${{ needs.classify-release.outputs.release_sha }}
+          file: Dockerfile
           push: true
-          tags: ${{ steps.image.outputs.app_image }}
+          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          build-args: RELEASE_SHA=${{ github.sha }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web,ignore-error=true
-      - name: Check web image
-        if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
-        env:
-          IMAGE_DIGEST: ${{ steps.web.outputs.digest }}
-        run: docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}" -c 'import django, gunicorn, psycopg, PIL; import compileall; assert compileall.compile_dir(".", quiet=1)'
-      - name: Check import image
-        if: ${{ needs.classify-release.outputs.import_changed == 'true' }}
-        env:
-          IMAGE_DIGEST: ${{ steps.import.outputs.digest }}
-        run: docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}-import-worker@${IMAGE_DIGEST}" -c 'import import_worker.__main__'
-      - name: Publish current web pointer
-        if: ${{ needs.classify-release.outputs.web_changed == 'true' }}
-        env:
-          IMAGE_DIGEST: ${{ steps.web.outputs.digest }}
-          PREVIOUS_IMAGE: ${{ steps.previous.outputs.web }}
-        run: |
-          set -eu
-          sh deploy/image-pointer.sh advance "ghcr.io/${GITHUB_REPOSITORY}:latest" "ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}" "$PREVIOUS_IMAGE"
-      - name: Publish current import pointer
-        if: ${{ needs.classify-release.outputs.import_changed == 'true' }}
-        env:
-          IMAGE_DIGEST: ${{ steps.import.outputs.digest }}
-          PREVIOUS_IMAGE: ${{ steps.previous.outputs.import }}
-        run: |
-          set -eu
-          sh deploy/image-pointer.sh advance "ghcr.io/${GITHUB_REPOSITORY}-import-worker:latest" "ghcr.io/${GITHUB_REPOSITORY}-import-worker@${IMAGE_DIGEST}" "$PREVIOUS_IMAGE"
-      - name: Inspect effective worker base cache
-        id: base_cache
-        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
-        env:
-          BASE_IMAGE: ${{ steps.image.outputs.worker_base }}
-        run: |
-          set -eu
-          if docker buildx imagetools inspect "$BASE_IMAGE" >/dev/null 2>&1; then
-            echo 'missing=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'missing=true' >> "$GITHUB_OUTPUT"
-          fi
-      - name: Build and push worker base
-        id: base
-        if: ${{ needs.classify-release.outputs.worker_base_changed == 'true' || steps.base_cache.outputs.missing == 'true' }}
+      - name: Build import worker
+        id: import
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.worker-base
+          file: Dockerfile.import-worker
           push: true
-          tags: ${{ steps.image.outputs.worker_base }}
+          tags: ghcr.io/${{ github.repository }}-import-worker:${{ github.sha }}
+          cache-from: type=gha,scope=import-worker
+          cache-to: type=gha,mode=max,scope=import-worker,ignore-error=true
+      - name: Build worker base
+        id: base
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker-base
+          push: true
+          tags: ghcr.io/${{ github.repository }}-worker-base:${{ github.sha }}
           cache-from: type=gha,scope=worker-base
           cache-to: type=gha,mode=max,scope=worker-base,ignore-error=true
-      - name: Resolve immutable worker base
-        id: base_ref
-        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
-        env:
-          BASE_IMAGE: ${{ steps.image.outputs.worker_base }}
-        run: |
-          set -eu
-          digest="$(docker buildx imagetools inspect "$BASE_IMAGE" --format '{{.Manifest.Digest}}')"
-          case "$digest" in sha256:*) ;; *) exit 2 ;; esac
-          hash="${digest#sha256:}"
-          test "${#hash}" -eq 64
-          test -z "$(printf '%s' "$hash" | tr -d '0-9a-f')"
-          echo "image=${BASE_IMAGE%:*}@${digest}" >> "$GITHUB_OUTPUT"
-      - name: Build and push worker image
+      - name: Build photo worker
         id: worker
-        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.worker
-          build-args: |
-            RELEASE_SHA=${{ needs.classify-release.outputs.release_sha }}
-            WORKER_BASE_IMAGE=${{ steps.base_ref.outputs.image }}
+          file: Dockerfile.worker
           push: true
-          tags: ${{ steps.image.outputs.worker_image }}
+          tags: ghcr.io/${{ github.repository }}-worker:${{ github.sha }}
+          build-args: |
+            RELEASE_SHA=${{ github.sha }}
+            WORKER_BASE_IMAGE=ghcr.io/${{ github.repository }}-worker-base@${{ steps.base.outputs.digest }}
           cache-from: type=gha,scope=worker
           cache-to: type=gha,mode=max,scope=worker,ignore-error=true
-      - name: Check worker image
-        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
-        env:
-          IMAGE_DIGEST: ${{ steps.worker.outputs.digest }}
-        run: docker run --rm --entrypoint python "ghcr.io/${GITHUB_REPOSITORY}-worker@${IMAGE_DIGEST}" -c 'import photo_worker.client, photo_worker.contracts'
-      - name: Publish current worker pointer
-        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
-        env:
-          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
-        run: |
-          set -eu
-          digest="$WORKER_DIGEST"
-          case "$digest" in sha256:*) ;; *) exit 2 ;; esac
-          hash="${digest#sha256:}"
-          test "${#hash}" -eq 64
-          test -z "$(printf '%s' "$hash" | tr -d '0-9a-f')"
-          docker buildx imagetools create --tag "ghcr.io/${GITHUB_REPOSITORY}-worker:latest" "ghcr.io/${GITHUB_REPOSITORY}-worker@${digest}"
-      - name: Restore registry pointers after publication failure
-        if: ${{ failure() }}
-        env:
-          PREVIOUS_WEB_IMAGE: ${{ steps.previous.outputs.web }}
-          PREVIOUS_IMPORT_IMAGE: ${{ steps.previous.outputs.import }}
-          PREVIOUS_WORKER_IMAGE: ${{ steps.previous.outputs.worker }}
-        run: |
-          status=0
-          if [ "${{ needs.classify-release.outputs.web_changed }}" = true ]; then
-            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}:latest" "$PREVIOUS_WEB_IMAGE" || status=1
-          fi
-          if [ "${{ needs.classify-release.outputs.import_changed }}" = true ]; then
-            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-import-worker:latest" "$PREVIOUS_IMPORT_IMAGE" || status=1
-          fi
-          if [ "${{ needs.classify-release.outputs.worker_changed }}" = true ]; then
-            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-worker:latest" "$PREVIOUS_WORKER_IMAGE" || status=1
-          fi
-          exit "$status"
 
   deploy:
-    name: Deploy
-    if: ${{ always() && needs.build.result == 'success' && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && (needs.classify-release.outputs.requires_observability_bootstrap != 'true' || inputs.verify_paused_observability_release) && (needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' || needs.classify-release.outputs.worker_changed == 'true') }}
+    if: ${{ inputs.deploy }}
+    needs: [build]
     runs-on: ubuntu-latest
-    needs: [classify-release, build, reconcile-observability-host]
     permissions:
       contents: read
       id-token: write
-      packages: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.classify-release.outputs.release_sha }}
-          fetch-depth: 1
           persist-credentials: false
-      - name: Verify staged paused observability release
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_paused_observability_release }}
+      - name: Deploy restored database and application
         env:
+          FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
           VM_HOST: ${{ vars.VM_HOST }}
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
-          OBSERVABILITY_SOURCE_MANIFEST_SHA256: ${{ needs.classify-release.outputs.observability_source_manifest_sha256 }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check \
-            --identity github-oidc \
-            -- deploy/run-remote.sh verify-paused-observability-release
-      - name: Run deployment
-        if: ${{ needs.classify-release.outputs.web_changed == 'true' || needs.classify-release.outputs.import_changed == 'true' }}
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          APP_IMAGE: ${{ needs.build.outputs.app_image }}
-          DEPLOY_WEB: ${{ needs.classify-release.outputs.web_changed }}
-          DEPLOY_IMPORT: ${{ needs.classify-release.outputs.import_changed }}
-          DEPLOY_COMMERCE: ${{ needs.classify-release.outputs.commerce_changed }}
-          RECOVER_FORWARD: ${{ inputs.recover_forward && 'True' || 'False' }}
-          RELEASE_SHA: ${{ needs.classify-release.outputs.release_sha }}
-          WORKER_POOL_PRIVATE_API_IPV4: ${{ vars.WORKER_POOL_PRIVATE_API_IPV4 }}
-          IMPORT_WORKER_IMAGE: ${{ needs.build.outputs.import_worker_image }}
+          APP_IMAGE: ghcr.io/${{ github.repository }}@${{ needs.build.outputs.app }}
+          PHOTO_WORKER_IMAGE: ghcr.io/${{ github.repository }}-worker@${{ needs.build.outputs.worker }}
+          IMPORT_WORKER_IMAGE: ghcr.io/${{ github.repository }}-import-worker@${{ needs.build.outputs.import }}
           PHOTO_IMPORT_ENABLED: ${{ vars.PHOTO_IMPORT_ENABLED || 'False' }}
-          PHOTO_IMPORT_BUILD: ${{ needs.classify-release.outputs.release_sha }}
+          PHOTO_IMPORT_BUILD: ${{ github.sha }}
           DEBUG: "False"
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
-          GUNICORN_WORKERS: '5'
-          GUNICORN_THREADS: '2'
-          GUNICORN_TIMEOUT: '180'
-          GUNICORN_MAX_REQUESTS: '0'
-          GUNICORN_MAX_REQUESTS_JITTER: '0'
+          GUNICORN_WORKERS: ${{ vars.GUNICORN_WORKERS || '1' }}
+          GUNICORN_THREADS: ${{ vars.GUNICORN_THREADS || '2' }}
+          GUNICORN_TIMEOUT: ${{ vars.GUNICORN_TIMEOUT || '180' }}
+          GUNICORN_MAX_REQUESTS: ${{ vars.GUNICORN_MAX_REQUESTS || '0' }}
+          GUNICORN_MAX_REQUESTS_JITTER: ${{ vars.GUNICORN_MAX_REQUESTS_JITTER || '0' }}
           DB_NAME: ${{ vars.DB_NAME }}
           DB_USER: ${{ vars.DB_USER }}
           PUBLIC_DOMAIN: ${{ vars.PUBLIC_DOMAIN }}
@@ -469,12 +124,6 @@ jobs:
           PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS: ${{ vars.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS || '120' }}
           PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${{ vars.PHOTO_PROCESSING_MAX_REQUEST_BYTES || '393216' }}
           PHOTO_WORKER_LEASE_SECONDS: ${{ vars.PHOTO_WORKER_LEASE_SECONDS || '120' }}
-          PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_BULK_PROCESSOR_IDENTITIES || '1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,3/face_embedding/5,1/bib_recognition/1' }}
-          PHOTO_WORKER_BULK_PROCESSOR_TYPES: ${{ vars.PHOTO_WORKER_BULK_PROCESSOR_TYPES || 'bib_recognition,face_embedding,capture_metadata,generate_preview,generate_watermarked_preview' }}
-          PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS: ${{ vars.PHOTO_WORKER_BULK_HTTP_TIMEOUT_SECONDS || '180' }}
-          PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES: ${{ vars.PHOTO_WORKER_SELFIE_PROCESSOR_IDENTITIES || '1/selfie_query/2' }}
-          PHOTO_WORKER_SELFIE_PROCESSOR_TYPES: ${{ vars.PHOTO_WORKER_SELFIE_PROCESSOR_TYPES || 'selfie_query' }}
-          PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS: ${{ vars.PHOTO_WORKER_SELFIE_HTTP_TIMEOUT_SECONDS || '900' }}
           SELFIE_SEARCH_MAX_UPLOAD_BYTES: ${{ vars.SELFIE_SEARCH_MAX_UPLOAD_BYTES || '20971520' }}
           SELFIE_SEARCH_MAX_PIXELS: ${{ vars.SELFIE_SEARCH_MAX_PIXELS || '25000000' }}
           SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS: ${{ vars.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS || '120' }}
@@ -506,284 +155,4 @@ jobs:
           COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS: ${{ vars.COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS || '300' }}
           GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
         run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer deploy \
-            --identity github-oidc \
-            -- deploy/run-remote.sh deploy
-      - name: Run photo-worker activation
-        if: ${{ needs.classify-release.outputs.worker_changed == 'true' }}
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          WORKER_POOL_FOLDER_ID: ${{ vars.WORKER_POOL_FOLDER_ID }}
-          WORKER_POOL_BULK_GROUP_ID: ${{ vars.WORKER_POOL_BULK_GROUP_ID }}
-          WORKER_POOL_SELFIE_GROUP_ID: ${{ vars.WORKER_POOL_SELFIE_GROUP_ID }}
-          WORKER_POOL_SUBNET_ID: ${{ vars.WORKER_POOL_SUBNET_ID }}
-          WORKER_POOL_SECURITY_GROUP_ID: ${{ vars.WORKER_POOL_SECURITY_GROUP_ID }}
-          WORKER_POOL_CANONICAL_VM_ID: ${{ vars.WORKER_POOL_CANONICAL_VM_ID }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check --identity github-oidc \
-            -- deploy/worker-pools/activate.py
-      - name: Verify private upload storage contract
-        if: ${{ inputs.verify_private_storage }}
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          PRIVATE_MEDIA_ALLOWED_ORIGINS: ${{ vars.PRIVATE_MEDIA_ALLOWED_ORIGINS }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check \
-            --identity github-oidc \
-            -- deploy/run-remote.sh private-storage
-      - name: Verify selfie-search temporary storage contract
-        if: ${{ inputs.verify_selfie_search_storage }}
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check \
-            --identity github-oidc \
-            -- deploy/run-remote.sh selfie-storage
-      - name: Verify selfie-feedback storage contract
-        if: ${{ inputs.verify_selfie_feedback_storage }}
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}
-          SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}
-          SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer deploy \
-            --identity github-oidc \
-            -- deploy/run-remote.sh selfie-feedback-storage
-
-      - name: Log in to GHCR for failed activation recovery
-        if: ${{ failure() }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Set up Docker Buildx for failed activation recovery
-        if: ${{ failure() }}
-        uses: docker/setup-buildx-action@v3
-      - name: Restore canonical registry pointers after activation failure
-        if: ${{ failure() }}
-        env:
-          PREVIOUS_WEB_IMAGE: ${{ needs.build.outputs.previous_web_image }}
-          PREVIOUS_IMPORT_IMAGE: ${{ needs.build.outputs.previous_import_image }}
-          PREVIOUS_WORKER_IMAGE: ${{ needs.build.outputs.previous_worker_image }}
-        run: |
-          status=0
-          if [ "${{ needs.classify-release.outputs.web_changed }}" = true ]; then
-            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}:latest" "$PREVIOUS_WEB_IMAGE" || status=1
-          fi
-          if [ "${{ needs.classify-release.outputs.import_changed }}" = true ]; then
-            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-import-worker:latest" "$PREVIOUS_IMPORT_IMAGE" || status=1
-          fi
-          if [ "${{ needs.classify-release.outputs.worker_changed }}" = true ]; then
-            sh deploy/image-pointer.sh restore "ghcr.io/${GITHUB_REPOSITORY}-worker:latest" "$PREVIOUS_WORKER_IMAGE" || status=1
-          fi
-          exit "$status"
-
-  reconcile-deploy-issue:
-    name: Reconcile deployment issue
-    if: ${{ always() && !inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.stage_paused_observability_release && needs.classify-release.outputs.web_changed == 'true' }}
-    runs-on: ubuntu-latest
-    needs: [classify-release, build, deploy]
-    permissions:
-      actions: read
-      contents: read
-      issues: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Reconcile issue state
-        id: reconcile
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          if [ "${{ needs.build.result }}" = failure ]; then
-            conclusion=failure
-            phase=build
-          elif [ "${{ needs.deploy.result }}" = success ]; then
-            conclusion=success
-            phase=commit
-          elif [ "${{ needs.deploy.result }}" != failure ]; then
-            exit 0
-          else
-            conclusion=failure
-            phase="$(
-              gh run view "$GITHUB_RUN_ID" --log-failed 2>/dev/null | awk '
-                /(^|[[:space:]])DEPLOY_PHASE=(validate|snapshot|candidate-pull|private-media-preflight|migration-preflight|observability-preflight|observability-reconcile|projection-preflight|certificate|compose-reconcile|local-health|gallery-media-smoke|worker-health|public-health|observability-verify|commit) elapsed_seconds=[0-9]+$/ {
-                  phase = $0
-                  sub(/^.*DEPLOY_PHASE=/, "", phase)
-                  sub(/ elapsed_seconds=[0-9]+$/, "", phase)
-                }
-                END {
-                  if (phase != "") {
-                    print phase
-                  } else {
-                    print "unknown"
-                  }
-                }
-              '
-            )"
-          fi
-
-          python scripts/reconcile_deploy_issue.py \
-            --repository "$GITHUB_REPOSITORY" \
-            --token-env GITHUB_TOKEN \
-            --mode deploy \
-            --conclusion "$conclusion" \
-            --sha "${{ needs.classify-release.outputs.release_sha }}" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --phase "$phase"
-      - name: Warn when issue reconciliation fails
-        if: ${{ steps.reconcile.outcome == 'failure' }}
-        run: echo "::warning::Deployment issue reconciliation failed; the deployment result remains authoritative."
-
-  validate-deploy-issue:
-    name: Validate deployment issue notification
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deploy_issue && !inputs.preflight && !inputs.recover_forward }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Create validation issue
-        run: |
-          python scripts/reconcile_deploy_issue.py \
-            --repository "$GITHUB_REPOSITORY" --token-env GITHUB_TOKEN --mode validation \
-            --conclusion failure --sha "$GITHUB_SHA" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --phase validate
-      - name: Update validation issue
-        run: |
-          python scripts/reconcile_deploy_issue.py \
-            --repository "$GITHUB_REPOSITORY" --token-env GITHUB_TOKEN --mode validation \
-            --conclusion failure --sha "$GITHUB_SHA" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --phase snapshot
-      - name: Close validation issue
-        run: |
-          python scripts/reconcile_deploy_issue.py \
-            --repository "$GITHUB_REPOSITORY" --token-env GITHUB_TOKEN --mode validation \
-            --conclusion success --sha "$GITHUB_SHA" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --phase commit
-      - name: Assert validation issue is closed
-        run: |
-          if gh api \
-            "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
-            --jq '.[] | select((.pull_request | not) and .title == "[deployment validation] notification drill") | .number' \
-            | grep -q .; then
-            echo "Validation issue remains open" >&2
-            exit 1
-          fi
-
-  configure-monitoring-agent:
-    name: Configure Unified Agent
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_monitoring_agent && !inputs.validate_deploy_issue && !inputs.preflight && !inputs.recover_forward }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Configure Unified Agent
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          YANDEX_CLOUD_FOLDER_ID: ${{ vars.YANDEX_CLOUD_FOLDER_ID }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check \
-            --identity github-oidc \
-            -- deploy/run-remote.sh configure-monitoring
-
-  lockbox-preflight:
-    name: Validate Lockbox projections
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight && !inputs.recover_forward }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: "Verify Lockbox projection: local-web"
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer local-web --identity github-oidc \
-            -- python scripts/verify-environment-secret-projection.py local-web
-      - name: "Verify Lockbox projection: deploy"
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer deploy --identity github-oidc \
-            -- python scripts/verify-environment-secret-projection.py deploy
-      - name: "Verify Lockbox projection: remote-check"
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check --identity github-oidc \
-            -- python scripts/verify-environment-secret-projection.py remote-check
-      - name: "Verify Lockbox projection: public-monitor"
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer public-monitor --identity github-oidc \
-            -- python scripts/verify-environment-secret-projection.py public-monitor
-      - name: Verify read-only remote preflight
-        env:
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-        run: |
-          python scripts/run-with-environment-secrets.py \
-            --consumer remote-check --identity github-oidc \
-            -- deploy/run-remote.sh remote-preflight
-
-  reconcile-observability-host:
-    name: Reconcile canonical observability
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.classify-release.outputs.canonical_changed == 'true' }}
-    needs: [classify-release]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Reconcile exact canonical host package
-        env:
-          RELEASE_SHA: ${{ github.sha }}
-          VM_HOST: ${{ vars.VM_HOST }}
-          VM_USER: ${{ vars.VM_USER }}
-          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-        run: |
-          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-          python scripts/run-with-environment-secrets.py --consumer remote-check --identity github-oidc -- deploy/run-remote.sh reconcile-observability
+          python scripts/run-with-environment-secrets.py --consumer deploy --identity github-oidc -- deploy/run-remote.sh deploy

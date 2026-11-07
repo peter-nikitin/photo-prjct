@@ -27,8 +27,13 @@ run "one_recovery_host" {
   }
 
   assert {
-    condition     = yandex_compute_disk.postgres.size == 10 && yandex_compute_disk.boot.size == 30
-    error_message = "Reviewed disk inputs must reach distinct resources."
+    condition = (
+      yandex_compute_disk.postgres.size == 10 &&
+      yandex_compute_disk.boot.size == 30 &&
+      yandex_compute_disk.postgres.type == "network-ssd" &&
+      yandex_compute_disk.boot.type == "network-ssd"
+    )
+    error_message = "Both reviewed disk sizes and SSD types must reach distinct resources."
   }
 
   assert {

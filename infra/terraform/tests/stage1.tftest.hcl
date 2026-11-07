@@ -4,10 +4,6 @@ override_resource {
   target = yandex_vpc_address.edge
   values = { external_ipv4_address = { address = "111.88.151.64" } }
 }
-override_resource {
-  target = yandex_compute_instance.legacy_holder
-}
-
 
 run "one_recovery_host" {
   command = apply

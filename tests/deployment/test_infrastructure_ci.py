@@ -467,10 +467,6 @@ def test_cost_cli_keeps_app_and_disks_and_marks_partial_estimate(
         resources.extend(
             [
                 {
-                    "address": "yandex_compute_instance.legacy_holder",
-                    "type": "yandex_compute_instance",
-                },
-                {
                     "address": "yandex_lb_network_load_balancer.edge",
                     "type": "yandex_lb_network_load_balancer",
                 },
@@ -504,14 +500,14 @@ app yandex_compute_instance postgres boot yandex_compute_disk
         sys, "argv", ["cost_estimation.py", str(plan_path), "--estimator-dir", str(tmp_path)]
     )
     assert cost_estimation.main() == 0
-    assert "Неполная оценка" in capsys.readouterr().out
+    report = capsys.readouterr().out
+    assert "Неполная оценка" in report and "NLB" in report
     assert len(received) == 1
     for resources in (
         received[0]["prior_state"]["values"]["root_module"]["resources"],
         received[0]["planned_values"]["root_module"]["resources"],
     ):
         by_address = {resource["address"]: resource for resource in resources}
-        assert "yandex_compute_instance.legacy_holder" not in by_address
         assert "yandex_compute_disk.boot" not in by_address
         assert by_address["yandex_compute_instance.app"]["values"]["boot_disk"][0][
             "initialize_params"

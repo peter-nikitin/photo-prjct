@@ -119,6 +119,11 @@ visual_patterns = [
     path("legal/", views.legal, name="visual_legal"),
     path("reference/search/", views.reference_search, name="visual_reference_search"),
     path(
+        "reference/design-system/",
+        views.reference_design_system,
+        name="visual_reference_design_system",
+    ),
+    path(
         "reference/dashboard/",
         views.reference_dashboard,
         name="visual_reference_dashboard",

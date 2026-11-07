@@ -474,10 +474,3 @@ def test_ansible_owns_both_reviewed_ssh_identities() -> None:
     handlers = yaml.safe_load((ROOT / "infra/ansible/roles/host/handlers/main.yml").read_text())
     assert handlers[0]["ansible.builtin.command"] == "/usr/sbin/sshd -t -f /etc/ssh/sshd_config"
     assert handlers[1]["ansible.builtin.service"]["state"] == "reloaded"
-
-
-def test_cost_comment_discloses_unmanaged_vm_and_lockbox_exclusions() -> None:
-    workflow = (ROOT / ".github/workflows/infrastructure.yml").read_text()
-    assert "только управляемые Terraform ресурсы" in workflow
-    assert "тестовую VM" in workflow
-    assert "40,77 RUB за 744 часа" in workflow

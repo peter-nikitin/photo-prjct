@@ -65,7 +65,6 @@
     group: root
     mode: '0644'
     validate: /usr/sbin/sshd -t -f %s
-  notify: Validate and reload SSH
 
 - name: Read effective SSH policy before reload
   ansible.builtin.command: /usr/sbin/sshd -T -C user=deploy,host=localhost,addr=127.0.0.1
@@ -79,11 +78,19 @@
       - "'passwordauthentication no' in findme_sshd_policy.stdout_lines"
       - "'kbdinteractiveauthentication no' in findme_sshd_policy.stdout_lines"
       - "'pubkeyauthentication yes' in findme_sshd_policy.stdout_lines"
-      - "'allowusers deploy petrnikitin' in findme_sshd_policy.stdout_lines"
+      - >-
+        (findme_sshd_policy.stdout_lines | select('match', '^allowusers ') | list | sort)
+        == ['allowusers deploy', 'allowusers petrnikitin']
     fail_msg: The effective sshd configuration does not match the reviewed access policy.
 
-- name: Activate a validated SSH policy
-  ansible.builtin.meta: flush_handlers
+- name: Validate installed SSH configuration
+  ansible.builtin.command: /usr/sbin/sshd -t -f /etc/ssh/sshd_config
+  changed_when: false
+
+- name: Activate a validated SSH policy on every configuration run
+  ansible.builtin.service:
+    name: ssh
+    state: reloaded
 
 - name: Install Docker and host utilities
   ansible.builtin.apt:

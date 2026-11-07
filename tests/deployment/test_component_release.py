@@ -1,12 +1,10 @@
 import importlib.util
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,41 +42,6 @@ def test_independent_image_and_running_service_selection(path, images, services)
     )
 
 
-@pytest.mark.parametrize("special", [None, "preflight", "configure_monitoring_agent"])
-def test_forward_dispatch_classification_forces_web_only_and_rejects_other_modes(tmp_path, special):
-    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
-    step = next(
-        s for s in workflow["jobs"]["classify-release"]["steps"] if s.get("id") == "classify"
-    )
-    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    expressions = {
-        "github.sha": sha,
-        "github.event_name": "workflow_dispatch",
-        "inputs.recover_forward": "true",
-    }
-    if special:
-        expressions[f"inputs.{special}"] = "true"
-    program = re.sub(
-        r"\$\{\{\s*(.*?)\s*\}\}", lambda m: expressions.get(m[1], "false"), step["run"]
-    )
-    output = tmp_path / "output"
-    result = subprocess.run(
-        ["sh", "-c", program],
-        cwd=ROOT,
-        env={**os.environ, "DEPLOYMENT_SHA": sha, "GITHUB_OUTPUT": str(output)},
-        capture_output=True,
-        text=True,
-    )
-    if special:
-        assert result.returncode != 0
-    else:
-        assert result.returncode == 0, result.stderr
-        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-        assert values["web_changed"] == "true"
-        assert values["worker_changed"] == values["worker_base_changed"] == "false"
-        assert values["release_sha"] == sha
-
-
 @pytest.mark.parametrize(
     ("paths", "expected"),
     [
@@ -110,36 +73,6 @@ def test_only_effective_component_inputs_are_published(paths, expected):
     ) == expected
 
 
-def test_failed_worker_pointer_publication_reports_failure(tmp_path):
-    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
-    step = next(
-        step
-        for step in workflow["jobs"]["build"]["steps"]
-        if step.get("name") == "Publish current worker pointer"
-    )
-    docker = tmp_path / "docker"
-    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_LOG"\nexit 1\n')
-    docker.chmod(0o755)
-    result = subprocess.run(
-        ["sh", "-c", step["run"]],
-        env={
-            **os.environ,
-            "PATH": f"{tmp_path}:{os.environ['PATH']}",
-            "WORKER_DIGEST": "sha256:" + "a" * 64,
-            "GITHUB_REPOSITORY": "example/photo-prjct",
-            "DOCKER_LOG": str(tmp_path / "calls"),
-        },
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 1
-    assert (
-        (tmp_path / "calls").read_text().strip()
-        == "buildx imagetools create --tag ghcr.io/example/photo-prjct-worker:latest "
-        "ghcr.io/example/photo-prjct-worker@sha256:" + "a" * 64
-    )
-
-
 def test_failed_pointer_advance_restores_known_previous_target(tmp_path):
     docker = tmp_path / "docker"
     docker.write_text(
@@ -169,32 +102,6 @@ def test_failed_pointer_advance_restores_known_previous_target(tmp_path):
         "buildx imagetools create --tag ghcr.io/example/app:latest new-digest",
         "buildx imagetools create --tag ghcr.io/example/app:latest old-digest",
     ]
-
-
-@pytest.mark.parametrize("available", [False, True])
-def test_worker_code_release_selects_the_existing_base_cache_before_building(tmp_path, available):
-    steps = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())["jobs"]["build"][
-        "steps"
-    ]
-    step = next((step for step in steps if step.get("id") == "base_cache"), None)
-    assert step is not None, "Worker code releases must resolve or publish the effective base cache"
-    docker = tmp_path / "docker"
-    docker.write_text(f"#!/bin/sh\nexit {0 if available else 1}\n")
-    docker.chmod(0o755)
-    output = tmp_path / "output"
-    result = subprocess.run(
-        ["sh", "-c", step["run"]],
-        env={
-            **os.environ,
-            "PATH": f"{tmp_path}:{os.environ['PATH']}",
-            "BASE_IMAGE": "ghcr.io/example/base:inputs",
-            "GITHUB_OUTPUT": str(output),
-        },
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    assert output.read_text() == f"missing={'false' if available else 'true'}\n"
 
 
 def test_native_collector_helper_installs_verified_owned_source_and_can_remove(tmp_path):

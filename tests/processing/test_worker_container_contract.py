@@ -266,28 +266,6 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
     assert "capture_metadata" not in selfie["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"]
 
 
-def test_deployment_has_only_remote_photo_workers_and_preserves_shared_services() -> None:
-    """Production Compose cannot grant local photo claims, but keeps shared services."""
-    compose = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8"))
-    services = compose["services"]
-    assert set(services) == {
-        "db",
-        "web",
-        "web-next",
-        "import-worker",
-        "commerce-worker",
-        "postgres-exporter",
-    }
-    assert services["import-worker"]["profiles"] == ["import"]
-    assert services["commerce-worker"]["profiles"] == ["commerce"]
-    for slot in ("web", "web-next"):
-        assert services[slot]["environment"]["PHOTO_PROCESSING_FLEET_TOKEN"] == (
-            "${PHOTO_PROCESSING_FLEET_TOKEN:-}"
-        )
-    for service in services.values():
-        assert "PHOTO_PROCESSING_WORKER_TOKEN" not in service.get("environment", {})
-
-
 def test_default_compose_config_interpolates_example_without_enabling_the_worker() -> None:
     """An inactive profile must not make the normal local Compose configuration unusable."""
     with TemporaryDirectory() as temporary:

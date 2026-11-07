@@ -21,12 +21,14 @@ FindMe Photo помогает участникам мероприятий нах
 ```text
 GitHub Actions Infrastructure → Terraform (VPC, диски, одна VM)
                               → Ansible (пользователь, SSH, Docker, PG mount)
-                              → подготовленная ОС; приложение не запускается
+                              → подготовленная ОС
+GitHub Actions Deploy → immutable образы → Compose (db, web, HTTP Nginx)
+                                        → выключенные worker-профили до проверки очереди
 ```
 
 Django — модульный монолит: он владеет HTTP-интерфейсом, полномочиями и правилами продукта.
 PostgreSQL — источник истины для состояний и результатов. Object Storage хранит байты медиа.
-Инфраструктурный PR не меняет приложение, обработчики или их текущие границы. Основу закрепляют
+Обработчики запускаются рядом с Django и обращаются к нему по внутренней Docker-сети. Основу закрепляют
 [ADR 0001](adr/0001-django-modular-monolith.md),
 [0002](adr/0002-postgresql-system-of-record.md),
 [0003](adr/0003-docker-compose-yandex-cloud.md) и
@@ -58,6 +60,11 @@ GitHub Actions связывает эти слои в общий release. В PR �
 Размещение следует принципу минимально жизнеспособной конфигурации: одна VM для PostgreSQL,
 Django и обработчиков, отдельный сохраняемый диск БД и Object Storage для медиа. Мощности
 увеличиваются по измеренной потребности ([ADR 0056](adr/0056-minimum-viable-infrastructure.md)).
+Для промежуточного восстановления реализован ручной **Deploy**: сборка без запуска по умолчанию,
+явный выпуск только после восстановления БД; образы закреплены registry digests. Автоматический
+merge → application release ещё предстоит проверить завершающим этапом восстановления.
+Подробности действующего интерфейса — в [инструкции выпуска](runbooks/deployment.md).
+
 Для независимого от VM публичного адреса выбран NLB с TCP forwarding; TLS завершается на
 Nginx/Certbot ([ADR 0058](adr/0058-stable-public-entrypoint-nlb.md)). Секреты и SSH-доступ описаны
 в [отдельном разделе](#secrets-and-ssh-access).

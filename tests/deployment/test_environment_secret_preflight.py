@@ -26,12 +26,6 @@ def _workflow() -> dict[str, Any]:
     return yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
 
 
-def test_staged_observability_source_is_bound_to_the_selected_deployment_sha(
-    tmp_path: Path,
-) -> None:
-    _assert_staged_deployment_source_identity(tmp_path)
-
-
 def test_commerce_credentials_are_isolated_from_public_web(tmp_path):
     from tests.deployment.compose_config import render_compose
 

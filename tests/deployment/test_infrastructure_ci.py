@@ -34,6 +34,22 @@ def load_release_classifier():
     return module
 
 
+def test_plan_summary_updates_its_own_named_comment() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
+    plan = workflow["jobs"]["plan"]
+    publisher = next(
+        step
+        for step in plan["steps"]
+        if step.get("uses", "").startswith("marocchino/sticky-pull-request-comment@")
+    )
+    assert publisher["with"] == {
+        "header": "findme-infrastructure-plan",
+        "path": "/tmp/infra-review.txt",
+    }
+    assert plan["permissions"]["pull-requests"] == "write"
+    assert all("gh pr comment" not in step.get("run", "") for step in plan["steps"])
+
+
 def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
     classify = load_release_classifier().classify
     assert classify(["docs/architecture.md"]) == {

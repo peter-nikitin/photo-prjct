@@ -139,7 +139,11 @@ jobs:
             echo "[Запуск CI и сохранённый plan]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
             printf '\nПосле проверки оставьте комментарий `/infra approve %s`. Для нового push потребуется новый план и подтверждение.\n' "$GITHUB_RUN_ID"
           } | tee /tmp/infra-review.txt >> "$GITHUB_STEP_SUMMARY"
-          gh pr comment '${{ github.event.pull_request.number }}' --body-file /tmp/infra-review.txt
+      - name: Update the PR resource and cost summary
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          header: findme-infrastructure-plan
+          path: /tmp/infra-review.txt
       - uses: actions/upload-artifact@v4
         with:
           name: terraform-plan-${{ github.event.pull_request.number }}

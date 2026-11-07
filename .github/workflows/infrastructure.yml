@@ -77,7 +77,7 @@ jobs:
           def get(path):
               with urlopen(Request('https://compute.api.cloud.yandex.net/compute/v1/'+path, headers={'Authorization':'Bearer '+os.environ['YC_TOKEN']}),timeout=20) as response:
                   return json.load(response)
-          vm=get('instances/'+vmid)
+          vm=get('instances/'+vmid+'?view=FULL')
           safe={k:v for k,v in vm.items() if k!='metadata'}
           metadata=vm.get('metadata',{}); safe['metadata_fields']=list(metadata)
           users=set(re.findall(r'^([^:\s]+):ssh-',metadata.get('ssh-keys',''),re.M))

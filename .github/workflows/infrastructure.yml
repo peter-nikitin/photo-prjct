@@ -63,3 +63,50 @@ jobs:
           if not any(result.get('ssh') for result in results):
               raise SystemExit('No RUNNING VM returned an SSH banner')
           PY
+      - name: Inspect adoption inputs and verify CI SSH login read-only
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ru-central1
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess, tempfile
+          from urllib.request import Request,urlopen
+          folder='b1g2qttgfhb4gdunvlge'; vmid='fv4lac9q76a3m7209gjp'
+          def get(path):
+              with urlopen(Request('https://compute.api.cloud.yandex.net/compute/v1/'+path, headers={'Authorization':'Bearer '+os.environ['YC_TOKEN']}),timeout=20) as response:
+                  return json.load(response)
+          vm=get('instances/'+vmid)
+          safe={k:v for k,v in vm.items() if k!='metadata'}
+          metadata=vm.get('metadata',{}); safe['metadata_fields']=list(metadata)
+          users=set(re.findall(r'^([^:\s]+):ssh-',metadata.get('ssh-keys',''),re.M))
+          users.update(re.findall(r'^\s*-?\s*name:\s*([a-z_][a-z0-9_-]*)\s*$',metadata.get('user-data',''),re.M))
+          safe['ssh_users']=sorted(users)
+          safe['metadata_access_settings']={k:v for k,v in metadata.items() if k in ['enable-oslogin','serial-port-enable']}
+          safe['disks']=get('disks?folderId='+folder).get('disks',[])
+          serial=get('instances/'+vmid+':serialPortOutput').get('contents','')
+          keys=set(re.findall(r'(ssh-ed25519) ([A-Za-z0-9+/=]{40,})',serial))
+          safe['serial_ed25519_keys']=sorted(' '.join(key) for key in keys)
+          print('ADOPTION_INVENTORY '+json.dumps(safe),flush=True)
+          statefile='/tmp/findme-state.json'
+          command=['aws','s3api','get-object','--endpoint-url','https://storage.yandexcloud.net','--bucket','findme-photo-tfstate','--key','core/single-vm/terraform.tfstate',statefile]
+          state_result=subprocess.run(command,capture_output=True,text=True)
+          if state_result.returncode==0:
+              state=json.load(open(statefile))
+              print('STATE '+json.dumps({'serial':state.get('serial'),'resources':[{'type':r['type'],'name':r['name'],'ids':[i.get('attributes',{}).get('id') for i in r.get('instances',[])]} for r in state.get('resources',[])]}),flush=True)
+          else: print('STATE_READ_FAILED '+state_result.stderr[-600:],flush=True)
+          if not users: raise SystemExit('No SSH user identified in authenticated metadata')
+          if len(keys)!=1: raise SystemExit('Expected one authenticated host key; no SSH login attempted')
+          host=vm['networkInterfaces'][0]['primaryV4Address']['oneToOneNat']['address']
+          with tempfile.TemporaryDirectory() as directory:
+              keyfile=directory+'/key';knownfile=directory+'/known_hosts'
+              descriptor=os.open(keyfile,os.O_CREAT|os.O_WRONLY,0o600)
+              with os.fdopen(descriptor,'w') as output: output.write(os.environ['VM_SSH_KEY'].rstrip()+'\n')
+              with open(knownfile,'w') as output: output.write(host+' '+' '.join(next(iter(keys)))+'\n')
+              for user in sorted(users):
+                  result=subprocess.run(['ssh','-i',keyfile,'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=7','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+knownfile,user+'@'+host,'id -un; sudo -n true'],capture_output=True,text=True,timeout=15)
+                  print('SSH_LOGIN '+json.dumps({'user':user,'exit':result.returncode,'stdout':result.stdout.strip(),'stderr':result.stderr.strip()}),flush=True)
+                  if result.returncode==0: break
+              else: raise SystemExit('CI key login failed for observed users')
+          PY

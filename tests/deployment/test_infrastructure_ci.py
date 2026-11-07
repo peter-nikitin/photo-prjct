@@ -444,8 +444,12 @@ pathlib.Path(os.environ["ANSIBLE_CAPTURE"]).write_bytes(variables.read_bytes())
     }
 
 
+@pytest.mark.parametrize("boot_shape", ["fresh", "refreshed", "inline-only"])
 def test_cost_cli_keeps_app_and_disks_and_marks_partial_estimate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    boot_shape: str,
 ) -> None:
     cost_estimation = load_helper("cost_estimation")
     plan = json.loads((ROOT / "tests/fixtures/infrastructure/cost_plan.json").read_text())
@@ -453,6 +457,13 @@ def test_cost_cli_keeps_app_and_disks_and_marks_partial_estimate(
         plan["prior_state"]["values"]["root_module"]["resources"],
         plan["planned_values"]["root_module"]["resources"],
     ):
+        if boot_shape != "fresh":
+            app = next(r for r in resources if r["address"] == "yandex_compute_instance.app")
+            app["values"]["boot_disk"][0]["initialize_params"] = [
+                {"size": 30, "type": "network-hdd"}
+            ]
+        if boot_shape == "inline-only":
+            resources[:] = [r for r in resources if r["address"] != "yandex_compute_disk.boot"]
         resources.extend(
             [
                 {
@@ -465,6 +476,8 @@ def test_cost_cli_keeps_app_and_disks_and_marks_partial_estimate(
                 },
             ]
         )
+    if boot_shape == "inline-only":
+        plan["configuration"]["root_module"]["resources"][0]["expressions"] = {}
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(plan))
     received = []
@@ -481,9 +494,9 @@ DIFFERENCE:
 Hourly: 0 RUB
 Monthly: 0 RUB
 === CURRENT USAGE DETAILS ===
-app yandex_compute_instance postgres yandex_compute_disk
+app yandex_compute_instance postgres boot yandex_compute_disk
 === PLANNED USAGE DETAILS ===
-app yandex_compute_instance postgres yandex_compute_disk
+app yandex_compute_instance postgres boot yandex_compute_disk
 """
 
     monkeypatch.setattr(cost_estimation, "run_estimator", fake_estimator)

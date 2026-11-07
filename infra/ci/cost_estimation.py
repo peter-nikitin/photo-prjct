@@ -68,23 +68,6 @@ def format_summary(report: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _resource_address_from_reference(
-    references: list[str], addresses: set[str], disk_id: str | None, disk_by_address: dict
-) -> str:
-    matches = {
-        address for address in addresses if address in references or f"{address}.id" in references
-    }
-    if not matches and disk_id:
-        matches = {
-            address
-            for address, resource in disk_by_address.items()
-            if resource.get("values", {}).get("id") == disk_id
-        }
-    if len(matches) != 1:
-        raise ValueError("cannot resolve the VM boot disk reference in Terraform configuration")
-    return matches.pop()
-
-
 def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any]) -> None:
     # The imported stopped holder references an unmanaged legacy boot disk; the
     # estimator assumes running compute and cannot resolve or price it reliably.
@@ -112,25 +95,34 @@ def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any
             continue
 
         initialize_params = boot_disks[0].get("initialize_params")
-        if (
+        has_inline_boot = bool(
             isinstance(initialize_params, list)
             and initialize_params
             and initialize_params[0].get("size", 0) > 0
             and initialize_params[0].get("type")
-        ):
-            continue
-
+        )
         configuration = config_resources.get(resource.get("address"), {})
         boot_expressions = configuration.get("expressions", {}).get("boot_disk") or []
         references = (
             boot_expressions[0].get("disk_id", {}).get("references", []) if boot_expressions else []
         )
-        disk_address = _resource_address_from_reference(
-            references,
-            set(disk_by_address),
-            boot_disks[0].get("disk_id"),
-            disk_by_address,
-        )
+        matches = {
+            address
+            for address in disk_by_address
+            if address in references or f"{address}.id" in references
+        }
+        disk_id = boot_disks[0].get("disk_id")
+        if not matches and disk_id:
+            matches = {
+                address
+                for address, disk in disk_by_address.items()
+                if disk.get("values", {}).get("id") == disk_id
+            }
+        if not matches and has_inline_boot:
+            continue
+        if len(matches) != 1:
+            raise ValueError("cannot resolve the VM boot disk reference in Terraform configuration")
+        disk_address = matches.pop()
         if disk_address in attached_boot_disks:
             raise ValueError("Terraform plan references one boot disk from multiple VMs")
         disk_resource = disk_by_address[disk_address]
@@ -142,7 +134,8 @@ def _normalize_root_module(root: dict[str, Any], config_resources: dict[str, Any
         if not isinstance(disk_type, str) or not disk_type:
             raise ValueError("referenced VM boot disk has no known type")
 
-        boot_disks[0]["initialize_params"] = [{"size": disk_size, "type": disk_type}]
+        if not has_inline_boot:
+            boot_disks[0]["initialize_params"] = [{"size": disk_size, "type": disk_type}]
         attached_boot_disks.add(disk_address)
 
     if attached_boot_disks:

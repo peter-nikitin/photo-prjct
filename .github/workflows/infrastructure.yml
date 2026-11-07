@@ -6,109 +6,46 @@ permissions:
   contents: read
   id-token: write
 jobs:
-  ssh-reachability:
+  verify-ci-lockbox-key:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     environment: infrastructure
     env:
       YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
+      EXPECTED_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Read-only Yandex identity
-        run: python infra/ci/identity.py
-      - name: Inventory and direct SSH reachability, without login or deployment
+      - run: python infra/ci/identity.py
+      - name: Verify dedicated CI key from Lockbox without server login
         run: |
           python - <<'PY'
-          import json, os, socket, subprocess
-          from urllib.request import Request, urlopen
-          folder = 'b1g2qttgfhb4gdunvlge'
-          def get(resource):
-              request = Request('https://compute.api.cloud.yandex.net/compute/v1/' + resource,
-                                headers={'Authorization': 'Bearer ' + os.environ['YC_TOKEN']})
-              with urlopen(request, timeout=20) as response:
-                  return json.load(response)
-          instances = get('instances?folderId=' + folder).get('instances', [])
-          for vm in sorted(instances, key=lambda x: x.get('createdAt', ''), reverse=True):
-              safe = {k: vm.get(k) for k in ('id','name','createdAt','status','zoneId','platformId','resources','bootDisk','secondaryDisks','networkInterfaces')}
-              print('VM ' + json.dumps(safe), flush=True)
-          disks = get('disks?folderId=' + folder).get('disks', [])
-          for disk in disks:
-              print('DISK ' + json.dumps({k: disk.get(k) for k in ('id','name','size','typeId','zoneId','instanceIds')}), flush=True)
-          results = []
-          for vm in sorted(instances, key=lambda x: x.get('createdAt', ''), reverse=True):
-              if vm.get('status') != 'RUNNING':
-                  continue
-              for nic in vm.get('networkInterfaces', []):
-                  ip = nic.get('primaryV4Address', {}).get('oneToOneNat', {}).get('address')
-                  if not ip:
-                      continue
-                  result = {'vm': vm['id'], 'name': vm['name'], 'ip': ip, 'port': 22}
-                  try:
-                      with socket.create_connection((ip, 22), timeout=5) as connection:
-                          connection.settimeout(5)
-                          banner = connection.recv(256).decode(errors='replace').strip()
-                          result.update(tcp=True, ssh_banner=banner, ssh=banner.startswith('SSH-'))
-                  except OSError as error:
-                      result.update(tcp=False, ssh=False, error=str(error))
-                  if result.get('ssh'):
-                      scan = subprocess.run(['ssh-keyscan','-T','4','-t','ed25519',ip], capture_output=True, text=True, timeout=8)
-                      result['host_key_received'] = bool(scan.stdout.strip())
-                  results.append(result)
-                  print('PROBE ' + json.dumps(result), flush=True)
-          summary = '\n'.join('- ' + json.dumps(result) for result in results)
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
-              output.write('## Direct SSH from GitHub-hosted runner\n' + summary + '\n\nNo authentication, remote commands or deployment performed.\n')
-          if not any(result.get('ssh') for result in results):
-              raise SystemExit('No RUNNING VM returned an SSH banner')
-          PY
-      - name: Inspect adoption inputs and verify CI SSH login read-only
-        env:
-          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ru-central1
-        run: |
-          python - <<'PY'
-          import json, os, re, subprocess, tempfile
+          import json,os,subprocess,tempfile
           from urllib.request import Request,urlopen
-          folder='b1g2qttgfhb4gdunvlge'; vmid='fv4lac9q76a3m7209gjp'
-          def get(path):
-              with urlopen(Request('https://compute.api.cloud.yandex.net/compute/v1/'+path, headers={'Authorization':'Bearer '+os.environ['YC_TOKEN']}),timeout=20) as response:
-                  return json.load(response)
-          vm=get('instances/'+vmid+'?view=FULL')
-          safe={k:v for k,v in vm.items() if k!='metadata'}
-          metadata=vm.get('metadata',{}); safe['metadata_fields']=list(metadata)
-          users=set(re.findall(r'^([^:\s]+):ssh-',metadata.get('ssh-keys',''),re.M))
-          users.update(re.findall(r'^\s*-?\s*name:\s*([a-z_][a-z0-9_-]*)\s*$',metadata.get('user-data',''),re.M))
-          safe['ssh_users']=sorted(users)
-          safe['operator_public_keys']=re.findall(r'(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+',metadata.get('user-data',''))
-          safe['metadata_access_settings']={k:v for k,v in metadata.items() if k in ['enable-oslogin','serial-port-enable']}
-          safe['disks']=get('disks?folderId='+folder).get('disks',[])
-          serial=get('instances/'+vmid+':serialPortOutput').get('contents','')
-          keys=set(re.findall(r'(ssh-ed25519) ([A-Za-z0-9+/=]{40,})',serial))
-          safe['serial_key_block_headings']=[line for line in serial.splitlines() if 'SSH HOST' in line]
-          safe['serial_ed25519_keys']=sorted(' '.join(key) for key in keys)
-          print('ADOPTION_INVENTORY '+json.dumps(safe),flush=True)
-          statefile='/tmp/findme-state.json'
-          command=['aws','s3api','get-object','--endpoint-url','https://storage.yandexcloud.net','--bucket','findme-photo-tfstate','--key','core/single-vm/terraform.tfstate',statefile]
-          state_result=subprocess.run(command,capture_output=True,text=True)
-          if state_result.returncode==0:
-              state=json.load(open(statefile))
-              print('STATE '+json.dumps({'serial':state.get('serial'),'resources':[{'type':r['type'],'name':r['name'],'ids':[i.get('attributes',{}).get('id') for i in r.get('instances',[])]} for r in state.get('resources',[])]}),flush=True)
-          else: print('STATE_READ_FAILED '+state_result.stderr[-600:],flush=True)
-          if not users: raise SystemExit('No SSH user identified in authenticated metadata')
-          if len(keys)!=1: raise SystemExit('Expected one authenticated host key; no SSH login attempted')
-          host=vm['networkInterfaces'][0]['primaryV4Address']['oneToOneNat']['address']
+          from urllib.error import HTTPError
+          secret='e6q12ru8opfn2sl91so3'
+          headers={'Authorization':'Bearer '+os.environ['YC_TOKEN']}
+          with urlopen(Request('https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/'+secret+'/payload',headers=headers),timeout=20) as response:
+              payload=json.load(response)
+          entries={entry['key']:entry.get('textValue') for entry in payload['entries']}
+          assert entries['ssh_user']=='deploy'
+          expected=os.environ['EXPECTED_PUBLIC_KEY'].split()[:2]
+          assert entries['ssh_public_key'].split()[:2]==expected
           with tempfile.TemporaryDirectory() as directory:
-              keyfile=directory+'/key';knownfile=directory+'/known_hosts'
-              descriptor=os.open(keyfile,os.O_CREAT|os.O_WRONLY,0o600)
-              with os.fdopen(descriptor,'w') as output: output.write(os.environ['VM_SSH_KEY'].rstrip()+'\n')
-              with open(knownfile,'w') as output: output.write(host+' '+' '.join(next(iter(keys)))+'\n')
-              for user in sorted(users):
-                  result=subprocess.run(['ssh','-i',keyfile,'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=7','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+knownfile,user+'@'+host,'id -un; sudo -n true'],capture_output=True,text=True,timeout=15)
-                  print('SSH_LOGIN '+json.dumps({'user':user,'exit':result.returncode,'stdout':result.stdout.strip(),'stderr':result.stderr.strip()}),flush=True)
-                  if result.returncode==0: break
-              else: raise SystemExit('CI key login failed for observed users')
+              filename=directory+'/key'
+              descriptor=os.open(filename,os.O_CREAT|os.O_WRONLY,0o600)
+              with os.fdopen(descriptor,'w') as output:output.write(entries['ssh_private_key'])
+              derived=subprocess.check_output(['ssh-keygen','-y','-f',filename],text=True).strip()
+              assert derived.split()[:2]==expected
+              fingerprint=subprocess.check_output(['ssh-keygen','-lf',filename],text=True).strip()
+              print('CI_KEY_VERIFIED '+fingerprint)
+          url='https://lockbox.api.cloud.yandex.net/lockbox/v1/secrets/'+secret+':listAccessBindings'
+          try:
+              with urlopen(Request(url,headers=headers),timeout=20) as response:json.load(response)
+              print('TECH_SECRET_BINDINGS_READ_ALLOWED')
+          except HTTPError as error:
+              print('TECH_SECRET_BINDINGS_READ_HTTP '+str(error.code))
+              raise SystemExit(1)
+          print('No VM modified; operator private key was not requested or transferred to GitHub.')
           PY

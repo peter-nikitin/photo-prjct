@@ -1,5 +1,14 @@
 mock_provider "yandex" {}
 
+override_resource {
+  target = yandex_vpc_address.edge
+  values = { external_ipv4_address = { address = "111.88.151.64" } }
+}
+override_resource {
+  target = yandex_compute_instance.legacy_holder
+}
+
+
 run "one_recovery_host" {
   command = apply
 
@@ -36,8 +45,23 @@ run "one_recovery_host" {
   }
 
   assert {
-    condition     = length(yandex_vpc_security_group.vm.ingress) == 2 && toset([for rule in yandex_vpc_security_group.vm.ingress : rule.port]) == toset([80, 22])
-    error_message = "Only HTTP and reviewed SSH sources should be publicly reachable."
+    condition     = length(yandex_vpc_security_group.vm.ingress) == 4 && toset([for rule in yandex_vpc_security_group.vm.ingress : rule.port]) == toset([80, 443, 8081, 22])
+    error_message = "Expected HTTP, HTTPS, health check and SSH rules."
+  }
+
+  assert {
+    condition     = toset([for l in yandex_lb_network_load_balancer.edge.listener : l.port]) == toset([80, 443]) && alltrue([for l in yandex_lb_network_load_balancer.edge.listener : l.protocol == "tcp" && l.target_port == l.port && one(l.external_address_spec).address == "111.88.151.64"])
+    error_message = "NLB must expose only TCP 80/443 on the reserved address."
+  }
+
+  assert {
+    condition     = one(yandex_lb_target_group.app.target).subnet_id == yandex_vpc_subnet.core_d.id && one(yandex_lb_target_group.app.target).address == yandex_compute_instance.app.network_interface[0].ip_address && one(one(yandex_lb_network_load_balancer.edge.attached_target_group).healthcheck).http_options[0].port == 8081 && one(one(yandex_lb_network_load_balancer.edge.attached_target_group).healthcheck).http_options[0].path == "/health/"
+    error_message = "NLB must target the app and check readiness on 8081."
+  }
+
+  assert {
+    condition     = one([for rule in yandex_vpc_security_group.vm.ingress : rule if rule.port == 8081]).predefined_target == "loadbalancer_healthchecks" && output.ssh_host == yandex_compute_instance.app.network_interface[0].nat_ip_address
+    error_message = "Health checks are restricted and SSH stays direct."
   }
 
   assert {

@@ -22,8 +22,7 @@ FindMe Photo помогает участникам мероприятий нах
 GitHub Actions Infrastructure → Terraform (VPC, диски, одна VM)
                               → Ansible (пользователь, SSH, Docker, PG mount)
                               → подготовленная ОС
-GitHub Actions Deploy → immutable образы → Compose (db, web, HTTP Nginx)
-                                        → выключенные worker-профили до проверки очереди
+GitHub Actions Deploy → immutable образы → Compose (db, web, edge, обработчики)
 ```
 
 Django — модульный монолит: он владеет HTTP-интерфейсом, полномочиями и правилами продукта.
@@ -60,13 +59,13 @@ GitHub Actions связывает эти слои в общий release. В PR �
 Размещение следует принципу минимально жизнеспособной конфигурации: одна VM для PostgreSQL,
 Django и обработчиков, отдельный сохраняемый диск БД и Object Storage для медиа. Мощности
 увеличиваются по измеренной потребности ([ADR 0056](adr/0056-minimum-viable-infrastructure.md)).
-Для промежуточного восстановления реализован ручной **Deploy**: сборка без запуска по умолчанию,
-явный выпуск только после восстановления БД; образы закреплены registry digests. Автоматический
-merge → application release ещё предстоит проверить завершающим этапом восстановления.
-Подробности действующего интерфейса — в [инструкции выпуска](runbooks/deployment.md).
+Порядок выпуска описан в [инструкции выпуска](runbooks/deployment.md).
 
-Для независимого от VM публичного адреса выбран NLB с TCP forwarding; TLS завершается на
-Nginx/Certbot ([ADR 0058](adr/0058-stable-public-entrypoint-nlb.md)). Секреты и SSH-доступ описаны
+Для независимого от VM публичного адреса используется постоянный IP NLB с TCP forwarding;
+TLS завершается на Nginx/Certbot ([ADR 0058](adr/0058-stable-public-entrypoint-nlb.md)).
+Nginx направляет запросы по Host к Django или image origin по приватной сети. При переносе
+сервиса меняется его приватный upstream, при переносе edge — цель NLB; публичный адрес и DNS
+сохраняются. SSH использует отдельный служебный доступ к VM. Секреты и SSH-доступ описаны
 в [отдельном разделе](#secrets-and-ssh-access).
 
 <a id="target-mvp-architecture--proposed"></a>

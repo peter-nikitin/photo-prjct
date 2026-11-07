@@ -6,7 +6,7 @@ from tests.deployment.compose_config import render_compose
 def test_single_vm_services_keep_workers_and_database_private(tmp_path: Path) -> None:
     default = render_compose(tmp_path / "default", "docker-compose.deployment.yml")
     services = default["services"]
-    assert set(services) == {"db", "web", "nginx"}
+    assert set(services) == {"db", "web", "nginx", "certbot-renew"}
     assert "ports" not in services["db"]
     assert services["db"]["volumes"][0]["source"] == "/var/lib/findme-photo/postgres"
     assert "ports" not in services["web"]

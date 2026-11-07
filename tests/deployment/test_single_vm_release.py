@@ -184,3 +184,48 @@ os.execv(sys.executable, [sys.executable, '-c', program])
     assert json.loads(check.stdout)["services"]["check"]["environment"]["VALUE"] == value.replace(
         "$", "$$"
     )
+
+
+def test_certificate_issue_is_explicit_and_reloads_the_edge(tmp_path: Path) -> None:
+    commands = tmp_path / "commands"
+    docker = tmp_path / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMANDS"\n')
+    docker.chmod(0o755)
+    result = subprocess.run(
+        ["sh", str(ROOT / "deploy/certbot/reconcile-certificate.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "COMMANDS": str(commands),
+            "DEPLOY_ROOT": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = commands.read_text()
+    assert "certonly --webroot" in calls
+    assert "-d findme-photo.ru -d www.findme-photo.ru" in calls
+    assert "up -d --wait --force-recreate --no-deps nginx" in calls
+
+
+def test_certificate_failure_does_not_restart_nginx(tmp_path: Path) -> None:
+    commands = tmp_path / "commands"
+    docker = tmp_path / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMANDS"\nexit 1\n')
+    docker.chmod(0o755)
+    result = subprocess.run(
+        ["sh", str(ROOT / "deploy/certbot/reconcile-certificate.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "COMMANDS": str(commands),
+            "DEPLOY_ROOT": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    calls = commands.read_text()
+    assert "certonly --webroot" in calls
+    assert "up -d" not in calls

@@ -5,6 +5,10 @@ resource "yandex_compute_disk" "boot" {
   type      = "network-ssd"
   size      = var.boot_disk_gb
   image_id  = var.ubuntu_image_id
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "yandex_compute_disk" "postgres" {

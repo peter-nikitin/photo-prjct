@@ -98,6 +98,10 @@ def main() -> None:
             "docker-compose.deployment.yml",
             "deploy/apply-deployment.sh",
             "deploy/nginx/http.conf",
+            "deploy/nginx/https.conf",
+            "deploy/nginx/edge-start.sh",
+            "deploy/certbot/renew-certificates.sh",
+            "deploy/certbot/reconcile-certificate.sh",
         ):
             tar.add(ROOT / name, arcname=name, recursive=False)
     payload = json.dumps(

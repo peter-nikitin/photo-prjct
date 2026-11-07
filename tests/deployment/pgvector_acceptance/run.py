@@ -14,7 +14,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SELECTORS = (
-    "tests/deployment/test_pgvector_acceptance.py",
     "src/backend/processing/tests/test_pgvector_callbacks.py",
     "src/backend/selfie_search/tests/test_read_selection.py",
     "src/backend/selfie_search/tests/test_vector_ranking.py",

@@ -4,14 +4,15 @@ run "one_recovery_host" {
   command = apply
 
   variables {
-    cloud_id         = "b1gmcsmr51o5kvp86l55"
-    folder_id        = "b1g2qttgfhb4gdunvlge"
-    zone             = "ru-central1-d"
-    ubuntu_image_id  = "fd8a30ptg5tdapq35dlb"
-    ssh_public_key   = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKh9rmX/xkzdkVDBA+LTwNzH9MNjToOjzXvrYZuY7WmN test"
-    ssh_cidrs        = ["203.0.113.8/32"]
-    boot_disk_gb     = 30
-    postgres_disk_gb = 40
+    cloud_id             = "b1gmcsmr51o5kvp86l55"
+    folder_id            = "b1g2qttgfhb4gdunvlge"
+    zone                 = "ru-central1-d"
+    ubuntu_image_id      = "fd8p50cvjmb6fo0ik4hk"
+    ssh_public_key       = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKh9rmX/xkzdkVDBA+LTwNzH9MNjToOjzXvrYZuY7WmN test"
+    admin_ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKh9rmX/xkzdkVDBA+LTwNzH9MNjToOjzXvrYZuY7WmN admin"
+    ssh_cidrs            = ["203.0.113.8/32"]
+    boot_disk_gb         = 30
+    postgres_disk_gb     = 10
   }
 
   assert {
@@ -25,8 +26,13 @@ run "one_recovery_host" {
   }
 
   assert {
-    condition     = yandex_compute_disk.postgres.size == 40 && yandex_compute_disk.boot.size == 30
-    error_message = "Reviewed disk inputs must reach distinct resources."
+    condition = (
+      yandex_compute_disk.postgres.size == 10 &&
+      yandex_compute_disk.boot.size == 30 &&
+      yandex_compute_disk.postgres.type == "network-ssd" &&
+      yandex_compute_disk.boot.type == "network-ssd"
+    )
+    error_message = "Both reviewed disk sizes and SSD types must reach distinct resources."
   }
 
   assert {
@@ -37,5 +43,10 @@ run "one_recovery_host" {
   assert {
     condition     = yandex_resourcemanager_folder_iam_member.backup_agent.role == "backup.user"
     error_message = "Temporary recovery agent must have only backup.user on its VM identity."
+  }
+
+  assert {
+    condition     = strcontains(yandex_compute_instance.app.metadata["user-data"], "name: deploy") && strcontains(yandex_compute_instance.app.metadata["user-data"], "name: petrnikitin") && yandex_compute_instance.app.metadata["enable-oslogin"] == "false"
+    error_message = "Cloud-init must provision both separate key-only SSH identities with OS Login disabled."
   }
 }

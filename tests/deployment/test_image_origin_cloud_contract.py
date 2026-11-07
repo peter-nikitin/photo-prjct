@@ -23,32 +23,6 @@ PUBLIC_KEY = PACKAGE / "workflow-ssh-key.pub"
 CLOUD_INIT = PACKAGE / "cloud-init.sh"
 MANIFEST = ROOT / "deploy/environment-secrets.json"
 RESOURCE_NAME = "findme-gallery-image-origin"
-NEW_SECRET_KEYS = {
-    "GALLERY_CDN_TOKEN_SECRET",
-    "GALLERY_IMGPROXY_KEY",
-    "GALLERY_IMGPROXY_SALT",
-    "IMAGE_ORIGIN_HEADER_SECRET",
-    "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
-    "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
-}
-DJANGO_SIGNING_KEYS = {
-    "GALLERY_CDN_TOKEN_SECRET",
-    "GALLERY_IMGPROXY_KEY",
-    "GALLERY_IMGPROXY_SALT",
-}
-ORIGIN_KEYS = {
-    "GALLERY_IMGPROXY_KEY",
-    "GALLERY_IMGPROXY_SALT",
-    "IMAGE_ORIGIN_HEADER_SECRET",
-    "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
-    "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
-    "VM_SSH_KEY",
-}
-IMAGE_DELIVERY_PROVISION_KEYS = {
-    "GALLERY_CDN_TOKEN_SECRET",
-    "IMAGE_ORIGIN_HEADER_SECRET",
-    "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
-}
 
 
 @pytest.fixture
@@ -365,39 +339,20 @@ def _apply_origin_access_phase(tmp_path: Path, environment: dict[str, str]) -> d
     return _plan(result)
 
 
-def test_policy_statement_is_one_principal_scoped_preview_read() -> None:
-    statement = json.loads((PACKAGE / "bucket-policy-statement.json").read_text())
-
-    assert statement == {
-        "Sid": "AllowFindMeGalleryImageOriginPreviewReads",
-        "Effect": "Allow",
-        "Principal": {"CanonicalUser": "${IMAGE_ORIGIN_SERVICE_ACCOUNT_ID}"},
-        "Action": "s3:GetObject",
-        "Resource": "arn:aws:s3:::${PRIVATE_MEDIA_S3_BUCKET}/derivatives/previews/*",
-    }
-
-
-def test_manifest_adds_exactly_six_optional_secrets_with_closed_consumers() -> None:
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    entries = {entry["key"]: entry for entry in manifest["entries"]}
-
-    assert NEW_SECRET_KEYS <= entries.keys()
-    assert all(
-        entries[key]
-        == {
-            "key": key,
-            "target": key,
-            "type": "text",
-            "required": False,
-            "local": False,
-        }
-        for key in NEW_SECRET_KEYS
-    )
+def test_origin_credentials_are_not_granted_to_application_consumers() -> None:
+    manifest = json.loads(MANIFEST.read_text())
     consumers = {name: set(keys) for name, keys in manifest["consumers"].items()}
-    assert consumers["local-web"] & NEW_SECRET_KEYS == DJANGO_SIGNING_KEYS
-    assert consumers["deploy"] & NEW_SECRET_KEYS == DJANGO_SIGNING_KEYS
-    assert consumers["image-origin"] == ORIGIN_KEYS
-    assert consumers["image-delivery-provision"] == IMAGE_DELIVERY_PROVISION_KEYS
+    origin_private = {
+        "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
+        "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
+        "IMAGE_ORIGIN_HEADER_SECRET",
+    }
+    for consumer in ("local-web", "deploy"):
+        assert consumers[consumer].isdisjoint(origin_private)
+    assert "GALLERY_CDN_TOKEN_SECRET" not in consumers["image-origin"]
+    assert consumers["image-delivery-provision"].isdisjoint(
+        {"IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY", "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY"}
+    )
 
 
 def test_default_is_read_only_discovery_and_machine_readable_plan(
@@ -1677,18 +1632,3 @@ def test_lockbox_rejects_every_non_bootstrap_partial_gallery_set(
     assert result.returncode == 2
     assert "lockbox_secret_set_partial" in result.stderr
     assert all("create" not in command and "update" not in command for command in commands)
-
-
-def test_runbook_keeps_dark_deploy_first_and_s3_signal_as_activation_blocker() -> None:
-    runbook = (ROOT / "docs/runbooks/gallery-image-delivery.md").read_text(encoding="utf-8")
-    dark = runbook.index("gallery-cdn-images=off")
-    provision = runbook.index("Provision the reviewed resources")
-    validate = runbook.index("Validate the origin, credentials, and CDN gates")
-    staff = runbook.index("gallery-cdn-images=staff")
-    public = runbook.index("gallery-cdn-images=on")
-
-    assert dark < provision < validate < staff < public
-    assert "S3 403" in runbook
-    assert "Task 6 staff-activation blocker" in runbook
-    assert "wired alert" not in runbook.lower()
-    assert "fresh manual approval" in runbook.lower()

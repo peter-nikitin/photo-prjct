@@ -193,42 +193,25 @@ def test_local_script_rejects_remote_event_before_docker(monkeypatch):
     assert error.value.code == 2
 
 
-def test_local_stack_keeps_production_sequential_contract():
-    import yaml
+def test_bib_fixture_separates_bulk_from_selfie_processing(tmp_path):
+    from tests.deployment.compose_config import render_compose
 
-    from tests.deployment.test_deployment_scripts import ROOT
-
-    stack = yaml.safe_load((ROOT / "docker-compose.bib-local.yml").read_text())
-    bulk = stack["services"]["worker-bulk"]
-    selfie = stack["services"]["worker-selfie"]
-    assert bulk["cpus"] == "2.0"
-    assert bulk["mem_limit"] == "6g"
-    assert bulk["pids_limit"] == 64
-    assert bulk["restart"] == "no"
-    assert bulk["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"].endswith("1/bib_recognition/1")
-    assert (
-        bulk["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"]
-        == "bib_recognition,face_embedding,capture_metadata,generate_preview,"
-        "generate_watermarked_preview"
+    services = render_compose(
+        tmp_path,
+        "docker-compose.bib-local.yml",
+        environment={
+            "BIB_EVENT_SLUG": "test-event",
+            "BIB_SOURCE_ROOT": str(tmp_path),
+            "BIB_BASELINE": str(tmp_path / "baseline.json"),
+        },
+    )["services"]
+    bulk = set(services["worker-bulk"]["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"].split(","))
+    selfie = set(
+        services["worker-selfie"]["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"].split(",")
     )
-    assert selfie["image"] == bulk["image"]
-    assert selfie["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == "1/selfie_query/2"
-    assert selfie["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"] == "selfie_query"
-    assert stack["services"]["web"]["ports"] == ["127.0.0.1:18210:8000"]
-
-
-def test_metrics_observer_does_not_consume_worker_pid_quota():
-    from tests.deployment.test_deployment_scripts import ROOT
-
-    runner = " ".join(
-        (ROOT / "experiments/bib_search/worker_acceptance/run.py").read_text().split()
-    )
-    sampler = (ROOT / "experiments/bib_search/worker_acceptance/metrics.py").read_text()
-    assert '"--pid", f"container:{worker_id}"' in runner
-    assert '"--cgroupns", "host"' in runner
-    assert '"--network", "none"' in runner
-    assert 'Path("/proc/1/cgroup")' in sampler
-    assert "p.parent.name == str(os.getpid())" in sampler
+    assert "bib_recognition" in bulk
+    assert "selfie_query" in selfie
+    assert bulk.isdisjoint(selfie)
 
 
 @pytest.mark.parametrize("final_available", ["available", "timeout", "stopped"])

@@ -6,11 +6,11 @@ does not authorize a live cloud, credential, or deployment mutation.
 ## Canonical deployment secrets
 
 - [Environment secrets operator runbook](runbooks/environment-secrets.md)
-- [Environment secrets inventory](runbooks/environment-secrets-inventory.md)
 
-The current scope is the canonical deployment. One manifest and Lockbox authority serve the
-repository consumers; repository variables hold non-secret configuration, and neither the VM nor
-the runtime reads Lockbox.
+Устройство хранения секретов и разделение доступа приложения, CI и оператора описаны в
+[архитектуре](architecture.md#secrets-and-ssh-access). Точная схема секретов приложения находится
+в [manifest](../deploy/environment-secrets.json), а порядок получения SSH-ключа — в
+[инструкции оператора](runbooks/environment-secrets.md#ssh-keys-infrastructure).
 
 ## Other runbooks
 

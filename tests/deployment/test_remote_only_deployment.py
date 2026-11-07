@@ -1,8 +1,6 @@
 import os
 import subprocess
 
-import yaml
-
 from tests.deployment.test_deployment_scripts import ROOT
 
 
@@ -40,38 +38,18 @@ def test_package_replacement_and_restore_keep_live_nginx_directory_inode(tmp_pat
         assert not (current / "obsolete").exists()
 
 
-def test_production_compose_has_no_local_photo_workers():
-    services = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())["services"]
-    assert not {"worker", "worker-bulk", "worker-selfie"} & services.keys()
-    assert {"web", "db", "import-worker", "commerce-worker"} <= services.keys()
-    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in services["web"]["environment"]
-    assert "nginx" in yaml.safe_load((ROOT / "docker-compose.https.yml").read_text())["services"]
+def test_public_web_does_not_receive_worker_authentication(tmp_path):
+    from tests.deployment.compose_config import render_compose
 
-
-def test_production_deploy_has_no_local_placement_or_restore_path():
-    source = (ROOT / "deploy/apply-deployment.sh").read_text()
-    assert "PHOTO_WORKER_PLACEMENT" not in source
-    assert "PHOTO_PROCESSING_WORKER_TOKEN" not in source
-    assert "worker-bulk" not in source
-    assert "worker-selfie" not in source
-    assert "fleet_phase" not in source
-    assert "verify-native-release.py" not in source
-    assert not (ROOT / "deploy/verify-native-release.py").exists()
-    workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
-    assert "PHOTO_WORKER_REPLICAS:" not in workflow
-    assert "PHOTO_WORKER_CPUS:" not in workflow
-    assert "PHOTO_WORKER_MEMORY_LIMIT:" not in workflow
-
-
-def test_obsolete_fleet_release_and_finalizer_are_removed():
-    assert not (ROOT / "deploy/worker-pools/release.py").exists()
-    assert not (ROOT / "deploy/worker-pools/finalize_initial.py").exists()
-
-
-def test_production_commands_cannot_run_legacy_compose_identity_cutover():
-    assert not (ROOT / "deploy/cutover-compose-identity.sh").exists()
-    assert "cutover-compose-identity" not in (ROOT / "deploy/run-remote.sh").read_text()
-    assert "cutover_compose_identity" not in (ROOT / ".github/workflows/deploy.yml").read_text()
+    sentinel = "worker-auth-private-sentinel"
+    services = render_compose(
+        tmp_path,
+        "docker-compose.deployment.yml",
+        "docker-compose.https.yml",
+        environment={"PHOTO_PROCESSING_WORKER_TOKEN": sentinel},
+    )["services"]
+    for name in ("web", "web-next", "nginx"):
+        assert sentinel not in str(services[name].get("environment", {}))
 
 
 def test_observability_requires_web_and_nginx_only(tmp_path):

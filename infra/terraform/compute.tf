@@ -30,9 +30,15 @@ resource "yandex_compute_instance" "app" {
 
   metadata = {
     user-data = templatefile("${path.module}/cloud-init.yml.tftpl", {
-      ssh_public_key = trimspace(var.ssh_public_key)
+      deploy_ssh_public_key = trimspace(var.ssh_public_key)
+      admin_ssh_public_key  = trimspace(var.admin_ssh_public_key)
     })
     serial-port-enable = "1"
+    enable-oslogin     = "false"
+  }
+
+  lifecycle {
+    ignore_changes = [metadata["findme-ssh-host-key"]]
   }
 
   depends_on = [yandex_resourcemanager_folder_iam_member.backup_agent]

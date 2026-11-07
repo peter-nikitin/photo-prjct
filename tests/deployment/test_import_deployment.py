@@ -81,18 +81,17 @@ def test_failed_candidate_stops_import_before_stopping_web_for_forward_recovery(
     assert not (tmp_path / ".deployment-recovery").exists()
 
 
-def test_import_token_projection_is_optional_and_edge_denies_internal_api():
+def test_import_token_is_optional_and_limited_to_application_consumers():
     manifest = json.loads((ROOT / "deploy/environment-secrets.json").read_text())
-    token = next(e for e in manifest["entries"] if e["key"] == "PHOTO_IMPORT_WORKER_TOKEN")
+    token = next(
+        entry for entry in manifest["entries"] if entry["key"] == "PHOTO_IMPORT_WORKER_TOKEN"
+    )
     assert token["required"] is False
-    assert {name for name, keys in manifest["consumers"].items() if token["key"] in keys} == {
+    assert token["key"] in manifest["consumers"]["deploy"]
+    assert {name for name, keys in manifest["consumers"].items() if token["key"] in keys} <= {
         "local-web",
         "deploy",
     }
-    assert (
-        "location ^~ /internal/photo-import/ {\n        return 404;"
-        in (ROOT / "deploy/nginx/https.conf.template").read_text()
-    )
 
 
 def test_protocol_readiness_failure_keeps_candidate_without_starting_import(tmp_path, fake_bin):

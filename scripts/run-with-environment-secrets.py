@@ -99,22 +99,85 @@ def _manifest_entries(manifest: Mapping[str, Any]) -> dict[str, Mapping[str, Any
     return entries
 
 
+def _ssh_credential_sources(
+    manifest: Mapping[str, Any],
+) -> tuple[dict[str, Mapping[str, Any]], dict[str, str]]:
+    raw = manifest.get("ssh_credentials")
+    if not isinstance(raw, dict):
+        _fail("manifest", "manifest_invalid")
+    raw_sources = raw.get("sources")
+    raw_consumers = raw.get("consumers")
+    if not isinstance(raw_sources, dict) or not isinstance(raw_consumers, dict):
+        _fail("manifest", "manifest_invalid")
+    sources: dict[str, Mapping[str, Any]] = {}
+    targets: set[str] = set()
+    for name, source in raw_sources.items():
+        if (
+            not isinstance(name, str)
+            or not isinstance(source, dict)
+            or set(source)
+            != {
+                "secret_id",
+                "folder_id",
+                "expected_user",
+                "public_key_environment",
+                "target",
+            }
+        ):
+            _fail("manifest", "manifest_invalid")
+        if (
+            not isinstance(source.get("secret_id"), str)
+            or not re.fullmatch(r"[a-z0-9]{20}", source["secret_id"])
+            or not isinstance(source.get("folder_id"), str)
+            or not source["folder_id"]
+            or not isinstance(source.get("expected_user"), str)
+            or not source["expected_user"]
+            or not isinstance(source.get("public_key_environment"), str)
+            or not ENVIRONMENT_NAME.fullmatch(source["public_key_environment"])
+            or not isinstance(source.get("target"), str)
+            or not ENVIRONMENT_NAME.fullmatch(source["target"])
+            or source["target"] in targets
+        ):
+            _fail("manifest", "manifest_invalid")
+        sources[name] = source
+        targets.add(source["target"])
+    consumers: dict[str, str] = {}
+    for consumer, source_name in raw_consumers.items():
+        if (
+            not isinstance(consumer, str)
+            or not consumer
+            or not isinstance(source_name, str)
+            or source_name not in sources
+        ):
+            _fail("manifest", "manifest_invalid")
+        consumers[consumer] = source_name
+    if not sources or not consumers:
+        _fail("manifest", "manifest_invalid")
+    return sources, consumers
+
+
 def _consumer_projection(
-    manifest: Mapping[str, Any], consumer: str, entries: Mapping[str, Mapping[str, Any]]
+    manifest: Mapping[str, Any],
+    consumer: str,
+    entries: Mapping[str, Mapping[str, Any]],
+    credential_consumers: Mapping[str, str],
 ) -> list[str]:
     consumers = manifest.get("consumers")
     if not isinstance(consumers, dict):
         _fail("manifest", "manifest_invalid")
-    if consumer not in consumers:
+    if consumer not in consumers and consumer not in credential_consumers:
         _fail("manifest", "unknown_consumer")
+    if consumer not in consumers:
+        return []
     projection = consumers[consumer]
     if (
         not isinstance(projection, list)
-        or not projection
         or any(not isinstance(key, str) for key in projection)
         or len(projection) != len(set(projection))
         or any(key not in entries for key in projection)
     ):
+        _fail("manifest", "manifest_invalid")
+    if not projection and consumer not in credential_consumers:
         _fail("manifest", "manifest_invalid")
     return projection
 
@@ -283,7 +346,64 @@ def _obtain_identity(
         return _yc_identity()
     if identity == "github-oidc":
         return _github_identity(manifest, environment)
+    if identity == "iam-token":
+        token = environment.get("YC_TOKEN")
+        if not token:
+            _fail("identity", "identity_failed")
+        return token
     _fail("identity", "unknown_identity")
+
+
+def _derive_public_key(private_key: str) -> str:
+    descriptor, temp_name = tempfile.mkstemp(prefix="findme-ssh-validation-")
+    try:
+        os.fchmod(descriptor, PRIVATE_MODE)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as key_file:
+            key_file.write(private_key)
+        result = subprocess.run(
+            ["ssh-keygen", "-y", "-f", temp_name],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return " ".join(result.stdout.split()[:2])
+    except (OSError, subprocess.SubprocessError, ValueError):
+        _fail("payload", "ssh_identity_mismatch")
+    finally:
+        Path(temp_name).unlink(missing_ok=True)
+
+
+def _validate_ssh_credential(
+    values: Mapping[str, SecretValue], source: Mapping[str, Any], environment: Mapping[str, str]
+) -> bytes:
+    private = values.get("ssh_private_key")
+    public = values.get("ssh_public_key")
+    username = values.get("ssh_user")
+    expected_public = environment.get(source["public_key_environment"])
+    if (
+        private is None
+        or public is None
+        or username is None
+        or not isinstance(private.value, str)
+        or not isinstance(public.value, str)
+        or not isinstance(username.value, str)
+        or not expected_public
+    ):
+        _fail("payload", "ssh_identity_mismatch")
+
+    def normalize(value: str) -> str:
+        return " ".join(value.split()[:2])
+
+    reviewed_public = normalize(expected_public)
+    if (
+        username.value != source["expected_user"]
+        or not reviewed_public
+        or normalize(public.value) != reviewed_public
+        or _derive_public_key(private.value) != reviewed_public
+    ):
+        _fail("payload", "ssh_identity_mismatch")
+    return private.value.encode()
 
 
 def _authorized_request(url: str, iam_token: str) -> Request:
@@ -294,9 +414,13 @@ def _authorized_request(url: str, iam_token: str) -> Request:
 
 
 def _active_version(
-    manifest: Mapping[str, Any], entries: Mapping[str, Mapping[str, Any]], iam_token: str
+    manifest: Mapping[str, Any],
+    entries: Mapping[str, Mapping[str, Any]],
+    iam_token: str,
+    *,
+    lockbox: Mapping[str, Any] | None = None,
 ) -> str:
-    lockbox = manifest.get("lockbox")
+    lockbox = lockbox if lockbox is not None else manifest.get("lockbox")
     if not isinstance(lockbox, dict):
         _fail("manifest", "manifest_invalid")
     secret_id = lockbox.get("secret_id")
@@ -330,7 +454,7 @@ def _active_version(
         _fail("metadata", "metadata_mismatch")
     payload_key_set = set(payload_keys)
     required_keys = {key for key, specification in entries.items() if specification["required"]}
-    if not required_keys <= payload_key_set <= set(entries):
+    if not required_keys <= payload_key_set:
         _fail("metadata", "metadata_mismatch")
     version_id = version["id"]
     if not isinstance(version_id, str):
@@ -338,8 +462,14 @@ def _active_version(
     return version_id
 
 
-def _fetch_payload(manifest: Mapping[str, Any], version_id: str, iam_token: str) -> dict[str, Any]:
-    lockbox = manifest["lockbox"]
+def _fetch_payload(
+    manifest: Mapping[str, Any],
+    version_id: str,
+    iam_token: str,
+    *,
+    lockbox: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    lockbox = lockbox if lockbox is not None else manifest["lockbox"]
     secret_id = lockbox["secret_id"]
     query = urlencode({"versionId": version_id})
     request = _authorized_request(
@@ -365,7 +495,7 @@ def _validate_payload(
             _fail("payload", "duplicate_entry")
         specification = entries.get(key)
         if specification is None:
-            _fail("payload", "unknown_entry")
+            continue
         value_fields = {field for field in ("textValue", "binaryValue") if field in raw_entry}
         expected_field = "textValue" if specification["type"] == "text" else "binaryValue"
         if value_fields != {expected_field} or set(raw_entry) != {"key", expected_field}:
@@ -423,6 +553,7 @@ def _materialize(
     projection: Sequence[str],
     entries: Mapping[str, Mapping[str, Any]],
     values: Mapping[str, SecretValue],
+    file_targets: dict[str, Path] | None = None,
 ) -> Path:
     records: list[str] = []
     for key in projection:
@@ -438,6 +569,8 @@ def _materialize(
             if not isinstance(secret.value, bytes):
                 _fail("materialize", "materialization_failed")
             _write_private(binary_path, secret.value)
+            if file_targets is not None:
+                file_targets[target] = binary_path
             value = str(binary_path)
         else:
             if not isinstance(secret.value, str):
@@ -469,6 +602,8 @@ def _run_child(
     manifest: Mapping[str, Any],
     entries: Mapping[str, Mapping[str, Any]],
     consumer: str,
+    file_targets: Mapping[str, Path] | None = None,
+    sensitive_environment_names: Sequence[str] = (),
 ) -> int:
     child_environment = os.environ.copy()
     governed_names = set(entries)
@@ -481,10 +616,20 @@ def _run_child(
         ):
             _fail("manifest", "manifest_invalid")
         governed_names.update(local_overrides)
-    governed_names.update({"ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"})
+    governed_names.update(
+        {
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            "YC_TOKEN",
+        }
+    )
+    governed_names.update(file_targets or {})
+    governed_names.update(sensitive_environment_names)
     for name in governed_names:
         child_environment.pop(name, None)
     child_environment["FINDME_ENV_FILE"] = str(environment_path)
+    for name, path in (file_targets or {}).items():
+        child_environment[name] = str(path)
     process: subprocess.Popen[bytes] | None = None
     previous_handlers: dict[int, Callable[[int, FrameType | None], Any] | int | None] = {}
 
@@ -514,11 +659,47 @@ def _run_child(
 def _resolve_and_run(consumer: str, identity: str, command: Sequence[str]) -> int:
     manifest = _load_manifest()
     entries = _manifest_entries(manifest)
-    projection = _consumer_projection(manifest, consumer, entries)
+    credential_sources, credential_consumers = _ssh_credential_sources(manifest)
+    projection = _consumer_projection(manifest, consumer, entries, credential_consumers)
+    credential_name = credential_consumers.get(consumer)
     iam_token = _obtain_identity(identity, manifest, os.environ)
-    version_id = _active_version(manifest, entries, iam_token)
-    payload = _fetch_payload(manifest, version_id, iam_token)
-    values = _validate_payload(payload, version_id, entries)
+    values: dict[str, SecretValue] = {}
+    if projection:
+        version_id = _active_version(manifest, entries, iam_token)
+        payload = _fetch_payload(manifest, version_id, iam_token)
+        values.update(_validate_payload(payload, version_id, entries))
+    file_targets: dict[str, Path] = {}
+    if credential_name is not None:
+        source = credential_sources[credential_name]
+        credential_entries = {
+            name: {"type": "text", "required": True}
+            for name in ("ssh_private_key", "ssh_public_key", "ssh_user")
+        }
+        source_lockbox = {
+            "secret_id": source["secret_id"],
+            "folder_id": source["folder_id"],
+        }
+        version_id = _active_version(
+            manifest, credential_entries, iam_token, lockbox=source_lockbox
+        )
+        payload = _fetch_payload(manifest, version_id, iam_token, lockbox=source_lockbox)
+        credential_values = _validate_payload(payload, version_id, credential_entries)
+        private_key = _validate_ssh_credential(credential_values, source, os.environ)
+        target = source["target"]
+        if target in entries:
+            _fail("manifest", "manifest_invalid")
+        entries = {
+            **entries,
+            target: {
+                "key": target,
+                "target": target,
+                "type": "binary",
+                "required": True,
+                "local": False,
+            },
+        }
+        projection = [*projection, target]
+        values[target] = SecretValue("binary", private_key)
 
     previous_handlers: dict[int, Callable[[int, FrameType | None], Any] | int | None] = {}
 
@@ -535,12 +716,26 @@ def _resolve_and_run(consumer: str, identity: str, command: Sequence[str]) -> in
     try:
         try:
             temporary_root = Path(tempfile.mkdtemp(prefix="findme-environment-"))
-            environment_path = _materialize(temporary_root, projection, entries, values)
+            environment_path = _materialize(
+                temporary_root, projection, entries, values, file_targets
+            )
             print(
                 f"[environment-secrets] stage=resolve status=ok "
                 f"consumer={consumer} version_id={version_id}"
             )
-            exit_code = _run_child(command, environment_path, manifest, entries, consumer)
+            exit_code = _run_child(
+                command,
+                environment_path,
+                manifest,
+                entries,
+                consumer,
+                file_targets,
+                [
+                    name
+                    for item in credential_sources.values()
+                    for name in (item["target"], item["public_key_environment"])
+                ],
+            )
         except ResolverError as error:
             failure = error
         except SignalReceived as received:

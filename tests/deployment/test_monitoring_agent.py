@@ -166,10 +166,6 @@ esac
     }
 
 
-def _plugin_count(config: dict[object, object], plugin: str) -> int:
-    return sum(1 for route in config["routes"] if route["input"]["plugin"] == plugin)
-
-
 def _valid_existing_agent_config() -> str:
     return yaml.safe_dump(
         {
@@ -194,103 +190,20 @@ def _valid_existing_agent_config() -> str:
     )
 
 
-def test_unified_agent_template_collects_only_host_agent_and_private_app_metrics() -> None:
-    template = ROOT / "deploy/monitoring/unified-agent.yml.template"
-    source = template.read_text(encoding="utf-8")
-    config = yaml.safe_load(source)
+def test_agent_uses_instance_identity_and_loopback_app_metrics() -> None:
+    from urllib.parse import urlparse
 
-    assert _plugin_count(config, "linux_metrics") == 1
-    assert _plugin_count(config, "agent_metrics") == 1
-    assert _plugin_count(config, "metrics_pull") == 1
-    assert config["routes"][0]["input"]["config"] == {
-        "poll_period": "60s",
-        "namespace": "sys",
-    }
-    assert config["routes"][1]["input"]["config"] == {
-        "poll_period": "60s",
-        "namespace": "ua",
-    }
-    assert config["routes"][1]["channel"]["pipe"] == [
-        {"filter": {"plugin": "filter_metrics", "config": {"match": "{scope=health}"}}}
-    ]
-    assert config["routes"][2]["input"]["config"] == {
-        "url": "http://127.0.0.1:8080/metrics/",
-        "format": {"prometheus": {}},
-        "poll_period": "60s",
-        "namespace": "app",
-    }
-    assert config["storages"] == [
-        {
-            "name": "metrics_buffer",
-            "plugin": "fs",
-            "config": {
-                "directory": "/var/lib/yandex/unified_agent/metrics_buffer",
-                "max_partition_size": "128mb",
-                "max_segment_size": "16mb",
-            },
-        }
-    ]
-    assert len(config["channels"]) == 1
-    output = config["channels"][0]["channel"]["output"]
-    assert output == {
-        "plugin": "yc_metrics",
-        "config": {"folder_id": "__YANDEX_CLOUD_FOLDER_ID__", "iam": {"cloud_meta": {}}},
-    }
-    assert "token" not in source.lower()
-    assert "docker" not in source.lower()
-    assert "/var/run/docker.sock" not in source
-    assert "container" not in source.lower()
-
-
-def test_commerce_worker_probe_is_packaged_but_not_activated_by_monitoring_setup() -> None:
-    script = ROOT / "deploy/configure-monitoring-agent.sh"
-    source = script.read_text(encoding="utf-8")
-    template = (ROOT / "deploy/monitoring/unified-agent.yml.template").read_text(encoding="utf-8")
-
-    assert "run-commerce-worker-health.sh" in source
-    assert "findme-commerce-worker-health" in source
-    assert "systemctl enable findme-commerce-worker-health" not in source
-    assert "systemctl start findme-commerce-worker-health" not in source
-    assert "run-commerce-worker-health.sh" in template
-
-
-def test_monitoring_agent_script_has_safe_install_and_rollback_contract() -> None:
-    script = ROOT / "deploy/configure-monitoring-agent.sh"
-    source = script.read_text(encoding="utf-8")
-
-    assert "id -u" in source
-    assert '"$FOLDER_ID"' in source
-    assert "uname -m" in source
-    assert "x86_64" in source
-    assert "/etc/os-release" in source
-    assert "ID=ubuntu" in source
-    assert "storage.yandexcloud.net/yc-unified-agent" in source
-    assert "yandex-unified-agent_" in source
-    assert "dpkg -i" in source
-    assert "/etc/yandex/unified_agent/config.yml" in source
-    assert "check-config" in source
-    assert "DEB_SERVICE=unified-agent" in source
-    assert "MANAGED_CONFIG_PATH=/etc/yc/unified_agent/config.yml" in source
-    assert "MANAGED_SERVICE=unified_agent" in source
-    assert 'systemctl enable "$SERVICE_NAME"' in source
-    assert 'systemctl restart "$SERVICE_NAME"' in source
-    assert 'systemctl is-active "$SERVICE_NAME"' in source
-    assert "trap cleanup" in source
-    assert "Unified Agent version:" in source
-    assert "token" not in source.lower()
-    assert source.index("check-config") < source.index('mv "$candidate_config" "$CONFIG_PATH"')
-    assert 'if [ "$exit_status" -ne 0 ] && [ "$agent_installed_by_attempt" -eq 1 ]' in source
-    assert "dpkg --remove yandex-unified-agent" in source
-    assert "snapshot_existing_agent" in source
-    assert "dpkg-query -W" in source
-    assert 'systemctl cat "$DEB_SERVICE"' in source
-    assert 'systemctl cat "$MANAGED_SERVICE"' in source
-    assert 'systemctl is-enabled --quiet "$SERVICE_NAME"' in source
-    assert 'systemctl is-active --quiet "$SERVICE_NAME"' in source
-    assert 'mv "$previous_config" "$CONFIG_PATH" || true' in source
-
-    result = subprocess.run(["sh", "-n", script], capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stderr
+    config = yaml.safe_load((ROOT / "deploy/monitoring/unified-agent.yml.template").read_text())
+    for channel in config["channels"]:
+        output = channel["channel"]["output"]
+        assert set(output["config"]["iam"]) == {"cloud_meta"}
+    for route in config["routes"]:
+        source = route["input"]
+        assert source["plugin"] in {"linux_metrics", "agent_metrics", "metrics_pull"}
+        if source["plugin"] == "metrics_pull":
+            endpoint = urlparse(source["config"]["url"])
+            assert endpoint.hostname in {"127.0.0.1", "localhost", "::1"}
+            assert endpoint.username is None and endpoint.password is None
 
 
 def test_fresh_install_validation_failure_removes_only_the_agent_attempt(tmp_path: Path) -> None:

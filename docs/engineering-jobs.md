@@ -547,7 +547,8 @@ non-disclosure are documented and covered by repository-foundation contracts.
 - Evidence: [`deploy/environment-secrets.json`](../deploy/environment-secrets.json),
   [`scripts/run-with-environment-secrets.py`](../scripts/run-with-environment-secrets.py),
   [environment secrets runbook](runbooks/environment-secrets.md),
-  [inventory](runbooks/environment-secrets-inventory.md), [ADR 0028](adr/0028-operate-one-canonical-deployment.md),
+  [архитектура хранения секретов](architecture.md#secrets-and-ssh-access),
+  [ADR 0028](adr/0028-operate-one-canonical-deployment.md),
   and [`tests/deployment/test_environment_secrets.py`](../tests/deployment/test_environment_secrets.py).
 - Last updated: 2026-08-20
 

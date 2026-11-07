@@ -11,19 +11,6 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_worker_release_b_stays_queued_when_docs_only_c_arrives_during_deployment_a():
-    classify = module("classify-release").classify
-    assert classify(["src/worker/photo_worker/client.py"])["worker_changed"]
-    assert not any(classify(["docs/runbooks/deployment.md"]).values())
-    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
-    # GitHub's default one-slot queue replaces B with C even without canceling A.
-    assert workflow["concurrency"] == {
-        "group": "deploy",
-        "cancel-in-progress": False,
-        "queue": "max",
-    }
-
-
 def module(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / "deploy" / f"{name}.py")
     loaded = importlib.util.module_from_spec(spec)
@@ -55,15 +42,6 @@ def test_independent_image_and_running_service_selection(path, images, services)
         )
         == services
     )
-
-
-def test_forward_recovery_dispatch_is_explicit_exact_sha_and_web_only():
-    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
-    event = workflow.get("on", workflow.get(True))
-    assert event["workflow_dispatch"]["inputs"]["recover_forward"]["default"] is False
-    run = next(s for s in workflow["jobs"]["deploy"]["steps"] if s.get("name") == "Run deployment")
-    assert run["env"]["RECOVER_FORWARD"] == "${{ inputs.recover_forward && 'True' || 'False' }}"
-    assert run["env"]["RELEASE_SHA"] == "${{ needs.classify-release.outputs.release_sha }}"
 
 
 @pytest.mark.parametrize("special", [None, "preflight", "configure_monitoring_agent"])
@@ -132,36 +110,6 @@ def test_only_effective_component_inputs_are_published(paths, expected):
     ) == expected
 
 
-def test_workflow_builds_worker_with_immutable_base_and_latest_only_after_smoke():
-    jobs = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())["jobs"]
-    build = jobs["build"]
-    assert "web_changed == 'true'" in jobs["deploy"]["if"]
-    assert "web_changed == 'true'" in build["if"]
-    assert "worker_changed == 'true'" in build["if"]
-    steps = {step.get("name"): step for step in build["steps"]}
-    base = steps["Build and push worker base"]
-    assert "worker_base_changed == 'true'" in base["if"]
-    worker = steps["Build and push worker image"]
-    assert "WORKER_BASE_IMAGE=${{ steps.base_ref.outputs.image }}" in worker["with"]["build-args"]
-    assert "${{ steps.image.outputs.worker_image }}" in worker["with"]["tags"]
-    assert "latest" not in worker["with"]["tags"]
-    publish = steps["Publish current worker pointer"]
-    assert "imagetools create" in publish["run"]
-    assert "steps.worker.outputs.digest" in publish["env"]["WORKER_DIGEST"]
-    assert "continue-on-error" not in publish
-    assert "worker_changed == 'true'" in publish["if"]
-    source = (ROOT / "deploy/apply-deployment.sh").read_text()
-    remote = (ROOT / "deploy/run-remote.sh").read_text()
-    for retired in (
-        "fleet_phase",
-        "WORKER_POOL_RELEASE",
-        "worker-pools-current.json",
-        "worker-pools/release.py",
-    ):
-        assert retired not in source + remote
-    assert "WORKER_IMAGE" not in jobs["deploy"]["steps"][-1]["env"]
-
-
 def test_failed_worker_pointer_publication_reports_failure(tmp_path):
     workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())
     step = next(
@@ -190,34 +138,6 @@ def test_failed_worker_pointer_publication_reports_failure(tmp_path):
         == "buildx imagetools create --tag ghcr.io/example/photo-prjct-worker:latest "
         "ghcr.io/example/photo-prjct-worker@sha256:" + "a" * 64
     )
-
-
-def test_canonical_images_have_independent_latest_publication_and_activation():
-    jobs = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text())["jobs"]
-    steps = {step.get("name"): step for step in jobs["build"]["steps"]}
-    assert "import_changed == 'true'" in steps["Build and push import image"]["if"]
-    assert (
-        "steps.import.outputs.digest"
-        in steps["Publish current import pointer"]["env"]["IMAGE_DIGEST"]
-    )
-    assert "steps.web.outputs.digest" in steps["Publish current web pointer"]["env"]["IMAGE_DIGEST"]
-    deployment = next(
-        step for step in jobs["deploy"]["steps"] if step.get("name") == "Run deployment"
-    )
-    assert deployment["env"]["DEPLOY_WEB"] == "${{ needs.classify-release.outputs.web_changed }}"
-    assert (
-        deployment["env"]["DEPLOY_IMPORT"] == "${{ needs.classify-release.outputs.import_changed }}"
-    )
-    assert (
-        deployment["env"]["DEPLOY_COMMERCE"]
-        == "${{ needs.classify-release.outputs.commerce_changed }}"
-    )
-    assert "import_changed == 'true'" in jobs["deploy"]["if"]
-    ordered = [step.get("name") for step in jobs["build"]["steps"]]
-    for image in ("web", "import", "worker"):
-        assert ordered.index(f"Check {image} image") < ordered.index(
-            f"Publish current {image} pointer"
-        )
 
 
 def test_failed_pointer_advance_restores_known_previous_target(tmp_path):

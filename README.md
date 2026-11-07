@@ -67,7 +67,7 @@ make local-web
 и запускает `db` и `web`. Она не требует копировать секреты в `.env` и не выводит их в терминал.
 Если доступа нет, продолжайте работу без секретов или запросите выдачу указанных прав; детали
 доступа и проверки описаны в [runbook секретов](docs/runbooks/environment-secrets.md) и
-[манифесте окружения](docs/runbooks/environment-secrets-inventory.md).
+[манифесте окружения](deploy/environment-secrets.json).
 
 Приложение: <http://localhost:8000/>; Django Admin: <http://localhost:8000/admin/>.
 При первом запуске создайте администратора командой

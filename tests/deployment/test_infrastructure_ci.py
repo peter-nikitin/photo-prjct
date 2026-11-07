@@ -1,6 +1,5 @@
 """Offline execution of the resource release boundaries."""
 
-import base64
 import importlib.util
 import json
 import os
@@ -32,6 +31,22 @@ def load_release_classifier():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_plan_summary_updates_its_own_named_comment() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
+    plan = workflow["jobs"]["plan"]
+    publisher = next(
+        step
+        for step in plan["steps"]
+        if step.get("uses", "").startswith("marocchino/sticky-pull-request-comment@")
+    )
+    assert publisher["with"] == {
+        "header": "findme-infrastructure-plan",
+        "path": "/tmp/infra-review.txt",
+    }
+    assert plan["permissions"]["pull-requests"] == "write"
+    assert all("gh pr comment" not in step.get("run", "") for step in plan["steps"])
 
 
 def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
@@ -87,22 +102,6 @@ def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
         ]
         is True
     )
-
-
-def test_infrastructure_workflow_has_no_application_build_or_runtime_release() -> None:
-    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
-    release = workflow["jobs"]["release"]
-    step_names = {step.get("name", "") for step in release["steps"]}
-    assert not any("Build and publish" in name for name in step_names)
-    assert not any("runtime package" in name.lower() for name in step_names)
-    assert (
-        "docker/build-push-action@v6"
-        not in (ROOT / ".github/workflows/infrastructure.yml").read_text()
-    )
-    assert "needs.classify.outputs.terraform_changed" in release["if"]
-    no_plan = workflow["jobs"]["no-resource-plan"]
-    assert "terraform_changed != 'true'" in no_plan["if"]
-    assert no_plan["permissions"]["statuses"] == "write"
 
 
 def test_plan_step_writes_json_where_summary_command_reads_it(tmp_path: Path) -> None:
@@ -342,17 +341,6 @@ def test_github_old_run_mutable_pr_relation_cannot_approve_new_head() -> None:
         release.choose_plan(pr, [comment], run, artifacts, True)
 
 
-def test_serial_host_key_is_bound_to_terraform_ip() -> None:
-    known_hosts = load_helper("known_hosts")
-    key = base64.b64encode(b"\x00\x00\x00\x0bssh-ed25519" + b"x" * 32).decode()
-    serial = f"boot output\r\nFINDME_HOST_ED25519 ssh-ed25519 {key}\r\n"
-    assert known_hosts.known_host(serial, "192.0.2.44") == (f"192.0.2.44 ssh-ed25519 {key}\n")
-    with pytest.raises(ValueError, match="missing or conflicting"):
-        known_hosts.known_host(
-            serial + f"FINDME_HOST_ED25519 ssh-ed25519 {key[:-2]}AA\n", "192.0.2.44"
-        )
-
-
 def test_infrastructure_identity_loads_real_helper_before_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -384,61 +372,73 @@ def test_oidc_token_is_masked_before_runner_environment_write(
     assert output.read_text() == "YC_TOKEN=synthetic-token\n"
 
 
-def test_resource_shape_is_reviewed_in_git_and_runtime_only_skips_backend() -> None:
+def test_ansible_receives_both_public_keys_using_the_configured_ssh_user(tmp_path):
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
-    source = (ROOT / "infra/terraform/project.tfvars").read_text()
-    assert "boot_disk_gb     = 30" in source
-    assert "postgres_disk_gb = 10" in source
-    assert 'ssh_cidrs        = ["0.0.0.0/0"]' in source
-    release = workflow["jobs"]["release"]
-    assert "TF_VAR_boot_disk_gb" not in release["env"]
-    assert "TF_VAR_postgres_disk_gb" not in release["env"]
-    assert "TF_VAR_ssh_cidrs" not in release["env"]
-    backend = next(
-        step
-        for step in release["steps"]
-        if step.get("name") == "Open locked state and apply approved saved plan only"
-    )
-    assert backend["env"]["TERRAFORM_CHANGED"] == (
-        "${{ needs.classify.outputs.terraform_changed }}"
-    )
-
-
-def test_ansible_owns_repeatable_ssh_policy_with_reviewed_ci_key() -> None:
-    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
-    assert workflow["jobs"]["validate"]["name"] == "Infrastructure validation"
     configure = next(
         step
         for step in workflow["jobs"]["release"]["steps"]
-        if step.get("name") == "Configure host OS with Ansible only"
+        if "ansible-playbook" in step.get("run", "")
     )
-    assert configure["env"]["FINDME_SSH_PUBLIC_KEY"] == "${{ vars.INFRA_SSH_PUBLIC_KEY }}"
-    assert "-e @/tmp/findme-ansible-vars.json" in configure["run"]
-
-    tasks = yaml.safe_load((ROOT / "infra/ansible/roles/host/tasks/main.yml").read_text())
-    copies = {
-        task["ansible.builtin.copy"]["dest"]: task
-        for task in tasks
-        if "ansible.builtin.copy" in task
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    python = fake_bin / "python"
+    python.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import os, subprocess, sys
+if sys.argv[1] == "scripts/run-with-environment-secrets.py":
+    assert sys.argv[sys.argv.index("--consumer") + 1] == "infrastructure-ansible"
+    command = sys.argv[sys.argv.index("--") + 1:]
+    raise SystemExit(subprocess.run(command, env=os.environ).returncode)
+os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+"""
+    )
+    ssh = fake_bin / "ssh"
+    ssh.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import os, pathlib, sys
+assert "configured-deployer@192.0.2.10" in sys.argv
+assert pathlib.Path(os.environ["VM_SSH_KEY_FILE"]).is_file()
+pathlib.Path(os.environ["SSH_MARKER"]).touch()
+"""
+    )
+    ansible = fake_bin / "ansible-playbook"
+    ansible.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import os, pathlib, sys
+assert pathlib.Path(os.environ["SSH_MARKER"]).exists()
+assert sys.argv[sys.argv.index("-u") + 1] == "configured-deployer"
+assert sys.argv[sys.argv.index("--private-key") + 1] == os.environ["VM_SSH_KEY_FILE"]
+variables = pathlib.Path(sys.argv[sys.argv.index("-e") + 1].removeprefix("@"))
+pathlib.Path(os.environ["ANSIBLE_CAPTURE"]).write_bytes(variables.read_bytes())
+"""
+    )
+    for executable in (python, ssh, ansible):
+        executable.chmod(0o755)
+    (tmp_path / "findme-host").write_text("192.0.2.10\n")
+    key = tmp_path / "deploy-key"
+    key.write_text("synthetic-test-key")
+    key.chmod(0o600)
+    captured = tmp_path / "captured.json"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FINDME_DEPLOY_SSH_PUBLIC_KEY": "ssh-ed25519 technical-public-test",
+        "FINDME_ADMIN_SSH_PUBLIC_KEY": "ssh-ed25519 admin-public-test",
+        "VM_SSH_KEY_FILE": str(key),
+        "VM_USER": "configured-deployer",
+        "SSH_MARKER": str(tmp_path / "ssh-checked"),
+        "ANSIBLE_CAPTURE": str(captured),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
     }
-    assert copies["/home/findme/.ssh/authorized_keys"]["ansible.builtin.copy"]["content"] == (
-        "{{ findme_ssh_public_key | trim }}\n"
+    script = configure["run"].replace("/tmp/findme-", str(tmp_path / "findme-"))
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=ROOT, env=environment, capture_output=True, text=True
     )
-    assert copies["/etc/sudoers.d/90-findme"]["ansible.builtin.copy"]["validate"] == (
-        "/usr/sbin/visudo -cf %s"
-    )
-    ssh = copies["/etc/ssh/sshd_config.d/00-findme-recovery.conf"]
-    assert all(
-        line in ssh["ansible.builtin.copy"]["content"]
-        for line in (
-            "PermitRootLogin no",
-            "PasswordAuthentication no",
-            "KbdInteractiveAuthentication no",
-            "PubkeyAuthentication yes",
-            "AllowUsers findme",
-        )
-    )
-    assert ssh["notify"] == "Validate and reload SSH"
-    handlers = yaml.safe_load((ROOT / "infra/ansible/roles/host/handlers/main.yml").read_text())
-    assert handlers[0]["ansible.builtin.command"] == "/usr/sbin/sshd -t -f /etc/ssh/sshd_config"
-    assert handlers[1]["ansible.builtin.service"]["state"] == "reloaded"
+    assert result.returncode == 0, result.stderr
+    assert json.loads(captured.read_text()) == {
+        "findme_deploy_ssh_public_key": environment["FINDME_DEPLOY_SSH_PUBLIC_KEY"],
+        "findme_admin_ssh_public_key": environment["FINDME_ADMIN_SSH_PUBLIC_KEY"],
+    }

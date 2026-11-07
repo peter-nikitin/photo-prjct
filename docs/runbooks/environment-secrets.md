@@ -1,437 +1,151 @@
-# Canonical deployment secrets operator runbook
+# Управление секретами
 
-This runbook operates one Lockbox authority for the canonical deployment:
-[`deploy/environment-secrets.json`](../../deploy/environment-secrets.json). It implements
-[ADR 0028](../adr/0028-operate-one-canonical-deployment.md) and the Lockbox boundary in
-[ADR 0026](../adr/0026-use-lockbox-for-environment-secrets.md). It does not create another
-environment, make the runtime read Lockbox, or expose payload values.
+Инструкция для сопровождающего проекта: изменить секрет приложения, восстановить его версию,
+отозвать доступ или получить административный SSH-ключ. Обычный деплой получает секреты автоматически.
+Устройство доступа описано в [архитектуре](../architecture.md#secrets-and-ssh-access),
+ключи и типы значений приложения — в [manifest](../../deploy/environment-secrets.json).
 
-## Scope and safety rules
+Выполняйте команды из корня checkout под собственной учётной записью `yc` с доступом к нужному
+секрету. Не выводите значения, не включайте `set -x`, не помещайте секреты в Git, аргументы команд,
+логи или комментарии. Временные файлы храните вне репозитория и облачной синхронизации с правами
+`0600`; редактор не должен создавать резервные копии. Изменения IAM и учётных данных выполняются
+в рамках согласованной задачи.
 
-- The reviewed secret is `e6q85jjl76r45maigtfb` in folder `b1g2qttgfhb4gdunvlge`.
-- GitHub OIDC uses service account `ajeaekiue94ogksguh0h`, federation `ajeula3gd46omgf9jiko`,
-  repository `peter-nikitin/photo-prjct`, and subject `repo:peter-nikitin/photo-prjct:ref:refs/heads/main`.
-- Only the manifest's `local-web`, `deploy`, `remote-check`, `public-monitor`, `image-origin`, and
-  `image-delivery-provision` projections are authorized. Repository variables provide reviewed
-  non-secret configuration.
-- Gallery delivery secrets remain optional to the generic resolver during the dark deploy.
-  `local-web` and `deploy` receive only the CDN token and imgproxy signing pair; `image-origin`
-  receives the imgproxy pair, origin header, dedicated S3 credential, and transport-only
-  `VM_SSH_KEY_FILE`; provisioning receives only the CDN token, origin header, and existing
-  `PRIVATE_MEDIA_S3_ACCESS_KEY_ID` needed to reconcile the canonical application bucket-policy
-  rule. It never receives `PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY`. The origin helper removes the
-  transport key before constructing runtime configuration. The consuming runtime/action validates
-  its own subset.
-- Commerce order-link signing and Postbox SMTP credentials are `deploy` projection entries only.
-  The application workflow supplies Commerce factory paths, sender address, public origin, support
-  contact, and worker-enable state as repository variables; do not add provider credentials there.
-- No GitHub Environment participates. Do not use GitHub Environment secret or variable commands.
-- Do not run `yc config list`, `yc lockbox payload get`, `set -x`, `env`, or `printenv` while
-  handling this procedure.
+## Изменить секрет приложения
 
-Every IAM, Lockbox, credential, or secret mutation is a hard stop: before it, show the exact
-resource, current and intended state, impact, validation, rollback, and price effect, then obtain
-fresh operator approval. Values may enter only through a protected mode-0600 local file and never
-through command arguments, output, artifacts, tickets, Git history, or `.env`.
+1. Получите ID из manifest и сохраните ID текущей версии для возможного восстановления:
 
-## Setup
+   ```sh
+   SECRET_ID=$(.venv/bin/python -c 'import json; print(json.load(open("deploy/environment-secrets.json"))["lockbox"]["secret_id"])')
+   yc lockbox secret get --id "$SECRET_ID" --format json
+   ```
 
-### Preflight
+   Запишите `current_version.id` в переменную `BASE_VERSION_ID`.
 
-From an isolated worktree, read only the control-plane facts:
+2. Подготовьте файл с изменяемыми полями:
 
-```bash
-yc config profile list
-yc config get cloud-id
-yc config get folder-id
-yc resource-manager folder get --id b1g2qttgfhb4gdunvlge --format json
-yc lockbox secret get --id e6q85jjl76r45maigtfb --format json
-yc lockbox secret list-access-bindings --id e6q85jjl76r45maigtfb --format json
-yc iam service-account get --id ajeaekiue94ogksguh0h --format json
-yc iam workload-identity oidc federation get --id ajeula3gd46omgf9jiko --format json
-yc iam workload-identity federated-credential list --service-account-id ajeaekiue94ogksguh0h --format json
-yc iam key list --service-account-id ajeaekiue94ogksguh0h --format json
-yc iam api-key list --service-account-id ajeaekiue94ogksguh0h --format json
-yc iam access-key list --service-account-id ajeaekiue94ogksguh0h --format json
-yc resource-manager folder list-access-bindings --id b1g2qttgfhb4gdunvlge --format json
-cloud_id=$(yc config get cloud-id)
-yc resource-manager cloud list-access-bindings --id "$cloud_id" --format json
-```
+   ```sh
+   umask 077
+   PAYLOAD_FILE=$(mktemp "${TMPDIR:-/tmp}/findme-lockbox.XXXXXX")
+   "${EDITOR:?Укажите локальный редактор}" "$PAYLOAD_FILE"
+   ```
 
-Confirm the inventory's exact subject, main-branch workflow allowlist, and resource-level
-`lockbox.viewer` plus `lockbox.payloadViewer` roles. Stop for review if they differ; do not create
-a duplicate secret or broaden a folder role.
+   Формат: JSON-массив `[{"key":"ИМЯ_ПОЛЯ","text_value":"новое значение"}]`.
+   Для бинарного поля используйте `binary_value` со значением в base64. Имена и типы берите из
+   manifest. Неизменяемые поля копировать не нужно: они наследуются из базовой версии.
 
-All three key lists are empty. Confirm the CI service account is absent from the folder and cloud
-bindings; it may hold only the two exact-secret reader roles. Any static key, API/access key, or
-broad inherited role is an incident/design-review stop, not a deviation to work around.
+3. Создайте версию и удалите временный файл, в том числе при ошибке команды:
 
-### Success evidence
+   ```sh
+   yc lockbox secret add-version --id "$SECRET_ID" \
+     --base-version-id "${BASE_VERSION_ID:?Укажите текущую версию}" \
+     --payload - --format json < "$PAYLOAD_FILE"
+   rm -f -- "$PAYLOAD_FILE"
+   ```
 
-Record only non-secret IDs, role names, and the time of the read-only check in protected change
-evidence.
+   При прерывании процедуры также удалите файл. Если создание версии завершилось ошибкой,
+   остановитесь и разберитесь с ней до деплоя.
 
-### Rollback
+4. Проверьте чтение новой версии и проекцию приложения без изменения ВМ:
 
-Read-only setup has no rollback. Missing infrastructure needs separately approved creation work.
+   ```sh
+   .venv/bin/python scripts/run-with-environment-secrets.py \
+     --consumer deploy --identity yc \
+     -- .venv/bin/python scripts/verify-environment-secret-projection.py deploy
+   ```
 
-### Non-disclosure
+   Успех: команда завершилась с кодом `0`, в выводе есть новая `version_id` и
+   `[environment-secret-projection] consumer=deploy status=ok`.
+   Это проверка получения и схемы, а не работоспособности нового пароля у внешнего сервиса.
 
-Do not attach raw CLI output, tokens, key material, or payload metadata to a ticket.
+5. Выполните релиз через штатный пайплайн и проверьте затронутую функцию. Работающие контейнеры
+   не подхватывают новую версию сами. При ротации сначала настройте новые учётные данные у их
+   поставщика, а старые отзывайте после успешного переключения.
 
-## Inventory
+## Восстановить предыдущую версию
 
-### Preflight
+1. Получите список версий и запишите ID подходящей версии в `RESTORE_VERSION_ID`.
+   Используйте `SECRET_ID` из предыдущего раздела:
 
-Compare the checked-in manifest and [inventory](environment-secrets-inventory.md). List only
-repository secret and variable names:
+   ```sh
+   yc lockbox secret list-versions --id "$SECRET_ID" --format json
+   ```
 
-```bash
-gh secret list --repo peter-nikitin/photo-prjct --json name,updatedAt
-gh variable list --repo peter-nikitin/photo-prjct --json name,updatedAt
-```
+2. Создайте новую текущую версию из выбранной без изменения значений:
 
-### Success evidence
+   ```sh
+   printf '[]' | yc lockbox secret add-version --id "$SECRET_ID" \
+     --base-version-id "${RESTORE_VERSION_ID:?Укажите версию для восстановления}" \
+     --payload - --format json
+   ```
 
-The manifest is the complete key/projection schema and repository variables are non-secret.
+3. Повторите проверку чтения и релиз из предыдущего раздела. Восстановление версии не возвращает
+   действие паролям или ключам, уже отозванным у поставщика.
 
-### Rollback
+## Отозвать доступ
 
-Do not change source scopes as a diagnostic action.
+1. Определите секрет и учётную запись, потерявшую право доступа:
 
-### Non-disclosure
+   ```sh
+   yc lockbox secret list-access-bindings --id "$SECRET_ID" --format json
+   ```
 
-Name-only listings are the maximum GitHub evidence allowed here.
+2. Для пользователя удалите его право чтения именно на этом секрете:
 
-## Payload version validation and population
+   ```sh
+   yc lockbox secret remove-access-binding --id "$SECRET_ID" \
+     --user-account-id "${USER_ACCOUNT_ID:?Укажите ID пользователя}" \
+     --role lockbox.payloadViewer --format json
+   ```
 
-### Preflight
+   Для CI определите нужный federated credential через `github_oidc.service_account_id` из
+   manifest и удалите только его:
 
-Use an isolated worktree and a protected local path. The candidate is a JSON array for `yc lockbox`:
-text entries use `text_value`; binary `VM_SSH_KEY` uses base64 `binary_value`. Validate the complete
-manifest key set before mutation and never put a payload in argv or output. The editor must not
-create swap, backup, or cloud-synced copies.
+   ```sh
+   yc iam workload-identity federated-credential list --service-account-id "$SERVICE_ACCOUNT_ID" --format json
+   yc iam workload-identity federated-credential delete --id "$FEDERATED_CREDENTIAL_ID" --format json
+   ```
 
-```bash
-candidate_payload=""
-cleanup_candidate() {
-  [ -n "$candidate_payload" ] || return 0
-  [ ! -e "$candidate_payload" ] && { candidate_payload=""; return 0; }
-  if ! rm -f -- "$candidate_payload"; then
-    printf '%s\n' "[environment-secrets] stage=candidate_cleanup status=error code=cleanup_failed retained_path=$candidate_payload" >&2
-    return 1
-  fi
-  candidate_payload=""
-}
-finish_candidate() {
-  status=$?
-  trap - EXIT HUP INT TERM
-  cleanup_candidate || exit 1
-  exit "$status"
-}
-set -e
+3. Проверьте, что отозванная учётная запись больше не может получить секрет, а разрешённая —
+   может. Если доступ сохранился, проверьте наследуемые права на каталог и облако.
+   Отзыв доступа к Lockbox не обезвреживает уже скопированные пароли: при утечке замените их
+   у поставщиков и обновите секрет. При потере своей учётной записи обратитесь к другому
+   администратору облака.
+
+<a id="ssh-keys-infrastructure"></a>
+## Административный SSH-доступ
+
+Все пайплайны используют одну техническую пару `deploy`; оператор — отдельную пару `petrnikitin`.
+Источники и потребители заданы в `ssh_credentials` файла
+[`deploy/environment-secrets.json`](../../deploy/environment-secrets.json). Приватные ключи
+получает общий resolver; административный секрет не доступен service accounts CI.
+Оператору нужны `lockbox.viewer` и `lockbox.payloadViewer` на `findme-photo-vm-admin`
+(`e6qes463bl6r09r72580`).
+
+После создания ВМ Infrastructure регистрирует проверенный открытый host key в её metadata
+`findme-ssh-host-key`. Для обычного подключения берите текущий адрес и эту запись через
+аутентифицированный API ЯО; повторно читать serial output не требуется. Если запись отсутствует
+или не проходит проверку OpenSSH, завершите регистрацию ВМ штатным Infrastructure workflow.
+Не подтверждайте новый ключ через отключение `StrictHostKeyChecking`.
+
+Укажите `VM_ID` нужной ВМ и задайте `INFRA_ADMIN_SSH_PUBLIC_KEY` значением одноимённой variable
+GitHub Environment `infrastructure`. На своей защищённой рабочей станции выполните:
+
+```sh
 umask 077
-candidate_payload=$(mktemp "${TMPDIR:-/tmp}/findme-lockbox-payload.XXXXXX.json") || exit 1
-trap finish_candidate EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-chmod 600 "$candidate_payload"
-"${EDITOR:?set EDITOR to a non-logging local editor}" "$candidate_payload"
-.venv/bin/python - "$candidate_payload" deploy/environment-secrets.json <<'PY'
-import base64, json, sys
-from pathlib import Path
-
-candidate = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-manifest = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-expected = {entry["key"]: entry["type"] for entry in manifest["entries"]}
-if not isinstance(candidate, list): raise SystemExit("candidate must be a JSON array")
-actual = {}
-for entry in candidate:
-    if not isinstance(entry, dict) or not isinstance(entry.get("key"), str): raise SystemExit("candidate entry is malformed")
-    key = entry["key"]; field = "text_value" if expected.get(key) == "text" else "binary_value"
-    if key in actual or key not in expected or set(entry) != {"key", field} or not isinstance(entry[field], str) or not entry[field]: raise SystemExit("candidate key set is invalid")
-    if field == "binary_value": base64.b64decode(entry[field], validate=True)
-    actual[key] = field
-if set(actual) != set(expected): raise SystemExit("candidate key set is incomplete")
-print("candidate schema is complete")
-PY
+VM_INFO=$(yc compute instance get --id "$VM_ID" --full --format json)
+export VM_IP=$(jq -er '.network_interfaces[0].primary_v4_address.one_to_one_nat.address' <<< "$VM_INFO")
+export VM_KNOWN_HOSTS_FILE=$(mktemp "${TMPDIR:-/tmp}/findme-known-hosts.XXXXXX")
+HOST_KEY=$(jq -er '.metadata["findme-ssh-host-key"] | select(length > 0)' <<< "$VM_INFO")
+printf '%s %s\n' "$VM_IP" "$HOST_KEY" > "$VM_KNOWN_HOSTS_FILE"
+ssh-keygen -l -E sha256 -f "$VM_KNOWN_HOSTS_FILE"
+INFRA_ADMIN_SSH_PUBLIC_KEY="$INFRA_ADMIN_SSH_PUBLIC_KEY" \
+  .venv/bin/python scripts/run-with-environment-secrets.py \
+  --consumer operator-admin-key --identity yc -- sh -c \
+  'exec ssh -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o UserKnownHostsFile="$VM_KNOWN_HOSTS_FILE" -i "$ADMIN_SSH_KEY_FILE" "petrnikitin@$VM_IP"'
+rm -f -- "$VM_KNOWN_HOSTS_FILE"
 ```
 
-**STOP — obtain fresh operator approval** immediately before an initial version or rotation. Show
-only key names, secret ID, current metadata, downstream credential overlap/revocation, price effect,
-and rollback version ID.
-
-### Success evidence
-
-For an empty secret, create the first version through standard input; never guess a base version.
-It must contain every required manifest key. The Commerce signing secret and Postbox API-key
-entries may be omitted only for a dark deploy with `COMMERCE_WORKER_ENABLED=False`; the enabled
-deployment path rejects their absence before any mutation. Verify exact metadata and one permitted
-consumer's sanitized resolver result:
-
-```bash
-yc lockbox secret add-version --id e6q85jjl76r45maigtfb \
-  --payload - --format json < "$candidate_payload"
-yc lockbox secret get --id e6q85jjl76r45maigtfb --format json
-yc lockbox secret list-versions --id e6q85jjl76r45maigtfb --format json
-```
-
-The exit trap removes the candidate after success, failed validation, rejected approval, interrupt,
-termination, or failed `add-version`.
-
-### Rollback
-
-Before retiring old sources, restore only reviewed workflow code for a drill. Afterwards, select an
-earlier complete validated Lockbox version or reviewed code retaining the Lockbox reader; do not
-recreate GitHub secrets as a standing fallback.
-
-### Non-disclosure
-
-Never display, `cat`, upload, commit, attach, or retain `candidate_payload`, and never use
-`yc lockbox payload get` as a validation shortcut.
-
-## Rotation
-
-### Preflight
-
-Build a complete candidate including unchanged entries and `VM_SSH_KEY`. Payload rotation is not
-identity revocation. **STOP — obtain fresh approval** before a new version, downstream credential
-change, or destruction schedule.
-
-### Success evidence
-
-Derive the actual current version ID from metadata immediately before mutation, then add exactly one
-complete candidate version:
-
-```bash
-previous_version_id=$(yc lockbox secret get --id e6q85jjl76r45maigtfb --format json | \
-  .venv/bin/python -c '
-import json
-import sys
-from pathlib import Path
-
-secret = json.load(sys.stdin)
-manifest = json.loads(Path("deploy/environment-secrets.json").read_text(encoding="utf-8"))
-expected_keys = {entry["key"] for entry in manifest["entries"]}
-current = secret.get("current_version")
-if not isinstance(current, dict):
-    raise SystemExit(2)
-version_id = current.get("id")
-payload_keys = current.get("payload_entry_keys")
-if (
-    not isinstance(version_id, str)
-    or not version_id
-    or secret.get("id") != "e6q85jjl76r45maigtfb"
-    or current.get("secret_id") != "e6q85jjl76r45maigtfb"
-    or current.get("status") != "ACTIVE"
-    or not isinstance(payload_keys, list)
-    or any(not isinstance(key, str) for key in payload_keys)
-    or len(payload_keys) != len(set(payload_keys))
-    or set(payload_keys) != expected_keys
-):
-    raise SystemExit(2)
-print(version_id)
-')
-test -n "$previous_version_id"
-yc lockbox secret add-version --id e6q85jjl76r45maigtfb \
-  --base-version-id "$previous_version_id" --payload - --format json < "$candidate_payload"
-yc lockbox secret get --id e6q85jjl76r45maigtfb --format json
-yc lockbox secret list-versions --id e6q85jjl76r45maigtfb --format json
-```
-
-Verify the new current version's required manifest key set, any present optional Commerce entries,
-and the affected consumer without showing its environment file. Running services keep prior values
-until a reviewed canonical deployment.
-
-### Rollback
-
-Select an earlier complete validated version and follow the exact global rollback below. Only after
-a separate fresh approval, retire an old version with a bounded seven-day retention period:
-
-```bash
-yc lockbox secret schedule-version-destruction --id e6q85jjl76r45maigtfb \
-  --version-id "$old_version_id" --pending-period 168h --format json
-```
-
-If destruction was scheduled before rollback completes, cancel only that schedule after fresh approval:
-
-```bash
-yc lockbox secret cancel-version-destruction --id e6q85jjl76r45maigtfb \
-  --version-id "$old_version_id" --format json
-```
-
-### Non-disclosure
-
-Compare only key names, IDs, statuses, timestamps, and sanitized resolver markers; never copy a
-credential, base64 private key, or provider response body.
-
-## Local use
-
-### Preflight
-
-Use only `make local-web` from an isolated worktree. It invokes the `local-web` projection with an
-authorized human `yc` identity and applies manifest local overrides.
-
-### Success evidence
-
-Expect sanitized `[environment-secrets]` markers and `[local-web] stage=launch status=ready`.
-
-### Rollback
-
-Stop local services with `docker compose stop web db`; do not use this launcher to deploy or SSH.
-
-### Non-disclosure
-
-`FINDME_ENV_FILE` is a private path, not a value. Do not log it after cleanup.
-
-## CI OIDC preflight
-
-### Preflight
-
-Dispatch the reviewed main workflow without application mutation:
-
-```bash
-gh workflow run deploy.yml --ref main -f preflight=true
-```
-
-The resolver enforces issuer, audience, repository, `refs/heads/main`, and exact `workflow_ref`
-allowlist before exchange. It validates all manifest consumers, including the independent
-`image-origin` and `image-delivery-provision` projections, without printing their values.
-
-### Success evidence
-
-Record the run URL/ID, workflow path, expected OIDC subject, service-account and secret IDs,
-non-secret version ID, consumer name, and sanitized stage result.
-
-### Rollback
-
-A failed no-op preflight changes no VM state. Correct trust or manifest configuration through
-review; never broaden the OIDC identity as a workaround.
-
-### Non-disclosure
-
-OIDC/IAM tokens remain in memory and must not be echoed or emitted as outputs.
-
-## Revocation
-
-### Preflight
-
-Determine whether the affected reader is human or CI. Read the exact secret binding and, for CI,
-identify the federated credential from the dedicated service account by matching federation
-`ajeula3gd46omgf9jiko`, repository, and `refs/heads/main`; never guess an ID. **STOP — obtain fresh
-operator approval** before changing IAM, deleting a federated credential, or suspending an account.
-
-### Success evidence
-
-For a human, remove only the exact resource-level binding. For CI, delete only the matching
-federated credential when the approved response requires it:
-
-```bash
-yc lockbox secret remove-access-binding --id e6q85jjl76r45maigtfb \
-  --user-account-id "$revoked_user_account_id" --role lockbox.payloadViewer --format json
-yc iam workload-identity federated-credential delete --id "$federated_credential_id" --format json
-```
-
-Verify a sanitized resolver failure for the revoked identity and a sanitized success for an intended
-identity. Payload rotation does not prove revocation.
-
-### Rollback
-
-Restoring access is a separate IAM mutation and needs fresh approval for the exact resource-level
-binding or exact federated credential, followed by the two-identity verification.
-
-### Non-disclosure
-
-Never test revocation with `yc lockbox payload get` or by retaining a resolver environment file.
-
-## Rollback
-
-### Preflight
-
-Select an earlier complete version from `yc lockbox secret list-versions` metadata and set its
-non-secret ID as `rollback_version_id`. Do not treat a retained old version as current. **STOP —
-obtain fresh approval** before a version mutation or canonical deployment.
-
-### Success evidence
-
-Create a new current version based exactly on the selected complete version; the empty change array
-is standard input and never contains a payload value:
-
-```bash
-test -n "$rollback_version_id"
-printf "[]" | yc lockbox secret add-version --id e6q85jjl76r45maigtfb \
-  --base-version-id "$rollback_version_id" --payload - --format json
-yc lockbox secret get --id e6q85jjl76r45maigtfb --format json
-yc lockbox secret list-versions --id e6q85jjl76r45maigtfb --format json
-```
-
-Verify the resulting current version has the exact key set from the manifest and one permitted
-consumer without displaying its resolved file, then
-use the reviewed canonical deployment workflow.
-
-### Rollback
-
-Do not introduce dual-read behavior, mix entries from versions, or restore GitHub secrets as a
-second authority. A mistakenly scheduled destruction needs separate approval before cancellation.
-
-### Non-disclosure
-
-Do not export a payload during rollback; keep diagnostics and Git history free of values, token
-fragments, and shell tracing.
-
-## Lost device or account recovery
-
-### Preflight
-
-Treat a lost device/account as an identity incident. Contact a surviving cloud organization
-administrator who can verify the affected reader and the separately maintained break-glass
-ownership record. This runbook never names or stores break-glass identities.
-
-### Success evidence
-
-The surviving administrator restores a human reader only after revoking the lost identity from the
-exact Lockbox resource and verifying a replacement through the sanitized resolver. Record only IDs,
-approver, timestamps, and stage codes.
-
-### Rollback
-
-If replacement access is wrong, remove the new exact binding after fresh approval and continue with
-the surviving administrator. Never grant folder-wide access, create a service-account key, or use a
-copied payload as a recovery channel.
-
-### Non-disclosure
-
-Payload rotation is not identity revocation and cannot invalidate a reader that retains payload
-access. This relies on separately maintained break-glass ownership and does not claim runtime
-credential recovery.
-
-## Incident and non-disclosure
-
-### Preflight
-
-Stop at the first sanitized resolver error and preserve only stage, code, non-secret IDs, time,
-consumer, and workflow URL/ID.
-
-### Success evidence
-
-The incident record states containment owner, approved action, and recovery decision without
-credential data.
-
-### Rollback
-
-Use the approved Lockbox-version or deployment rollback path. A candidate cleanup failure remains
-an error after child success: contain the reported private path locally, do not upload it, and
-request approved recovery. Never restart, SSH to, or mutate the VM merely to probe Lockbox.
-
-### Non-disclosure
-
-Do not share raw CLI output, payloads, tokens, SSH keys, database passwords, Object Storage keys,
-or environment dumps.
-
-## References
-
-- [Environment secrets inventory](environment-secrets-inventory.md)
-- [Canonical deployment runbook](deployment.md)
-- [ADR 0026](../adr/0026-use-lockbox-for-environment-secrets.md) and
-  [ADR 0028](../adr/0028-operate-one-canonical-deployment.md)
+При ошибке проверки остановитесь; не продолжайте SSH. Resolver сверяет пользователя и пару с
+ожидаемым публичным ключом, создаёт приватный файл `0600` только на время дочерней команды и
+удаляет его при завершении. Не копируйте этот файл в постоянное хранилище или GitHub.

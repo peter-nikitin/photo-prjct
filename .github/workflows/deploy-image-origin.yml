@@ -1,5 +1,8 @@
 name: Deploy isolated image origin
 
+env:
+  FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+
 on:
   workflow_dispatch:
     inputs:

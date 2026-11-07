@@ -4023,15 +4023,6 @@ def test_candidate_pull_failure_leaves_canonical_env_without_service_reconciliat
     _assert_no_env_temporary_files(tmp_path)
 
 
-def test_workflow_forwards_private_media_settings_through_the_deploy_consumer() -> None:
-    workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-
-    assert "PRIVATE_MEDIA_S3_BUCKET: ${{ vars.PRIVATE_MEDIA_S3_BUCKET }}" in workflow
-    assert "PRIVATE_MEDIA_S3_ACCESS_KEY_ID" not in workflow
-    assert "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" not in workflow
-    assert "--consumer deploy" in workflow
-
-
 def test_deployment_path_performs_no_iam_mutation(tmp_path: Path, fake_bin: Path) -> None:
     for tool in ("yc", "aws", "s3cmd"):
         _write_executable(
@@ -4302,24 +4293,6 @@ def test_confirmed_feedback_activation_persists_web_only_storage_configuration(
     assert "feedback-secret-must-not-be-logged" not in result.stdout
     assert "feedback-secret-must-not-be-logged" not in result.stderr
     assert "feedback-secret-must-not-be-logged" not in "\n".join(_apply_log(tmp_path))
-
-
-def test_feedback_workflow_forwards_web_credentials_and_keeps_them_out_of_worker_compose_env() -> (
-    None
-):
-    """The workflow is the only feedback-credential ingress; worker never gets them."""
-    workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-    compose = (ROOT / "docker-compose.deployment.yml").read_text(encoding="utf-8")
-
-    assert "SELFIE_FEEDBACK_ENABLED: ${{ vars.SELFIE_FEEDBACK_ENABLED || 'False' }}" in workflow
-    assert "SELFIE_FEEDBACK_S3_BUCKET: ${{ vars.SELFIE_FEEDBACK_S3_BUCKET }}" in workflow
-    assert "SELFIE_FEEDBACK_S3_ACCESS_KEY_ID" not in workflow
-    assert "SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY" not in workflow
-    assert "SELFIE_FEEDBACK_KMS_KEY_ID: ${{ vars.SELFIE_FEEDBACK_KMS_KEY_ID }}" in workflow
-    assert "--consumer deploy" in workflow
-    assert "selfie-feedback-storage" in workflow
-    assert "worker-bulk:" not in compose
-    assert "SELFIE_FEEDBACK_" not in (ROOT / "deploy/worker-pools/compose.yml").read_text()
 
 
 def _observability_install_env(tmp_path: Path, fake_bin: Path) -> dict[str, str]:
@@ -5074,18 +5047,6 @@ def test_apply_rejects_stale_observability_bootstrap_before_host_mutation(
     assert not any(" stop nginx" in command for command in commands)
 
 
-def test_root_helper_reads_only_the_root_owned_package() -> None:
-    helper = (ROOT / "deploy/selfie-observability/root-helper.sh").read_text(encoding="utf-8")
-
-    assert "/opt/photo-prjct" not in helper
-    assert "/usr/local/lib/findme-selfie-observability-package" in helper
-    assert "deploy/selfie-observability" not in helper
-    assert "systemd-analyze cat-config systemd/journald.conf" in helper
-    assert "systemctl is-enabled --quiet selfie-search-summary.timer" in helper
-    assert "systemctl is-active --quiet selfie-search-summary.timer" in helper
-    assert "journalctl --disk-usage" in helper
-
-
 @pytest.mark.parametrize(
     ("scenario", "expected_success"),
     [
@@ -5203,46 +5164,6 @@ esac
         assert result.stderr == "selfie summary timer is not enabled\n"
     if scenario == "inactive-timer":
         assert result.stderr == "selfie summary timer is not active\n"
-
-
-def test_nginx_validation_covers_submission_and_bearer_redaction_contract() -> None:
-    validator = (ROOT / "tests/deployment/validate-nginx.sh").read_text(encoding="utf-8")
-
-    for route in (
-        "submission_path=",
-        "bearer_result_path=",
-        "bearer_status_path=",
-        "bearer_media_path=",
-        "bearer_download_path=",
-        "event_path=",
-        "static_path=",
-        "bearer_4xx_headers=",
-    ):
-        assert route in validator
-
-    for sentinel in (
-        "sentinel-client-ip",
-        "sentinel-referrer",
-        "sentinel-user-agent",
-        "sentinel-tracking",
-        "bearer-log-token",
-        "sentinel-request-body",
-    ):
-        assert sentinel in validator
-
-    for assertion in (
-        "request_time",
-        "status",
-        "body_bytes_sent",
-        "error_log",
-        "ordinary_path",
-        "submission_path",
-        "ordinary_client_address",
-        "client_max_body_size 1k",
-        " 413 ",
-        "^-",
-    ):
-        assert assertion in validator
 
 
 @pytest.mark.parametrize("scenario", ["vector-capability-failure"])

@@ -6,7 +6,7 @@ permissions:
   contents: read
   id-token: write
 jobs:
-  verify-ci-lockbox-key:
+  verify-reviewed-ssh-helpers:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     environment: infrastructure
@@ -16,36 +16,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: 209c6179e3eac280c4e8d7b224a902f8e0fed10e
           persist-credentials: false
-      - run: python infra/ci/identity.py
-      - name: Verify dedicated CI key from Lockbox without server login
+      - name: Exchange infrastructure OIDC identity
+        run: python infra/ci/identity.py
+      - name: Verify actual release credential and host-key helpers read-only
         run: |
-          python - <<'PY'
-          import json,os,subprocess,tempfile
-          from urllib.request import Request,urlopen
-          from urllib.error import HTTPError
-          secret='e6q12ru8opfn2sl91so3'
-          headers={'Authorization':'Bearer '+os.environ['YC_TOKEN']}
-          with urlopen(Request('https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/'+secret+'/payload',headers=headers),timeout=20) as response:
-              payload=json.load(response)
-          entries={entry['key']:entry.get('textValue') for entry in payload['entries']}
-          assert entries['ssh_user']=='deploy'
-          expected=os.environ['EXPECTED_PUBLIC_KEY'].split()[:2]
-          assert entries['ssh_public_key'].split()[:2]==expected
-          with tempfile.TemporaryDirectory() as directory:
-              filename=directory+'/key'
-              descriptor=os.open(filename,os.O_CREAT|os.O_WRONLY,0o600)
-              with os.fdopen(descriptor,'w') as output:output.write(entries['ssh_private_key'])
-              derived=subprocess.check_output(['ssh-keygen','-y','-f',filename],text=True).strip()
-              assert derived.split()[:2]==expected
-              fingerprint=subprocess.check_output(['ssh-keygen','-lf',filename],text=True).strip()
-              print('CI_KEY_VERIFIED '+fingerprint)
-          url='https://lockbox.api.cloud.yandex.net/lockbox/v1/secrets/'+secret+':listAccessBindings'
-          try:
-              with urlopen(Request(url,headers=headers),timeout=20) as response:json.load(response)
-              print('TECH_SECRET_BINDINGS_READ_ALLOWED')
-          except HTTPError as error:
-              print('TECH_SECRET_BINDINGS_READ_HTTP '+str(error.code))
-              raise SystemExit(1)
-          print('No VM modified; operator private key was not requested or transferred to GitHub.')
-          PY
+          set -euo pipefail
+          python infra/ci/lockbox.py e6q12ru8opfn2sl91so3 deploy "$EXPECTED_PUBLIC_KEY" "$RUNNER_TEMP/findme-reviewed-key"
+          test "$(stat -c %a "$RUNNER_TEMP/findme-reviewed-key")" = 600
+          ssh-keygen -lf "$RUNNER_TEMP/findme-reviewed-key"
+          python infra/ci/known_hosts.py fv4lac9q76a3m7209gjp 158.160.130.235 "$RUNNER_TEMP/findme-reviewed-hosts"
+          test -s "$RUNNER_TEMP/findme-reviewed-hosts"
+          echo 'Reviewed Lockbox credential helper and authenticated cloud-init host-key parser verified. No VM login or mutation performed.'
+      - name: Remove temporary credential files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/findme-reviewed-key" "$RUNNER_TEMP/findme-reviewed-hosts"

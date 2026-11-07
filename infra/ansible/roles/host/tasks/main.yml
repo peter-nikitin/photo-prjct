@@ -160,11 +160,11 @@
   ansible.builtin.command: mountpoint -q /var/lib/findme-photo
   register: postgres_mountpoint
   changed_when: false
-  failed_when: postgres_mountpoint.rc not in [0, 1]
+  failed_when: postgres_mountpoint.rc not in [0, 32]
 
 - name: Mount PostgreSQL disk
   ansible.builtin.command: mount /var/lib/findme-photo
-  when: postgres_mountpoint.rc == 1
+  when: postgres_mountpoint.rc == 32
 
 - name: Create PostgreSQL data directory below ext4 root
   ansible.builtin.file:

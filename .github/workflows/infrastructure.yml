@@ -83,10 +83,12 @@ jobs:
           users=set(re.findall(r'^([^:\s]+):ssh-',metadata.get('ssh-keys',''),re.M))
           users.update(re.findall(r'^\s*-?\s*name:\s*([a-z_][a-z0-9_-]*)\s*$',metadata.get('user-data',''),re.M))
           safe['ssh_users']=sorted(users)
+          safe['operator_public_keys']=re.findall(r'(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+',metadata.get('user-data',''))
           safe['metadata_access_settings']={k:v for k,v in metadata.items() if k in ['enable-oslogin','serial-port-enable']}
           safe['disks']=get('disks?folderId='+folder).get('disks',[])
           serial=get('instances/'+vmid+':serialPortOutput').get('contents','')
           keys=set(re.findall(r'(ssh-ed25519) ([A-Za-z0-9+/=]{40,})',serial))
+          safe['serial_key_block_headings']=[line for line in serial.splitlines() if 'SSH HOST' in line]
           safe['serial_ed25519_keys']=sorted(' '.join(key) for key in keys)
           print('ADOPTION_INVENTORY '+json.dumps(safe),flush=True)
           statefile='/tmp/findme-state.json'

@@ -53,8 +53,9 @@ def test_edge_bootstrap_and_tls_routing(tmp_path: Path, tls: bool) -> None:
     stub = tmp_path / "stub.conf"
     stub.write_text(
         "server { listen 8000; access_log off; "
-        "if ($host != localhost) { return 400; } "
-        "location = /health/ { if ($arg_down = 1) { return 503; } return 200; } }"
+        "location = /health/ { if ($host != localhost) { return 400; } "
+        "if ($arg_down = 1) { return 503; } return 200; } "
+        "location = /admin/login/ { return 200; } }"
     )
     if tls:
         directory = certs / "live/photo-prjct"
@@ -131,6 +132,18 @@ def test_edge_bootstrap_and_tls_routing(tmp_path: Path, tls: bool) -> None:
             assert request(http_port, "/", "findme-photo.ru")[1] == "https://findme-photo.ru/"
             assert request(https_port, "/health/", "findme-photo.ru", True)[0] == 400
             assert request(https_port, "/internal/x", "findme-photo.ru", True)[0] == 404
+            code, headers = private_response(
+                https_port, "/admin/login/?next=/admin/", "findme-photo.ru", True
+            )
+            assert code == 200
+            assert headers["Referrer-Policy"] == "same-origin"
+            for path in (
+                "/orders/1/access/private-token/secret-value/",
+                "/orders/1/download/",
+                "/events/race/selfie-search/token/",
+            ):
+                _, headers = private_response(https_port, path, "findme-photo.ru", True)
+                assert headers["Referrer-Policy"] == "no-referrer"
             for path in (
                 "/orders/1/access/private-token/secret-value/",
                 "/orders/1/download/",
@@ -147,7 +160,7 @@ def test_edge_bootstrap_and_tls_routing(tmp_path: Path, tls: bool) -> None:
             code, headers = private_response(
                 https_port, "/orders/1/access/private-token/secret-value/", "findme-photo.ru", True
             )
-            assert code == 400  # The local stub rejects the canonical Host.
+            assert code == 404  # The local stub does not serve order URLs.
             assert headers["Cache-Control"] == "private, no-store"
             assert headers["Referrer-Policy"] == "no-referrer"
             assert headers["Vary"] == "Cookie"

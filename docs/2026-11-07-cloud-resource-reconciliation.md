@@ -447,6 +447,6 @@ Daily Backup policy/binding и 15 recovery points старой VM защищен
 С учётом новых ресурсов, импортов и существующего state численные итоги прежнего
 снимка выше не использовать как текущую инвентаризацию. Повторный API/state check
 нужен перед любым live plan; в этой задаче cloud и state не изменялись.
-Текущий `infrastructure.yml` не передаёт две обязательные переменные Postbox
-management credentials, поэтому pipeline plan до отдельного безопасного wiring
-не готов; достаточные read permissions для backend и Postbox также не доказаны.
+Текущий `infrastructure.yml` передаёт две обязательные переменные Postbox
+management credentials из отдельных environment secrets. Сами secrets пока
+отсутствуют; достаточные read permissions для backend и Postbox также не доказаны.

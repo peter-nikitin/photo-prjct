@@ -78,10 +78,13 @@ apply, изменений cloud, DNS или state. Код не доказыва�
 Оценка стоимости в CI не включает полный storage/KMS объём. Наличие resource в коде не
 означает import, работающую галерею, Monitoring или восстановленную БД.
 
-Для будущего живого pipeline plan текущему `infrastructure.yml` ещё нужны внешне
-переданные обязательные `postbox_access_key` и `postbox_secret_key`: workflow их
-сейчас не передаёт. Offline mock validation проходит с тестовыми значениями, но
-живое принятие заблокировано до отдельного wiring управления Postbox, достаточных
-read permissions для backend/Postbox и передачи ownership существующих native
-объектов от старого provisioning. Не подставлять backend ключи и не добавлять
-секреты в Git или Terraform state.
+`infrastructure.yml` передаёт `TF_VAR_postbox_access_key` и
+`TF_VAR_postbox_secret_key` из отдельных environment secrets
+`INFRA_POSTBOX_ACCESS_KEY_ID` и `INFRA_POSTBOX_SECRET_ACCESS_KEY` в живые plan и
+release. Сами secrets пока отсутствуют: их необходимо предоставить отдельно,
+без подстановки backend ключей и без записи в Git или Terraform state. При
+изменении Terraform draft PR выполняет обязательную offline validation, оставляет
+`infra/approved` в `pending` и откладывает живой plan. Переход в Ready for review
+запускает живой plan; пустые Postbox credentials останавливают его до обращения к
+облаку. Приёмка по-прежнему требует достаточных read permissions для backend и
+Postbox и передачи ownership существующих native объектов от старого provisioning.

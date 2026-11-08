@@ -495,3 +495,99 @@ app yandex_compute_instance postgres boot yandex_compute_disk
         ] == [{"size": 30, "type": "network-hdd"}]
         postgres = by_address["yandex_compute_disk.postgres"]["values"]
         assert postgres["size"] == 10 and postgres["type"] == "network-hdd"
+
+
+def test_draft_infrastructure_keeps_offline_checks_and_pending_approval() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
+    triggers = workflow.get("on", workflow.get(True))["pull_request"]["types"]
+    assert {"opened", "reopened", "synchronize", "ready_for_review", "converted_to_draft"} <= set(
+        triggers
+    )
+    jobs = workflow["jobs"]
+    assert "github.event.pull_request.draft" not in jobs["validate"]["if"]
+    assert "!github.event.pull_request.draft" in jobs["plan"]["if"]
+    assert "needs.classify.outputs.terraform_changed == 'true'" in jobs["plan"]["if"]
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository" in jobs["plan"]["if"]
+    )
+    draft = jobs["draft-resource-plan"]
+    assert "github.event.pull_request.draft" in draft["if"]
+    assert "needs.classify.outputs.terraform_changed == 'true'" in draft["if"]
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in draft["if"]
+    assert jobs["no-resource-plan"]["if"].find("terraform_changed != 'true'") >= 0
+    assert "environment" not in draft
+    assert "AWS_ACCESS_KEY_ID" not in str(draft)
+    assert "id-token" not in str(draft)
+    assert draft["permissions"] == {"contents": "read", "statuses": "write"}
+    assert all("actions/upload-artifact" not in step.get("uses", "") for step in draft["steps"])
+    assert all("identity.py" not in step.get("run", "") for step in draft["steps"])
+    script = "\n".join(step.get("run", "") for step in draft["steps"])
+    assert "state=pending" in script and "context=infra/approved" in script
+    assert "GITHUB_STEP_SUMMARY" in script and "отложен" in script
+    assert "state=success" not in script
+    assert "verify-pr" in str(jobs["approve"]["steps"])
+    approval_script = next(
+        step["run"] for step in jobs["approve"]["steps"] if "verify-pr" in step.get("run", "")
+    )
+    assert "pulls/$PR_NUMBER" in approval_script
+    assert '".draft"' in approval_script
+    assert approval_script.index('".draft"') < approval_script.index("verify-pr")
+    assert "verify-merge" in str(jobs["release"]["steps"])
+
+
+def test_live_infrastructure_uses_separate_postbox_credentials_and_safe_preflight() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
+    for job_name in ("plan", "release"):
+        job = workflow["jobs"][job_name]
+        assert job["env"]["TF_VAR_postbox_access_key"] == (
+            "${{ secrets.INFRA_POSTBOX_ACCESS_KEY_ID }}"
+        )
+        assert job["env"]["TF_VAR_postbox_secret_key"] == (
+            "${{ secrets.INFRA_POSTBOX_SECRET_ACCESS_KEY }}"
+        )
+        script = next(
+            step["run"]
+            for step in job["steps"]
+            if step.get("name") == "Require Postbox management credentials"
+        )
+        if job_name == "release":
+            preflight = next(
+                step
+                for step in job["steps"]
+                if step.get("name") == "Require Postbox management credentials"
+            )
+            assert preflight["if"] == "needs.classify.outputs.terraform_changed == 'true'"
+        for key in ("TF_VAR_postbox_access_key", "TF_VAR_postbox_secret_key"):
+            assert key in script
+        assert "AWS_ACCESS_KEY_ID" not in script
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            cwd=ROOT,
+            env={**os.environ, "TF_VAR_postbox_access_key": "", "TF_VAR_postbox_secret_key": ""},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "INFRA_POSTBOX_ACCESS_KEY_ID" in result.stderr
+        assert "INFRA_POSTBOX_SECRET_ACCESS_KEY" in result.stderr
+        assert "sensitive-test-value" not in result.stderr
+        successful = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "TF_VAR_postbox_access_key": "sensitive-test-value",
+                "TF_VAR_postbox_secret_key": "sensitive-test-value",
+            },
+            capture_output=True,
+            text=True,
+        )
+        assert successful.returncode == 0
+        assert "sensitive-test-value" not in successful.stdout + successful.stderr
+
+
+def test_successful_run_without_plan_artifact_cannot_be_approved() -> None:
+    release = load_helper("release")
+    pr, comment, run, _artifacts = _approval_fixture()
+    with pytest.raises(ValueError, match="plan artifact unavailable"):
+        release.choose_plan(pr, [comment], run, [], True)

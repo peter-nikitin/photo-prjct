@@ -210,7 +210,11 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                     )
 
                 media_url_builder = direct_preview_media_url
-            faces_by_photo = gallery_search_faces_by_photo(event=event, photos=gallery_page_photos)
+            faces_by_photo = gallery_search_faces_by_photo(
+                event=event,
+                photos=gallery_page_photos,
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+            )
 
             def faces(photo: Photo):
                 return tuple(

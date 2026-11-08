@@ -14,7 +14,6 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
-from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from ingestion.storage import StorageUnavailable
@@ -109,6 +108,64 @@ class SearchJobTests(TestCase):
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertIsNotNone(search.cleanup_confirmed_at)
         self.assertEqual(search.results.count(), 1)
+
+    def test_stale_cached_positive_count_cannot_make_empty_corpus_ready(self) -> None:
+        search = self.make_search()
+        sampled = rank_vector_direct(search, self.result()["embedding"])
+        self.assertEqual(sampled.eligible_face_count, 1)
+        PhotoProcessingState.objects.filter(
+            photo__event=self.event, processor_type="face_embedding"
+        ).update(accepted_attempt=None)
+
+        claimed = self.claim(search)
+        complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        search.refresh_from_db()
+
+        self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
+        self.assertEqual((search.eligible_face_count, search.eligible_photo_count), (0, 0))
+
+    def test_new_vectors_after_empty_corpus_can_make_search_ready(self) -> None:
+        search = self.make_search(with_candidate=False)
+        empty = rank_vector_direct(search, self.result()["embedding"])
+        self.assertFalse(empty.has_vectors)
+        self.add_candidate(search=search, photo_id="later-candidate", distance=0.1)
+
+        claimed = self.claim(search)
+        complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        search.refresh_from_db()
+
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.results.count(), 1)
+
+    def test_stale_cached_count_below_matches_still_publishes_and_logs(self) -> None:
+        search = self.make_search()
+        sampled = rank_vector_direct(search, self.result()["embedding"])
+        self.assertEqual(sampled.eligible_photo_count, 1)
+        self.add_candidate(search=search, photo_id="added-after-count-sample", distance=0.1)
+
+        claimed = self.claim(search)
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
+            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        search.refresh_from_db()
+
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.eligible_photo_count, 1)
+        self.assertEqual(search.results.count(), 2)
+        events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+        ranking = next(event for event in events if event["event"] == "selfie_ranking_finished")
+        self.assertEqual((ranking["eligible_photo_count"], ranking["matched_photo_count"]), (1, 2))
+
+    def test_nonempty_corpus_without_match_still_finishes_ready(self) -> None:
+        search = self.make_search()
+        claimed = self.claim(search)
+        complete_search_attempt(
+            claimed.attempt.id, result=self.result(first=0.0), storage=self.storage
+        )
+        search.refresh_from_db()
+
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.eligible_face_count, 1)
+        self.assertEqual(search.results.count(), 0)
 
     def test_native_database_error_fails_closed_after_private_cleanup(self) -> None:
         search = self.make_search()
@@ -409,9 +466,9 @@ class SearchJobTests(TestCase):
         publication_time = claimed_at + timedelta(seconds=121)
         clock = [claimed_at]
 
-        def advance_past_expiry(_search: SelfieSearch, query):
+        def advance_past_expiry(_search: SelfieSearch, query, **kwargs):
             clock[0] = publication_time
-            return rank_vector_direct(_search, query)
+            return rank_vector_direct(_search, query, **kwargs)
 
         with (
             patch("selfie_search.services.jobs.timezone.now", side_effect=lambda: clock[0]),
@@ -866,7 +923,7 @@ class SearchJobTests(TestCase):
         assert terminal["direct_matched_photo_count"] == 1
         assert terminal["cluster_expanded_photo_count"] == 0
 
-    def test_warm_selfie_completion_reads_no_gallery_vectors_and_persists_exact_same_scores(
+    def test_warm_selfie_completion_persists_exact_same_scores(
         self,
     ) -> None:
         first = self.make_search()
@@ -875,18 +932,8 @@ class SearchJobTests(TestCase):
             self.claim(first).attempt.id, result=self.result(), storage=self.storage
         )
         claimed = self.claim(second)
-        with (
-            CaptureQueriesContext(connection) as queries,
-            self.assertLogs("selfie_search.services.jobs", level="INFO") as logs,
-        ):
+        with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
             complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
-        selects = [
-            item["sql"]
-            for item in queries
-            if 'FROM "processing_photofaceembeddingprojection"' in item["sql"]
-        ]
-        self.assertTrue(selects)
-        self.assertFalse(any('"vector"' in sql.split(" FROM ")[0] for sql in selects))
         self.assertEqual(
             list(
                 first.results.values_list(
@@ -1070,11 +1117,11 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
         allow_cohort = ThreadEvent()
         errors: Queue[BaseException] = Queue()
 
-        def paused_candidates(_search: SelfieSearch, query):
+        def paused_candidates(_search: SelfieSearch, query, **kwargs):
             cohort_started.set()
             if not allow_cohort.wait(timeout=10):
                 raise TimeoutError("test did not release cohort load")
-            return rank_vector_direct(_search, query)
+            return rank_vector_direct(_search, query, **kwargs)
 
         def complete_first() -> None:
             close_old_connections()

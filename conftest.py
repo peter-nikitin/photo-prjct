@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from django.core.cache import cache
 from django.test import TransactionTestCase
 
 from scripts.select_test_suites import DEFAULT_CONFIG, layer_for_path, load_config, select_suites
@@ -12,6 +13,14 @@ from scripts.select_test_suites import DEFAULT_CONFIG, layer_for_path, load_conf
 PRIMARY_LAYERS = {"unit", "db", "product_flow", "operational", "migration"}
 CONFIG = load_config(DEFAULT_CONFIG)
 ROOT = Path(__file__).resolve().parent
+
+
+@pytest.fixture(autouse=True)
+def isolate_default_cache():
+    """Prevent rollback-only test rows from surviving in the process-local cache."""
+    cache.clear()
+    yield
+    cache.clear()
 
 
 def _uses_django_database(item: pytest.Item) -> bool:

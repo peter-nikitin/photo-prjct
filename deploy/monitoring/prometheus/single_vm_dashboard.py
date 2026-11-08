@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reconcile the existing dashboard after the single VM produces fresh samples."""
+"""Reconcile the existing dashboard independently of metric availability."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import json
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -19,27 +18,13 @@ control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
 CONFIG = {key: control.load_config()[key] for key in ("folder_id", "workspace_id", "dashboard_id")}
 
-SOURCES = (
-    'sys_memory_MemAvailable{instance="findme-photo-app"}',
-    'sys_filesystem_FreeB{instance="findme-photo-app",mountpoint="/"}',
-    'sys_filesystem_FreeB{instance="findme-photo-app",mountpoint="/var/lib/findme-photo"}',
-    'findme_http_requests_total{job="findme-http"}',
-    'pg_up{job="findme-postgres"}',
-)
-
 
 def dashboard() -> dict:
     content = (HERE / "single-vm-dashboard.json").read_text()
     return json.loads(content.replace("{{workspace_id}}", CONFIG["workspace_id"]))
 
 
-def reconcile(transport, backup: Path, *, now: float | None = None) -> None:
-    for source in SOURCES:
-        samples = control._fresh_matrix(
-            transport, source + "[180s]", key=source, max_age=180, now=now
-        )
-        if source.startswith("pg_up") and any(value != 1 for _, value in samples):
-            raise control.ControlError("PostgreSQL exporter cannot connect")
+def reconcile(transport, backup: Path) -> None:
     desired = dashboard()
     current = transport.dashboard_get(CONFIG["dashboard_id"])
     request = control.dashboard_request(current, desired, CONFIG)
@@ -101,22 +86,10 @@ def main() -> int:
         transport = control.CloudTransport(
             CONFIG, control.identity("github-oidc", args.oidc_config)
         )
-        deadline = time.monotonic() + 300
-        while True:
-            try:
-                reconcile(transport, args.backup)
-                return 0
-            except control.ControlError as error:
-                if (
-                    not str(error).startswith(
-                        ("expected sample missing:", "sample stale/nonfinite:")
-                    )
-                    or time.monotonic() >= deadline
-                ):
-                    raise
-                time.sleep(10)
+        reconcile(transport, args.backup)
+        return 0
     except (control.ControlError, OSError, ValueError, subprocess.CalledProcessError):
-        print("Dashboard reconciliation failed; check source freshness and backup", file=sys.stderr)
+        print("Dashboard reconciliation failed; inspect configuration and backup", file=sys.stderr)
         return 1
 
 

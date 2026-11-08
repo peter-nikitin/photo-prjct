@@ -324,6 +324,16 @@ jobs:
         if: always()
         run: rm -f /tmp/findme-saved-host-key /tmp/findme-known-hosts /tmp/findme-host /tmp/findme-ansible-vars.json
 
+  verify-vm-metrics:
+    needs: release
+    if: github.event_name == 'push' && needs.release.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/verify-metrics.yml
+    with:
+      scope: vm
+
   application-release:
     needs: [classify, release]
     if: >-

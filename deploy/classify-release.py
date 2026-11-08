@@ -2,11 +2,7 @@
 """Select publication from effective Docker and canonical deployment inputs."""
 
 import argparse
-import json
-import os
-import re
 import subprocess
-from pathlib import Path
 
 CANONICAL = {
     "docker-compose.deployment.yml",
@@ -57,100 +53,10 @@ DASHBOARD_INPUTS = {
     "deploy/monitoring/prometheus/oidc.json",
     "scripts/run-with-environment-secrets.py",
 }
-COLLECTOR_INPUTS = {
-    "infra/ansible/site.yml",
-    "infra/terraform/iam.tf",
-    "infra/terraform/compute.tf",
-    "infra/terraform/storage.tf",
-    "infra/ansible/roles/host/tasks/main.yml",
-    ".github/workflows/infrastructure.yml",
-    ".github/workflows/deploy.yml",
-    "deploy/environment-secrets.json",
-    "deploy/run-single-vm.py",
-    "deploy/run-remote.sh",
-    "deploy/apply-deployment.sh",
-    "docker-compose.deployment.yml",
-}
-APPLICATION_INPUTS = {
-    "src/backend/config/metrics.py",
-    "src/backend/config/gunicorn.py",
-    "src/backend/entrypoint.sh",
-    "src/backend/config/views.py",
-    "src/backend/config/urls.py",
-    "src/backend/config/settings.py",
-    "src/backend/requirements.txt",
-    "Dockerfile",
-}
 
 
 def classify_observability(paths):
-    return {
-        "cloud_changed": any(path in DASHBOARD_INPUTS for path in paths),
-        "collector_changed": any(
-            path in COLLECTOR_INPUTS
-            or path.startswith(("infra/ansible/roles/monitoring/", "deploy/postgres-monitoring/"))
-            and not path.endswith(".md")
-            for path in paths
-        ),
-        "application_changed": any(path in APPLICATION_INPUTS for path in paths),
-    }
-
-
-def trusted_release(run, repository):
-    return (
-        run.get("conclusion") == "success"
-        and run.get("head_branch") == "main"
-        and (run.get("head_repository") or {}).get("full_name") == repository
-        and (run.get("name"), run.get("event"))
-        in {("Infrastructure", "push"), ("Deploy", "workflow_dispatch")}
-    )
-
-
-def release_readiness(run, repository, jobs):
-    if not trusted_release(run, repository):
-        return None
-    if run["name"] == "Infrastructure":
-        if jobs.get("application-release / deploy") == "success":
-            return "application_changed"
-        if jobs.get("application-release / monitoring") == "success":
-            return "collector_changed"
-        if jobs.get("release") == "success":
-            return "collector_changed"
-    if run["name"] == "Deploy" and all(
-        jobs.get(name) == "success" for name in ("deploy", "monitoring")
-    ):
-        return "application_changed"
-    return None
-
-
-def classify_release_event(event, repository):
-    selected = classify_observability([])
-    run = event.get("workflow_run") or {}
-    run_id = str(run.get("id", ""))
-    if (
-        (event.get("repository") or {}).get("full_name") != repository
-        or not trusted_release(run, repository)
-        or not re.fullmatch(r"[0-9]{1,20}", run_id)
-    ):
-        return selected
-    result = subprocess.run(
-        ["gh", "api", "--paginate", "--slurp", f"repos/{repository}/actions/runs/{run_id}/jobs"],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    pages = json.loads(result.stdout)
-    jobs = {}
-    for page in pages:
-        for job in page["jobs"]:
-            name = job["name"]
-            if name in jobs:
-                raise ValueError("duplicate job name")
-            jobs[name] = job["conclusion"]
-    readiness = release_readiness(run, repository, jobs)
-    if readiness:
-        selected[readiness] = True
-    return selected
+    return {"cloud_changed": any(path in DASHBOARD_INPUTS for path in paths)}
 
 
 def classify(paths):
@@ -232,14 +138,8 @@ def main():
     parser.add_argument("--base")
     parser.add_argument("--head")
     parser.add_argument("--observability", action="store_true")
-    parser.add_argument("--monitoring-release-event", action="store_true")
     args = parser.parse_args()
-    if args.monitoring_release_event:
-        if args.base or args.head or args.observability:
-            parser.error("release event cannot be combined with a diff")
-        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-        selected = classify_release_event(event, os.environ["GITHUB_REPOSITORY"])
-    elif not args.base or not args.head:
+    if not args.base or not args.head:
         parser.error("--base and --head are required")
     elif args.base == "0" * 40:
         # An initial push has no predecessor; publish both complete components explicitly.

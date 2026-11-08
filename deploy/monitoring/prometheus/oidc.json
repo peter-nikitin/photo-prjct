@@ -7,7 +7,9 @@
     "ref": "refs/heads/main",
     "service_account_id": "aje3t70qka1dtc09k5ic",
     "allowed_workflows": [
-      "peter-nikitin/photo-prjct/.github/workflows/monitoring.yml@refs/heads/main"
+      "peter-nikitin/photo-prjct/.github/workflows/monitoring.yml@refs/heads/main",
+      "peter-nikitin/photo-prjct/.github/workflows/infrastructure.yml@refs/heads/main",
+      "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main"
     ]
   }
 }

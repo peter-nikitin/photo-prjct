@@ -4,24 +4,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def load(name, path):
-    spec = importlib.util.spec_from_file_location(name, ROOT / path)
+def load():
+    spec = importlib.util.spec_from_file_location(
+        "single_dashboard", ROOT / "deploy/monitoring/prometheus/single_vm_dashboard.py"
+    )
+    assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_dashboard_reconcile_only_updates_dashboard_and_requires_fresh_samples(tmp_path):
-    import time
-
-    import pytest
-
-    module = load("single_dashboard", "deploy/monitoring/prometheus/single_vm_dashboard.py")
-    now = time.time()
+def test_dashboard_updates_without_querying_metrics(tmp_path):
+    module = load()
 
     class Transport:
-        def __init__(self, timestamp):
-            self.timestamp = timestamp
+        def __init__(self):
             self.calls = []
             self.current = {
                 "id": module.CONFIG["dashboard_id"],
@@ -31,54 +28,24 @@ def test_dashboard_reconcile_only_updates_dashboard_and_requires_fresh_samples(t
                 "widgets": [],
             }
 
-        def request(self, method, url, *args):
-            self.calls.append((method, url))
-            return {
-                "status": "success",
-                "data": {
-                    "resultType": "matrix",
-                    "result": [{"metric": {}, "values": [[self.timestamp, "1"]]}],
-                },
-            }
-
         def dashboard_get(self, _):
-            self.calls.append(("dashboard", "get"))
+            self.calls.append("get")
             return self.current
 
         def dashboard_update(self, request):
-            self.calls.append(("dashboard", "update"))
-            self.current.update({k: request[k] for k in ("title", "widgets")})
+            self.calls.append("update")
+            self.current.update({key: request[key] for key in ("title", "widgets")})
 
-    stale = Transport(now - 1000)
-    with pytest.raises(module.control.ControlError):
-        module.reconcile(stale, tmp_path / "stale", now=now)
-    assert ("dashboard", "update") not in stale.calls
-    fresh = Transport(now)
-    module.reconcile(fresh, tmp_path / "backup", now=now)
-    assert ("dashboard", "update") in fresh.calls
-    assert all(method == "GET" for method, url in fresh.calls if method != "dashboard")
-    assert all("/extensions/" not in url for _, url in fresh.calls)
+    transport = Transport()
+    module.reconcile(transport, tmp_path / "backup")
+    assert transport.calls == ["get", "update", "get"]
+    assert (tmp_path / "backup/dashboard.json").exists()
 
 
-def test_matching_dashboard_is_not_rewritten_after_freshness_check(tmp_path):
-    import time
-
-    module = load("matching_dashboard", "deploy/monitoring/prometheus/single_vm_dashboard.py")
+def test_matching_dashboard_is_not_rewritten_or_backed_up(tmp_path):
+    module = load()
 
     class Transport:
-        def __init__(self):
-            self.requests = []
-
-        def request(self, method, url, *args):
-            self.requests.append((method, url))
-            return {
-                "status": "success",
-                "data": {
-                    "resultType": "matrix",
-                    "result": [{"metric": {}, "values": [[time.time(), "1"]]}],
-                },
-            }
-
         def dashboard_get(self, _):
             return {
                 "id": module.CONFIG["dashboard_id"],
@@ -90,31 +57,5 @@ def test_matching_dashboard_is_not_rewritten_after_freshness_check(tmp_path):
         def dashboard_update(self, request):
             raise AssertionError("unchanged dashboard must not be rewritten")
 
-    transport = Transport()
-    module.reconcile(transport, tmp_path / "backup")
-    assert len(transport.requests) == len(module.SOURCES)
+    module.reconcile(Transport(), tmp_path / "backup")
     assert not (tmp_path / "backup").exists()
-
-
-def test_matching_dashboard_still_requires_fresh_sources(tmp_path):
-    import time
-
-    import pytest
-
-    module = load("stale_matching_dashboard", "deploy/monitoring/prometheus/single_vm_dashboard.py")
-
-    class Transport:
-        def request(self, method, url, *args):
-            return {
-                "status": "success",
-                "data": {
-                    "resultType": "matrix",
-                    "result": [{"metric": {}, "values": [[time.time() - 1000, "1"]]}],
-                },
-            }
-
-        def dashboard_get(self, _):
-            pytest.fail("stale sources must fail before dashboard access")
-
-    with pytest.raises(module.control.ControlError, match="stale"):
-        module.reconcile(Transport(), tmp_path / "backup")

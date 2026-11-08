@@ -5,10 +5,6 @@ on:
     types: [opened, reopened, synchronize]
   push:
     branches: [main]
-  workflow_run:
-    workflows: [Infrastructure, Deploy]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -20,45 +16,30 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read
     outputs:
       cloud_changed: ${{ steps.select.outputs.cloud_changed }}
-      collector_changed: ${{ steps.select.outputs.collector_changed }}
-      application_changed: ${{ steps.select.outputs.application_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Classify single VM monitoring inputs or completed release
+      - name: Classify dashboard inputs
         id: select
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -eu
-          case "$EVENT_NAME" in
-            push|pull_request)
-              python deploy/classify-release.py --observability --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
-              ;;
-            workflow_run)
-              # A completed source release is a readiness signal; GitHub does not expose its push base here.
-              # Recheck freshness after trusted releases; an unchanged dashboard is never rewritten.
-              python deploy/classify-release.py --monitoring-release-event >> "$GITHUB_OUTPUT"
-              ;;
-            workflow_dispatch)
-              printf '%s\n' 'cloud_changed=true' >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            printf '%s\n' 'cloud_changed=true' >> "$GITHUB_OUTPUT"
+          else
+            python deploy/classify-release.py --observability --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
+          fi
   validate:
     needs: classify
-    if: >-
-      needs.classify.outputs.cloud_changed == 'true' ||
-      needs.classify.outputs.collector_changed == 'true' ||
-      needs.classify.outputs.application_changed == 'true'
+    if: needs.classify.outputs.cloud_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,13 +62,7 @@ jobs:
     needs: [classify, validate]
     if: >-
       github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && needs.classify.outputs.cloud_changed == 'true' &&
-        needs.classify.outputs.collector_changed != 'true' &&
-        needs.classify.outputs.application_changed != 'true') ||
-       (github.event_name == 'workflow_run' &&
-        (needs.classify.outputs.collector_changed == 'true' ||
-         needs.classify.outputs.application_changed == 'true')))
+      needs.classify.outputs.cloud_changed == 'true'
     runs-on: ubuntu-latest
     environment: monitoring
     timeout-minutes: 15

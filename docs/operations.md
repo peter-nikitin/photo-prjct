@@ -14,6 +14,6 @@ does not authorize a live cloud, credential, or deployment mutation.
 
 ## Other runbooks
 
-- [Minimal monitoring](runbooks/minimal-monitoring.md)
+- [Исторический минимальный мониторинг](runbooks/minimal-monitoring.md)
 - [Canonical deployment](runbooks/deployment.md)
 - [Selfie-search log analysis](runbooks/selfie-search-log-analysis.md)

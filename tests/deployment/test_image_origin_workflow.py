@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import stat
@@ -10,47 +9,11 @@ import tarfile
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 REMOTE = ROOT / "deploy/image-origin/run-remote.sh"
 CONFIGURE_CDN = ROOT / "deploy/image-origin/configure-cdn.sh"
 ORIGIN_AGENT_TEMPLATE = ROOT / "deploy/image-origin/monitoring/unified-agent.yml.template"
-
-
-def test_origin_deploy_agent_keeps_public_prometheus_route() -> None:
-    source = ROOT / "deploy/monitoring/prometheus/render_agent.py"
-    spec = importlib.util.spec_from_file_location("findme_render_agent", source)
-    assert spec and spec.loader
-    renderer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(renderer)
-    template = ORIGIN_AGENT_TEMPLATE.read_text(encoding="utf-8")
-    native = yaml.safe_load(
-        template.replace("__YANDEX_CLOUD_FOLDER_ID__", "folder1").replace(
-            "__PROMETHEUS_WORKSPACE_ID__", "workspace1"
-        )
-    )
-    expected = renderer.merge_agent(native, role="public", workspace_id="workspace1")
-    assert native == expected
-    native_routes = [
-        route
-        for route in native["routes"]
-        if route["channel"]["channel_ref"]["name"] == "cloud_monitoring"
-    ]
-    assert len(native_routes) == 4
-    assert {
-        route["input"]["config"]["url"]
-        for route in native_routes
-        if route["input"]["plugin"] == "metrics_pull"
-    } == {"http://127.0.0.1:18081/metrics", "http://127.0.0.1:18081/imgproxy-metrics"}
-    assert "__PROMETHEUS_WORKSPACE_ID__" in template
-    remote = REMOTE.read_text(encoding="utf-8")
-    assert "deploy/monitoring/prometheus/environment.json" in remote
-    assert "__PROMETHEUS_WORKSPACE_ID__" in remote
-    assert 'if [ "$monitoring_only" = false ]; then\n    sh "$package/apply.sh"' in remote
-    assert 'cp -p "$backup_path" "$config_path"' in remote
-    remote_program = remote.split("<<'REMOTE'\n", 1)[1].split("\nREMOTE\n", 1)[0]
-    subprocess.run(["sh", "-n"], input=remote_program, text=True, check=True)
 
 
 def _private_projection(tmp_path: Path) -> tuple[Path, dict[str, str]]:
@@ -596,3 +559,77 @@ def test_cdn_adopts_existing_origin_id_before_resource_mutation_and_round_trips(
     }
     assert any(command[:3] == ["cdn", "origin-group", "get"] for command in next_commands)
     assert any(command[:3] == ["cdn", "resource", "get"] for command in next_commands)
+
+
+@pytest.mark.parametrize("monitoring_only", ["true", "false"])
+def test_remote_agent_repair_and_deploy_do_not_require_retired_public_exporter(
+    tmp_path: Path, monitoring_only: str
+) -> None:
+    release = "a" * 40
+    stage = tmp_path / "stage"
+    package = stage / "image-origin"
+    (package / "monitoring").mkdir(parents=True)
+    (package / "monitoring/unified-agent.yml.template").write_text(
+        ORIGIN_AGENT_TEMPLATE.read_text()
+    )
+    marker = tmp_path / "applied"
+    (package / "apply.sh").write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+    (package / "check.sh").write_text("#!/bin/sh\nexit 0\n")
+    archive = tmp_path / f"findme-image-origin-{release}.tar"
+    with tarfile.open(archive, "w") as bundle:
+        bundle.add(package, arcname="image-origin")
+    environment = tmp_path / f"findme-image-origin-{release}.env"
+    environment.write_text("")
+    environment.chmod(0o600)
+    config_dir = tmp_path / "etc/yandex/unified_agent"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yml"
+    config_path.write_text("old configuration\n")
+    check_dir = tmp_path / "current"
+    check_dir.mkdir()
+    (check_dir / "check.sh").write_text("#!/bin/sh\nexit 0\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    systemctl = fake_bin / "systemctl"
+    systemctl.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  "cat unified-agent"|"is-active --quiet unified-agent"|'
+        '"enable unified-agent"|"restart unified-agent") exit 0 ;;\n'
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+    agent = fake_bin / "unified_agent"
+    agent.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, yaml\n"
+        "config = yaml.safe_load(open(sys.argv[2]))\n"
+        "routes = [route['input'] for route in config['routes']]\n"
+        "urls = {route.get('config', {}).get('url') for route in routes}\n"
+        "assert 'http://127.0.0.1:18081/metrics' in urls\n"
+        "assert 'http://127.0.0.1:18081/imgproxy-metrics' in urls\n"
+        "assert any(route['plugin'] == 'linux_metrics' for route in routes)\n"
+        "assert all(url is None or ':19091/' not in url for url in urls)\n"
+    )
+    stat_command = fake_bin / "stat"
+    stat_command.write_text("#!/bin/sh\nprintf '600\\n'\n")
+    curl = fake_bin / "curl"
+    curl.write_text("#!/bin/sh\nexit 1\n")
+    for executable in (systemctl, agent, stat_command, curl):
+        executable.chmod(0o755)
+    program = REMOTE.read_text().split("<<'REMOTE'\n", 1)[1].split("\nREMOTE\n", 1)[0]
+    program = program.replace("/tmp/findme-image-origin", f"{tmp_path}/findme-image-origin")
+    program = program.replace("/etc/yandex/unified_agent", str(config_dir))
+    program = program.replace("/opt/photo-prjct-image-origin/current", str(check_dir))
+    result = subprocess.run(
+        ["sh", "-s", "--", release, "folder1", "workspace1", monitoring_only],
+        input=program,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "IMAGE_ORIGIN_MONITORING=green" in result.stdout
+    assert marker.exists() == (monitoring_only == "false")
+    assert (config_dir / "config.yml.pre-image-origin").read_text() == "old configuration\n"

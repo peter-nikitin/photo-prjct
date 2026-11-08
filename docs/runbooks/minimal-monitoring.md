@@ -1,5 +1,7 @@
 # Minimal deployment monitoring runbook
 
+> Историческая конфигурация до перехода на одну VM. Текущая схема описана в [архитектуре](../architecture.md#observability), статус — в [инженерном реестре](../engineering-jobs.md#ej-009--operator--detect-service-degradation). Прошлая активация не доказывает работу текущего развёртывания.
+
 Use this runbook for first response only. Monitoring does not restart containers or the VM, deploy
 an image, run migrations, or perform rollback automatically.
 

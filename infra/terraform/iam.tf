@@ -16,3 +16,10 @@ resource "yandex_resourcemanager_folder_iam_member" "infrastructure_nlb" {
   role      = "load-balancer.editor"
   member    = "serviceAccount:ajema849qjho2lgjaqvo"
 }
+
+# The attached VM identity sends only metrics to the existing workspace.
+resource "yandex_resourcemanager_folder_iam_member" "monitoring_writer" {
+  folder_id = var.folder_id
+  role      = "monitoring.editor"
+  member    = "serviceAccount:${yandex_iam_service_account.backup_agent.id}"
+}

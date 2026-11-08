@@ -19,6 +19,6 @@ publication remains untouched by this migration.
 ## Trigger and required work
 
 Before importing or activating worker diagnostic views on dashboard `fbeketud0mdaupj43of6`, reconcile
-their ownership with `deploy/monitoring/prometheus/dashboard.json` and prove both apply orders retain
+their ownership with текущим дашбордом `deploy/monitoring/prometheus/single-vm-dashboard.json` and prove both apply orders retain
 all intended views. Before adding diagnostic rules to workspace `mon0c97qv2s5uju1ark8`, reconcile
 routing ownership; the current dedicated-workspace guard must continue rejecting foreign rule files.

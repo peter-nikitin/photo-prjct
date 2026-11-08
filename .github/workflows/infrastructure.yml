@@ -23,6 +23,11 @@ jobs:
     outputs:
       terraform_changed: ${{ steps.paths.outputs.terraform_changed }}
       ansible_changed: ${{ steps.paths.outputs.ansible_changed }}
+      web_changed: ${{ steps.paths.outputs.web_changed }}
+      worker_changed: ${{ steps.paths.outputs.worker_changed }}
+      import_changed: ${{ steps.paths.outputs.import_changed }}
+      commerce_changed: ${{ steps.paths.outputs.commerce_changed }}
+      exporter_changed: ${{ steps.paths.outputs.exporter_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -318,3 +323,24 @@ jobs:
       - name: Remove temporary SSH credential files
         if: always()
         run: rm -f /tmp/findme-saved-host-key /tmp/findme-known-hosts /tmp/findme-host /tmp/findme-ansible-vars.json
+
+  application-release:
+    needs: [classify, release]
+    if: >-
+      always() && github.event_name == 'push' && needs.classify.result == 'success' &&
+      (needs.release.result == 'success' || needs.release.result == 'skipped') &&
+      (needs.classify.outputs.web_changed == 'true' || needs.classify.outputs.worker_changed == 'true' ||
+       needs.classify.outputs.import_changed == 'true' || needs.classify.outputs.commerce_changed == 'true' ||
+       needs.classify.outputs.exporter_changed == 'true')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
+    with:
+      web: ${{ needs.classify.outputs.web_changed == 'true' }}
+      worker: ${{ needs.classify.outputs.worker_changed == 'true' }}
+      importer: ${{ needs.classify.outputs.import_changed == 'true' }}
+      commerce: ${{ needs.classify.outputs.commerce_changed == 'true' }}
+      exporter: ${{ needs.classify.outputs.exporter_changed == 'true' }}
+    secrets: inherit

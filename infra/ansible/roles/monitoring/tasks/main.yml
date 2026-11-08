@@ -1,0 +1,48 @@
+---
+- name: Check supported host for Unified Agent
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'Ubuntu'
+      - ansible_distribution_version in ['22.04', '24.04']
+      - ansible_architecture == 'x86_64'
+
+- name: Install the pinned official Unified Agent package
+  ansible.builtin.apt:
+    deb: "https://storage.yandexcloud.net/yc-unified-agent/releases/26.09.10/deb/ubuntu-{{ ansible_distribution_version }}-{{ ansible_distribution_release }}/yandex-unified-agent_26.09.10_amd64.deb"
+    state: present
+
+- name: Install single VM remote-write configuration
+  ansible.builtin.copy:
+    src: config.yml
+    dest: /etc/yandex/unified_agent/config.yml
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/bin/unified_agent --config %s check-config
+  notify: Restart Unified Agent
+
+- name: Enable Unified Agent
+  ansible.builtin.service:
+    name: unified-agent
+    enabled: true
+    state: started
+
+- name: Limit Unified Agent resources
+  ansible.builtin.file:
+    path: /etc/systemd/system/unified-agent.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install resource limits
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/unified-agent.service.d/findme-resources.conf
+    content: |
+      [Service]
+      MemoryMax=192M
+      CPUQuota=20%
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload and restart Unified Agent

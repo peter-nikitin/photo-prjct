@@ -191,30 +191,14 @@ activated and observed, so I can serve trusted canonical traffic and renew certi
 
 ### EJ-009 — Operator — Detect service degradation
 
-When a product or processing component becomes unhealthy, I want monitoring and actionable alerts,
-so I can respond before failures persist unnoticed.
+Оператору нужны признаки деградации и своевременные уведомления. Для текущей одной VM
+подготовлен путь графиков Linux, HTTP и PostgreSQL с приватным сбором и существующим dashboard.
+Он ещё не активирован и не подтверждён свежими сериями. Внешний checker, алерты и доставка
+уведомлений отложены; историческая проверка 2026-09-27 относилась к прежней конфигурации.
 
-The approved minimum is limited to the current public critical path. A five-minute probe on the
-separate image-origin VM observes canonical public HTTPS availability, TLS validity, and latency.
-Both VMs share one Yandex Cloud zone, so a zone-wide outage is outside this increment.
-Yandex Monitoring receives simple Linux VM metrics from Unified Agent and private low-cardinality
-Django HTTP request, 5xx, and latency metrics. One dashboard and one operator email channel cover
-sustained public failure, missing VM telemetry, imminent disk or memory exhaustion, sustained CPU
-pressure, application 5xx degradation, and recovery. Logs, tracing, business metrics, database
-internals, privileged container collection, and disabled-worker metrics remain outside this increment.
-The baseline is active. The operator verified the console dashboard and baseline alert settings;
-the isolated public probe failure/recovery drill confirmed Alarm and OK email delivery. Commerce
-collection is a separate extension and is not implied by this baseline validation.
-The [ADR 0043 worker diagnostic extension](adr/0043-observe-isolated-workers-with-git-managed-alerts.md)
-has default-off repository collection/ingestion/export code and local acceptance evidence; worker
-Remote Write ingestion, diagnostic alert application and notifications are not part of this
-baseline validation and remain separately gated.
-
-- Status: Validated
-- Evidence: [Minimal service monitoring design](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-07-30-minimal-service-monitoring-design.md),
-  [image-origin probe decision](adr/0039-run-public-probe-on-image-origin-vm.md), and
-  [activation runbook](runbooks/minimal-monitoring.md).
-- Last updated: 2026-09-27
+- Статус: в работе.
+- Устройство: [наблюдаемость](architecture.md#observability).
+- Последнее обновление: 2026-11-08.
 
 ### EJ-010 — Operator — Restore service data
 
@@ -744,8 +728,6 @@ This log is append-only.
 | 2026-09-28 | EJ-031 | Not recorded | In progress | Approved worker-isolation repository implementation has reviewed private transport, lifecycle, metrics and provisioning code; canonical release integration and final verification remain in progress. No paid provisioning or live relocation is claimed. |
 | 2026-10-05 | EJ-031 | In progress | In progress | Repository CI-push path reuses the existing Lockbox SSH key and adds restricted worker access, while live security-group/template/selfie recreation and CI activation remain unverified; no new live cutover is claimed. |
 
-PostgreSQL observability repository support adds a private exporter and a bounded Django database
-probe. The exporter belongs to independent observability reconciliation; monitoring failure does
-not block product Deploy or rollback. Cloud apply requires same-SHA producer release success.
-Live credential/role provisioning, measured series cost, freshness and notification delivery remain
-pending. See [PostgreSQL activation and rollback](../deploy/postgres-monitoring/README.md).
+Подготовленный exporter PostgreSQL запускается отдельным monitoring job после основного Deploy;
+прежнее требование same-SHA host reconciliation к текущему пути больше не применяется. Свежие
+серии, стоимость и уведомления ещё не подтверждены.

@@ -1,0 +1,11 @@
+---
+- name: Restart Unified Agent
+  ansible.builtin.service:
+    name: unified-agent
+    state: restarted
+
+- name: Reload and restart Unified Agent
+  ansible.builtin.systemd:
+    name: unified-agent
+    daemon_reload: true
+    state: restarted

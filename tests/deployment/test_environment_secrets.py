@@ -28,6 +28,7 @@ EXPECTED_SECRET_KEYS = {
     "PHOTO_PROCESSING_FLEET_TOKEN",
     "SECRET_KEY",
     "DB_PASSWORD",
+    "POSTGRES_EXPORTER_PASSWORD",
     "LETSENCRYPT_EMAIL",
     "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
     "COMMERCE_POSTBOX_API_KEY_ID",
@@ -52,6 +53,7 @@ EXPECTED_SECRET_KEYS = {
     "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
 }
 OPTIONAL_DARK_SECRET_KEYS = {
+    "POSTGRES_EXPORTER_PASSWORD",
     "PHOTO_PROCESSING_FLEET_TOKEN",
     "PHOTO_IMPORT_WORKER_TOKEN",
     "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
@@ -84,6 +86,7 @@ LOCAL_WEB_KEYS = LOCAL_MATERIALIZABLE_KEYS | {
     "GALLERY_IMGPROXY_SALT",
 }
 DEPLOY_KEYS = EXPECTED_SECRET_KEYS - {
+    "POSTGRES_EXPORTER_PASSWORD",
     "PHOTO_PROCESSING_FLEET_TOKEN",
     "YANDEX_MONITORING_API_KEY",
     "IMAGE_ORIGIN_HEADER_SECRET",
@@ -287,6 +290,7 @@ def test_manifest_pins_the_reviewed_deployment_identity(manifest: dict[str, Any]
         "federation_id": "ajeula3gd46omgf9jiko",
         "allowed_workflows": [
             "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
+            "peter-nikitin/photo-prjct/.github/workflows/infrastructure.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/monitor-public-health.yml@refs/heads/main",
             "peter-nikitin/photo-prjct/.github/workflows/deploy-image-origin.yml@refs/heads/main",
         ],
@@ -314,6 +318,7 @@ def test_manifest_declares_complete_schema_and_closed_projections(
     )
     assert manifest["ssh_credentials"]["consumers"] == {
         "deploy": "technical-deploy",
+        "monitoring-deploy": "technical-deploy",
         "remote-check": "technical-deploy",
         "image-origin": "technical-deploy",
         "infrastructure-ansible": "technical-deploy",
@@ -338,6 +343,7 @@ def test_manifest_declares_complete_schema_and_closed_projections(
     assert {name: set(keys) for name, keys in manifest["consumers"].items()} == {
         "local-web": LOCAL_WEB_KEYS,
         "deploy": DEPLOY_KEYS,
+        "monitoring-deploy": {"POSTGRES_EXPORTER_PASSWORD"},
         "remote-check": set(),
         "public-monitor": {"YANDEX_MONITORING_API_KEY"},
         "image-origin": IMAGE_ORIGIN_KEYS,

@@ -1,24 +1,32 @@
 #!/bin/sh
 set -eu
 
-# Called only after an operator explicitly starts the deployment following restore.
 cd "${DEPLOY_ROOT:-/opt/photo-prjct}"
 compose() { docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml "$@"; }
-printf '%s\n' 'DEPLOY_STAGE=stop-workers'
-compose --profile photo-worker --profile import --profile commerce stop photo-worker import-worker commerce-worker
-printf '%s\n' 'DEPLOY_STAGE=pull-images'
-compose pull db web nginx certbot-renew
-compose --profile photo-worker pull photo-worker
-compose --profile import pull import-worker
-printf '%s\n' 'DEPLOY_STAGE=commerce-check'
-compose run --rm --no-deps -T --entrypoint python web manage.py check --tag commerce_runtime
-printf '%s\n' 'DEPLOY_STAGE=database'
-compose up -d --wait db
-printf '%s\n' 'DEPLOY_STAGE=migrate'
-compose run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput
-printf '%s\n' 'DEPLOY_STAGE=static'
-compose run --rm --no-deps -T --entrypoint python web manage.py collectstatic --noinput
-printf '%s\n' 'DEPLOY_STAGE=web'
-compose up -d --wait web
-compose up -d --wait --force-recreate --no-deps nginx
-compose up -d certbot-renew
+if [ "$DEPLOY_WEB" = true ]; then
+    printf '%s\n' 'DEPLOY_STAGE=pull-images'
+    compose pull db web nginx certbot-renew
+    printf '%s\n' 'DEPLOY_STAGE=commerce-check'
+    compose run --rm --no-deps -T --entrypoint python web manage.py check --tag commerce_runtime
+    printf '%s\n' 'DEPLOY_STAGE=database'
+    compose up -d --wait db
+    printf '%s\n' 'DEPLOY_STAGE=migrate'
+    compose run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput
+    printf '%s\n' 'DEPLOY_STAGE=static'
+    compose run --rm --no-deps -T --entrypoint python web manage.py collectstatic --noinput
+    printf '%s\n' 'DEPLOY_STAGE=web'
+    compose up -d --wait web
+    compose up -d --wait --force-recreate --no-deps nginx
+    compose up -d certbot-renew
+fi
+update_worker() {
+    profile=$1
+    service=$2
+    if [ -n "$(compose --profile "$profile" ps --status running -q "$service")" ]; then
+        compose --profile "$profile" pull "$service"
+        compose --profile "$profile" up -d --no-deps "$service"
+    fi
+}
+[ "$DEPLOY_WORKER" = false ] || update_worker photo-worker photo-worker
+[ "$DEPLOY_IMPORT" = false ] || update_worker import import-worker
+[ "$DEPLOY_COMMERCE" = false ] || update_worker commerce commerce-worker

@@ -67,16 +67,6 @@ routes:
     channel:
       channel_ref: {name: cloud_monitoring}
   - input:
-      plugin: metrics_pull
-      config:
-        url: http://127.0.0.1:19091/metrics
-        format: {prometheus: {}}
-        poll_period: 300s
-        timeout: 30s
-        prometheus_config: {job_name: findme-public}
-    channel:
-      channel_ref: {name: findme_prometheus_remote_write}
-  - input:
       plugin: linux_metrics
       config:
         poll_period: 60s

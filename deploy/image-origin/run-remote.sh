@@ -269,12 +269,6 @@ if ! cmp -s "$candidate" "$config_path"; then
 else
     systemctl is-active --quiet "$service"
 fi
-if [ "$monitoring_only" = true ]; then
-    systemctl is-active --quiet findme-prometheus-public.service
-    metrics=$(curl --fail --silent --show-error --max-time 20 \
-        http://127.0.0.1:19091/metrics)
-    printf '%s\n' "$metrics" | grep -q 'findme_probe_success{check="canonical-health"}'
-fi
 rm -f "$candidate"
 trap cleanup EXIT HUP INT TERM
 

@@ -1,0 +1,30 @@
+name: Verify metrics
+on:
+  workflow_call:
+    inputs:
+      scope:
+        type: string
+        required: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    environment: monitoring
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify fresh source samples
+        env:
+          METRICS_SCOPE: ${{ inputs.scope }}
+        run: |
+          python -m venv /tmp/monitoring-tools
+          /tmp/monitoring-tools/bin/pip install -r deploy/monitoring/prometheus/requirements.txt
+          /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/verify_metrics.py \
+            "$METRICS_SCOPE" --oidc-config deploy/monitoring/prometheus/oidc.json

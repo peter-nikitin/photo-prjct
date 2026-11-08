@@ -201,3 +201,18 @@ jobs:
           FINDME_DEPLOY_MODE: monitoring
         run: |
           python scripts/run-with-environment-secrets.py --consumer monitoring-deploy --identity github-oidc -- deploy/run-remote.sh deploy
+
+  verify-application-metrics:
+    needs: [deploy, monitoring]
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || inputs.deploy) &&
+      ((needs.deploy.result == 'success' &&
+        (needs.monitoring.result == 'success' || needs.monitoring.result == 'skipped')) ||
+       (needs.deploy.result == 'skipped' && needs.monitoring.result == 'success'))
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/verify-metrics.yml
+    with:
+      scope: application

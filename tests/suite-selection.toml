@@ -117,6 +117,7 @@ patterns = [
   ".github/workflows/deploy-public-probe.yml",
   ".github/workflows/monitor-public-health.yml",
   ".github/workflows/monitoring.yml",
+  ".github/workflows/verify-metrics.yml",
   ".github/workflows/visual-test-image.yml",
 ]
 suites = ["operational", "migrations", "visual"]

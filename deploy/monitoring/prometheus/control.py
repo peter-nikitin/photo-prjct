@@ -70,8 +70,10 @@ def _fresh_matrix(
     max_age: int,
     now: float | None,
 ) -> list[tuple[dict[str, Any], float]]:
-    response = transport.request("GET", "/api/v1/query?" + urlencode({"query": query}))
     observed_at = time.time() if now is None else now
+    response = transport.request(
+        "GET", "/api/v1/query?" + urlencode({"query": query, "time": observed_at})
+    )
     data = response.get("data")
     if (
         response.get("status") != "success"

@@ -110,3 +110,38 @@ def test_matrix_freshness_rejects_stale_latest_point_in_any_observed_series(cont
 
     with pytest.raises(control.ControlError, match="sample"):
         control._fresh_matrix(Transport(), "up[180s]", key="up", max_age=180, now=1000)
+
+
+def test_fresh_query_sends_evaluation_time_and_uses_raw_timestamp(control, monkeypatch):
+    import json
+    from urllib.parse import parse_qs, urlsplit
+
+    transport = control.CloudTransport.__new__(control.CloudTransport)
+    transport.config = control.load_config()
+    transport.token = "secret"
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "status": "success",
+                    "data": {"resultType": "matrix", "result": [{"values": [[990, "1"]]}]},
+                }
+            ).encode()
+
+    def open_request(request, timeout):
+        calls.append(request)
+        return Response()
+
+    monkeypatch.setattr(control, "urlopen", open_request)
+    monkeypatch.setattr(control.time, "time", lambda: 1000)
+    result = control._fresh_matrix(transport, "up[180s]", key="up", max_age=180, now=None)
+    assert result == [({}, 1.0)]
+    assert parse_qs(urlsplit(calls[0].full_url).query) == {"query": ["up[180s]"], "time": ["1000"]}

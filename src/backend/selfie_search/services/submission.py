@@ -9,17 +9,21 @@ from datetime import datetime
 from uuid import uuid4
 
 from django.conf import settings
-from django.db import DatabaseError, transaction
-from django.db.models import F, QuerySet
+from django.db import DatabaseError, connection, transaction
+from django.db.models import QuerySet
 from django.utils import timezone
-from picflow.gallery import GalleryFaceCrop, gallery_face_crop, gallery_photo_queryset
+from picflow.gallery import (
+    GalleryFaceCrop,
+    gallery_face_crop,
+    gallery_photo_queryset,
+    retrieval_gallery_photo_queryset,
+)
 from picflow.models import Event, Photo
 from processing.models import (
     EventFaceClusterActivation,
     FaceEmbeddingVector,
-)
-from processing.services.face_cohort import (
-    eligible_face_detections,
+    PhotoFaceDetection,
+    PhotoProcessingState,
 )
 from processing.services.face_quality import active_face_embedding_generations
 
@@ -60,6 +64,35 @@ class GallerySearchFailed(RuntimeError):
 
 class _MissingGallerySourceResult(RuntimeError):
     pass
+
+
+_GALLERY_RANKING_TIMEOUT_MS = 120_000
+
+
+def _gallery_advisory_lock_key(search_id) -> int:
+    # UUID search IDs make collisions with other gallery searches negligible.
+    return search_id.int & ((1 << 63) - 1)
+
+
+def _rank_gallery_with_timeout(search: SelfieSearch, query: object):
+    # The savepoint makes a PostgreSQL statement cancellation recoverable by the
+    # surrounding transaction, which still owns the advisory lock for publication.
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SHOW statement_timeout")
+            previous_timeout = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT set_config('statement_timeout', %s, true)",
+                [str(_GALLERY_RANKING_TIMEOUT_MS)],
+            )
+        ranking = rank_selected_direct(search, query)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT set_config('statement_timeout', %s, true)", [previous_timeout])
+        return ranking
+
+
+def _is_statement_timeout(error: DatabaseError) -> bool:
+    return getattr(error.__cause__, "sqlstate", None) == "57014"
 
 
 def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user) -> CreatedSearch:
@@ -103,23 +136,41 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user)
 
 
 def gallery_search_faces_by_photo(
-    *, event: Event, photos: Iterable[Photo]
+    *,
+    event: Event,
+    photos: Iterable[Photo],
+    paid_watermarked_previews_enabled: bool = False,
 ) -> dict[str, tuple[GalleryFaceCrop, ...]]:
     """Return vector-free usable face crops for supplied gallery photos."""
     photo_ids = frozenset(str(photo.pk) for photo in photos if photo.event_id == event.pk)
     if not photo_ids:
         return {}
     configuration = _gallery_configuration(event=event)
-    faces = _compatible_gallery_embeddings(
-        event=event,
-        configuration=configuration,
-        photo_ids=photo_ids,
-        require_current_state=True,
-    ).order_by("detection__attempt__photo_id", "detection__face_index", "detection_id")
+    visible_ids = (
+        gallery_photo_queryset(
+            event=event,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
+        .filter(pk__in=photo_ids)
+        .values("pk")
+    )
+    attempt_to_photo = dict(
+        PhotoProcessingState.objects.filter(
+            photo_id__in=visible_ids,
+            processor_type="face_embedding",
+            accepted_attempt_id__isnull=False,
+        ).values_list("accepted_attempt_id", "photo_id")
+    )
+    if not attempt_to_photo:
+        return {}
+    faces = _usable_gallery_vectors(
+        accepted_attempt_ids=attempt_to_photo,
+        model=configuration["embedding_model"],
+    ).order_by("detection__attempt_id", "detection__face_index", "detection_id")
     results: dict[str, list[GalleryFaceCrop]] = {}
-    for detection_id, photo_id, face_index, geometry in faces.values_list(
+    for detection_id, attempt_id, face_index, geometry in faces.values_list(
         "detection_id",
-        "detection__attempt__photo_id",
+        "detection__attempt_id",
         "detection__face_index",
         "detection__geometry",
     ).iterator(chunk_size=2_000):
@@ -127,7 +178,7 @@ def gallery_search_faces_by_photo(
             detection_id=str(detection_id), face_index=face_index, geometry=geometry
         )
         if crop is not None:
-            results.setdefault(str(photo_id), []).append(crop)
+            results.setdefault(str(attempt_to_photo[attempt_id]), []).append(crop)
     return {photo_id: tuple(crops) for photo_id, crops in results.items()}
 
 
@@ -165,8 +216,6 @@ def submit_gallery_photo_search(
             _gallery_source_candidate(
                 event=event,
                 configuration=configuration,
-                require_current_state=True,
-                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             )
 
             public_token = secrets.token_urlsafe(32)
@@ -189,35 +238,56 @@ def process_gallery_photo_search(
     *,
     search: SelfieSearch,
     now: datetime | None = None,
-    paid_watermarked_previews_enabled: bool = False,
 ) -> SelfieSearch:
     """Rank an immutable gallery snapshot before briefly locking to publish it."""
     try:
-        snapshot = SelfieSearch.objects.select_related("event").get(pk=search.pk)
-        if snapshot.status != SelfieSearch.Status.QUEUED:
-            return snapshot
-        if snapshot.configuration.get("processor") != "gallery_photo_query":
-            raise GallerySearchUnavailable()
-        source_candidate = _gallery_source_candidate(
-            event=snapshot.event,
-            configuration=snapshot.configuration,
-            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-        )
-        ranking = rank_selected_direct(snapshot, source_candidate.vector)
-        ranked = ranking.photos
-        source = snapshot.configuration.get("query_source")
-        if not isinstance(source, dict) or not any(
-            row.photo_id == source.get("photo_id") for row in ranked
-        ):
-            raise _MissingGallerySourceResult()
-        expansion = _expand_gallery_ranking(
-            search=snapshot,
-            ranked=ranked,
-            query=source_candidate.vector,
-        )
-        eligible_photo_count = ranking.eligible_photo_count
-        eligible_face_count = ranking.eligible_face_count
         with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_try_advisory_xact_lock(%s)", [_gallery_advisory_lock_key(search.pk)]
+                )
+                acquired = cursor.fetchone()[0]
+            snapshot = SelfieSearch.objects.select_related("event").get(pk=search.pk)
+            if not acquired or snapshot.status != SelfieSearch.Status.QUEUED:
+                return snapshot
+            if snapshot.configuration.get("processor") != "gallery_photo_query":
+                return _terminal_gallery_failure(
+                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
+                )
+            try:
+                source_candidate = _gallery_source_candidate(
+                    event=snapshot.event,
+                    configuration=snapshot.configuration,
+                )
+                try:
+                    ranking = _rank_gallery_with_timeout(snapshot, source_candidate.vector)
+                except DatabaseError as error:
+                    if _is_statement_timeout(error):
+                        return _terminal_gallery_failure(
+                            search_id=search.pk, status="failed", now=now or timezone.now()
+                        )
+                    raise
+                ranked = ranking.photos
+                source = snapshot.configuration.get("query_source")
+                if not isinstance(source, dict) or not any(
+                    row.photo_id == source.get("photo_id") for row in ranked
+                ):
+                    raise _MissingGallerySourceResult()
+                expansion = _expand_gallery_ranking(
+                    search=snapshot,
+                    ranked=ranked,
+                    query=source_candidate.vector,
+                )
+            except (GallerySearchUnavailable, _MissingGallerySourceResult):
+                return _terminal_gallery_failure(
+                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
+                )
+            except RankingError:
+                return _terminal_gallery_failure(
+                    search_id=search.pk, status="failed", now=now or timezone.now()
+                )
+            eligible_photo_count = ranking.eligible_photo_count
+            eligible_face_count = ranking.eligible_face_count
             locked_search = (
                 SelfieSearch.objects.select_for_update().select_related("event").get(pk=search.pk)
             )
@@ -228,14 +298,22 @@ def process_gallery_photo_search(
                 or locked_search.configuration_hash != snapshot.configuration_hash
                 or locked_search.configuration != snapshot.configuration
             ):
-                raise GallerySearchUnavailable()
-            current_source = _gallery_source_candidate(
-                event=locked_search.event,
-                configuration=locked_search.configuration,
-                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-            )
+                return _terminal_gallery_failure(
+                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
+                )
+            try:
+                current_source = _gallery_source_candidate(
+                    event=locked_search.event,
+                    configuration=locked_search.configuration,
+                )
+            except GallerySearchUnavailable:
+                return _terminal_gallery_failure(
+                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
+                )
             if current_source != source_candidate:
-                raise GallerySearchUnavailable()
+                return _terminal_gallery_failure(
+                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
+                )
             now = now or timezone.now()
             _persist_gallery_results(search=locked_search, expansion=expansion)
             locked_search.status = SelfieSearch.Status.READY
@@ -274,14 +352,6 @@ def process_gallery_photo_search(
                     "cleanup_confirmed_at",
                 ]
             )
-    except (GallerySearchUnavailable, _MissingGallerySourceResult):
-        return _terminal_gallery_failure(
-            search_id=search.pk, status="search_unavailable", now=now or timezone.now()
-        )
-    except RankingError:
-        return _terminal_gallery_failure(
-            search_id=search.pk, status="failed", now=now or timezone.now()
-        )
     except DatabaseError as error:
         raise GallerySearchFailed() from error
     return locked_search
@@ -313,8 +383,6 @@ def _gallery_source_candidate(
     *,
     event: Event,
     configuration: dict[str, object],
-    paid_watermarked_previews_enabled: bool = False,
-    require_current_state: bool = False,
 ) -> CandidateEmbedding:
     source = configuration.get("query_source")
     if (
@@ -324,31 +392,29 @@ def _gallery_source_candidate(
         or not isinstance(source.get("detection_id"), str)
     ):
         raise GallerySearchUnavailable()
-    photo = (
-        gallery_photo_queryset(
-            event=event,
-            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-        )
-        .filter(pk=source["photo_id"])
-        .first()
-    )
+    photo = retrieval_gallery_photo_queryset(event=event).filter(pk=source["photo_id"]).first()
     if photo is None:
         raise GallerySearchUnavailable()
+    accepted_attempt_id = (
+        PhotoProcessingState.objects.filter(
+            photo_id=photo.pk,
+            processor_type="face_embedding",
+        )
+        .values_list("accepted_attempt_id", flat=True)
+        .first()
+    )
+    if accepted_attempt_id is None:
+        raise GallerySearchUnavailable()
     row = (
-        _compatible_gallery_embeddings(
-            event=event,
-            configuration=configuration,
-            photo_ids=(str(photo.pk),),
-            require_current_state=require_current_state,
+        _usable_gallery_vectors(
+            accepted_attempt_ids=(accepted_attempt_id,),
+            model=configuration.get("embedding_model"),
         )
         .filter(detection_id=source["detection_id"])
         .values_list(
             "vector",
             "model_version",
             "detection_id",
-            "detection__attempt__photo_id",
-            "detection__attempt__photo__event_id",
-            "detection__attempt__event_id",
             "detection__face_index",
             "detection__geometry",
         )
@@ -360,9 +426,6 @@ def _gallery_source_candidate(
         vector,
         model_version,
         detection_id,
-        photo_id,
-        photo_event_id,
-        attempt_event_id,
         face_index,
         geometry,
     ) = row
@@ -377,10 +440,7 @@ def _gallery_source_candidate(
         vector=[float(value) for value in vector] if vector is not None else vector,
         model_version=model_version,
         detection_id=detection_id,
-        photo_id=str(photo_id),
-        photo_event_id=photo_event_id,
-        attempt_event_id=attempt_event_id,
-        attempt_photo_id=photo_id,
+        photo_id=str(photo.pk),
     )
     validation_search = SelfieSearch(event=event, configuration=configuration)
     if not _is_usable_gallery_query(search=validation_search, vector=candidate.vector):
@@ -444,46 +504,18 @@ def _search_parameters(model: str) -> tuple[int, float]:
     raise ValueError("invalid face-embedding generation")
 
 
-def _compatible_gallery_embeddings(
-    *,
-    event: Event,
-    configuration: dict[str, object],
-    photo_ids: Iterable[str] | None = None,
-    require_current_state: bool = False,
+def _usable_gallery_vectors(
+    *, accepted_attempt_ids: Iterable, model: object
 ) -> QuerySet[FaceEmbeddingVector]:
-    generations = _configured_gallery_generations(configuration)
-    queryset = FaceEmbeddingVector.objects.filter(
-        detection__in=eligible_face_detections(event, generations),
-        model_version=configuration.get("embedding_model"),
-    )
-    if require_current_state:
-        queryset = queryset.filter(
-            detection__attempt__photo__processing_states__processor_type="face_embedding",
-            detection__attempt__photo__processing_states__accepted_attempt_id=F(
-                "detection__attempt_id"
-            ),
-        )
-    if photo_ids is not None:
-        queryset = queryset.filter(detection__attempt__photo_id__in=photo_ids)
-    return queryset.filter(
+    return FaceEmbeddingVector.objects.filter(
+        detection__attempt_id__in=accepted_attempt_ids,
+        detection__status=PhotoFaceDetection.Status.KEPT,
+        model_version=model,
         detection__geometry__coordinate_space="preview-small-v1",
         detection__geometry__pixel_width__gt=0,
         detection__geometry__pixel_height__gt=0,
         detection__geometry__bbox__isnull=False,
     )
-
-
-def _configured_gallery_generations(configuration: dict[str, object]) -> tuple[dict, ...]:
-    configured_generations = configuration.get("gallery_face_embedding_generations")
-    if not isinstance(configured_generations, list) or not all(
-        isinstance(generation, dict) for generation in configured_generations
-    ):
-        raise ValueError("invalid face-embedding generation")
-    generations = tuple(configured_generations)
-    if not generations:
-        raise ValueError("invalid face-embedding generation")
-
-    return generations
 
 
 def _is_usable_gallery_query(*, search: SelfieSearch, vector: object) -> bool:

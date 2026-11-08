@@ -1,121 +1,108 @@
-"""Native exact cosine ranking; a single statement owns the entire cohort snapshot."""
+"""Exact current-vector ranking for retrievable event photos."""
 
 from __future__ import annotations
 
 from time import perf_counter
+from uuid import UUID
 
-from django.db import connection
-from django.db.models import F
-from processing.models import FaceEmbeddingVector
-from processing.services.face_cohort import eligible_face_detections
-from processing.services.vector_reconciliation import vector_identity_gap_predicates
+from django.contrib.postgres.expressions import ArraySubquery
+from django.core.cache import cache
+from django.db.models import Count, Exists, F, Subquery, Value, Window
+from django.db.models.functions import Greatest, JSONObject, Least, RowNumber
+from pgvector.django import CosineDistance
+from picflow.gallery import retrieval_gallery_photo_queryset
+from processing.models import PhotoFaceDetection, PhotoProcessingState
 
 from selfie_search.models import SelfieSearch
-from selfie_search.services.direct_ranking import DirectRankingOutcome, frozen_generations
-from selfie_search.services.ranking import (
-    RankedPhoto,
-    RankingError,
-    _configuration,
-    validate_query_vector,
-)
+from selfie_search.services.direct_ranking import DirectRankingOutcome
+from selfie_search.services.ranking import RankedPhoto, _configuration, validate_query_vector
+
+_COUNT_CACHE_TTL_SECONDS = 60
 
 
 def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRankingOutcome:
-    """Scan all eligible faces, fail closed on gaps, return scalar evidence only.
-
-    PostgreSQL READ COMMITTED supplies a consistent snapshot for this one statement even
-    when the caller already has an atomic transaction. No transaction isolation is changed.
-    The query vector is a bound parameter and never becomes persistent gallery evidence.
-    """
+    """Rank current vectors; fresh matches and emptiness share one database snapshot."""
     configuration = _configuration(search)
     query = validate_query_vector(search, query_vector)
-    generations = frozen_generations(search)
-    missing, divergent = vector_identity_gap_predicates(generations)
-    cohort = (
-        eligible_face_detections(search.event, generations)
-        .annotate(
-            detection_id=F("pk"),
-            photo_id=F("attempt__photo_id"),
-            contract_version=F("attempt__contract_version"),
-            processor_version=F("attempt__processor_version"),
-            configuration_hash=F("attempt__job__configuration_hash"),
-            model_version=F("embedding_vector__model_version"),
-            vector_id=F("embedding_vector__pk"),
-            missing_vector=missing,
-            divergent_vector=divergent,
+    photos = retrieval_gallery_photo_queryset(event=search.event).order_by().values("pk")
+    states = (
+        PhotoProcessingState.objects.filter(
+            photo_id__in=Subquery(photos),
+            processor_type="face_embedding",
+            accepted_attempt_id__isnull=False,
+            accepted_attempt__face_detections__status=PhotoFaceDetection.Status.KEPT,
+            accepted_attempt__face_detections__embedding_vector__model_version=(
+                configuration.model
+            ),
         )
-        .values(
-            "detection_id",
-            "photo_id",
-            "attempt_id",
-            "contract_version",
-            "processor_version",
-            "configuration_hash",
-            "model_version",
-            "vector_id",
-            "missing_vector",
-            "divergent_vector",
+        .annotate(
+            detection_id=F("accepted_attempt__face_detections__id"),
+            distance=Least(
+                Value(2.0),
+                Greatest(
+                    Value(0.0),
+                    CosineDistance(
+                        "accepted_attempt__face_detections__embedding_vector__vector",
+                        list(query),
+                    ),
+                ),
+            ),
         )
         .order_by()
     )
-    cohort_sql, cohort_params = cohort.query.sql_with_params()
-    table = connection.ops.quote_name(FaceEmbeddingVector._meta.db_table)
-    sql = f"""
-        WITH eligible AS MATERIALIZED ({cohort_sql}),
-        counts AS (
-            SELECT count(*) AS face_count, count(DISTINCT photo_id) AS photo_count,
-                count(*) FILTER (WHERE missing_vector) AS missing_count,
-                count(*) FILTER (WHERE divergent_vector) AS divergent_count
-            FROM eligible
-        ),
-        scored AS MATERIALIZED (
-            SELECT e.*,
-                CASE WHEN c.missing_count = 0 AND c.divergent_count = 0
-                    AND v.model_version = %s AND vector_dims(v.vector) = %s
-                    THEN LEAST(2.0, GREATEST(0.0, v.vector <=> %s::vector)) END AS distance
-            FROM eligible e LEFT JOIN {table} v ON v.id = e.vector_id
-            CROSS JOIN counts c
-        ),
-        ranked AS (
-            SELECT scored.*, row_number() OVER (
-                PARTITION BY photo_id ORDER BY distance, detection_id
-            ) AS photo_rank
-            FROM scored
+    matches = (
+        states.annotate(
+            photo_rank=Window(
+                RowNumber(),
+                partition_by=[F("photo_id")],
+                order_by=[F("distance").asc(), F("detection_id").asc()],
+            )
         )
-        SELECT c.face_count, c.photo_count, c.missing_count, c.divergent_count,
-            e.detection_id, e.photo_id, e.distance
-        FROM counts c LEFT JOIN ranked e
-            ON e.photo_rank = 1 AND e.distance <= %s
-        ORDER BY e.distance, e.photo_id, e.detection_id
-    """
-    # Only the validated query travels into PostgreSQL. Gallery vector values never leave it.
-    query_literal = "[" + ",".join(str(value) for value in query) + "]"
+        .filter(photo_rank=1, distance__lte=configuration.threshold)
+        .order_by("distance", "photo_id", "detection_id")
+        .annotate(
+            payload=JSONObject(
+                photo_id=F("photo_id"),
+                detection_id=F("detection_id"),
+                distance=F("distance"),
+            )
+        )
+        .values("payload")
+    )
     started = perf_counter()
-    with connection.cursor() as cursor:
-        cursor.execute(
-            sql,
-            (
-                *cohort_params,
-                configuration.model,
-                configuration.dimensions,
-                query_literal,
-                configuration.threshold,
-            ),
+    result = (
+        SelfieSearch.objects.filter(pk=search.pk)
+        .annotate(has_vectors=Exists(states), matches=ArraySubquery(matches))
+        .values("has_vectors", "matches")
+        .get()
+    )
+    if result["has_vectors"]:
+        # Counts are advisory for one minute; only the fresh query controls results.
+        cache_key = f"selfie-search:cohort-counts:v1:{search.event_id}:{configuration.model}"
+        counts = cache.get(cache_key)
+        if counts is None:
+            sampled = states.aggregate(
+                face_count=Count("pk"), photo_count=Count("photo_id", distinct=True)
+            )
+            counts = (sampled["face_count"], sampled["photo_count"])
+            if counts[0]:
+                cache.set(cache_key, counts, timeout=_COUNT_CACHE_TTL_SECONDS)
+    else:
+        counts = (0, 0)
+    ranked_photos = tuple(
+        RankedPhoto(
+            photo_id=row["photo_id"],
+            detection_id=UUID(row["detection_id"]),
+            cosine_distance=row["distance"],
         )
-        rows = cursor.fetchall()
+        for row in result["matches"]
+    )
     ranking_ms = (perf_counter() - started) * 1_000
-    face_count, photo_count, missing_count, divergent_count = rows[0][:4]
-    if missing_count or divergent_count:
-        raise RankingError("native face cohort is incomplete or divergent")
-    photos = []
-    for row in rows:
-        if row[4] is None:
-            continue
-        photos.append(RankedPhoto(photo_id=row[5], detection_id=row[4], cosine_distance=row[6]))
     return DirectRankingOutcome(
-        photos=tuple(photos),
-        eligible_face_count=face_count,
-        eligible_photo_count=photo_count,
+        photos=ranked_photos,
+        eligible_face_count=counts[0],
+        eligible_photo_count=counts[1],
+        has_vectors=result["has_vectors"],
         identity_ms=0.0,
         build_ms=0.0,
         ranking_ms=ranking_ms,

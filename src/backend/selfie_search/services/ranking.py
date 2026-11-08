@@ -15,7 +15,7 @@ _ADAFACE_QUERY_THRESHOLD = 0.42
 
 
 class RankingError(ValueError):
-    """The frozen corpus is incompatible with the declared query contract."""
+    """The search query is incompatible with the direct reader contract."""
 
 
 class QueryVectorError(RankingError):
@@ -35,9 +35,6 @@ class CandidateEmbedding:
     model_version: str
     detection_id: UUID
     photo_id: str
-    photo_event_id: object
-    attempt_event_id: object
-    attempt_photo_id: object
 
 
 @dataclass(frozen=True)

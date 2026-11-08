@@ -21,6 +21,7 @@ from photo_worker.client import ApiError, HttpClient, _RejectApiRedirects
 from photo_worker.contracts import FaceEmbeddingFace, FaceEmbeddingResult, SelfieEmbeddingResult
 from photo_worker.face_quality import FaceQualityEvidence
 from photo_worker.transport import REMOTE_API_URL
+from picflow.gallery_media_projection import publish_gallery_media
 from processing.management.commands.control_worker_pools import execute as control
 from processing.models import (
     FaceEmbeddingVector,
@@ -273,6 +274,10 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
     fixture.setUp()
     photo = fixture.photo("functional-tls-photo")
     preview = fixture.publish_preview(photo)
+    PhotoProcessingState.objects.filter(photo=photo, processor_type="generate_preview").update(
+        current_attempt_id=preview.accepted_attempt_id
+    )
+    assert publish_gallery_media(preview).clean_preview_final_key == preview.final_key
     before_preview = (preview.pk, preview.final_key, preview.accepted_attempt_id)
     request_processor(
         photo,

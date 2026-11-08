@@ -345,10 +345,7 @@ def process_gallery_search(request, event_slug: str, public_token: str) -> HttpR
     ):
         return _not_found_response()
     try:
-        process_gallery_photo_search(
-            search=search,
-            paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
-        )
+        process_gallery_photo_search(search=search)
     except GallerySearchUnavailable:
         return _not_found_response()
     except GallerySearchFailed:

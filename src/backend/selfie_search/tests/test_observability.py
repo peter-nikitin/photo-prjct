@@ -733,3 +733,22 @@ def test_direct_reader_event_is_bounded_and_vector_free(reader):
             matched_photo_count=1,
             ranking_ms=10,
         )
+
+
+def test_direct_reader_event_accepts_advisory_count_below_fresh_matches() -> None:
+    logger = _CaptureLogger()
+
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.DIRECT_READER_FINISHED,
+        event_id=1,
+        search_id=UUID("00000000-0000-0000-0000-000000000001"),
+        reader="pgvector",
+        eligible_face_count=1,
+        eligible_photo_count=1,
+        matched_photo_count=2,
+        ranking_ms=10,
+    )
+
+    payload = json.loads(logger.calls[0][1])
+    assert (payload["eligible_photo_count"], payload["matched_photo_count"]) == (1, 2)

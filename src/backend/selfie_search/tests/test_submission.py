@@ -23,6 +23,7 @@ from feature_flags.registry import PAID_EVENTS
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
+from picflow.gallery import gallery_photo_queryset
 from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
 from PIL import Image
@@ -57,6 +58,7 @@ from selfie_search.services.jobs import (
 )
 from selfie_search.services.ranking import RankingError
 from selfie_search.services.read_selection import rank_selected_direct
+from selfie_search.services.results import saved_ready_result_page
 from selfie_search.services.submission import (
     GallerySearchFailed,
     GallerySearchUnavailable,
@@ -708,6 +710,78 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.event = self.make_event("gallery", "free")
         self.other_event = self.make_event("other-gallery", "free")
 
+    def test_current_source_does_not_require_historical_generation_identity(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="current-newer-generation",
+            processor_version=QUALITY_FACE_PROCESSOR_VERSION + 1,
+        )
+
+        created = submit_gallery_photo_search(
+            event=self.event,
+            photo=embedding.detection.attempt.photo,
+            detection_id=embedding.detection_id,
+            user=self.user,
+        )
+
+        self.assertEqual(created.search.status, SelfieSearch.Status.QUEUED)
+
+    def test_current_accepted_attempt_excludes_historical_vector(self) -> None:
+        historical = self.make_eligible_embedding(
+            event=self.event, photo_id="reprocessed-source", vector=[1.0] + [0.0] * 511
+        )
+        old_attempt = historical.detection.attempt
+        current_attempt = ProcessingAttempt.objects.create(
+            event=self.event,
+            run=old_attempt.run,
+            job=old_attempt.job,
+            photo=old_attempt.photo,
+            contract_version=old_attempt.contract_version,
+            processor_type=old_attempt.processor_type,
+            processor_version=old_attempt.processor_version,
+            configuration=old_attempt.configuration,
+            input_fingerprint={},
+            status=ProcessingAttempt.Status.SUCCEEDED,
+            terminal_at=timezone.now(),
+            accepted=True,
+        )
+        artifact = FaceProcessingAttemptArtifact.objects.create(attempt=current_attempt)
+        detection = PhotoFaceDetection.objects.create(
+            artifact=artifact,
+            attempt=current_attempt,
+            face_index=0,
+            status=PhotoFaceDetection.Status.KEPT,
+            geometry=historical.detection.geometry,
+        )
+        FaceEmbeddingVector.objects.create(
+            detection=detection,
+            model_version="adaface-ir18-webface4m",
+            vector=[1.0] + [0.0] * 511,
+            metadata={},
+        )
+        PhotoProcessingState.objects.filter(
+            photo=old_attempt.photo, processor_type="face_embedding"
+        ).update(
+            current_attempt=current_attempt,
+            accepted_attempt=current_attempt,
+        )
+
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=old_attempt.photo,
+            detection_id=detection.id,
+            user=self.user,
+        ).search
+        process_gallery_photo_search(search=search)
+        search.refresh_from_db()
+
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+        self.assertEqual(search.eligible_face_count, 1)
+        self.assertEqual(
+            list(search.results.values_list("direct_evidence__detection_id", flat=True)),
+            [detection.id],
+        )
+
     def test_gallery_submission_locks_event_before_freezing_generation(self) -> None:
         embedding = self.make_eligible_embedding(
             event=self.event, photo_id="event-lock-source", vector=[1.0] + [0.0] * 511
@@ -902,7 +976,6 @@ class GalleryPhotoSubmissionTests(TestCase):
                 ),
             )
 
-        self.assertEqual(len(queries), 1)
         cohort_query = next(
             query["sql"]
             for query in queries
@@ -910,7 +983,7 @@ class GalleryPhotoSubmissionTests(TestCase):
         )
         select_clause = cohort_query.lower().split(" from ", maxsplit=1)[0]
         self.assertNotIn('"vector"', select_clause)
-        self.assertEqual(set(faces_by_photo), {one.id, two.id})
+        self.assertEqual(set(faces_by_photo), {one.id, two.id, stale_generation.id})
         self.assertEqual(len(faces_by_photo[one.id]), 1)
         self.assertEqual(
             [face.detection_id for face in faces_by_photo[two.id]],
@@ -928,12 +1001,6 @@ class GalleryPhotoSubmissionTests(TestCase):
         stale_embedding = self.make_eligible_embedding(event=self.event, photo_id="stale")
         stale = stale_embedding.detection.attempt.photo
         PhotoProcessingState.objects.filter(photo=stale).update(accepted_attempt=None)
-        stale_generation_embedding = self.make_eligible_embedding(
-            event=self.event,
-            photo_id="stale-generation",
-            processor_version=QUALITY_FACE_PROCESSOR_VERSION + 1,
-        )
-        stale_generation = stale_generation_embedding.detection.attempt.photo
         legacy_embedding = self.make_eligible_embedding(
             event=self.event,
             photo_id="legacy-coordinates",
@@ -961,7 +1028,6 @@ class GalleryPhotoSubmissionTests(TestCase):
         for invalid_source, detection_id in (
             (zero, uuid4()),
             (stale, stale_embedding.detection_id),
-            (stale_generation, stale_generation_embedding.detection_id),
             (legacy, legacy_embedding.detection_id),
             (malformed_geometry, malformed_geometry_embedding.detection_id),
             (source, foreign_embedding.detection_id),
@@ -1004,7 +1070,7 @@ class GalleryPhotoSubmissionTests(TestCase):
             },
         )
 
-    def test_paid_watermarked_source_requires_explicit_gate_through_submit_and_process(
+    def test_paid_watermarked_source_gate_applies_at_submission_and_presentation(
         self,
     ) -> None:
         paid_event = self.make_event("paid-gallery-source", "paid")
@@ -1036,13 +1102,35 @@ class GalleryPhotoSubmissionTests(TestCase):
                 user=self.user,
                 paid_watermarked_previews_enabled=True,
             )
-        processed = process_gallery_photo_search(
-            search=created.search,
-            paid_watermarked_previews_enabled=True,
+        projection = photo.gallery_media_projection
+        projection.watermarked_preview_final_key = None
+        projection.watermarked_preview_source_attempt = None
+        projection.save(
+            update_fields=[
+                "watermarked_preview_final_key",
+                "watermarked_preview_source_attempt",
+            ]
         )
+        self.assertFalse(
+            gallery_photo_queryset(event=paid_event, paid_watermarked_previews_enabled=True)
+            .filter(pk=photo.pk)
+            .exists()
+        )
+
+        processed = process_gallery_photo_search(search=created.search)
 
         self.assertEqual(processed.status, SelfieSearch.Status.READY)
         self.assertEqual(list(processed.results.values_list("photo_id", flat=True)), [photo.pk])
+        self.assertEqual(
+            tuple(
+                saved_ready_result_page(
+                    search=processed,
+                    page_number=None,
+                    paid_watermarked_previews_enabled=True,
+                ).object_list
+            ),
+            (),
+        )
 
     def test_staff_preview_gallery_search_can_finish_after_visibility_is_removed(self) -> None:
         draft = self.make_event("draft-gallery-worker", "free", published=False)
@@ -1165,24 +1253,6 @@ class GalleryPhotoSubmissionTests(TestCase):
         with self.assertRaises(ValidationError):
             rows[0].direct_evidence.save()
 
-    def test_gallery_completion_loads_projection_cohort_without_wide_sort(self) -> None:
-        embedding = self.make_eligible_embedding(
-            event=self.event, photo_id="projection-source", vector=[1.0] + [0.0] * 511
-        )
-        search = submit_gallery_photo_search(
-            event=self.event,
-            photo=embedding.detection.attempt.photo,
-            detection_id=embedding.detection_id,
-            user=self.user,
-        ).search
-        with CaptureQueriesContext(connection) as queries:
-            processed = process_gallery_photo_search(search=search)
-        cohort = next(
-            item["sql"] for item in queries if "WITH eligible AS MATERIALIZED" in item["sql"]
-        )
-        self.assertEqual(processed.status, SelfieSearch.Status.READY)
-        self.assertIn('FROM "processing_photofaceembeddingprojection"', cohort)
-
     def test_each_selected_face_uses_its_own_query_embedding(self) -> None:
         first = self.make_eligible_embedding(
             event=self.event,
@@ -1283,6 +1353,38 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.assertEqual(search.status, SelfieSearch.Status.FAILED)
         self.assertEqual(search.results.count(), 0)
 
+    def test_ranking_restores_outer_transaction_statement_timeout(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="timeout-scope-source", vector=[1.0] + [0.0] * 511
+        )
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=embedding.detection.attempt.photo,
+            detection_id=embedding.detection_id,
+            user=self.user,
+        ).search
+
+        def rank_with_configured_timeout(*args, **kwargs):
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT current_setting('statement_timeout')::interval")
+                self.assertEqual(cursor.fetchone()[0].total_seconds(), 120)
+            return rank_selected_direct(*args, **kwargs)
+
+        with (
+            transaction.atomic(),
+            patch(
+                "selfie_search.services.submission.rank_selected_direct",
+                side_effect=rank_with_configured_timeout,
+            ),
+        ):
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT set_config('statement_timeout', '7311', true)")
+            result = process_gallery_photo_search(search=search)
+            with connection.cursor() as cursor:
+                cursor.execute("SHOW statement_timeout")
+                self.assertEqual(cursor.fetchone()[0], "7311ms")
+        self.assertEqual(result.status, SelfieSearch.Status.READY)
+
     def test_database_failure_leaves_gallery_search_queued_for_retry(self) -> None:
         source_embedding = self.make_eligible_embedding(
             event=self.event,
@@ -1336,6 +1438,91 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
     setUp = GalleryPhotoSubmissionTests.setUp
     make_event = SubmissionTests.make_event
     make_eligible_embedding = SubmissionTests.make_eligible_embedding
+
+    def test_simultaneous_process_requests_rank_only_once(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="concurrent-source", vector=[1.0] + [0.0] * 511
+        )
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=embedding.detection.attempt.photo,
+            detection_id=embedding.detection_id,
+            user=self.user,
+        ).search
+        started = ThreadEvent()
+        resume = ThreadEvent()
+        errors: Queue[BaseException] = Queue()
+        rank_calls = 0
+
+        def paused_rank(*args, **kwargs):
+            nonlocal rank_calls
+            rank_calls += 1
+            started.set()
+            if not resume.wait(timeout=10):
+                raise TimeoutError("gallery test did not resume ranking")
+            return rank_selected_direct(*args, **kwargs)
+
+        def first_request() -> None:
+            close_old_connections()
+            try:
+                process_gallery_photo_search(search=search)
+            except BaseException as error:
+                errors.put(error)
+            finally:
+                close_old_connections()
+
+        with patch("selfie_search.services.submission.rank_selected_direct", paused_rank):
+            thread = Thread(target=first_request)
+            thread.start()
+            try:
+                self.assertTrue(started.wait(timeout=10))
+                duplicate = process_gallery_photo_search(search=search)
+                self.assertEqual(duplicate.status, SelfieSearch.Status.QUEUED)
+            finally:
+                resume.set()
+                thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(errors.empty(), list(errors.queue))
+        self.assertEqual(rank_calls, 1)
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
+
+    def test_ranking_statement_timeout_is_terminal_and_releases_lock(self) -> None:
+        embedding = self.make_eligible_embedding(
+            event=self.event, photo_id="timeout-source", vector=[1.0] + [0.0] * 511
+        )
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=embedding.detection.attempt.photo,
+            detection_id=embedding.detection_id,
+            user=self.user,
+        ).search
+
+        def slow_rank(*args, **kwargs):  # noqa: ARG001
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_sleep(0.05)")
+            raise AssertionError("statement timeout did not cancel ranking")
+
+        with (
+            patch("selfie_search.services.submission._GALLERY_RANKING_TIMEOUT_MS", 10, create=True),
+            patch("selfie_search.services.submission.rank_selected_direct", slow_rank),
+        ):
+            result = process_gallery_photo_search(search=search)
+
+        self.assertEqual(result.status, SelfieSearch.Status.FAILED)
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.FAILED)
+        self.assertEqual(search.failure_code, "failed")
+        self.assertEqual(search.results.count(), 0)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                "AND pid = pg_backend_pid()"
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+        self.assertEqual(
+            process_gallery_photo_search(search=search).status, SelfieSearch.Status.FAILED
+        )
 
     def test_paused_gallery_cohort_and_ranking_leave_event_and_search_unlocked(self) -> None:
         for phase in ("cohort", "ranking"):

@@ -231,6 +231,7 @@ def complete_search_attempt(
             str,
             int,
             int,
+            bool,
             int | None,
             int | None,
             RankedPhotoExpansion | None,
@@ -255,6 +256,7 @@ def complete_search_attempt(
                 "succeeded",
                 eligible_photo_count,
                 eligible_face_count,
+                cohort_lookup.has_vectors,
                 round(cohort_lookup.identity_ms + cohort_lookup.build_ms),
                 round(cohort_lookup.ranking_ms),
                 expansion,
@@ -266,6 +268,7 @@ def complete_search_attempt(
                 "incompatible",
                 eligible_photo_count,
                 eligible_face_count,
+                False,
                 None,
                 None,
                 None,
@@ -298,6 +301,7 @@ def complete_search_attempt(
                 ranking_outcome,
                 eligible_photo_count,
                 eligible_face_count,
+                has_vectors,
                 load_ms,
                 rank_ms,
                 prepared_expansion,
@@ -349,7 +353,7 @@ def complete_search_attempt(
                 expansion = prepared_expansion
                 intended_status = str(
                     SelfieSearch.Status.SEARCH_UNAVAILABLE
-                    if eligible_face_count == 0
+                    if not has_vectors
                     else SelfieSearch.Status.READY
                 )
                 _emit_ranking_finished(

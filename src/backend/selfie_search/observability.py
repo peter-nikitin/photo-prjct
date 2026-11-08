@@ -291,11 +291,6 @@ def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dic
                 )
             },
         }
-        matched = _bounded_int(fields["matched_photo_count"], nullable=False)
-        eligible = _bounded_int(fields["eligible_photo_count"], nullable=False)
-        assert matched is not None and eligible is not None
-        if matched > eligible:
-            raise SelfieEventContractError("direct result counts do not reconcile")
     elif event is SelfieEventName.RANKING_FINISHED:
         normalized = _ranking_fields_v4(fields)
     else:

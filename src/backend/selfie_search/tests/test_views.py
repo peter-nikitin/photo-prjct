@@ -578,7 +578,6 @@ class GalleryPhotoSearchViewTests(TestCase):
         )
         process_gallery_photo_search.assert_called_once_with(
             search=search,
-            paid_watermarked_previews_enabled=False,
         )
 
     @patch("selfie_search.views.process_gallery_photo_search")
@@ -2322,7 +2321,6 @@ class PublicSelfieResultViewTests(TestCase):
         )
         process_gallery_photo_search.assert_called_once_with(
             search=search,
-            paid_watermarked_previews_enabled=False,
         )
 
         process_gallery_photo_search.reset_mock()

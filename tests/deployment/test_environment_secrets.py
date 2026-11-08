@@ -1131,7 +1131,10 @@ def test_signal_is_forwarded_and_private_files_are_removed(
         env_file = pathlib.Path(os.environ["FINDME_ENV_FILE"])
         binary_path = next(env_file.parent.glob("binary-*"))
         paths = [str(env_file), str(binary_path)]
-        pathlib.Path(sys.argv[1]).write_text(json.dumps(paths))
+        ready_path = pathlib.Path(sys.argv[1])
+        ready_temp = ready_path.with_name(ready_path.name + ".tmp")
+        ready_temp.write_text(json.dumps(paths))
+        ready_temp.replace(ready_path)
         while True: time.sleep(1)
         """
     ).replace("import json,", "def raise_exit(code): raise SystemExit(code)\nimport json,")

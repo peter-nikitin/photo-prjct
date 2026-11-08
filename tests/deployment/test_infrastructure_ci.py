@@ -51,24 +51,10 @@ def test_plan_summary_updates_its_own_named_comment() -> None:
 
 def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
     classify = load_release_classifier().classify
-    assert classify(["docs/architecture.md"]) == {
-        "web_changed": False,
-        "worker_changed": False,
-        "worker_base_changed": False,
-        "import_changed": False,
-        "commerce_changed": False,
-        "terraform_changed": False,
-        "ansible_changed": False,
-    }
-    assert classify(["infra/ansible/site.yml"]) == {
-        "web_changed": False,
-        "worker_changed": False,
-        "worker_base_changed": False,
-        "import_changed": False,
-        "commerce_changed": False,
-        "terraform_changed": False,
-        "ansible_changed": True,
-    }
+    assert not any(classify(["docs/architecture.md"]).values())
+    os_change = classify(["infra/ansible/site.yml"])
+    assert os_change["ansible_changed"]
+    assert not any(value for name, value in os_change.items() if name != "ansible_changed")
     for path in (
         "infra/ci/release.py",
         "infra/ci/cost_estimation.py",
@@ -81,15 +67,10 @@ def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
     docs = classify(["docs/architecture.md"])
     assert docs["terraform_changed"] is False
     assert docs["ansible_changed"] is False
-    assert classify(["src/backend/config/views.py"]) == {
-        "web_changed": True,
-        "worker_changed": False,
-        "worker_base_changed": False,
-        "import_changed": False,
-        "commerce_changed": True,
-        "terraform_changed": False,
-        "ansible_changed": False,
-    }
+    app_change = classify(["src/backend/config/views.py"])
+    assert app_change["web_changed"] and app_change["commerce_changed"]
+    assert not app_change["worker_changed"] and not app_change["import_changed"]
+    assert not app_change["ansible_changed"] and not app_change["terraform_changed"]
     assert (
         classify(["infra/terraform/compute.tf", "src/worker/photo_worker/client.py"])[
             "terraform_changed"

@@ -19,6 +19,10 @@ def test_release_starts_only_web_stack(tmp_path: Path) -> None:
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "COMMANDS": str(commands),
             "DEPLOY_ROOT": str(tmp_path),
+            "DEPLOY_WEB": "true",
+            "DEPLOY_WORKER": "false",
+            "DEPLOY_IMPORT": "false",
+            "DEPLOY_COMMERCE": "false",
         },
         capture_output=True,
         text=True,
@@ -30,7 +34,7 @@ def test_release_starts_only_web_stack(tmp_path: Path) -> None:
     assert "up -d --wait db" in calls
     assert "up -d --wait web" in calls
     assert "up -d --wait --force-recreate --no-deps nginx" in calls
-    assert "--profile photo-worker pull photo-worker" in calls
+    assert "photo-worker" not in calls
     assert "up -d --wait photo-worker" not in calls
 
 
@@ -57,6 +61,10 @@ def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch) -> N
         "APP_IMAGE": f"ghcr.io/example/app@sha256:{digest}",
         "PHOTO_WORKER_IMAGE": f"ghcr.io/example/worker@sha256:{digest}",
         "IMPORT_WORKER_IMAGE": f"ghcr.io/example/import@sha256:{digest}",
+        "DEPLOY_WEB": "true",
+        "DEPLOY_WORKER": "true",
+        "DEPLOY_IMPORT": "true",
+        "DEPLOY_COMMERCE": "true",
     }.items():
         monkeypatch.setenv(name, value)
     captured = {}
@@ -71,22 +79,8 @@ def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch) -> N
     assert "django-secret" not in repr(captured["command"])
     assert captured["payload"]["environment"]["SECRET_KEY"] == "django-secret"
     assert "VM_SSH_KEY_FILE" not in captured["payload"]["environment"]
-    assert "192.0.2.1,localhost,web" in captured["payload"]["environment"]["ALLOWED_HOSTS"]
-
-
-def test_workflow_is_manual_and_build_only_by_default() -> None:
-    import yaml
-
-    workflow = yaml.load(
-        (ROOT / ".github/workflows/deploy.yml").read_text(), Loader=yaml.BaseLoader
-    )
-    assert set(workflow["on"]) == {"workflow_dispatch"}
-    assert workflow["on"]["workflow_dispatch"]["inputs"]["deploy"]["default"] == "false"
-    assert workflow["jobs"]["deploy"]["if"] == "${{ inputs.deploy }}"
-    assert workflow["jobs"]["deploy"]["needs"] == ["build"]
-    assert (
-        "run-with-environment-secrets.py --consumer deploy"
-        in workflow["jobs"]["deploy"]["steps"][-1]["run"]
+    assert {"192.0.2.1", "localhost", "127.0.0.1", "web"} <= set(
+        captured["payload"]["environment"]["ALLOWED_HOSTS"].split(",")
     )
 
 
@@ -123,7 +117,7 @@ def test_transport_executes_remote_shell_and_preserves_dotenv_values(tmp_path: P
     encode = runpy.run_path(str(ROOT / "scripts/run-with-environment-secrets.py"))["_encode_dotenv"]
     value = 'back\\slash "quoted" dollar$variable\nline'
     private.write_text(
-        f'VM_SSH_KEY_FILE="{key}"\nGHCR_READ_TOKEN="registry-secret"\nSECRET_KEY={encode(value)}\n'
+        f'VM_SSH_KEY_FILE="{key}"\nGHCR_READ_TOKEN="registry-secret"\nPOSTGRES_EXPORTER_PASSWORD="0123456789abcdef0123456789abcdef"\nSECRET_KEY={encode(value)}\n'
     )
     private.chmod(0o600)
     ssh = tmp_path / "ssh"
@@ -150,6 +144,10 @@ os.execv(sys.executable, [sys.executable, '-c', program])
         "APP_IMAGE": f"ghcr.io/example/app@sha256:{digest}",
         "PHOTO_WORKER_IMAGE": f"ghcr.io/example/worker@sha256:{digest}",
         "IMPORT_WORKER_IMAGE": f"ghcr.io/example/import@sha256:{digest}",
+        "DEPLOY_WEB": "true",
+        "DEPLOY_WORKER": "true",
+        "DEPLOY_IMPORT": "true",
+        "DEPLOY_COMMERCE": "true",
         "PUBLIC_DOMAIN": value,
     }
     result = subprocess.run(
@@ -160,6 +158,36 @@ os.execv(sys.executable, [sys.executable, '-c', program])
     )
     assert result.returncode == 0, result.stderr
     assert value not in result.stdout + result.stderr
+    values.update(
+        {
+            "DEPLOY_WEB": "false",
+            "DEPLOY_IMPORT": "false",
+            "DEPLOY_COMMERCE": "false",
+            "APP_IMAGE": "",
+            "IMPORT_WORKER_IMAGE": "",
+            "PHOTO_WORKER_IMAGE": f"ghcr.io/example/worker@sha256:{'b' * 64}",
+        }
+    )
+    result = subprocess.run(
+        ["python3", str(ROOT / "deploy/run-single-vm.py")],
+        env={**os.environ, **values},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    existing = (tmp_path / "remote/.env").read_text()
+    assert f'APP_IMAGE="ghcr.io/example/app@sha256:{digest}"' in existing
+    assert f'IMPORT_WORKER_IMAGE="ghcr.io/example/import@sha256:{digest}"' in existing
+    assert f'PHOTO_WORKER_IMAGE="ghcr.io/example/worker@sha256:{"b" * 64}"' in existing
+    (tmp_path / "remote/.env").write_text(existing.replace(f"sha256:{digest}", "latest"))
+    failed = subprocess.run(
+        ["python3", str(ROOT / "deploy/run-single-vm.py")],
+        env={**os.environ, **values},
+        capture_output=True,
+        text=True,
+    )
+    assert failed.returncode != 0
+    (tmp_path / "remote/.env").write_text(existing)
     compose = tmp_path / "check.yml"
     compose.write_text(
         "services:\n  check:\n    image: busybox\n    environment:\n      VALUE: ${SECRET_KEY}\n"
@@ -229,3 +257,118 @@ def test_certificate_failure_does_not_restart_nginx(tmp_path: Path) -> None:
     calls = commands.read_text()
     assert "certonly --webroot" in calls
     assert "up -d" not in calls
+
+
+def test_monitoring_requires_valid_secret_before_ssh(tmp_path, monkeypatch):
+    import runpy
+
+    import pytest
+
+    module = runpy.run_path(str(ROOT / "deploy/run-single-vm.py"))
+    key = tmp_path / "ssh"
+    key.write_text("private")
+    key.chmod(0o600)
+    env_file = tmp_path / "environment"
+    env_file.write_text(f'VM_SSH_KEY_FILE="{key}"\n')
+    env_file.chmod(0o600)
+    for name, value in {
+        "VM_HOST": "192.0.2.1",
+        "VM_USER": "deploy",
+        "FINDME_ENV_FILE": str(env_file),
+        "FINDME_DEPLOY_MODE": "monitoring",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("SSH must not run"))
+    with pytest.raises(ValueError, match="invalid PostgreSQL exporter credential"):
+        module["main"]()
+
+
+def test_monitoring_remote_projects_secret_and_starts_only_exporter(tmp_path):
+    import json
+    import runpy
+    import sys
+
+    module = runpy.run_path(str(ROOT / "deploy/run-single-vm.py"))
+    root = tmp_path / "root"
+    root.mkdir()
+    commands = tmp_path / "commands"
+    for name in ("python3", "docker"):
+        executable = tmp_path / name
+        executable.write_text(
+            '#!/bin/sh\nprintf "%s %s\\n" "$(basename "$0")" "$*" >> "$COMMANDS"\n'
+        )
+        executable.chmod(0o755)
+    script = module["REMOTE_MONITORING"].replace("Path('/opt/photo-prjct')", repr(root))
+    script = script.replace("root = " + repr(root), "root = Path(" + repr(str(root)) + ")")
+    script = script.replace("os.fchown(secret_file.fileno(), 0, 65534)", "pass")
+    secrets = root / "secrets"
+    secrets.mkdir()
+    (secrets / "postgres-exporter-password").write_text("B" * 32)
+    password = "A" * 32
+    import base64
+    import io
+    import tarfile
+
+    content = io.BytesIO()
+    with tarfile.open(fileobj=content, mode="w") as bundle:
+        for name in ("docker-compose.deployment.yml", "deploy/postgres-monitoring/prepare-role.py"):
+            bundle.add(ROOT / name, arcname=name)
+    archive = base64.b64encode(content.getvalue()).decode()
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        input=json.dumps(
+            {"environment": {"POSTGRES_EXPORTER_PASSWORD": password}, "archive": archive}
+        ),
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "COMMANDS": str(commands)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert password not in result.stdout + result.stderr + commands.read_text()
+    secret = root / "secrets/postgres-exporter-password"
+    assert secret.read_text() == password
+    assert secret.stat().st_mode & 0o777 == 0o640
+    calls = commands.read_text()
+    role, exporter = calls.splitlines()
+    assert role.startswith("python3 ") and "prepare-role.py" in role
+    assert exporter.startswith("docker compose ")
+    assert "--profile observability up -d --no-deps --force-recreate postgres-exporter" in exporter
+    assert " stop " not in calls
+
+
+def test_worker_only_apply_updates_only_running_selected_worker(tmp_path: Path) -> None:
+    commands = tmp_path / "commands"
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMANDS"\n'
+        'case "$*" in *"ps --status running -q photo-worker"*) echo running ;; esac\n'
+    )
+    docker.chmod(0o755)
+    result = subprocess.run(
+        ["sh", str(ROOT / "deploy/apply-deployment.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "COMMANDS": str(commands),
+            "DEPLOY_ROOT": str(tmp_path),
+            "DEPLOY_WEB": "false",
+            "DEPLOY_WORKER": "true",
+            "DEPLOY_IMPORT": "false",
+            "DEPLOY_COMMERCE": "false",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = commands.read_text()
+    assert "pull photo-worker" in calls and "up -d --no-deps photo-worker" in calls
+    assert "web" not in calls and "import-worker" not in calls and "commerce-worker" not in calls
+
+
+def test_monitoring_only_change_selects_exporter_without_app_images():
+    import runpy
+
+    classify = runpy.run_path(str(ROOT / "deploy/classify-release.py"))["classify"]
+    selection = classify(["deploy/postgres-monitoring/prepare-role.py"])
+    assert selection["exporter_changed"]
+    assert not any(selection[name] for name in ("web_changed", "worker_changed", "import_changed"))

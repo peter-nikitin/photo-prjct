@@ -61,8 +61,13 @@ run "one_recovery_host" {
   }
 
   assert {
+    condition     = yandex_resourcemanager_folder_iam_member.monitoring_writer.role == "monitoring.editor" && yandex_resourcemanager_folder_iam_member.monitoring_writer.member == "serviceAccount:${yandex_iam_service_account.backup_agent.id}"
+    error_message = "The attached VM identity must have monitoring.editor for remote write."
+  }
+
+  assert {
     condition     = yandex_resourcemanager_folder_iam_member.backup_agent.role == "backup.user"
-    error_message = "Temporary recovery agent must have only backup.user on its VM identity."
+    error_message = "Attached VM identity must retain backup.user."
   }
 
   assert {

@@ -4,9 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       deploy:
-        description: "Deploy after database restore is verified"
+        description: "Deploy from main after building images"
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      web: {type: boolean, required: true}
+      worker: {type: boolean, required: true}
+      importer: {type: boolean, required: true}
+      commerce: {type: boolean, required: true}
+      exporter: {type: boolean, required: true}
 
 concurrency:
   group: deploy
@@ -14,6 +21,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.web || inputs.worker || inputs.importer || inputs.commerce }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,6 +46,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
       - name: Build application
+        if: ${{ github.event_name == 'workflow_dispatch' || inputs.web || inputs.commerce }}
         id: web
         uses: docker/build-push-action@v6
         with:
@@ -49,6 +58,7 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web,ignore-error=true
       - name: Build import worker
+        if: ${{ github.event_name == 'workflow_dispatch' || inputs.importer }}
         id: import
         uses: docker/build-push-action@v6
         with:
@@ -59,6 +69,7 @@ jobs:
           cache-from: type=gha,scope=import-worker
           cache-to: type=gha,mode=max,scope=import-worker,ignore-error=true
       - name: Build worker base
+        if: ${{ github.event_name == 'workflow_dispatch' || inputs.worker }}
         id: base
         uses: docker/build-push-action@v6
         with:
@@ -69,6 +80,7 @@ jobs:
           cache-from: type=gha,scope=worker-base
           cache-to: type=gha,mode=max,scope=worker-base,ignore-error=true
       - name: Build photo worker
+        if: ${{ github.event_name == 'workflow_dispatch' || inputs.worker }}
         id: worker
         uses: docker/build-push-action@v6
         with:
@@ -83,7 +95,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=worker,ignore-error=true
 
   deploy:
-    if: ${{ inputs.deploy }}
+    if: ${{ github.ref == 'refs/heads/main' && needs.build.result == 'success' && (github.event_name == 'push' || inputs.deploy) }}
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
@@ -93,15 +105,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Deploy restored database and application
+      - name: Deploy application
         env:
           FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
           VM_HOST: ${{ vars.VM_HOST }}
           VM_USER: ${{ vars.VM_USER }}
           VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
-          APP_IMAGE: ghcr.io/${{ github.repository }}@${{ needs.build.outputs.app }}
-          PHOTO_WORKER_IMAGE: ghcr.io/${{ github.repository }}-worker@${{ needs.build.outputs.worker }}
-          IMPORT_WORKER_IMAGE: ghcr.io/${{ github.repository }}-import-worker@${{ needs.build.outputs.import }}
+          APP_IMAGE: ${{ needs.build.outputs.app && format('ghcr.io/{0}@{1}', github.repository, needs.build.outputs.app) || '' }}
+          PHOTO_WORKER_IMAGE: ${{ needs.build.outputs.worker && format('ghcr.io/{0}-worker@{1}', github.repository, needs.build.outputs.worker) || '' }}
+          IMPORT_WORKER_IMAGE: ${{ needs.build.outputs.import && format('ghcr.io/{0}-import-worker@{1}', github.repository, needs.build.outputs.import) || '' }}
           PHOTO_IMPORT_ENABLED: ${{ vars.PHOTO_IMPORT_ENABLED || 'False' }}
           PHOTO_IMPORT_BUILD: ${{ github.sha }}
           DEBUG: "False"
@@ -159,5 +171,33 @@ jobs:
           COMMERCE_SUPPORT_CONTACT: ${{ vars.COMMERCE_SUPPORT_CONTACT || 'support@findme-photo.ru' }}
           COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS: ${{ vars.COMMERCE_WORKER_HEALTH_MAX_READY_AGE_SECONDS || '300' }}
           GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+          DEPLOY_WEB: ${{ github.event_name == 'workflow_dispatch' || inputs.web }}
+          DEPLOY_WORKER: ${{ github.event_name == 'workflow_dispatch' || inputs.worker }}
+          DEPLOY_IMPORT: ${{ github.event_name == 'workflow_dispatch' || inputs.importer }}
+          DEPLOY_COMMERCE: ${{ github.event_name == 'workflow_dispatch' || inputs.commerce }}
         run: |
           python scripts/run-with-environment-secrets.py --consumer deploy --identity github-oidc -- deploy/run-remote.sh deploy
+  monitoring:
+    needs: [build, deploy]
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || inputs.deploy) &&
+      (inputs.exporter || github.event_name == 'workflow_dispatch') &&
+      (needs.deploy.result == 'success' || (needs.build.result == 'skipped' && needs.deploy.result == 'skipped'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start private PostgreSQL monitoring after application release
+        env:
+          FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+          VM_HOST: ${{ vars.VM_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+          VM_SSH_KNOWN_HOSTS: ${{ vars.VM_SSH_KNOWN_HOSTS }}
+          FINDME_DEPLOY_MODE: monitoring
+        run: |
+          python scripts/run-with-environment-secrets.py --consumer monitoring-deploy --identity github-oidc -- deploy/run-remote.sh deploy

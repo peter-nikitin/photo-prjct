@@ -10,6 +10,7 @@ from pathlib import Path
 CONSUMERS = {
     "local-web",
     "deploy",
+    "monitoring-deploy",
     "remote-check",
     "public-monitor",
 }

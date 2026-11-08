@@ -1,0 +1,481 @@
+{
+  "title": "FindMe Photo — мониторинг одной VM",
+  "widgets": [
+    {
+      "position": {
+        "w": "24",
+        "h": "24"
+      },
+      "group": {
+        "id": "9fe345e8-7671-54c5-8ebc-e08ee4e28247",
+        "title": "VM",
+        "widgets": [
+          {
+            "id": "a4285b6e-6c79-5601-8abb-61ca6c36709e",
+            "multiSourceChart": {
+              "id": "a4285b6e-6c79-5601-8abb-61ca6c36709e",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "91541935-34c0-5c97-a3d0-d3a7e7eaa7cf",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sys_memory_MemAvailable{instance=\"findme-photo-app\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "91541935-34c0-5c97-a3d0-d3a7e7eaa7cf",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Доступная память, байты"
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "957d7185-4f15-56d1-9c7e-7ac06316a497",
+            "multiSourceChart": {
+              "id": "957d7185-4f15-56d1-9c7e-7ac06316a497",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "113328aa-b941-5045-a731-2f21b65ac6e5",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(sys_system_UsefulTime{instance=\"findme-photo-app\"}[5m])) / (sum(rate(sys_system_UsefulTime{instance=\"findme-photo-app\"}[5m])) + sum(rate(sys_system_IdleTime{instance=\"findme-photo-app\"}[5m])))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "113328aa-b941-5045-a731-2f21b65ac6e5",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "CPU, доля"
+            },
+            "position": {
+              "x": "12",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "ca5dbc7f-8490-5db7-a5c8-52a2c8929802",
+            "multiSourceChart": {
+              "id": "ca5dbc7f-8490-5db7-a5c8-52a2c8929802",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "43dd5028-4119-516a-a695-9e2997c1eb81",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sys_filesystem_FreeB{instance=\"findme-photo-app\",mountpoint=\"/\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "43dd5028-4119-516a-a695-9e2997c1eb81",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Свободно /, байты"
+            },
+            "position": {
+              "y": "8",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "97cd70a0-2924-5d2e-b5d6-dc6a400a02b6",
+            "multiSourceChart": {
+              "id": "97cd70a0-2924-5d2e-b5d6-dc6a400a02b6",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "49cb83c2-da91-561e-b982-cf90e4a7d8fb",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sys_filesystem_FreeB{instance=\"findme-photo-app\",mountpoint=\"/var/lib/findme-photo\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "49cb83c2-da91-561e-b982-cf90e4a7d8fb",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Свободно /var/lib/findme-photo, байты"
+            },
+            "position": {
+              "x": "12",
+              "y": "8",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "6809df8c-07a3-5fa0-a9d6-3ec90c37cae6",
+            "multiSourceChart": {
+              "id": "6809df8c-07a3-5fa0-a9d6-3ec90c37cae6",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "fad44dd6-45b6-589b-8046-bf535c68903d",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sys_proc_LoadAverage1min{instance=\"findme-photo-app\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "fad44dd6-45b6-589b-8046-bf535c68903d",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Нагрузка за минуту"
+            },
+            "position": {
+              "y": "16",
+              "w": "12",
+              "h": "8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "position": {
+        "y": "24",
+        "w": "24",
+        "h": "8"
+      },
+      "group": {
+        "id": "e7f79c84-9b98-5d95-ab21-e2a9368ee479",
+        "title": "Django / HTTP",
+        "widgets": [
+          {
+            "id": "e36def47-1e4a-597d-b67e-97ccffb84bc2",
+            "multiSourceChart": {
+              "id": "e36def47-1e4a-597d-b67e-97ccffb84bc2",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "dbd131dd-eeb5-5eb6-b4aa-3d32384da6f0",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_http_requests_total[5m]))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "dbd131dd-eeb5-5eb6-b4aa-3d32384da6f0",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Запросы в секунду"
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "4a1f1192-ee4c-5c96-8f53-5000ad1d7fc2",
+            "multiSourceChart": {
+              "id": "4a1f1192-ee4c-5c96-8f53-5000ad1d7fc2",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "e8dc8975-9fcb-5d71-90dc-db5acea4772c",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_http_requests_total{status_class=\"5xx\"}[5m]))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "e8dc8975-9fcb-5d71-90dc-db5acea4772c",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Ошибки 5xx в секунду"
+            },
+            "position": {
+              "x": "12",
+              "w": "12",
+              "h": "8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "position": {
+        "y": "48",
+        "w": "24",
+        "h": "16"
+      },
+      "group": {
+        "id": "06b8a3dc-8fc7-56fa-ac05-b1062f7cdecb",
+        "title": "PostgreSQL",
+        "widgets": [
+          {
+            "id": "a3263216-88ff-5d50-b421-389680024148",
+            "multiSourceChart": {
+              "id": "a3263216-88ff-5d50-b421-389680024148",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "7bfa43c4-9a81-5e18-9b94-e8facd89e771",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "pg_up{job=\"findme-postgres\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "7bfa43c4-9a81-5e18-9b94-e8facd89e771",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Экспортёр доступен"
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "72468202-32bd-5ab0-8602-c7c6e4dbb2ca",
+            "multiSourceChart": {
+              "id": "72468202-32bd-5ab0-8602-c7c6e4dbb2ca",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "46c483c7-331e-55ce-8d84-df6bf695afeb",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "pg_database_size_bytes{job=\"findme-postgres\",datname=\"app\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "46c483c7-331e-55ce-8d84-df6bf695afeb",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Размер базы, байты"
+            },
+            "position": {
+              "x": "12",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "0855496e-772d-5a07-92f4-6a08dc510413",
+            "multiSourceChart": {
+              "id": "0855496e-772d-5a07-92f4-6a08dc510413",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "a2637ecb-4ba9-56a4-b467-f8ec271d8942",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "rate(pg_stat_database_xact_commit{job=\"findme-postgres\",datname=\"app\"}[5m])",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "a2637ecb-4ba9-56a4-b467-f8ec271d8942",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Транзакции в секунду"
+            },
+            "position": {
+              "y": "8",
+              "w": "12",
+              "h": "8"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

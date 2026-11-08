@@ -1,6 +1,5 @@
 import importlib.util
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -16,50 +15,48 @@ def load(name, path):
 
 
 @pytest.mark.parametrize("scope", ["vm", "application"])
-def test_scope_queries_raw_fresh_samples_with_explicit_evaluation_time(scope):
+def test_scope_reads_exact_selectors_in_one_batch(scope):
     checker = load("release_metrics", "deploy/monitoring/prometheus/verify_metrics.py")
-    urls = []
+    calls = []
 
     class Transport:
-        def request(self, method, path):
-            assert method == "GET"
-            params = parse_qs(urlsplit(path).query)
-            assert params["time"] == ["1000"]
-            urls.append(params["query"][0])
-            return {
-                "status": "success",
-                "data": {"resultType": "matrix", "result": [{"values": [[990, "1"]]}]},
-            }
+        def read_samples(self, selectors, *, now):
+            calls.append(selectors)
+            return [[[(990, 1.0)]] for _ in selectors]
 
     checker.check(Transport(), scope, now=1000)
+    assert len(calls) == 1
+    selectors = calls[0]
     if scope == "vm":
-        assert len(urls) == 3
-        assert any('mountpoint="/"' in item for item in urls)
-        assert any('mountpoint="/var/lib/findme-photo"' in item for item in urls)
+        assert len(selectors) == 3
+        assert {item.get("mountpoint") for item in selectors} >= {"/", "/var/lib/findme-photo"}
     else:
-        assert len(urls) == 2
-        assert any(item.startswith("pg_up") for item in urls)
-        assert any(item.startswith("findme_http_requests_total") for item in urls)
+        assert {item["__name__"] for item in selectors} == {"pg_up", "findme_http_requests_total"}
 
 
-@pytest.mark.parametrize("sample", [None, [0, "1"], [990, "NaN"], [1001, "1"], [990, "0"]])
+@pytest.mark.parametrize("sample", [None, (0, 1), (990, float("nan")), (1001, 1), (990, 0)])
 def test_application_rejects_missing_stale_nonfinite_future_or_disconnected_postgres(sample):
     checker = load("release_metrics_failures", "deploy/monitoring/prometheus/verify_metrics.py")
 
     class Transport:
-        def request(self, method, path):
-            query = parse_qs(urlsplit(path).query)["query"][0]
-            point = sample if query.startswith("pg_up") else [990, "1"]
-            return {
-                "status": "success",
-                "data": {
-                    "resultType": "matrix",
-                    "result": ([{"values": [point]}] if point is not None else []),
-                },
-            }
+        def read_samples(self, selectors, *, now):
+            return [[[(990, 1)]], [[sample]] if sample is not None else []]
 
     with pytest.raises(checker.control.ControlError):
         checker.check(Transport(), "application", now=1000)
+
+
+def test_freshness_is_measured_after_slow_read(monkeypatch):
+    checker = load("release_metrics_clock", "deploy/monitoring/prometheus/verify_metrics.py")
+    monkeypatch.setattr(checker.time, "time", lambda: 1200)
+
+    class Transport:
+        def read_samples(self, selectors, *, now):
+            assert now is None
+            return [[[(1000, 1)]] for _ in selectors]
+
+    with pytest.raises(checker.control.ControlError, match="stale"):
+        checker.check(Transport(), "vm")
 
 
 def test_cli_retries_missing_then_accepts_fresh_samples(monkeypatch):

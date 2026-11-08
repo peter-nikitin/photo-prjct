@@ -1,5 +1,12 @@
 name: Verify metrics
 on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: Источники метрик
+        type: choice
+        required: true
+        options: [vm, application]
   workflow_call:
     inputs:
       scope:
@@ -7,6 +14,7 @@ on:
         required: true
 jobs:
   verify:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: monitoring
     timeout-minutes: 10

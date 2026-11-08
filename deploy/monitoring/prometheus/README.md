@@ -30,3 +30,6 @@ Monitoring. Устройство сбора и хранения метрик о�
 [роли Ansible](../../../infra/ansible/roles/monitoring/), PostgreSQL exporter — в
 [Compose](../../../docker-compose.deployment.yml) и
 [его каталоге](../../postgres-monitoring/).
+
+Для повторной проверки выберите scope `vm` или `application` в Actions → **Verify metrics**.
+Проверка читает сырые выборки через Prometheus Remote Read, без изменения облачных ресурсов.

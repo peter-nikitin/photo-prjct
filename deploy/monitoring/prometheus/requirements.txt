@@ -1,3 +1,7 @@
 # Operational CLI only; never install in application/worker containers.
+--extra-index-url https://buf.build/gen/python
 yandexcloud==0.408.0
 PyYAML==6.0.3
+prometheus-prometheus-protocolbuffers-python==31.1.0.2.20261001224011+d7f6cfecf2b8
+python-snappy==0.7.3
+requests>=2.32.3,<3

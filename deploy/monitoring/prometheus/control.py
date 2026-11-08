@@ -6,16 +6,12 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
-import math
 import os
 import re
 import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -62,57 +58,14 @@ def dashboard_request(
     return request
 
 
-def _fresh_matrix(
-    transport: Any,
-    query: str,
-    *,
-    key: str,
-    max_age: int,
-    now: float | None,
-) -> list[tuple[dict[str, Any], float]]:
-    observed_at = time.time() if now is None else now
-    response = transport.request(
-        "GET", "/api/v1/query?" + urlencode({"query": query, "time": observed_at})
-    )
-    data = response.get("data")
-    if (
-        response.get("status") != "success"
-        or not isinstance(data, dict)
-        or data.get("resultType") != "matrix"
-    ):
-        raise ControlError(f"sample query failed: {key}")
-    values = data.get("result")
-    if not isinstance(values, list) or not values:
-        raise ControlError(f"expected sample missing: {key}")
-    result = []
-    for item in values:
-        try:
-            points = item["values"]
-            metric = item.get("metric", {})
-            if not isinstance(metric, dict) or not isinstance(points, list) or not points:
-                raise ValueError
-            latest = points[-1]
-            if not isinstance(latest, list) or len(latest) != 2:
-                raise ValueError
-            timestamp, number = map(float, latest)
-        except (KeyError, TypeError, ValueError):
-            raise ControlError(f"sample malformed: {key}") from None
-        if (
-            not math.isfinite(timestamp)
-            or not math.isfinite(number)
-            or not 0 <= observed_at - timestamp <= max_age
-        ):
-            raise ControlError(f"sample stale/nonfinite: {key}")
-        result.append((metric, number))
-    return result
-
-
 class CloudTransport:
     def __init__(self, config: dict[str, Any], token: str):
+        import requests
         import yandexcloud
         from yandex.cloud.monitoring.v3.dashboard_service_pb2_grpc import DashboardServiceStub
 
         self.config, self.token = config, token
+        self.session = requests.Session()
         self.sdk = yandexcloud.SDK(
             iam_token=token, endpoints={"monitoring": "monitoring.api.cloud.yandex.net:443"}
         )
@@ -120,32 +73,63 @@ class CloudTransport:
         # Its channel factory retains SDK TLS/IAM handling without patching that registry.
         self.dashboard = DashboardServiceStub(self.sdk._channels.channel("monitoring"))
 
-    def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        url = API + "/prometheus/workspaces/" + self.config["workspace_id"] + path
-        request = Request(
-            url,
-            method=method,
-            data=json.dumps(body).encode() if body else None,
-            headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"},
-        )
-        for attempt in range(3 if method == "GET" else 1):
+    def read_samples(
+        self, selectors: list[dict[str, str]], *, now: float | None = None
+    ) -> list[list[list[tuple[float, float]]]]:
+        import remote_pb2
+        import requests
+        import snappy
+        import types_pb2
+
+        observed = time.time() if now is None else now
+        query = remote_pb2.ReadRequest()
+        for selector in selectors:
+            item = query.queries.add(
+                start_timestamp_ms=int((observed - 180) * 1000),
+                end_timestamp_ms=int(observed * 1000),
+            )
+            for name, value in selector.items():
+                item.matchers.add(type=types_pb2.LabelMatcher.EQ, name=name, value=value)
+        url = API + "/prometheus/workspaces/" + self.config["workspace_id"] + "/api/v1/read"
+        headers = {
+            "Authorization": "Bearer " + self.token,
+            "Content-Type": "application/x-protobuf",
+            "Content-Encoding": "snappy",
+            "X-Prometheus-Remote-Read-Version": "0.1.0",
+        }
+        for attempt in range(3):
             try:
-                with urlopen(request, timeout=30) as response:
-                    raw = response.read()
-                    return json.loads(raw) if raw else {}
-            except HTTPError as error:
-                raise ControlError(f"Monitoring {method} failed (HTTP {error.code})") from None
-            except (TimeoutError, URLError) as error:
-                timed_out = isinstance(error, TimeoutError) or isinstance(
-                    error.reason, TimeoutError
+                response = self.session.post(
+                    url,
+                    data=snappy.compress(query.SerializeToString()),
+                    headers=headers,
+                    timeout=30,
                 )
-                if timed_out and method == "GET" and attempt < 2:
+                if 500 <= response.status_code < 600 and attempt < 2:
                     time.sleep(1)
                     continue
-                raise ControlError(f"Monitoring {method} failed") from None
+                if response.status_code != 200:
+                    raise ControlError(f"Monitoring read failed (HTTP {response.status_code})")
+                parsed = remote_pb2.ReadResponse.FromString(snappy.decompress(response.content))
+                if len(parsed.results) != len(selectors):
+                    raise ControlError("Monitoring read result count mismatch")
+                return [
+                    [
+                        [(point.timestamp / 1000, point.value) for point in series.samples]
+                        for series in result.timeseries
+                    ]
+                    for result in parsed.results
+                ]
+            except requests.exceptions.Timeout:
+                if attempt < 2:
+                    time.sleep(1)
+                    continue
+                raise ControlError("Monitoring read timed out") from None
+            except ControlError:
+                raise
             except Exception:
-                raise ControlError(f"Monitoring {method} failed") from None
-        raise AssertionError("unreachable Monitoring request retry state")
+                raise ControlError("Monitoring read failed") from None
+        raise AssertionError("unreachable Monitoring read retry state")
 
     def dashboard_get(self, dashboard_id: str) -> dict[str, Any]:
         from google.protobuf.json_format import MessageToDict

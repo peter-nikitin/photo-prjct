@@ -9,7 +9,8 @@
     "allowed_workflows": [
       "peter-nikitin/photo-prjct/.github/workflows/monitoring.yml@refs/heads/main",
       "peter-nikitin/photo-prjct/.github/workflows/infrastructure.yml@refs/heads/main",
-      "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main"
+      "peter-nikitin/photo-prjct/.github/workflows/deploy.yml@refs/heads/main",
+      "peter-nikitin/photo-prjct/.github/workflows/verify-metrics.yml@refs/heads/main"
     ]
   }
 }

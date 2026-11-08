@@ -52,6 +52,7 @@ jobs:
       - run: |
           python -m venv /tmp/monitoring-tools
           /tmp/monitoring-tools/bin/pip install -r deploy/monitoring/prometheus/requirements.txt
+          /tmp/monitoring-tools/bin/python -m unittest discover -s tests/monitoring -p test_remote_read_sdk.py
           cat > /tmp/promtool <<'SCRIPT'
           #!/bin/sh
           exec docker run --rm --user "$(id -u):$(id -g)" --entrypoint promtool -v "$PWD:$PWD" -w "$PWD" prom/prometheus:v3.5.0 "$@"

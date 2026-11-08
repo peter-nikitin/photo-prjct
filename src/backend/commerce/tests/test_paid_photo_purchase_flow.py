@@ -403,8 +403,9 @@ class PaidPhotoPurchaseFlowTests(TestCase):
             self.assertNotEqual(rotated_token, self.cart_token)
             self.assertFalse(Cart.objects.filter(event=self.event).exists())
             self.assertContains(history, first_order.public_number)
-            self.assertContains(retry_page, "Повторить оплату")
-            self.assertContains(waiting, "Проверяем связь с банком")
+            self.assertContains(retry_page, "Банк всё ещё обрабатывает попытку")
+            self.assertNotContains(retry_page, "Повторить оплату")
+            self.assertContains(waiting, "Банк всё ещё обрабатывает попытку")
             self.assertEqual(first_order.payment_attempts.count(), 1)
             self.assertEqual(first_attempt.status, PaymentAttempt.Status.PENDING)
 

@@ -89,6 +89,27 @@ services:
     mem_limit: 256m
     pids_limit: 32
 
+  gallery-search-worker:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+    entrypoint: ["python", "manage.py", "run_gallery_search_worker"]
+    command: []
+    working_dir: /app/src/backend
+    volumes:
+      - .:/app
+    depends_on:
+      - db
+    restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 32
+    stop_grace_period: 0s
+
   commerce-worker:
     build: .
     entrypoint: ["python", "manage.py", "run_commerce_worker"]

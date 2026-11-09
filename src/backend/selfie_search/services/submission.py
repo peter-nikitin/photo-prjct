@@ -69,26 +69,14 @@ class _MissingGallerySourceResult(RuntimeError):
 _GALLERY_RANKING_TIMEOUT_MS = 120_000
 
 
-def _gallery_advisory_lock_key(search_id) -> int:
-    # UUID search IDs make collisions with other gallery searches negligible.
-    return search_id.int & ((1 << 63) - 1)
-
-
 def _rank_gallery_with_timeout(search: SelfieSearch, query: object):
-    # The savepoint makes a PostgreSQL statement cancellation recoverable by the
-    # surrounding transaction, which still owns the advisory lock for publication.
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.execute("SHOW statement_timeout")
-            previous_timeout = cursor.fetchone()[0]
             cursor.execute(
                 "SELECT set_config('statement_timeout', %s, true)",
                 [str(_GALLERY_RANKING_TIMEOUT_MS)],
             )
-        ranking = rank_selected_direct(search, query)
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT set_config('statement_timeout', %s, true)", [previous_timeout])
-        return ranking
+        return rank_selected_direct(search, query)
 
 
 def _is_statement_timeout(error: DatabaseError) -> bool:
@@ -241,79 +229,54 @@ def process_gallery_photo_search(
 ) -> SelfieSearch:
     """Rank an immutable gallery snapshot before briefly locking to publish it."""
     try:
-        with transaction.atomic():
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_try_advisory_xact_lock(%s)", [_gallery_advisory_lock_key(search.pk)]
-                )
-                acquired = cursor.fetchone()[0]
-            snapshot = SelfieSearch.objects.select_related("event").get(pk=search.pk)
-            if not acquired or snapshot.status != SelfieSearch.Status.QUEUED:
-                return snapshot
-            if snapshot.configuration.get("processor") != "gallery_photo_query":
-                return _terminal_gallery_failure(
-                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
-                )
-            try:
-                source_candidate = _gallery_source_candidate(
-                    event=snapshot.event,
-                    configuration=snapshot.configuration,
-                )
-                try:
-                    ranking = _rank_gallery_with_timeout(snapshot, source_candidate.vector)
-                except DatabaseError as error:
-                    if _is_statement_timeout(error):
-                        return _terminal_gallery_failure(
-                            search_id=search.pk, status="failed", now=now or timezone.now()
-                        )
-                    raise
-                ranked = ranking.photos
-                source = snapshot.configuration.get("query_source")
-                if not isinstance(source, dict) or not any(
-                    row.photo_id == source.get("photo_id") for row in ranked
-                ):
-                    raise _MissingGallerySourceResult()
-                expansion = _expand_gallery_ranking(
-                    search=snapshot,
-                    ranked=ranked,
-                    query=source_candidate.vector,
-                )
-            except (GallerySearchUnavailable, _MissingGallerySourceResult):
-                return _terminal_gallery_failure(
-                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
-                )
-            except RankingError:
-                return _terminal_gallery_failure(
+        snapshot = SelfieSearch.objects.select_related("event").get(pk=search.pk)
+        if snapshot.status != SelfieSearch.Status.PROCESSING:
+            return snapshot
+        if snapshot.configuration.get("processor") != "gallery_photo_query":
+            raise GallerySearchUnavailable()
+        source_candidate = _gallery_source_candidate(
+            event=snapshot.event,
+            configuration=snapshot.configuration,
+        )
+        try:
+            ranking = _rank_gallery_with_timeout(snapshot, source_candidate.vector)
+        except DatabaseError as error:
+            if _is_statement_timeout(error):
+                return fail_gallery_attempt(
                     search_id=search.pk, status="failed", now=now or timezone.now()
                 )
-            eligible_photo_count = ranking.eligible_photo_count
-            eligible_face_count = ranking.eligible_face_count
+            raise
+        ranked = ranking.photos
+        source = snapshot.configuration.get("query_source")
+        if not isinstance(source, dict) or not any(
+            row.photo_id == source.get("photo_id") for row in ranked
+        ):
+            raise _MissingGallerySourceResult()
+        expansion = _expand_gallery_ranking(
+            search=snapshot,
+            ranked=ranked,
+            query=source_candidate.vector,
+        )
+        eligible_photo_count = ranking.eligible_photo_count
+        eligible_face_count = ranking.eligible_face_count
+        with transaction.atomic():
             locked_search = (
                 SelfieSearch.objects.select_for_update().select_related("event").get(pk=search.pk)
             )
-            if locked_search.status != SelfieSearch.Status.QUEUED:
+            if locked_search.status != SelfieSearch.Status.PROCESSING:
                 return locked_search
             if (
                 locked_search.event_id != snapshot.event_id
                 or locked_search.configuration_hash != snapshot.configuration_hash
                 or locked_search.configuration != snapshot.configuration
             ):
-                return _terminal_gallery_failure(
-                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
-                )
-            try:
-                current_source = _gallery_source_candidate(
-                    event=locked_search.event,
-                    configuration=locked_search.configuration,
-                )
-            except GallerySearchUnavailable:
-                return _terminal_gallery_failure(
-                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
-                )
+                raise GallerySearchUnavailable()
+            current_source = _gallery_source_candidate(
+                event=locked_search.event,
+                configuration=locked_search.configuration,
+            )
             if current_source != source_candidate:
-                return _terminal_gallery_failure(
-                    search_id=search.pk, status="search_unavailable", now=now or timezone.now()
-                )
+                raise GallerySearchUnavailable()
             now = now or timezone.now()
             _persist_gallery_results(search=locked_search, expansion=expansion)
             locked_search.status = SelfieSearch.Status.READY
@@ -352,15 +315,23 @@ def process_gallery_photo_search(
                     "cleanup_confirmed_at",
                 ]
             )
+    except (GallerySearchUnavailable, _MissingGallerySourceResult):
+        return fail_gallery_attempt(
+            search_id=search.pk,
+            status="search_unavailable",
+            now=now or timezone.now(),
+        )
+    except RankingError:
+        return fail_gallery_attempt(search_id=search.pk, status="failed", now=now or timezone.now())
     except DatabaseError as error:
         raise GallerySearchFailed() from error
     return locked_search
 
 
-def _terminal_gallery_failure(*, search_id, status: str, now: datetime) -> SelfieSearch:
+def fail_gallery_attempt(*, search_id, status: str, now: datetime) -> SelfieSearch:
     with transaction.atomic():
         search = SelfieSearch.objects.select_for_update().get(pk=search_id)
-        if search.status != SelfieSearch.Status.QUEUED:
+        if search.status != SelfieSearch.Status.PROCESSING:
             return search
         search.status = status
         search.failure_code = status

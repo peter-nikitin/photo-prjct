@@ -185,7 +185,9 @@ def test_previous_processing_and_search_rows_survive_vector_schema_expansion():
         with pytest.raises(LookupError):
             current.get_model("processing", "FaceEmbedding")
         rows = list(
-            current.get_model("selfie_search", "SelfieSearch").objects.order_by("pk").values()
+            current.get_model("selfie_search", "SelfieSearch")
+            .objects.order_by("pk")
+            .values(*before_search[0])
         )
         assert rows == before_search
         for name, values in saved.items():

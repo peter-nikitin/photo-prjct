@@ -27,11 +27,6 @@ urlpatterns = [
         name="status",
     ),
     path(
-        "events/<str:event_slug>/selfie-search/<str:public_token>/process-gallery/",
-        views.process_gallery_search,
-        name="process_gallery_search",
-    ),
-    path(
         "events/<str:event_slug>/selfie-search/<str:public_token>/feedback/",
         views.feedback,
         name="feedback",

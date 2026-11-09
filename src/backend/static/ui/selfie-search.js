@@ -7,7 +7,6 @@
 
   const ACTIVE_STATES = new Set(['queued', 'processing', 'cleanup_pending']);
   const POLL_DELAY_MS = 2000;
-  const PROCESS_RETRY_DELAY_MS = 2000;
   const MAX_BACKOFF_MS = 30000;
   const FEEDBACK_PENDING_KEY = 'findme_selfie_feedback_pending';
   const FEEDBACK_MARKS_PREFIX = 'findme_selfie_feedback_marks:';
@@ -812,12 +811,14 @@
   }
 
   class SelfieSearchPoller {
-    constructor({ url, fetch, setTimeout, clearTimeout, reload }) {
+    constructor({ url, fetch, setTimeout, clearTimeout, reload, onMessage, onStatus }) {
       this.url = url;
       this.fetch = fetch;
       this.setTimeout = setTimeout;
       this.clearTimeout = clearTimeout;
       this.reload = reload;
+      this.onMessage = onMessage;
+      this.onStatus = onStatus;
       this.timer = null;
       this.inFlight = false;
       this.stopped = false;
@@ -835,11 +836,18 @@
     async poll() {
       if (this.stopped || this.inFlight) return;
       this.inFlight = true;
+      const controller = new AbortController();
+      const timeout = this.setTimeout(() => controller.abort(), 10000);
       try {
         const response = await this.fetch(this.url, {
-          credentials: 'same-origin',
+          credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
           headers: { Accept: 'application/json' },
         });
+        if (response.status === 404) {
+          this.stop();
+          this.onMessage('Ссылка на поиск недоступна.');
+          return;
+        }
         if (!response.ok) throw new Error(`Unexpected status: ${response.status}`);
         const payload = await response.json();
         if (!ACTIVE_STATES.has(payload.status)) {
@@ -848,11 +856,15 @@
           return;
         }
         this.failureCount = 0;
+        this.onMessage('');
+        this.onStatus(payload.status);
         this.schedule(POLL_DELAY_MS);
       } catch (_error) {
+        this.onMessage('Не удалось обновить статус. Проверьте подключение; поиск продолжается.');
         this.failureCount += 1;
         this.schedule(Math.min(POLL_DELAY_MS * 2 ** this.failureCount, MAX_BACKOFF_MS));
       } finally {
+        this.clearTimeout(timeout);
         this.inFlight = false;
       }
     }
@@ -874,34 +886,6 @@
     if (error && typeof error.focus === 'function') error.focus();
   }
 
-  function submitGallerySearchProcess(form, fetch, setTimeout) {
-    if (!form || form.gallerySearchProcessStarted || typeof fetch !== 'function') return;
-    form.gallerySearchProcessStarted = true;
-    const csrfToken = form.querySelector?.('[name="csrfmiddlewaretoken"]')?.value || '';
-    let inFlight = false;
-    let completed = false;
-    const retry = () => {
-      if (completed || inFlight) return;
-      inFlight = true;
-      Promise.resolve(
-        fetch(form.action, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'X-CSRFToken': csrfToken },
-        }),
-      )
-        .then((response) => {
-          if (response && response.ok) completed = true;
-        })
-        .catch(() => {})
-        .finally(() => {
-          inFlight = false;
-          if (!completed && typeof setTimeout === 'function') setTimeout(retry, PROCESS_RETRY_DELAY_MS);
-        });
-    };
-    retry();
-  }
-
   function startBrowserUi(document, window, options = {}) {
     const storage = options.storage || new BrowserStorageAdapter({
       indexedDB: safeObjectValue(window, 'indexedDB'),
@@ -911,11 +895,6 @@
     const form = document.querySelector('[data-selfie-search-form]');
     focusSelfieSearchError(document);
     const result = document.querySelector('[data-selfie-search-result]');
-    submitGallerySearchProcess(
-      document.querySelector('[data-gallery-search-process]'),
-      window.fetch?.bind(window),
-      window.setTimeout?.bind(window),
-    );
     const feedbackEnabled = (form || result)?.dataset?.selfieFeedbackEnabled === 'true';
     const galleryOrigin = result?.dataset?.galleryOrigin === 'true';
     bindSelfieSearchForm(form, { storage });
@@ -941,6 +920,16 @@
       setTimeout: window.setTimeout.bind(window),
       clearTimeout: window.clearTimeout.bind(window),
       reload: () => window.location.reload(),
+      onStatus: (status) => {
+        if (!galleryOrigin) return;
+        const heading = document.querySelector('#selfie-search-state-title');
+        if (heading) heading.textContent = status === 'queued'
+          ? 'Поиск в очереди' : 'Ищем похожие фотографии';
+      },
+      onMessage: (message) => {
+        const element = document.querySelector('[data-selfie-search-connection]');
+        if (element) { element.textContent = message; element.hidden = !message; }
+      },
     }).start();
     poller.storage = storage;
     poller.storageReady = storageReady;
@@ -960,7 +949,6 @@
     initializeFeedbackCleanupUi,
     initializeFeedbackUi,
     focusSelfieSearchError,
-    submitGallerySearchProcess,
     startBrowserUi,
   };
 });

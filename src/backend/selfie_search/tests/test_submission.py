@@ -63,7 +63,6 @@ from selfie_search.services.submission import (
     GallerySearchFailed,
     GallerySearchUnavailable,
     gallery_search_faces_by_photo,
-    process_gallery_photo_search,
     resolve_public_search,
     submit_gallery_photo_search,
     submit_selfie_search,
@@ -71,6 +70,20 @@ from selfie_search.services.submission import (
 from selfie_search.services.submission import (
     _configuration as submission_configuration,
 )
+from selfie_search.services.submission import (
+    process_gallery_photo_search as execute_gallery_photo_search,
+)
+
+
+def process_gallery_photo_search(*, search, **kwargs):
+    from selfie_search.services.gallery_queue import claim
+
+    search.refresh_from_db()
+    if search.status == "queued":
+        claimed = claim()
+        assert claimed is not None and claimed.pk == search.pk
+        search = claimed
+    return execute_gallery_photo_search(search=search, **kwargs)
 
 
 class RecordingStorage:
@@ -385,7 +398,7 @@ class SubmissionTests(TestCase):
         ):
             process_gallery_photo_search(search=search)
 
-    def test_native_gallery_database_failure_preserves_queued_atomic_retry(self) -> None:
+    def test_native_gallery_database_failure_preserves_processing_for_queue_retry(self) -> None:
         embedding = self.make_eligible_embedding(
             event=self.event, photo_id="source", vector=[1.0] + [0.0] * 511
         )
@@ -404,7 +417,7 @@ class SubmissionTests(TestCase):
         ):
             process_gallery_photo_search(search=search)
         search.refresh_from_db()
-        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(search.status, SelfieSearch.Status.PROCESSING)
         self.assertEqual(search.results.count(), 0)
 
     def test_published_free_and_paid_events_queue_without_freezing_face_candidates(self) -> None:
@@ -1353,39 +1366,7 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.assertEqual(search.status, SelfieSearch.Status.FAILED)
         self.assertEqual(search.results.count(), 0)
 
-    def test_ranking_restores_outer_transaction_statement_timeout(self) -> None:
-        embedding = self.make_eligible_embedding(
-            event=self.event, photo_id="timeout-scope-source", vector=[1.0] + [0.0] * 511
-        )
-        search = submit_gallery_photo_search(
-            event=self.event,
-            photo=embedding.detection.attempt.photo,
-            detection_id=embedding.detection_id,
-            user=self.user,
-        ).search
-
-        def rank_with_configured_timeout(*args, **kwargs):
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT current_setting('statement_timeout')::interval")
-                self.assertEqual(cursor.fetchone()[0].total_seconds(), 120)
-            return rank_selected_direct(*args, **kwargs)
-
-        with (
-            transaction.atomic(),
-            patch(
-                "selfie_search.services.submission.rank_selected_direct",
-                side_effect=rank_with_configured_timeout,
-            ),
-        ):
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT set_config('statement_timeout', '7311', true)")
-            result = process_gallery_photo_search(search=search)
-            with connection.cursor() as cursor:
-                cursor.execute("SHOW statement_timeout")
-                self.assertEqual(cursor.fetchone()[0], "7311ms")
-        self.assertEqual(result.status, SelfieSearch.Status.READY)
-
-    def test_database_failure_leaves_gallery_search_queued_for_retry(self) -> None:
+    def test_database_failure_leaves_gallery_search_processing_for_queue_retry(self) -> None:
         source_embedding = self.make_eligible_embedding(
             event=self.event,
             photo_id="source",
@@ -1407,7 +1388,7 @@ class GalleryPhotoSubmissionTests(TestCase):
                 process_gallery_photo_search(search=search)
 
         search.refresh_from_db()
-        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(search.status, SelfieSearch.Status.PROCESSING)
         self.assertEqual(search.results.count(), 0)
 
     def test_processing_fails_closed_after_current_state_is_removed(self) -> None:
@@ -1432,6 +1413,9 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.assertEqual(search.results.count(), 0)
 
 
+@override_settings(
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+)
 class GalleryCompletionConcurrencyTests(TransactionTestCase):
     """Gallery cohort work must release rows and revalidate before publication."""
 
@@ -1439,55 +1423,7 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
     make_event = SubmissionTests.make_event
     make_eligible_embedding = SubmissionTests.make_eligible_embedding
 
-    def test_simultaneous_process_requests_rank_only_once(self) -> None:
-        embedding = self.make_eligible_embedding(
-            event=self.event, photo_id="concurrent-source", vector=[1.0] + [0.0] * 511
-        )
-        search = submit_gallery_photo_search(
-            event=self.event,
-            photo=embedding.detection.attempt.photo,
-            detection_id=embedding.detection_id,
-            user=self.user,
-        ).search
-        started = ThreadEvent()
-        resume = ThreadEvent()
-        errors: Queue[BaseException] = Queue()
-        rank_calls = 0
-
-        def paused_rank(*args, **kwargs):
-            nonlocal rank_calls
-            rank_calls += 1
-            started.set()
-            if not resume.wait(timeout=10):
-                raise TimeoutError("gallery test did not resume ranking")
-            return rank_selected_direct(*args, **kwargs)
-
-        def first_request() -> None:
-            close_old_connections()
-            try:
-                process_gallery_photo_search(search=search)
-            except BaseException as error:
-                errors.put(error)
-            finally:
-                close_old_connections()
-
-        with patch("selfie_search.services.submission.rank_selected_direct", paused_rank):
-            thread = Thread(target=first_request)
-            thread.start()
-            try:
-                self.assertTrue(started.wait(timeout=10))
-                duplicate = process_gallery_photo_search(search=search)
-                self.assertEqual(duplicate.status, SelfieSearch.Status.QUEUED)
-            finally:
-                resume.set()
-                thread.join(timeout=10)
-        self.assertFalse(thread.is_alive())
-        self.assertTrue(errors.empty(), list(errors.queue))
-        self.assertEqual(rank_calls, 1)
-        search.refresh_from_db()
-        self.assertEqual(search.status, SelfieSearch.Status.READY)
-
-    def test_ranking_statement_timeout_is_terminal_and_releases_lock(self) -> None:
+    def test_ranking_statement_timeout_is_terminal_without_queue_retry(self) -> None:
         embedding = self.make_eligible_embedding(
             event=self.event, photo_id="timeout-source", vector=[1.0] + [0.0] * 511
         )
@@ -1503,23 +1439,19 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
                 cursor.execute("SELECT pg_sleep(0.05)")
             raise AssertionError("statement timeout did not cancel ranking")
 
+        from selfie_search.services.gallery_queue import run_once
+
         with (
-            patch("selfie_search.services.submission._GALLERY_RANKING_TIMEOUT_MS", 10, create=True),
+            patch("selfie_search.services.submission._GALLERY_RANKING_TIMEOUT_MS", 10),
             patch("selfie_search.services.submission.rank_selected_direct", slow_rank),
         ):
-            result = process_gallery_photo_search(search=search)
-
-        self.assertEqual(result.status, SelfieSearch.Status.FAILED)
+            self.assertTrue(run_once())
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.FAILED)
         self.assertEqual(search.failure_code, "failed")
         self.assertEqual(search.results.count(), 0)
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
-                "AND pid = pg_backend_pid()"
-            )
-            self.assertEqual(cursor.fetchone()[0], 0)
+        self.assertEqual(search.gallery_attempt_count, 1)
+        self.assertFalse(run_once())
         self.assertEqual(
             process_gallery_photo_search(search=search).status, SelfieSearch.Status.FAILED
         )
@@ -1539,9 +1471,25 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
         self._complete_while_paused(phase="ranking", change="terminal")
 
     def _complete_while_paused(self, *, phase: str, change: str = "") -> None:
+        if not change:
+            self.event = self.make_event(f"concurrent-{phase}", "free")
         embedding = self.make_eligible_embedding(
             event=self.event, photo_id=f"paused-{phase}-{change}", vector=[1.0] + [0.0] * 511
         )
+        expected_matches = {embedding.detection.attempt.photo_id}
+        cohort_photo_ids = set(expected_matches)
+        if not change:
+            for index in range(11):
+                photo_id = f"cohort-{phase}-{index}"
+                similar = index < 8
+                self.make_eligible_embedding(
+                    event=self.event,
+                    photo_id=photo_id,
+                    vector=([0.99, 0.14106735979665894] if similar else [0.0, 1.0]) + [0.0] * 510,
+                )
+                cohort_photo_ids.add(photo_id)
+                if similar:
+                    expected_matches.add(photo_id)
         search = submit_gallery_photo_search(
             event=self.event,
             photo=embedding.detection.attempt.photo,
@@ -1598,6 +1546,55 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
                 except DatabaseError as error:
                     lock_errors.append(str(error))
             if not lock_errors:
+                if not change:
+                    from django.test import Client
+                    from django.urls import reverse
+
+                    client = Client()
+                    token = f"delayed-status-{phase}"
+                    import hashlib
+
+                    SelfieSearch.objects.filter(pk=search.pk).update(
+                        public_token_digest=hashlib.sha256(token.encode()).hexdigest()
+                    )
+                    response = client.get(
+                        reverse(
+                            "selfie_search:status",
+                            kwargs={
+                                "event_slug": self.event.slug,
+                                "public_token": token,
+                            },
+                        )
+                    )
+                    self.assertEqual(response.json(), {"status": "processing"})
+                    waiting = client.get(
+                        reverse(
+                            "selfie_search:result",
+                            kwargs={"event_slug": self.event.slug, "public_token": token},
+                        )
+                    )
+                    self.assertContains(waiting, "Ищем похожие фотографии")
+                    gallery = client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
+                    self.assertEqual(gallery.status_code, 200)
+                    for photo_id in cohort_photo_ids:
+                        self.assertContains(gallery, f'data-photo-id="{photo_id}"')
+                    self.assertTrue(thread.is_alive())
+                    search.refresh_from_db()
+                    self.assertEqual(search.status, SelfieSearch.Status.PROCESSING)
+                    self.assertEqual(search.results.count(), 0)
+                    submitted = client.post(
+                        reverse(
+                            "selfie_search:submit_gallery_face",
+                            kwargs={
+                                "event_slug": self.event.slug,
+                                "photo_id": embedding.detection.attempt.photo_id,
+                                "detection_id": embedding.detection_id,
+                            },
+                        )
+                    )
+                    self.assertEqual(submitted.status_code, 302)
+                    SelfieSearch.objects.filter(status="queued").exclude(pk=search.pk).delete()
+                    self.assertEqual(client.get("/health/").status_code, 200)
                 if change == "hide_source":
                     Photo.objects.filter(pk=embedding.detection.attempt.photo_id).update(
                         is_hidden=True
@@ -1628,4 +1625,8 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
                 self.assertEqual(search.failure_code, "concurrent_failure")
         else:
             self.assertEqual(search.status, SelfieSearch.Status.READY)
-            self.assertGreater(search.results.count(), 0)
+            self.assertEqual(search.eligible_photo_count, 12)
+            self.assertEqual(search.eligible_face_count, 12)
+            self.assertSetEqual(
+                set(search.results.values_list("photo_id", flat=True)), expected_matches
+            )

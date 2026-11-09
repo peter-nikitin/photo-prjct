@@ -377,10 +377,7 @@ class GalleryPhotoSearchViewTests(TestCase):
         )
 
     def process_url(self, *, token: str) -> str:
-        return reverse(
-            "selfie_search:process_gallery_search",
-            kwargs={"event_slug": self.event.slug, "public_token": token},
-        )
+        return f"/events/{self.event.slug}/selfie-search/{token}/process-gallery/"
 
     def make_queued_gallery_search(
         self, *, token: str, configuration: dict[str, object]
@@ -544,67 +541,7 @@ class GalleryPhotoSearchViewTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.content, b"")
 
-    @patch("selfie_search.views.process_gallery_photo_search")
-    def test_queued_gallery_bearer_processes_only_via_csrf_post(
-        self, process_gallery_photo_search
-    ) -> None:
-        token = "queued-gallery-token"
-        search = self.make_queued_gallery_search(
-            token=token,
-            configuration={
-                "processor": "gallery_photo_query",
-                "query_source": {
-                    "kind": "gallery_photo",
-                    "photo_id": self.photo.pk,
-                    "detection_id": str(self.detection_id),
-                },
-            },
-        )
-        process_gallery_photo_search.return_value = search
-
-        get_response = self.client.get(self.process_url(token=token))
-        csrf_response = Client(enforce_csrf_checks=True).post(self.process_url(token=token))
-        response = self.client.post(self.process_url(token=token))
-
-        self.assertEqual(get_response.status_code, 405)
-        self.assertEqual(csrf_response.status_code, 403)
-        self.assertRedirects(
-            response,
-            reverse(
-                "selfie_search:result",
-                kwargs={"event_slug": self.event.slug, "public_token": token},
-            ),
-            fetch_redirect_response=False,
-        )
-        process_gallery_photo_search.assert_called_once_with(
-            search=search,
-        )
-
-    @patch("selfie_search.views.process_gallery_photo_search")
-    def test_non_gallery_or_nonqueued_bearer_cannot_invoke_processing(
-        self, process_gallery_photo_search
-    ) -> None:
-        selfie_token = "queued-selfie-token"
-        ready_token = "ready-gallery-token"
-        self.make_queued_gallery_search(
-            token=selfie_token, configuration={"processor": "selfie_query"}
-        )
-        ready = self.make_queued_gallery_search(
-            token=ready_token,
-            configuration={"processor": "gallery_photo_query"},
-        )
-        ready.status = SelfieSearch.Status.READY
-        ready.save(update_fields=["status"])
-
-        responses = (
-            self.client.post(self.process_url(token=selfie_token)),
-            self.client.post(self.process_url(token=ready_token)),
-        )
-
-        self.assertEqual([response.status_code for response in responses], [404, 404])
-        process_gallery_photo_search.assert_not_called()
-
-    def test_only_queued_gallery_result_renders_the_process_form(self) -> None:
+    def test_gallery_result_explains_automatic_background_search(self) -> None:
         token = "queued-gallery-markup"
         selfie_token = "queued-selfie-markup"
         self.make_queued_gallery_search(
@@ -631,10 +568,8 @@ class GalleryPhotoSearchViewTests(TestCase):
             )
         )
 
-        self.assertContains(gallery, "data-gallery-search-process")
-        self.assertContains(gallery, 'name="csrfmiddlewaretoken"')
-        self.assertContains(gallery, self.process_url(token=token))
-        self.assertContains(gallery, "Начать поиск похожих фотографий")
+        self.assertNotContains(gallery, "data-gallery-search-process")
+        self.assertContains(gallery, "Поиск выполняется автоматически")
         self.assertNotContains(selfie, "data-gallery-search-process")
 
     @override_settings(SELFIE_FEEDBACK_ENABLED=True)
@@ -1205,10 +1140,7 @@ class PublicSelfieResultViewTests(TestCase):
         )
 
     def process_url(self, *, event: Event, token: str) -> str:
-        return reverse(
-            "selfie_search:process_gallery_search",
-            kwargs={"event_slug": event.slug, "public_token": token},
-        )
+        return f"/events/{event.slug}/selfie-search/{token}/process-gallery/"
 
     def result_media_url(self, *, event: Event, token: str, photo: Photo, variant: str) -> str:
         return reverse(
@@ -2279,57 +2211,6 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertContains(staff[0], "Черновик — виден только администраторам")
         resolver.resolve_signed.assert_called_once_with(photo=photo, variant="preview-small")
         resolver.resolve_download.assert_called_once_with(photo=photo)
-
-    @patch("selfie_search.views.process_gallery_photo_search")
-    def test_draft_gallery_process_requires_current_staff_visibility(
-        self, process_gallery_photo_search
-    ) -> None:
-        draft_event = self.make_event(
-            name="Draft process preview",
-            slug="draft-process-preview",
-            publication_status=Event.PublicationStatus.DRAFT,
-            timezone_name="Europe/Moscow",
-        )
-        search, token = self.make_search(event=draft_event)
-        search.configuration = {"processor": "gallery_photo_query"}
-        search.save(update_fields=["configuration"])
-        process_gallery_photo_search.return_value = search
-        url = self.process_url(event=draft_event, token=token)
-        ordinary_user = get_user_model().objects.create_user(username="draft-process-ordinary")
-        staff_user = get_user_model().objects.create_user(
-            username="draft-process-staff", is_staff=True
-        )
-
-        anonymous = self.client.post(url)
-
-        self.assertEqual(anonymous.status_code, 404)
-        process_gallery_photo_search.assert_not_called()
-
-        self.client.force_login(ordinary_user)
-        ordinary = self.client.post(url)
-
-        self.assertEqual(ordinary.status_code, 404)
-        process_gallery_photo_search.assert_not_called()
-
-        self.client.force_login(staff_user)
-        staff = self.client.post(url)
-
-        self.assertRedirects(
-            staff,
-            self.result_url(event=draft_event, token=token),
-            fetch_redirect_response=False,
-        )
-        process_gallery_photo_search.assert_called_once_with(
-            search=search,
-        )
-
-        process_gallery_photo_search.reset_mock()
-        draft_event.publication_status = Event.PublicationStatus.UNAVAILABLE
-        draft_event.save(update_fields=["publication_status"])
-        unavailable = self.client.post(url)
-
-        self.assertEqual(unavailable.status_code, 404)
-        process_gallery_photo_search.assert_not_called()
 
     def test_unknown_bearer_routes_keep_private_response_headers(self) -> None:
         photo = self.make_private_photo(self.event, photo_id="missing-result-member")

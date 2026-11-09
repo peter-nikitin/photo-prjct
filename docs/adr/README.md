@@ -84,3 +84,4 @@ ADR фиксирует долговременный выбор, причины, 
 | 0057 | [Описывать инфраструктуру в IaC и применять проверенный план](0057-declarative-cloud-infrastructure.md) | Accepted |
 | 0058 | [Сохранять публичный адрес при изменении вычислительных ресурсов](0058-stable-public-entrypoint-nlb.md) | Accepted |
 | 0063 | [Воспроизводить конфигурацию ОС из кода и выпускать её через общий пайплайн](0063-repeatable-host-configuration.md) | Accepted |
+| 0064 | [Выполнять поиск по фотографии галереи через очередь PostgreSQL](0064-queue-gallery-photo-search.md) | Accepted |

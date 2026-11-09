@@ -96,6 +96,7 @@ services:
       PHOTO_PROCESSING_MAX_REQUEST_BYTES: ${PHOTO_PROCESSING_MAX_REQUEST_BYTES:-393216}
       PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
       PHOTO_WORKER_REPLICAS: ${PHOTO_WORKER_REPLICAS:-1}
+      SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED: ${SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED:-False}
       SELFIE_SEARCH_MAX_UPLOAD_BYTES: ${SELFIE_SEARCH_MAX_UPLOAD_BYTES:-20971520}
       SELFIE_SEARCH_MAX_PIXELS: ${SELFIE_SEARCH_MAX_PIXELS:-25000000}
       SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS: ${SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS:-120}
@@ -222,6 +223,31 @@ services:
     cpus: "0.5"
     mem_limit: 256m
     pids_limit: 32
+
+  gallery-search-worker:
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      DEBUG: ${DEBUG:?DEBUG must be set}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set}
+      DB_NAME: ${DB_NAME:?DB_NAME must be set}
+      DB_USER: ${DB_USER:?DB_USER must be set}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      DB_HOST: db
+      DB_PORT: "5432"
+      PHOTO_PROCESSING_ENABLED: ${PHOTO_PROCESSING_ENABLED:-False}
+      PHOTO_PROCESSING_FACE_ENABLED: ${PHOTO_PROCESSING_FACE_ENABLED:-False}
+      SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED: ${SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED:-False}
+    entrypoint: ["python", "manage.py", "run_gallery_search_worker"]
+    command: []
+    working_dir: /app/src/backend
+    depends_on:
+      - db
+    restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 32
+    stop_grace_period: 0s
 
   commerce-worker:
     image: ${APP_IMAGE:?APP_IMAGE must be set}

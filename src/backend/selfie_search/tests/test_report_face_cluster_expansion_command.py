@@ -16,6 +16,7 @@ class ReportFaceClusterExpansionCommandTests(TestCase):
     def setUp(self) -> None:
         owner = get_user_model().objects.create_user(username="report-command-owner")
         self.event = Event.objects.create(
+            id=900_000_000_000_000_001,
             name="Command report event",
             slug=f"command-report-{uuid4().hex[:8]}",
             start_date=date(2026, 8, 5),

@@ -15,13 +15,12 @@ const {
   initializeFeedbackCleanupUi,
   initializeFeedbackUi,
   startBrowserUi,
-  submitGallerySearchProcess,
 } = require('../../src/backend/static/ui/selfie-search.js');
 
 function clock() {
   const scheduled = [];
   return {
-    scheduled,
+    get scheduled() { return scheduled.filter((timer) => !timer.cleared); },
     clearTimeout(timer) {
       timer.cleared = true;
     },
@@ -274,6 +273,8 @@ test('polls queued, processing, and cleanup states every two seconds before term
   const poller = new SelfieSearchPoller({
     url: '/status/',
     fetch: async () => ({ ok: true, json: async () => statuses.shift() }),
+    onMessage() {},
+    onStatus() {},
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     reload: () => {
@@ -293,68 +294,81 @@ test('polls queued, processing, and cleanup states every two seconds before term
   assert.equal(timers.scheduled.length, 3);
 });
 
-test('submits a queued gallery process form once while status polling stays active', async () => {
-  const calls = [];
-  const processForm = {
-    action: '/events/run/selfie-search/token/process-gallery/',
-    querySelector(selector) {
-      return selector === '[name="csrfmiddlewaretoken"]' ? { value: 'csrf-token' } : null;
-    },
-  };
-  const result = { dataset: { statusUrl: '/events/run/selfie-search/token/status/' } };
+test('gallery page changes queued heading to processing through status polling', async () => {
+  const timers = clock();
+  const heading = { textContent: 'Поиск в очереди' };
+  const result = { dataset: { galleryOrigin: 'true', statusUrl: '/status/' } };
+  const statuses = ['queued', 'processing'];
   const document = {
     querySelector(selector) {
       if (selector === '[data-selfie-search-result]') return result;
-      if (selector === '[data-gallery-search-process]') return processForm;
+      if (selector === '#selfie-search-state-title') return heading;
       return null;
     },
   };
-  const window = {
-    fetch: async (url, options = {}) => {
-      calls.push({ url, options });
-      return { ok: true, json: async () => ({ status: 'queued' }) };
-    },
-    setTimeout() { return 1; },
-    clearTimeout() {},
-    location: { reload() {} },
-  };
-
-  startBrowserUi(document, window);
-  await Promise.resolve();
-
-  assert.deepEqual(calls[0], {
-    url: '/events/run/selfie-search/token/process-gallery/',
-    options: {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'X-CSRFToken': 'csrf-token' },
-    },
-  });
-  assert.equal(calls.filter((call) => call.url.endsWith('/process-gallery/')).length, 1);
-  assert.equal(calls.filter((call) => call.url.endsWith('/status/')).length, 1);
+  const poller = startBrowserUi(document, {
+    fetch: async () => ({ ok: true, json: async () => ({ status: statuses.shift() }) }),
+    setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+    location: { reload() { assert.fail('active state must not reload'); } },
+  }, { storage: {} });
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  assert.equal(heading.textContent, 'Поиск в очереди');
+  await timers.scheduled.find((timer) => timer.delay === 2000).callback();
+  assert.equal(heading.textContent, 'Ищем похожие фотографии');
+  poller.stop();
 });
 
-test('retries rejected and 503 gallery process requests until a successful response', async () => {
+for (const stalledAt of ['headers', 'body']) {
+  test(`polling aborts stalled ${stalledAt}, stays read-only and backs off`, async () => {
+    const timers = clock();
+    let options;
+    let observedAbort = false;
+    const messages = [];
+    const stalled = (signal) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => {
+        observedAbort = true;
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    });
+    const poller = new SelfieSearchPoller({
+      url: '/status/', setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+      reload() { assert.fail('must not reload on network timeout'); },
+      onMessage(message) { messages.push(message); },
+      onStatus() {},
+      fetch: (_url, value) => {
+        options = value;
+        return stalledAt === 'headers' ? stalled(value.signal)
+          : Promise.resolve({ ok: true, json: () => stalled(value.signal) });
+      },
+    });
+    const pending = poller.poll();
+    for (let tick = 0; tick < 5; tick += 1) await Promise.resolve();
+    assert.equal(options.cache, 'no-store');
+    assert.equal(options.method || 'GET', 'GET');
+    assert.equal(timers.scheduled[0].delay, 10000);
+    await timers.scheduled[0].callback();
+    await pending;
+    assert.equal(observedAbort, true);
+    assert.equal(options.signal.aborted, true);
+    assert.equal(poller.inFlight, false);
+    assert.equal(timers.scheduled.at(-1).delay, 4000);
+    assert.ok(messages.at(-1));
+  });
+}
+
+test('404 stops polling and explains unavailable link', async () => {
   const timers = clock();
-  const calls = [];
-  const processForm = {
-    action: '/events/run/selfie-search/token/process-gallery/',
-    querySelector() { return { value: 'csrf-token' }; },
-  };
-  const outcomes = [Promise.reject(new Error('offline')), { ok: false, status: 503 }, { ok: true }];
-  const fetch = (url, options = {}) => {
-    calls.push({ url, options });
-    return outcomes.shift();
-  };
-
-  submitGallerySearchProcess(processForm, fetch, timers.setTimeout);
-  for (let index = 0; index < 4; index += 1) await Promise.resolve();
-  await timers.scheduled[0].callback();
-  for (let index = 0; index < 4; index += 1) await Promise.resolve();
-  await timers.scheduled[1].callback();
-  for (let index = 0; index < 4; index += 1) await Promise.resolve();
-
-  assert.equal(calls.length, 3);
+  const messages = [];
+  const poller = new SelfieSearchPoller({
+    url: '/status/', setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+    fetch: async () => ({ok: false, status: 404}),
+    reload() { assert.fail('404 must not reload'); },
+    onMessage(message) { messages.push(message); },
+    onStatus() {},
+  });
+  await poller.poll();
+  assert.equal(poller.stopped, true);
+  assert.match(messages.at(-1), /недоступ/);
 });
 
 test('backs off after a network failure without creating duplicate polling timers', async () => {
@@ -367,6 +381,8 @@ test('backs off after a network failure without creating duplicate polling timer
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     reload() {},
+    onMessage() {},
+    onStatus() {},
   });
 
   await Promise.all([poller.poll(), poller.poll()]);

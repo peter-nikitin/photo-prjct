@@ -143,6 +143,8 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
                 for row in rows:
                     row.pop("reader_staff_eligible", None)
                     row.pop("reader_comparison_requested", None)
+                    row.pop("gallery_attempt_count", None)
+                    row.pop("gallery_available_at", None)
             return rows
 
         before = {pair: snapshot(apps, *pair) for pair in names}

@@ -4,7 +4,7 @@
 - Date: 2026-08-04
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0064](0064-queue-gallery-photo-search.md) for browser-triggered process POST, HTTP execution and absence of background work only
 
 ## Context
 

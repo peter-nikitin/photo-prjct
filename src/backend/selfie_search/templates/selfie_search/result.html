@@ -21,14 +21,10 @@
 
     {% if search.status == "queued" or search.status == "processing" or search.status == "cleanup_pending" %}
       <section class="selfie-search-state" aria-labelledby="selfie-search-state-title">
-        <h2 id="selfie-search-state-title">Ищем ваши фотографии…</h2>
+        <h2 id="selfie-search-state-title">{% if is_gallery_origin %}{% if search.status == "queued" %}Поиск в очереди{% else %}Ищем похожие фотографии{% endif %}{% else %}Ищем ваши фотографии…{% endif %}</h2>
         <p role="status" aria-live="polite">Страница обновится автоматически, когда результат будет готов.</p>
-        {% if search.status == "queued" and search.configuration.processor == "gallery_photo_query" %}
-          <form method="post" action="{% url 'selfie_search:process_gallery_search' event_slug=event.slug public_token=public_token %}" data-gallery-search-process>
-            {% csrf_token %}
-            <noscript><button class="button" type="submit">Начать поиск похожих фотографий</button></noscript>
-          </form>
-        {% endif %}
+        <p role="status" data-selfie-search-connection hidden></p>
+        <noscript><p>Поиск выполняется автоматически. Обновите страницу, чтобы увидеть результат.</p></noscript>
       </section>
     {% elif search.status == "ready" %}
       <section class="event-gallery selfie-search-results" data-event-gallery aria-labelledby="selfie-search-matches-title">

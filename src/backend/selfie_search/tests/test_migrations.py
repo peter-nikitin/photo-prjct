@@ -65,6 +65,8 @@ class SelfieSearchResultProvenanceDataMigrationTests(TransactionTestCase):
 
     def test_existing_direct_result_is_converted_without_sentinels(self) -> None:
         executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(leaves))
         executor.migrate(self.migrate_from)
         old_apps = executor.loader.project_state(self.migrate_from).apps
 
@@ -152,3 +154,54 @@ class SelfieSearchResultProvenanceDataMigrationTests(TransactionTestCase):
         self.assertIsNone(migrated_result.search.direct_matched_photo_count)
         self.assertIsNone(migrated_result.search.final_matched_photo_count)
         self.assertIsNone(migrated_result.search.cluster_expansion_outcome)
+
+
+class GalleryQueueUpgradeTests(TransactionTestCase):
+    def test_existing_gallery_and_selfie_states_survive_and_only_gallery_is_claimed(self):
+        from selfie_search.services.gallery_queue import claim
+
+        before = [("selfie_search", "0007_remove_reader_review_context")]
+        executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        try:
+            executor.migrate(before)
+            apps = executor.loader.project_state(before).apps
+            Event = apps.get_model("picflow", "Event")
+            Search = apps.get_model("selfie_search", "SelfieSearch")
+            event = Event.objects.create(
+                name="Upgrade",
+                slug="queue-upgrade",
+                start_date="2026-11-09",
+                end_date="2026-11-09",
+                city="Moscow",
+                access_type="free",
+                publication_status="published",
+            )
+            queued = Search.objects.create(
+                event=event,
+                public_token_digest="1" * 64,
+                temporary_object_key="",
+                configuration={"processor": "gallery_photo_query"},
+            )
+            ready = Search.objects.create(
+                event=event,
+                public_token_digest="2" * 64,
+                status="ready",
+                temporary_object_key="",
+                configuration={"processor": "gallery_photo_query"},
+                matched_photo_count=7,
+            )
+            selfie = Search.objects.create(
+                event=event, public_token_digest="3" * 64, temporary_object_key="selfie"
+            )
+            MigrationExecutor(connection).migrate(leaves)
+            from selfie_search.models import SelfieSearch
+
+            self.assertEqual(SelfieSearch.objects.get(pk=ready.pk).matched_photo_count, 7)
+            self.assertEqual(SelfieSearch.objects.get(pk=ready.pk).status, "ready")
+            claimed = claim()
+            assert claimed is not None
+            self.assertEqual(claimed.pk, queued.pk)
+            self.assertEqual(SelfieSearch.objects.get(pk=selfie.pk).status, "queued")
+        finally:
+            MigrationExecutor(connection).migrate(leaves)

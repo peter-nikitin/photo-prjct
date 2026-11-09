@@ -136,6 +136,12 @@ PostgreSQL → exporter ────┘
 [0040](adr/0040-use-pgvector-for-exact-face-search.md) и
 [0054](adr/0054-retire-sface-and-fix-adaface-vector-dimension.md).
 
+Поиск по фотографии из галереи работает через очередь: клиент отправляет запрос на постановку
+задачи и сразу получает ответ, а фоновый исполнитель обрабатывает поиск. Клиент проверяет
+статус через polling и показывает готовый результат, не удерживая HTTP-соединение на время
+поиска. Решение: [ADR 0064](adr/0064-queue-gallery-photo-search.md); операции:
+[очередь поиска](runbooks/gallery-search-queue.md).
+
 <a id="purchase-and-download"></a>
 ## Покупка и выдача
 

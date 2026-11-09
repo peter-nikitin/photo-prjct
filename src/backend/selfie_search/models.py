@@ -65,6 +65,8 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="selfie_searches")
     public_token_digest = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=24, choices=Status, default=Status.QUEUED)
+    gallery_attempt_count = models.PositiveSmallIntegerField(default=0)
+    gallery_available_at = models.DateTimeField(default=timezone.now)
     temporary_object_key = models.CharField(max_length=255)
     temporary_object_etag = models.CharField(max_length=128, blank=True, default="")
     configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
@@ -155,7 +157,13 @@ class SelfieSearch(models.Model):  # noqa: DJ008
                 name="selfie_search_result_count_identity_chk",
             ),
         ]
-        indexes = [models.Index(fields=["event", "status"], name="selfie_search_event_status_idx")]
+        indexes = [
+            models.Index(fields=["event", "status"], name="selfie_search_event_status_idx"),
+            models.Index(
+                fields=["status", "gallery_available_at", "created_at"],
+                name="gallery_search_claim_idx",
+            ),
+        ]
 
     def clean(self) -> None:
         super().clean()

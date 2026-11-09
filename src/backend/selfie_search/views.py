@@ -63,7 +63,6 @@ from selfie_search.services.results import (
 from selfie_search.services.submission import (
     GallerySearchFailed,
     GallerySearchUnavailable,
-    process_gallery_photo_search,
     submit_gallery_photo_search,
     submit_selfie_search,
 )
@@ -333,28 +332,6 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     if cart_state is not None:
         private_cart_response(response)
     return response
-
-
-@require_POST
-def process_gallery_search(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa: ARG001
-    search = _public_search(request, event_slug=event_slug, public_token=public_token)
-    if (
-        search is None
-        or search.status != SelfieSearch.Status.QUEUED
-        or search.configuration.get("processor") != "gallery_photo_query"
-    ):
-        return _not_found_response()
-    try:
-        process_gallery_photo_search(search=search)
-    except GallerySearchUnavailable:
-        return _not_found_response()
-    except GallerySearchFailed:
-        return HttpResponse(status=503)
-    return redirect(
-        "selfie_search:result",
-        event_slug=search.event.slug,
-        public_token=public_token,
-    )
 
 
 def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001

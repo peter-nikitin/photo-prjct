@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_release_starts_only_web_stack(tmp_path: Path) -> None:
+def test_release_stops_old_search_owners_before_schema_and_starts_executor(tmp_path: Path) -> None:
     commands = tmp_path / "commands"
     docker = tmp_path / "docker"
     docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMANDS"\n')
@@ -32,7 +32,11 @@ def test_release_starts_only_web_stack(tmp_path: Path) -> None:
     assert "manage.py check --tag commerce_runtime" in calls
     assert calls.index("manage.py check --tag commerce_runtime") < calls.index("up -d --wait db")
     assert "up -d --wait db" in calls
-    assert "up -d --wait web" in calls
+    assert "pull db web gallery-search-worker nginx certbot-renew" in calls
+    assert calls.index("stop --timeout 0 gallery-search-worker") < calls.index("stop web")
+    assert calls.index("stop web") < calls.index("manage.py migrate")
+    assert calls.index("up -d --wait web") < calls.index("up -d --no-deps gallery-search-worker")
+    assert "--wait gallery-search-worker" not in calls
     assert "up -d --wait --force-recreate --no-deps nginx" in calls
     assert "photo-worker" not in calls
     assert "up -d --wait photo-worker" not in calls
@@ -372,3 +376,26 @@ def test_monitoring_only_change_selects_exporter_without_app_images():
     selection = classify(["deploy/postgres-monitoring/prepare-role.py"])
     assert selection["exporter_changed"]
     assert not any(selection[name] for name in ("web_changed", "worker_changed", "import_changed"))
+
+
+def test_gallery_executor_stops_immediately_without_lock_or_health_wait() -> None:
+    import yaml
+
+    deployment = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())
+    worker = deployment["services"]["gallery-search-worker"]
+    assert worker["image"] == deployment["services"]["web"]["image"]
+    assert worker["entrypoint"] == [
+        "python",
+        "manage.py",
+        "run_gallery_search_worker",
+    ]
+    assert "volumes" not in worker
+    assert "healthcheck" not in worker
+    assert worker["stop_grace_period"] == "0s"
+    assert worker["environment"]["DB_HOST"] == "db"
+    assert worker["cpus"] == "0.5"
+    assert worker["mem_limit"] == "256m"
+    assert worker["pids_limit"] == 32
+    assert worker["restart"] == "unless-stopped"
+    assert "profiles" not in worker
+    assert not any("SECRET_ACCESS_KEY" in key or "TBANK" in key for key in worker["environment"])

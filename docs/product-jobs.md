@@ -181,6 +181,11 @@ When I have an appropriate selfie or find an eligible gallery face in a selected
 search within that event, so I can review probable matches.
 
 - Status: In progress
+- Локальное доказательство очереди галереи (2026-11-09): публичный POST сохраняет queued,
+  отдельный Django executor публикует ready без браузерного запуска; тесты проверяют startup
+  recovery processing, немедленный SIGTERM, retry живого процесса и HTTP gallery/result/status
+  во время задержанного SQL-поиска.
+  [Runbook](runbooks/gallery-search-queue.md). Deploy и нагрузочная проверка на VM не выполнялись.
 - Evidence: [ADR 0019](adr/0019-use-public-event-selfie-search.md), the
   [public selfie-search implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-07-30-public-selfie-search.md), and
   [`tests/processing/test_selfie_search_e2e.py`](../tests/processing/test_selfie_search_e2e.py)

@@ -5,10 +5,12 @@ resource "yandex_compute_instance" "app" {
   platform_id        = "standard-v3"
   service_account_id = yandex_iam_service_account.backup_agent.id
 
+  allow_stopping_for_update = true
+
   resources {
     cores         = 2
     core_fraction = 20
-    memory        = 1
+    memory        = 4
   }
 
   boot_disk {

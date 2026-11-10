@@ -21,8 +21,13 @@ run "one_recovery_host" {
   }
 
   assert {
-    condition     = yandex_compute_instance.app.resources[0].cores == 2 && yandex_compute_instance.app.resources[0].core_fraction == 20 && yandex_compute_instance.app.resources[0].memory == 1
-    error_message = "The recovery host shape changed."
+    condition     = yandex_compute_instance.app.resources[0].cores == 2 && yandex_compute_instance.app.resources[0].core_fraction == 20 && yandex_compute_instance.app.resources[0].memory == 4
+    error_message = "The app host must have 4 GiB RAM and retain 2 vCPU at 20%."
+  }
+
+  assert {
+    condition     = yandex_compute_instance.app.allow_stopping_for_update == true
+    error_message = "Terraform must be allowed to stop the VM to resize its RAM."
   }
 
   assert {

@@ -27,6 +27,25 @@ class GalleryQueueTests(TestCase):
             user=self.user,
         ).search
 
+    def test_first_claim_timestamp_survives_live_retry_and_startup_recovery(self):
+        from selfie_search.services.gallery_queue import claim, recover_processing, retry
+
+        search = self.create_search()
+        self.assertIsNone(search.gallery_started_at)
+        first = claim()
+        assert first is not None
+        started = first.gallery_started_at
+        self.assertIsNotNone(started)
+        retry(first)
+        SelfieSearch.objects.filter(pk=search.pk).update(gallery_available_at=timezone.now())
+        second = claim()
+        assert second is not None
+        self.assertEqual(second.gallery_started_at, started)
+        recover_processing()
+        third = claim()
+        assert third is not None
+        self.assertEqual(third.gallery_started_at, started)
+
     def test_browser_cannot_execute_gallery_search(self):
         with self.assertRaises(Resolver404):
             resolve("/events/gallery/selfie-search/token/process-gallery/")

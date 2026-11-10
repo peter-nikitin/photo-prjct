@@ -29,6 +29,18 @@ SOURCES = {
     "application": (
         {"__name__": "findme_http_requests_total", "job": "findme-http"},
         {"__name__": "pg_up", "job": "findme-postgres"},
+        {"__name__": "findme_gallery_search_queue_depth", "job": "findme-http"},
+        {"__name__": "findme_gallery_search_completed_total", "job": "findme-http"},
+        {
+            "__name__": "findme_gallery_search_phase_duration_seconds_total",
+            "job": "findme-http",
+            "phase": "queue",
+        },
+        {
+            "__name__": "findme_gallery_search_phase_duration_seconds_total",
+            "job": "findme-http",
+            "phase": "processing",
+        },
     ),
 }
 

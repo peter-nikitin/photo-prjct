@@ -277,8 +277,8 @@ def process_gallery_photo_search(
             )
             if current_source != source_candidate:
                 raise GallerySearchUnavailable()
-            now = now or timezone.now()
             _persist_gallery_results(search=locked_search, expansion=expansion)
+            now = now or timezone.now()
             locked_search.status = SelfieSearch.Status.READY
             locked_search.eligible_photo_count = eligible_photo_count
             locked_search.eligible_face_count = eligible_face_count

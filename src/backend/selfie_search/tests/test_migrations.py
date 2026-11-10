@@ -205,3 +205,60 @@ class GalleryQueueUpgradeTests(TransactionTestCase):
             self.assertEqual(SelfieSearch.objects.get(pk=selfie.pk).status, "queued")
         finally:
             MigrationExecutor(connection).migrate(leaves)
+
+
+class GallerySearchTimingUpgradeTests(TransactionTestCase):
+    def test_upgrade_preserves_rows_and_results_without_fabricating_old_starts(self):
+        from uuid import uuid4
+
+        before = [("selfie_search", "0008_selfiesearch_gallery_attempt_count_and_more")]
+        executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        try:
+            executor.migrate(before)
+            apps = executor.loader.project_state(before).apps
+            Event = apps.get_model("picflow", "Event")
+            Photo = apps.get_model("picflow", "Photo")
+            Search = apps.get_model("selfie_search", "SelfieSearch")
+            Result = apps.get_model("selfie_search", "SelfieSearchResult")
+            event = Event.objects.create(
+                name="Timing upgrade",
+                slug="timing-upgrade",
+                city="Moscow",
+                start_date="2026-11-10",
+                end_date="2026-11-10",
+            )
+            rows = [
+                Search.objects.create(
+                    event=event,
+                    public_token_digest=uuid4().hex * 2,
+                    temporary_object_key="",
+                    status=status,
+                    configuration={"processor": processor},
+                )
+                for status, processor in [
+                    ("queued", "gallery_photo_query"),
+                    ("processing", "gallery_photo_query"),
+                    ("ready", "gallery_photo_query"),
+                    ("queued", "selfie_query"),
+                ]
+            ]
+            photo = Photo.objects.create(id="timing-upgrade-photo", event=event, src="photo.jpg")
+            Result.objects.create(search=rows[2], photo=photo, rank=1)
+            saved = list(Search.objects.order_by("pk").values())
+            saved_results = list(Result.objects.values())
+            MigrationExecutor(connection).migrate(leaves)
+            from selfie_search.models import SelfieSearch, SelfieSearchResult
+
+            self.assertEqual(list(SelfieSearch.objects.order_by("pk").values(*saved[0])), saved)
+            self.assertEqual(list(SelfieSearchResult.objects.values()), saved_results)
+            self.assertFalse(SelfieSearch.objects.filter(gallery_started_at__isnull=False).exists())
+            from selfie_search.services.gallery_queue import claim
+
+            claimed = claim()
+            assert claimed is not None
+            self.assertEqual(claimed.pk, rows[0].pk)
+            self.assertIsNotNone(claimed.gallery_started_at)
+            self.assertIsNone(SelfieSearch.objects.get(pk=rows[2].pk).gallery_started_at)
+        finally:
+            MigrationExecutor(connection).migrate(leaves)

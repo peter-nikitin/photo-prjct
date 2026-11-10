@@ -45,6 +45,8 @@ def claim() -> SelfieSearch | None:
             return None
         search.status = "processing"
         search.gallery_attempt_count += 1
+        if search.gallery_started_at is None:
+            search.gallery_started_at = now
         search.state_changed_at = now
         search.save()
         return search

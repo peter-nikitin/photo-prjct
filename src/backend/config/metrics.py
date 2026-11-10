@@ -43,6 +43,22 @@ FROM pg_stat_user_tables
 """
 _DB_WAL_SQL = "SELECT wal_bytes::bigint FROM pg_stat_wal"
 
+_GALLERY_SEARCH_SQL = """
+SELECT
+    count(*) FILTER (WHERE status = 'queued'),
+    count(*) FILTER (WHERE measured),
+    coalesce(sum(extract(epoch FROM gallery_started_at - created_at))
+        FILTER (WHERE measured), 0)::float,
+    coalesce(sum(extract(epoch FROM terminal_at - gallery_started_at))
+        FILTER (WHERE measured), 0)::float
+FROM (
+    SELECT status, created_at, gallery_started_at, terminal_at,
+        status = 'ready' AND gallery_started_at IS NOT NULL AND terminal_at IS NOT NULL AS measured
+    FROM selfie_search_selfiesearch
+    WHERE configuration->>'processor' = 'gallery_photo_query'
+) AS gallery
+"""
+
 HTTP_REQUESTS = Counter(
     "findme_http_requests",
     "HTTP requests by route, method, and response status class.",
@@ -70,6 +86,7 @@ def generate_metrics() -> bytes:
     activity = None
     vacuum = None
     wal_bytes = None
+    gallery = None
     try:
         with psycopg.connect(
             dbname=database["NAME"],
@@ -89,6 +106,10 @@ def generate_metrics() -> bytes:
                     wal_row = connection.execute(_DB_WAL_SQL).fetchone()
                     if wal_row is not None:
                         wal_bytes = wal_row[0]
+                except psycopg.Error:
+                    pass
+                try:
+                    gallery = connection.execute(_GALLERY_SEARCH_SQL).fetchone()
                 except psycopg.Error:
                     pass
     except (psycopg.Error, OSError, TimeoutError):
@@ -147,6 +168,27 @@ def generate_metrics() -> bytes:
             (
                 "# TYPE findme_db_wal_bytes_total counter",
                 f"findme_db_wal_bytes_total {wal_bytes}",
+            )
+        )
+    if gallery is not None:
+        queued, completed, queue_seconds, processing_seconds = gallery
+        lines.extend(
+            (
+                "# HELP findme_gallery_search_queue_depth "
+                "Gallery searches waiting, including retries.",
+                "# TYPE findme_gallery_search_queue_depth gauge",
+                f"findme_gallery_search_queue_depth {queued}",
+                "# HELP findme_gallery_search_completed_total "
+                "Measured successful gallery searches.",
+                "# TYPE findme_gallery_search_completed_total counter",
+                f"findme_gallery_search_completed_total {completed}",
+                "# HELP findme_gallery_search_phase_duration_seconds_total "
+                "Elapsed phase seconds for the same measured successful gallery searches.",
+                "# TYPE findme_gallery_search_phase_duration_seconds_total counter",
+                'findme_gallery_search_phase_duration_seconds_total{phase="queue"} '
+                f"{queue_seconds}",
+                'findme_gallery_search_phase_duration_seconds_total{phase="processing"} '
+                f"{processing_seconds}",
             )
         )
     return generate_latest(registry) + ("\n".join(lines) + "\n").encode()

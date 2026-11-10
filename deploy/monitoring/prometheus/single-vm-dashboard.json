@@ -342,6 +342,146 @@
     },
     {
       "position": {
+        "y": "32",
+        "w": "24",
+        "h": "8"
+      },
+      "group": {
+        "id": "21267d26-2b21-5007-afd9-1936ab183f84",
+        "title": "Поиск по фотографии галереи",
+        "widgets": [
+          {
+            "id": "ef309b88-9fb8-5a4e-861c-5fc0189b431b",
+            "multiSourceChart": {
+              "id": "ef309b88-9fb8-5a4e-861c-5fc0189b431b",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "0ef8cfff-34d1-5f48-8197-3ec87511def6",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(findme_gallery_search_queue_depth{job=\"findme-http\"})",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "0ef8cfff-34d1-5f48-8197-3ec87511def6",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Поиски в очереди",
+              "description": "Число ожидающих поисков по фотографии галереи, включая отложенные повторы. Выполняемые поиски и загрузки селфи не входят. Ноль означает пустую очередь; отсутствие линии — отсутствие данных."
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "3a2f81da-8853-5574-a84c-b7f991043725",
+            "multiSourceChart": {
+              "id": "3a2f81da-8853-5574-a84c-b7f991043725",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_gallery_search_phase_duration_seconds_total{job=\"findme-http\",phase=\"queue\"}[5m])) / (sum(rate(findme_gallery_search_completed_total{job=\"findme-http\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_gallery_search_phase_duration_seconds_total{job=\"findme-http\",phase=\"processing\"}[5m])) / (sum(rate(findme_gallery_search_completed_total{job=\"findme-http\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "B"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "Секунды"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Время поиска от отправки до готовности, с",
+              "description": "Среднее за 5 минут для новых измеренных успешных поисков по фотографии галереи. Слои: ожидание до первого запуска и этап обработки от первого запуска до ready, включая повторы и восстановление. Верхняя граница — полное время от отправки до готовности; это elapsed time, не CPU time. Без завершений за окно точек нет. Исторические результаты без времени первого старта исключены.",
+              "displayLegend": true,
+              "seriesOverrides": [
+                {
+                  "matcher": {
+                    "query": {
+                      "names": [
+                        "A"
+                      ]
+                    }
+                  },
+                  "settings": {
+                    "name": "Ожидание в очереди"
+                  }
+                },
+                {
+                  "matcher": {
+                    "query": {
+                      "names": [
+                        "B"
+                      ]
+                    }
+                  },
+                  "settings": {
+                    "name": "Обработка и повторы"
+                  }
+                }
+              ]
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "position": {
         "y": "48",
         "w": "24",
         "h": "16"

@@ -1342,6 +1342,47 @@ class GalleryPhotoSubmissionTests(TestCase):
             expected_detection_id,
         )
 
+    def test_terminal_timestamp_includes_result_publication_time(self):
+        from datetime import timedelta
+        from unittest.mock import Mock
+
+        from selfie_search.services import submission
+        from selfie_search.services.gallery_queue import run_once
+
+        face = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="publication-timing",
+            vector=[1.0] + [0.0] * 511,
+        )
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=face.detection.attempt.photo,
+            detection_id=face.detection_id,
+            user=self.user,
+        ).search
+        beginning = timezone.now()
+        after_publication = beginning + timedelta(seconds=5)
+        clock = Mock(return_value=beginning)
+        persist = submission._persist_gallery_results
+
+        def delayed_persist(*args, **kwargs):
+            result = persist(*args, **kwargs)
+            clock.return_value = after_publication
+            return result
+
+        with (
+            patch("selfie_search.services.submission.timezone.now", clock),
+            patch("selfie_search.services.submission._persist_gallery_results", delayed_persist),
+        ):
+            self.assertTrue(run_once())
+        search.refresh_from_db()
+        completed = search
+        self.assertEqual(completed.status, "ready")
+        self.assertEqual(completed.results.count(), 1)
+        self.assertEqual(completed.gallery_started_at, beginning)
+        self.assertEqual(completed.terminal_at, after_publication)
+        self.assertEqual((completed.terminal_at - completed.gallery_started_at).total_seconds(), 5)
+
     def test_ranking_failure_transitions_gallery_search_to_terminal_failure(self) -> None:
         source_embedding = self.make_eligible_embedding(
             event=self.event,

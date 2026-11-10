@@ -31,7 +31,17 @@ def test_scope_reads_exact_selectors_in_one_batch(scope):
         assert len(selectors) == 3
         assert {item.get("mountpoint") for item in selectors} >= {"/", "/var/lib/findme-photo"}
     else:
-        assert {item["__name__"] for item in selectors} == {"pg_up", "findme_http_requests_total"}
+        assert {item["__name__"] for item in selectors} >= {
+            "pg_up",
+            "findme_http_requests_total",
+            "findme_gallery_search_queue_depth",
+            "findme_gallery_search_completed_total",
+            "findme_gallery_search_phase_duration_seconds_total",
+        }
+        assert {item.get("phase") for item in selectors if "phase" in item} == {
+            "queue",
+            "processing",
+        }
 
 
 @pytest.mark.parametrize("sample", [None, (0, 1), (990, float("nan")), (1001, 1), (990, 0)])
@@ -40,7 +50,14 @@ def test_application_rejects_missing_stale_nonfinite_future_or_disconnected_post
 
     class Transport:
         def read_samples(self, selectors, *, now):
-            return [[[(990, 1)]], [[sample]] if sample is not None else []]
+            return [
+                [[sample]]
+                if selector["__name__"] == "pg_up" and sample is not None
+                else []
+                if selector["__name__"] == "pg_up"
+                else [[(990, 0)]]
+                for selector in selectors
+            ]
 
     with pytest.raises(checker.control.ControlError):
         checker.check(Transport(), "application", now=1000)
@@ -97,3 +114,26 @@ def test_cli_stops_at_deadline_and_reports_source(monkeypatch, capsys):
     monkeypatch.setattr(checker, "check", check)
     assert checker.main() == 1
     assert "root disk" in capsys.readouterr().err
+
+
+def test_application_accepts_zero_initialized_search_metrics_and_rejects_each_missing_phase():
+    checker = load("release_metrics_search", "deploy/monitoring/prometheus/verify_metrics.py")
+
+    class Transport:
+        missing = None
+
+        def read_samples(self, selectors, *, now):
+            return [
+                []
+                if selector == self.missing
+                else [[(990, 1 if selector["__name__"] == "pg_up" else 0)]]
+                for selector in selectors
+            ]
+
+    transport = Transport()
+    checker.check(transport, "application", now=1000)
+    for selector in checker.SOURCES["application"]:
+        if selector["__name__"].startswith("findme_gallery_search_"):
+            transport.missing = selector
+            with pytest.raises(checker.control.ControlError, match="expected sample missing"):
+                checker.check(transport, "application", now=1000)

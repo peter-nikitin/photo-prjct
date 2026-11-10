@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.http import HttpResponse
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
 from django.urls import path
 from prometheus_client import REGISTRY
 
@@ -130,6 +130,7 @@ class MultiprocessMetricsTests(SimpleTestCase):
             (2, 3, 1, 1, 12.5, 8.25, 5.0, 97),
             (123, 456, 7200.0, 42_000_000, 200_000_000),
             (1024,),
+            (0, 0, 0.0, 0.0),
         ]
         with (
             tempfile.TemporaryDirectory() as metrics_directory,
@@ -182,6 +183,7 @@ class MultiprocessMetricsTests(SimpleTestCase):
         connection.execute.side_effect = [
             SimpleNamespace(fetchone=lambda: (1,)),
             psycopg.OperationalError("sensitive activity detail"),
+            SimpleNamespace(fetchone=lambda: (0, 0, 0.0, 0.0)),
         ]
         with (
             tempfile.TemporaryDirectory() as metrics_directory,
@@ -205,6 +207,7 @@ class MultiprocessMetricsTests(SimpleTestCase):
             SimpleNamespace(fetchone=lambda: (0, 0, 0, 0, 0, 0, 0, 97)),
             SimpleNamespace(fetchone=lambda: (0, 0, None, 0, 200_000_000)),
             psycopg.OperationalError("private WAL detail"),
+            SimpleNamespace(fetchone=lambda: (0, 0, 0.0, 0.0)),
         ]
         with (
             tempfile.TemporaryDirectory() as metrics_directory,
@@ -232,6 +235,31 @@ class MultiprocessMetricsTests(SimpleTestCase):
         self.assertIn("findme_db_usable 0", output)
         self.assertIn("findme_db_check_timestamp_seconds", output)
         self.assertNotIn("secret database detail", output)
+        self.assertNotIn("findme_gallery_search_", output)
+
+    @patch("config.metrics.psycopg.connect")
+    def test_search_aggregate_failure_omits_only_search_series(self, connect):
+        import psycopg
+
+        from config.metrics import generate_metrics
+
+        connection = connect.return_value.__enter__.return_value
+        connection.execute.side_effect = [
+            SimpleNamespace(fetchone=lambda: (1,)),
+            SimpleNamespace(fetchone=lambda: (0, 0, 0, 0, 0, 0, 0, 97)),
+            SimpleNamespace(fetchone=lambda: (0, 0, None, 0, 200_000_000)),
+            SimpleNamespace(fetchone=lambda: (1024,)),
+            psycopg.OperationalError("private search details"),
+        ]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"PROMETHEUS_MULTIPROC_DIR": directory}),
+        ):
+            output = generate_metrics().decode()
+        self.assertIn("findme_db_usable 1", output)
+        self.assertIn("findme_db_wal_bytes_total 1024", output)
+        self.assertNotIn("findme_gallery_search_", output)
+        self.assertNotIn("private search details", output)
 
     def test_aggregates_metrics_recorded_by_multiple_gunicorn_processes(self) -> None:
         """A scrape must include observations from every Gunicorn worker process."""
@@ -380,3 +408,141 @@ class GunicornMetricsLifecycleTests(SimpleTestCase):
                 child_exit(None, SimpleNamespace(pid=123))
 
             self.assertFalse(stale_metric.exists())
+
+
+class GallerySearchMetricsTests(TransactionTestCase):
+    def setUp(self):
+        from picflow.models import Event
+
+        self.event = Event.objects.create(
+            name="Private metrics event",
+            slug="private-metrics-event",
+            city="Moscow",
+            start_date="2026-11-10",
+            end_date="2026-11-10",
+        )
+
+    def search(
+        self, *, status="queued", processor="gallery_photo_query", started=None, terminal=None
+    ):
+        from uuid import uuid4
+
+        from selfie_search.models import SelfieSearch
+
+        return SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest=uuid4().hex * 2,
+            status=status,
+            temporary_object_key="",
+            configuration={"processor": processor},
+            gallery_started_at=started,
+            terminal_at=terminal,
+        )
+
+    def exposition(self):
+        from config.metrics import generate_metrics
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"PROMETHEUS_MULTIPROC_DIR": directory}),
+        ):
+            return generate_metrics().decode()
+
+    def samples(self):
+        from prometheus_client.parser import text_string_to_metric_families
+
+        return {
+            (sample.name, tuple(sorted(sample.labels.items()))): sample.value
+            for family in text_string_to_metric_families(self.exposition())
+            for sample in family.samples
+            if sample.name.startswith("findme_gallery_search_")
+        }
+
+    def test_ready_cohort_phases_sum_to_submit_to_done_and_queue_is_gallery_only(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from selfie_search.models import SelfieSearch
+
+        now = timezone.now()
+        ready = self.search(status="ready", started=now - timedelta(seconds=15), terminal=now)
+        SelfieSearch.objects.filter(pk=ready.pk).update(created_at=now - timedelta(seconds=20))
+        self.search(status="ready", terminal=now)  # unknown historical start
+        self.search(status="failed", started=now - timedelta(seconds=40), terminal=now)
+        self.search(status="processing", started=now)
+        self.search(status="queued", processor="selfie_query")
+        self.search(
+            status="ready",
+            processor="selfie_query",
+            started=now - timedelta(seconds=100),
+            terminal=now,
+        )
+        self.search(status="ready", started=now)  # missing terminal timestamp
+        delayed = self.search()
+        SelfieSearch.objects.filter(pk=delayed.pk).update(
+            gallery_available_at=now + timedelta(days=1)
+        )
+        values = self.samples()
+        self.assertEqual(values[("findme_gallery_search_queue_depth", ())], 1)
+        self.assertEqual(values[("findme_gallery_search_completed_total", ())], 1)
+        queue = values[
+            ("findme_gallery_search_phase_duration_seconds_total", (("phase", "queue"),))
+        ]
+        processing = values[
+            ("findme_gallery_search_phase_duration_seconds_total", (("phase", "processing"),))
+        ]
+        self.assertEqual((queue, processing, queue + processing), (5, 15, 20))
+        self.assertNotIn("private-metrics-event", self.exposition())
+        self.assertTrue(
+            all(
+                not labels or labels in ((("phase", "queue"),), (("phase", "processing"),))
+                for _, labels in values
+            )
+        )
+
+    def test_no_completions_exports_initialized_zero_counters(self):
+        values = self.samples()
+        self.assertEqual(len(values), 4)
+        self.assertEqual(set(values.values()), {0})
+
+    def test_actual_gallery_completion_exports_both_measured_phases(self):
+        from django.contrib.auth import get_user_model
+        from selfie_search.services.gallery_queue import run_once
+        from selfie_search.services.submission import submit_gallery_photo_search
+        from selfie_search.tests.test_submission import SubmissionTests
+
+        self.user = get_user_model().objects.create_user(username="metrics-gallery-owner")
+        self.event.publication_status = "published"
+        self.event.save()
+        face = SubmissionTests.make_eligible_embedding(
+            self,
+            event=self.event,
+            photo_id="metrics-real-source",
+            vector=[1.0] + [0.0] * 511,
+        )
+        search = submit_gallery_photo_search(
+            event=self.event,
+            photo=face.detection.attempt.photo,
+            detection_id=face.detection_id,
+            user=self.user,
+        ).search
+        self.assertTrue(run_once())
+        search.refresh_from_db()
+        self.assertEqual(search.status, "ready")
+        values = self.samples()
+        self.assertEqual(values[("findme_gallery_search_completed_total", ())], 1)
+        queue = values[
+            ("findme_gallery_search_phase_duration_seconds_total", (("phase", "queue"),))
+        ]
+        processing = values[
+            ("findme_gallery_search_phase_duration_seconds_total", (("phase", "processing"),))
+        ]
+        self.assertAlmostEqual(
+            queue, (search.gallery_started_at - search.created_at).total_seconds()
+        )
+        self.assertAlmostEqual(
+            processing, (search.terminal_at - search.gallery_started_at).total_seconds()
+        )
+        self.assertAlmostEqual(
+            queue + processing, (search.terminal_at - search.created_at).total_seconds()
+        )

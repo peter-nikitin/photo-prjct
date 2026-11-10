@@ -66,11 +66,11 @@ def main() -> int:
                 charts = control._dashboard_charts(desired)
                 rules = [
                     {
-                        "record": f"findme_dashboard_query_{i}",
+                        "record": f"findme_dashboard_query_{i}_{j}",
                         "expr": target["prometheusTarget"]["query"],
                     }
                     for i, chart in enumerate(charts)
-                    for target in chart["targets"]
+                    for j, target in enumerate(chart["targets"])
                 ]
                 with tempfile.TemporaryDirectory(
                     prefix=".monitoring-queries-", dir=Path.cwd()

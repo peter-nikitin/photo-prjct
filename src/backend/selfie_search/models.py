@@ -65,6 +65,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="selfie_searches")
     public_token_digest = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=24, choices=Status, default=Status.QUEUED)
+    gallery_started_at = models.DateTimeField(null=True, blank=True)
     gallery_attempt_count = models.PositiveSmallIntegerField(default=0)
     gallery_available_at = models.DateTimeField(default=timezone.now)
     temporary_object_key = models.CharField(max_length=255)

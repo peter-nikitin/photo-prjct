@@ -353,7 +353,10 @@ def test_oidc_token_is_masked_before_runner_environment_write(
     assert output.read_text() == "YC_TOKEN=synthetic-token\n"
 
 
-def test_ansible_receives_both_public_keys_using_the_configured_ssh_user(tmp_path):
+@pytest.mark.parametrize("ansible_exit", [0, 23])
+def test_ansible_receives_configured_identity_without_a_one_shot_ssh_gate(
+    tmp_path: Path, ansible_exit: int
+) -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/infrastructure.yml").read_text())
     configure = next(
         step
@@ -379,9 +382,8 @@ os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
         f"#!{sys.executable}\n"
         + """
 import os, pathlib, sys
-assert "configured-deployer@192.0.2.10" in sys.argv
-assert pathlib.Path(os.environ["VM_SSH_KEY_FILE"]).is_file()
 pathlib.Path(os.environ["SSH_MARKER"]).touch()
+raise SystemExit(90)
 """
     )
     ansible = fake_bin / "ansible-playbook"
@@ -389,11 +391,18 @@ pathlib.Path(os.environ["SSH_MARKER"]).touch()
         f"#!{sys.executable}\n"
         + """
 import os, pathlib, sys
-assert pathlib.Path(os.environ["SSH_MARKER"]).exists()
 assert sys.argv[sys.argv.index("-u") + 1] == "configured-deployer"
 assert sys.argv[sys.argv.index("--private-key") + 1] == os.environ["VM_SSH_KEY_FILE"]
+assert pathlib.Path(os.environ["VM_SSH_KEY_FILE"]).is_file()
+assert sys.argv[sys.argv.index("--ssh-common-args") + 1] == (
+    "-o UserKnownHostsFile=" + os.environ["KNOWN_HOSTS"]
+    + " -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes"
+)
+assert os.environ["ANSIBLE_HOST_KEY_CHECKING"] == "True"
+assert sys.argv[sys.argv.index("-i") + 1] == os.environ["INVENTORY"]
 variables = pathlib.Path(sys.argv[sys.argv.index("-e") + 1].removeprefix("@"))
 pathlib.Path(os.environ["ANSIBLE_CAPTURE"]).write_bytes(variables.read_bytes())
+raise SystemExit(int(os.environ["ANSIBLE_EXIT"]))
 """
     )
     for executable in (python, ssh, ansible):
@@ -412,17 +421,37 @@ pathlib.Path(os.environ["ANSIBLE_CAPTURE"]).write_bytes(variables.read_bytes())
         "VM_USER": "configured-deployer",
         "SSH_MARKER": str(tmp_path / "ssh-checked"),
         "ANSIBLE_CAPTURE": str(captured),
+        "ANSIBLE_EXIT": str(ansible_exit),
+        "KNOWN_HOSTS": str(tmp_path / "findme-known-hosts"),
+        "INVENTORY": str(tmp_path / "findme-inventory"),
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
     }
     script = configure["run"].replace("/tmp/findme-", str(tmp_path / "findme-"))
     result = subprocess.run(
         ["bash", "-c", script], cwd=ROOT, env=environment, capture_output=True, text=True
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == ansible_exit, result.stderr
+    assert not (tmp_path / "ssh-checked").exists()
     assert json.loads(captured.read_text()) == {
         "findme_deploy_ssh_public_key": environment["FINDME_DEPLOY_SSH_PUBLIC_KEY"],
         "findme_admin_ssh_public_key": environment["FINDME_ADMIN_SSH_PUBLIC_KEY"],
     }
+    assert (tmp_path / "summary").exists() is (ansible_exit == 0)
+
+
+def test_ansible_waits_before_gathering_facts_and_running_roles() -> None:
+    playbook = yaml.safe_load((ROOT / "infra/ansible/site.yml").read_text())
+    assert len(playbook) == 1
+    play = playbook[0]
+    assert play["gather_facts"] is False
+    assert play["roles"] == ["host", "monitoring"]
+    wait, facts = play["pre_tasks"]
+    assert wait["ansible.builtin.wait_for_connection"] == {
+        "timeout": 300,
+        "connect_timeout": 10,
+        "sleep": 5,
+    }
+    assert facts["ansible.builtin.setup"] == {}
 
 
 @pytest.mark.parametrize("boot_shape", ["fresh", "refreshed", "inline-only"])

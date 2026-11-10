@@ -18,13 +18,15 @@ jobs:
       contents: read
     outputs:
       cloud_changed: ${{ steps.select.outputs.cloud_changed }}
+      dashboard_changed: ${{ steps.select.outputs.dashboard_changed }}
+      alerts_changed: ${{ steps.select.outputs.alerts_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Classify dashboard inputs
+      - name: Classify managed monitoring inputs
         id: select
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -34,6 +36,8 @@ jobs:
           set -eu
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
             printf '%s\n' 'cloud_changed=true' >> "$GITHUB_OUTPUT"
+            printf '%s\n' 'dashboard_changed=true' >> "$GITHUB_OUTPUT"
+            printf '%s\n' 'alerts_changed=true' >> "$GITHUB_OUTPUT"
           else
             python deploy/classify-release.py --observability --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
           fi
@@ -53,12 +57,18 @@ jobs:
           python -m venv /tmp/monitoring-tools
           /tmp/monitoring-tools/bin/pip install -r deploy/monitoring/prometheus/requirements.txt
           /tmp/monitoring-tools/bin/python -m unittest discover -s tests/monitoring -p test_remote_read_sdk.py
+          /tmp/monitoring-tools/bin/python -m unittest discover -s tests/monitoring -p test_public_probe_function.py
           cat > /tmp/promtool <<'SCRIPT'
           #!/bin/sh
           exec docker run --rm --user "$(id -u):$(id -g)" --entrypoint promtool -v "$PWD:$PWD" -w "$PWD" prom/prometheus:v3.5.0 "$@"
           SCRIPT
           chmod +x /tmp/promtool
+      - if: needs.classify.outputs.dashboard_changed == 'true'
+        run: |
           /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/single_vm_dashboard.py --validate --promtool /tmp/promtool
+      - if: needs.classify.outputs.alerts_changed == 'true'
+        run: |
+          /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/alerts.py --validate --promtool /tmp/promtool
   reconcile:
     needs: [classify, validate]
     if: >-
@@ -66,7 +76,7 @@ jobs:
       needs.classify.outputs.cloud_changed == 'true'
     runs-on: ubuntu-latest
     environment: monitoring
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -81,11 +91,17 @@ jobs:
       - run: |
           python -m venv /tmp/monitoring-tools
           /tmp/monitoring-tools/bin/pip install -r deploy/monitoring/prometheus/requirements.txt
+      - if: needs.classify.outputs.dashboard_changed == 'true'
+        run: |
           /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/single_vm_dashboard.py \
-            --oidc-config deploy/monitoring/prometheus/oidc.json --backup "$PWD/monitoring-backup"
+            --oidc-config deploy/monitoring/prometheus/oidc.json --backup "$PWD/monitoring-backup/dashboard"
+      - if: needs.classify.outputs.alerts_changed == 'true'
+        run: |
+          /tmp/monitoring-tools/bin/python deploy/monitoring/prometheus/alerts.py \
+            --oidc-config deploy/monitoring/prometheus/oidc.json --backup "$PWD/monitoring-backup/alerts"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: monitoring-dashboard-backup-${{ github.run_id }}
+          name: monitoring-backup-${{ github.run_id }}
           path: monitoring-backup
           if-no-files-found: ignore

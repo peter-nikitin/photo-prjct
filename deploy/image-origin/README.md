@@ -104,10 +104,9 @@ are discarded because upstream error messages contain request/source URLs. libvi
 technical orientation/DPI tags after metadata stripping; descriptive and copyright metadata are
 removed. No Pro options are used, and deprecated/unknown imgproxy settings fail startup.
 
-Read [the alert contract](monitoring/alerts.md) before activation. A documented S3 403 signal is
-still a Task 6 activation prerequisite: native imgproxy source errors are not an S3-status signal,
-and the current managed Object Storage reference documents no status label. Do not enable staff
-delivery until this gap and all other live gates are resolved.
+Актуальный набор критических алертов хранится в
+[общих правилах](../monitoring/prometheus/rules.yml). Метрики image origin используются для
+диагностики; отдельных правил для прежней выделенной VM больше нет.
 
 Image pins were read from `docker buildx imagetools inspect` against GHCR, Docker Hub and the
 official Quay MinIO mirror on 2026-09-15. Configuration behavior was checked against the

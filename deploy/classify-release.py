@@ -54,15 +54,42 @@ DASHBOARD_INPUTS = {
     "scripts/run-with-environment-secrets.py",
 }
 
+ALERT_INPUTS = {
+    ".github/workflows/monitoring.yml",
+    "deploy/classify-release.py",
+    "deploy/monitoring/prometheus/alerts.py",
+    "deploy/monitoring/prometheus/alertmanager.yml",
+    "deploy/monitoring/prometheus/rules.yml",
+    "deploy/monitoring/prometheus/control.py",
+    "deploy/monitoring/prometheus/environment.json",
+    "deploy/monitoring/prometheus/requirements.txt",
+    "deploy/monitoring/prometheus/oidc.json",
+    "scripts/run-with-environment-secrets.py",
+}
+
 
 def classify_observability(paths):
-    return {"cloud_changed": any(path in DASHBOARD_INPUTS for path in paths)}
+    dashboard = any(path in DASHBOARD_INPUTS for path in paths)
+    alerts = any(
+        path in ALERT_INPUTS
+        or path.startswith("deploy/public-probe/")
+        or path == "scripts/monitor_public_health.py"
+        for path in paths
+    )
+    return {
+        "cloud_changed": dashboard or alerts,
+        "dashboard_changed": dashboard,
+        "alerts_changed": alerts,
+    }
 
 
 def classify(paths):
     web = worker = base = importer = commerce = False
     terraform = ansible = exporter = False
     for path in paths:
+        if path.startswith("deploy/public-probe/") or path == "scripts/monitor_public_health.py":
+            terraform = True
+            continue
         if path == "docker-compose.deployment.yml" or (
             path.startswith("deploy/postgres-monitoring/") and not path.endswith(".md")
         ):

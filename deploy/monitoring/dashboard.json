@@ -9,7 +9,7 @@
   "widgets": [
     {
       "position": {"x": "0", "y": "0", "w": "36", "h": "4"},
-      "text": {"text": "## Alert status\nAlerts are created separately from this template. Their exact resource names are recorded in `deploy/monitoring/alerts.md`; add alert widgets after live creation records their IDs."}
+      "text": {"text": "## Критические алерты\nПравила и маршрутизация уведомлений описаны в `deploy/monitoring/prometheus/`. Дашборд показывает диагностические метрики независимо от набора алертов."}
     },
     {
       "position": {"x": "0", "y": "4", "w": "18", "h": "8"},

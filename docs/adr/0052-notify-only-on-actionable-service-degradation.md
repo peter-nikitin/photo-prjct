@@ -33,6 +33,16 @@ also occurred. Evaluator episodes are not a count of delivered messages.
 
 ## Decision
 
+### Уточнение от 10 ноября 2026
+
+Владелец проекта принял минимальный набор критических алертов: внешний отказ HTTPS,
+пользовательские 5xx и высокая задержка, недоступность PostgreSQL для Django, критический
+остаток места на системном и PostgreSQL-диске, остановка готовой работы в очередях.
+Все остальные правила, включая диагностические и старые нативные дубликаты, удаляются.
+Диагностические метрики и графики сохраняются. Это заменяет прежнюю часть решения ниже
+о сохранении ненотифицирующих диагностических правил; политика actionable-уведомлений,
+различение отказа и отсутствия наблюдений, группировка и проверка доставки сохраняются.
+
 Select option 2. Email and Telegram receive firing and recovery notifications only for sustained,
 measured service degradation or an imminent, actionable loss of service capacity. This includes
 observed public HTTPS failure, customer-request or image-delivery errors, overdue ready work with

@@ -62,6 +62,7 @@ jobs:
       - name: Validate Terraform without backend or cloud identity
         run: |
           set -euo pipefail
+          python deploy/public-probe/package.py
           terraform -chdir=infra/terraform fmt -check -recursive
           terraform -chdir=infra/terraform init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra/terraform validate
@@ -109,6 +110,7 @@ jobs:
         run: |
           set -euo pipefail
           terraform -chdir=infra/terraform init -input=false -lockfile=readonly
+          python deploy/public-probe/package.py
           terraform -chdir=infra/terraform fmt -check -recursive
           terraform -chdir=infra/terraform validate
           terraform -chdir=infra/terraform plan -input=false -var-file=project.tfvars -out=plan.tfplan
@@ -152,7 +154,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: terraform-plan-${{ github.event.pull_request.number }}
-          path: infra/terraform/plan.tfplan
+          path: |
+            infra/terraform/plan.tfplan
+            infra/terraform/public-probe.zip
           retention-days: 7
           if-no-files-found: error
       - name: Keep infra approval pending until an authorized plan comment
@@ -235,7 +239,7 @@ jobs:
           set -euo pipefail
           artifact_id="$(python -c 'import json; print(json.load(open("/tmp/approved-plan.json"))["artifact_id"])')"
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > /tmp/approved-plan.zip
-          unzip -j /tmp/approved-plan.zip plan.tfplan -d infra/terraform
+          unzip -j /tmp/approved-plan.zip plan.tfplan public-probe.zip -d infra/terraform
       - name: Exchange short-lived infrastructure OIDC token
         run: python infra/ci/identity.py
       - uses: hashicorp/setup-terraform@v3

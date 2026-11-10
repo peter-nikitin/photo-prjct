@@ -45,9 +45,9 @@ unknown. Inspect `worker_pool_queue_observation_timestamp_seconds`,
 sample timestamps. Groups/boot disks belong to the worker folder; demand metrics target the
 canonical folder. Collector interval is 30 seconds, freshness 90 seconds. Read-only
 `observe_worker_pool_cloud --config <path>` validates configuration; `--record` writes trusted
-coordinator evidence. Operator-owned observation JSON remains needed for cloud scope. See
-[worker alerts](../../deploy/monitoring/alerts.md#worker-pool-alerts); rule evaluation is not
-notification-delivery proof.
+coordinator evidence. Operator-owned observation JSON remains needed for cloud scope. Эта процедура относится к прежним instance groups. Текущие критические алерты очередей
+описаны в [архитектуре](../architecture.md#observability); их вычисление не является
+доказательством доставки уведомления.
 
 ## One-time CI push cutover at cap one
 

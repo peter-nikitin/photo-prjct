@@ -1,0 +1,26 @@
+global:
+  resolve_timeout: 5m
+route:
+  receiver: unmatched
+  group_by: [incident]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - receiver: critical-operator
+      matchers: [project="findme-photo", notification="actionable", severity="critical"]
+receivers:
+  - name: unmatched
+    yandex_monitoring_configs:
+      - channel_names: []
+  - name: critical-operator
+    yandex_monitoring_configs:
+      - channel_names: [findme-photo-operator-email, findme-photo-operator-telegram]
+        send_resolved: true
+inhibit_rules:
+  - source_matchers: [project="findme-photo", alertname="PublicServiceUnavailable", instance="findme-photo-app"]
+    target_matchers: [project="findme-photo", alertname=~"Application5xxDegradation|ApplicationLatencyHigh", instance="findme-photo-app"]
+    equal: [instance]
+  - source_matchers: [project="findme-photo", alertname="DatabaseUnavailableToDjango", instance="findme-photo-app"]
+    target_matchers: [project="findme-photo", alertname=~"Application5xxDegradation|ApplicationLatencyHigh", instance="findme-photo-app"]
+    equal: [instance]

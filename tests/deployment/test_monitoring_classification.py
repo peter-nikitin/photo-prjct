@@ -56,3 +56,30 @@ def test_mixed_dashboard_and_source_changes_select_dashboard():
             "src/backend/config/metrics.py",
         ]
     )["cloud_changed"]
+
+
+def test_rules_only_select_alert_publication_without_image_or_dashboard():
+    module = classifier()
+    path = "deploy/monitoring/prometheus/rules.yml"
+    assert module.classify_observability([path]) == {
+        "cloud_changed": True,
+        "dashboard_changed": False,
+        "alerts_changed": True,
+    }
+    assert not any(module.classify([path]).values())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "deploy/public-probe/index.py",
+        "deploy/public-probe/package.py",
+        "deploy/public-probe/requirements.txt",
+        "scripts/monitor_public_health.py",
+    ],
+)
+def test_probe_bundle_inputs_select_infrastructure_not_image(path):
+    result = classifier().classify([path])
+    assert result["terraform_changed"]
+    assert not any(value for key, value in result.items() if key != "terraform_changed")
+    assert classifier().classify_observability([path])["alerts_changed"]

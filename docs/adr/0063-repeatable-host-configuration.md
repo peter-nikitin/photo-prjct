@@ -88,4 +88,4 @@ PR только с изменением ОС после merge автоматич
 
 - [0057: декларативное управление облаком](0057-declarative-cloud-infrastructure.md)
 - [Развёртывание приложения](../runbooks/deployment.md)
-- [Отложенный мониторинг](../future-work/2026-10-25-restore-production-monitoring.md)
+- [0052: политика уведомлений о сбоях сервиса](0052-notify-only-on-actionable-service-degradation.md)

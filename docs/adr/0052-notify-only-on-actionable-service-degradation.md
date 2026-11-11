@@ -1,103 +1,112 @@
-# 0052: Notify only on actionable service degradation
+# 0052: Уведомлять только об ухудшении работы сервиса, требующем вмешательства
 
 - Status: Accepted
-- Date: 2026-10-04
-- Deciders: project maintainer; explicitly approved the five-day alert-audit response in conversation
-- Supersedes: none
-- Superseded by: none
+- Дата: 2026-10-04
+- Кто принял решение: владелец проекта явно одобрил в обсуждении меры по итогам пятидневного аудита алертов
+- Заменяет: нет
+- Заменено: нет
 
-## Context
+## Контекст
 
-The dedicated Managed Prometheus workspace evaluates Git-owned public, VM, Commerce, worker and
-image-delivery alerts. Its current Alertmanager route sends every `project="findme-photo"` rule to
-email and Telegram. In the 2026-09-29 to 2026-10-04 audit, brief delays in queue, cloud and
-publisher observations fired several critical alerts together; host and runtime diagnostic rules
-had identical firing intervals. The application-wide HTTP 5xx rule fired on worker-control routes,
-without observed customer-route 5xx. Real backlog, disk pressure and image-origin error bursts
-also occurred. Evaluator episodes are not a count of delivered messages.
+Выделенный workspace Managed Prometheus вычисляет хранящиеся в Git правила для публичного
+сервиса, ВМ, Commerce, воркеров и доставки изображений. На момент принятия решения Alertmanager
+направлял все алерты с меткой `project="findme-photo"` в email и Telegram. Аудит с 29 сентября по
+4 октября 2026 года показал, что короткие задержки в поступлении наблюдений за очередями,
+облачными ресурсами и публикацией метрик одновременно вызывали несколько критических алертов.
+Диагностические алерты по состоянию хоста и среды исполнения срабатывали в одни и те же интервалы.
+Общее правило HTTP 5xx срабатывало на служебных маршрутах управления воркерами, хотя на
+пользовательских маршрутах таких ошибок не наблюдалось. Аудит также зафиксировал реальное
+накопление заданий, нехватку места на диске и всплески ошибок на сервере изображений.
+Число срабатываний правил и число доставленных сообщений учитываются отдельно.
 
-## Decision drivers
+## Критерии выбора
 
-- Notify the operator about real customer-facing or processing degradation in minutes.
-- Preserve visibility into missing or stale telemetry without treating it as service failure.
-- Avoid duplicate notifications for one cause and retain independently useful diagnostics.
-- Keep the public availability probe independent of the canonical VM and its failed-check signal
-  distinct from a missing probe observation.
+- Сообщать оператору в течение нескольких минут о реальном ухудшении работы для пользователей или обработки заданий.
+- Показывать отсутствие или устаревание телеметрии как отдельное состояние.
+- Избегать нескольких уведомлений об одной причине и сохранять полезные диагностические данные.
+- Выполнять проверку публичной доступности независимо от основной ВМ и различать неуспешную проверку и отсутствие её результата.
 
-## Considered options
+## Рассмотренные варианты
 
-1. Send every rule to both channels and tune individual thresholds only.
-2. Route actionable degradation to the operator and keep telemetry-only signals as non-notifying
-   diagnostic rules and dashboard state.
-3. Remove diagnostic rules and rely only on service-health alerts.
+1. Отправлять уведомления по всем правилам в оба канала и настраивать только пороги отдельных правил.
+2. Уведомлять оператора об ухудшении работы, требующем вмешательства. Сигналы о состоянии телеметрии показывать на дашборде и в диагностических правилах без уведомлений.
+3. Удалить диагностические правила и оставить только алерты о состоянии сервиса.
 
-## Decision
+## Решение
 
 ### Уточнение от 10 ноября 2026
 
-Владелец проекта принял минимальный набор критических алертов: внешний отказ HTTPS,
-пользовательские 5xx и высокая задержка, недоступность PostgreSQL для Django, критический
-остаток места на системном и PostgreSQL-диске, остановка готовой работы в очередях.
-Все остальные правила, включая диагностические и старые нативные дубликаты, удаляются.
-Диагностические метрики и графики сохраняются. Это заменяет прежнюю часть решения ниже
-о сохранении ненотифицирующих диагностических правил; политика actionable-уведомлений,
-различение отказа и отсутствия наблюдений, группировка и проверка доставки сохраняются.
+Владелец проекта принял минимальный набор критических алертов: недоступность публичного HTTPS,
+ошибки 5xx и высокая задержка на пользовательских маршрутах, недоступность PostgreSQL для Django,
+критический остаток места на системном диске и диске PostgreSQL, отсутствие прогресса при наличии
+готовых заданий в очередях. Все остальные правила, включая диагностические и старые нативные
+дубликаты, удаляются. Диагностические метрики и графики сохраняются. Это уточнение заменяет
+положение исходного решения о сохранении диагностических правил без уведомлений. Остальные
+принципы остаются в силе: уведомлять о проблемах, требующих вмешательства, различать отказ и
+отсутствие наблюдений, группировать связанные алерты и проверять доставку.
 
-Select option 2. Email and Telegram receive firing and recovery notifications only for sustained,
-measured service degradation or an imminent, actionable loss of service capacity. This includes
-observed public HTTPS failure, customer-request or image-delivery errors, overdue ready work with
-evidence of sustained inability to process it, and critically low root-disk capacity. A transient
-worker registration rejection or a busy pool without overdue work does not by itself establish
-customer or processing degradation.
+### Исходное решение от 4 октября 2026
 
-Missing/stale probe, VM, Commerce, worker or image-origin observations remain visible as unknown
-diagnostic state in Monium and on the dashboard. They do not impersonate a healthy zero or an
-observed outage, and do not notify the operator solely because telemetry is absent. Remove exact
-duplicate diagnostic alerts; require a sustained condition before any remaining diagnostic rule
-enters firing state. CPU, memory, certificate-expiry and other early-warning signals remain
-diagnostic unless a reviewed rule establishes imminent actionable service loss.
+Выбран вариант 2. Email и Telegram получают уведомления о срабатывании и восстановлении только
+при устойчивом, подтверждённом метриками ухудшении работы сервиса или непосредственной угрозе
+потери его работоспособности, при которой оператор ещё может вмешаться. Сюда относятся
+подтверждённая недоступность публичного HTTPS, ошибки пользовательских запросов или доставки
+изображений, готовые задания, которые ждут дольше допустимого при устойчивом отсутствии
+прогресса, и критическая нехватка места на системном диске. Разовый отказ регистрации воркера
+или полная загрузка пула без просроченных заданий сами по себе не свидетельствуют об ухудшении
+работы для пользователей или обработки заданий.
 
-Scope the HTTP 5xx service alert to customer-serving routes. Worker-control 5xx remain observable
-through their metrics and worker-specific diagnostics; worker impact is judged through fresh queue,
-capacity and age evidence. Group correlated service symptoms so one incident does not generate
-separate routine pages. Notification routing is an explicit rule label/policy, not a blanket match
-on the project label. This changes notification policy, not worker autoscaling or remediation.
+Отсутствующие или устаревшие наблюдения за публичной проверкой, ВМ, Commerce, воркерами и сервером
+изображений отображаются в Monium и на дашборде как неизвестное состояние. Отсутствие данных
+само по себе не вызывает уведомление и учитывается отдельно от нормального нулевого значения
+и подтверждённого отказа. Точные дубликаты диагностических алертов удаляются. Оставшиеся
+диагностические правила переходят в состояние `firing` только при устойчивом выполнении условия.
+Загрузка CPU, память, приближение срока окончания сертификата и другие ранние сигналы служат
+для диагностики. Уведомление по такому сигналу требует отдельно рассмотренного правила,
+которое устанавливает непосредственную угрозу работоспособности сервиса.
 
-## Consequences
+Алерт HTTP 5xx учитывает пользовательские маршруты. Ошибки 5xx на маршрутах управления воркерами
+видны в метриках и диагностике воркеров. Их влияние на обработку оценивается по свежим данным
+об очередях, доступной мощности и возрасте заданий. Связанные симптомы группируются в одно
+уведомление об инциденте. Правила направляются в каналы по явным меткам и настройкам
+маршрутизации. Метки проекта для этого недостаточно. Решение касается политики уведомлений.
+Автомасштабирование воркеров и меры восстановления регулируются отдельно.
 
-### Positive
+## Последствия
 
-- Short metric-delivery delays stop producing multiple operator notifications.
-- Notifications have a clearer relationship to customer or processing impact.
-- Diagnostic graphs and rule states still explain gaps during investigation.
+### Преимущества
 
-### Negative
+- Короткие задержки доставки метрик перестают вызывать несколько уведомлений оператору.
+- По уведомлению проще понять, затронуты ли пользователи или обработка заданий.
+- Графики и состояния диагностических правил помогают объяснить пробелы в данных при разборе инцидента.
 
-- A monitoring outage can leave the operator blind without sending an independent notification.
-- Excluding internal HTTP errors from the service alert requires separate worker-impact signals
-  and route-label contract checks.
-- Correlation and persistence windows add detection delay to some non-public signals.
+### Недостатки
 
-### Follow-up
+- При отказе мониторинга оператор может потерять видимость состояния сервиса без отдельного уведомления.
+- Исключение служебных HTTP-ошибок требует отдельных сигналов о влиянии воркеров на обработку и проверки меток маршрутов.
+- Группировка и ожидание устойчивого условия задерживают обнаружение некоторых проблем, которые не видны в публичной проверке.
 
-- Change the Git-owned rules and Alertmanager route, including their behavior fixtures.
-- Replay candidate rules against the audited five-day history before activation, then verify
-  fresh rule evaluation and actual firing/recovery delivery to both operator channels.
-- Inventory native UI alerts and retire duplicates only after the replacement signal and delivery
-  have been proved. UI-created alerts are outside the Git-owned routing policy until migrated.
+### Дальнейшие действия
 
-## Validation and rollback
+- Обновить правила и маршрутизацию Alertmanager в Git вместе с тестовыми сценариями.
+- До включения прогнать новые правила на данных пятидневного аудита. Затем проверить свежесть вычислений и фактическую доставку сообщений о срабатывании и восстановлении в оба канала.
+- Провести инвентаризацию нативных алертов и удалить дубликаты после проверки нового сигнала и доставки. Алерты, созданные в интерфейсе, начнут подчиняться политике маршрутизации из Git после переноса.
 
-Compare candidate service notifications with the recorded backlog, disk and image-origin events
-and reject notifications caused only by short observation gaps. Test sustained public failures,
-missing observations, internal-versus-customer HTTP routes, queue saturation and recovery. Live
-acceptance requires fresh metric samples, matching owned rules/dashboard and received email and
-Telegram firing/recovery messages. Restore the prior reviewed Git rules/routing if the new policy
-misses a controlled service failure; routing has no confirmed server-side GET backup.
+## Проверка и откат
 
-## References
+Сопоставить уведомления по новым правилам с зафиксированными случаями накопления заданий,
+нехватки места на диске и ошибок сервера изображений. Исключить уведомления, вызванные только
+короткими пробелами в наблюдениях. Проверить устойчивый отказ публичного сервиса, отсутствие
+наблюдений, различие служебных и пользовательских HTTP-маршрутов, перегрузку очередей и
+восстановление. Приёмка в рабочей среде требует свежих метрик, совпадения правил и дашборда
+с версиями из Git и получения сообщений о срабатывании и восстановлении в email и Telegram.
+Если при контролируемом отказе сервиса новая политика пропустит уведомление, восстановить
+предыдущую проверенную версию правил и маршрутизации из Git. Возможность получить резервную
+копию маршрутизации с сервера через GET не подтверждена.
 
-- [ADR 0018: Managed Yandex Monitoring](0018-use-managed-yandex-monitoring.md)
-- [ADR 0039: Public probe placement](0039-run-public-probe-on-image-origin-vm.md)
-- [ADR 0048: Worker alerts](0048-reuse-managed-prometheus-for-worker-alerts.md)
-- [Monitoring package](../../deploy/monitoring/prometheus/README.md)
+## Ссылки
+
+- [ADR 0018: Управляемый мониторинг Яндекса](0018-use-managed-yandex-monitoring.md)
+- [ADR 0039: Размещение проверки публичной доступности](0039-run-public-probe-on-image-origin-vm.md)
+- [ADR 0048: Алерты воркеров](0048-reuse-managed-prometheus-for-worker-alerts.md)
+- [Конфигурация мониторинга](../../deploy/monitoring/prometheus/README.md)

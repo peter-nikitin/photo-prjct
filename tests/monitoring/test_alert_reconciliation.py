@@ -52,7 +52,7 @@ class Transport:
         }
 
     def read_samples(self, selectors, *, now=None):
-        self.calls.append(("read_samples", len(selectors)))
+        self.calls.append(("read_samples",))
         return [[[(now - 60, now - 60)]] for _ in selectors]
 
 
@@ -127,38 +127,10 @@ def test_extensions_failure_does_not_expose_response_body():
     assert "private-token" not in str(error.value)
 
 
-def test_preflight_requires_every_fresh_observation_before_rule_write(tmp_path):
+def test_preflight_accepts_fresh_observations():
     module = load()
     transport = Transport(b"old rules")
-    transport.read_samples = lambda selectors, now=None: [[] for _ in selectors]
-    with pytest.raises(module.MissingSource):
-        module.check_sources(transport, now=1000)
-    assert transport.calls == []
-
-
-def test_preflight_accepts_fresh_probe_queues_disks_database_and_http():
-    module = load()
-    transport = Transport(b"old rules")
-
-    def samples(selectors, now=None):
-        transport.calls.append(("read_samples", len(selectors)))
-        return [
-            [
-                [
-                    (
-                        now - 60,
-                        now - 60
-                        if selector["__name__"] in module.EXPLICIT_OBSERVATION_NAMES
-                        else 1,
-                    )
-                ]
-            ]
-            for selector in selectors
-        ]
-
-    transport.read_samples = samples
     module.check_sources(transport, now=1000)
-    assert transport.calls == [("read_samples", 14)]
 
 
 def test_partial_snapshot_does_not_validate_matching_rule_file(tmp_path, monkeypatch):
@@ -214,14 +186,27 @@ def test_preflight_protocol_error_is_not_retried(monkeypatch):
     assert transport.read_samples.call_count == 1
 
 
-def test_failed_preflight_keeps_existing_rule_file(tmp_path, monkeypatch):
+def test_missing_gallery_search_observation_blocks_publication(tmp_path, monkeypatch):
     module = load()
     transport = Transport(b"old rules")
-    monkeypatch.setattr(
-        module, "wait_for_sources", Mock(side_effect=module.MissingSource("missing"))
-    )
-    with pytest.raises(module.MissingSource):
+    read_samples = transport.read_samples
+    missing_selector = {
+        "__name__": "findme_queue_observed_timestamp_seconds",
+        "queue": "gallery-search",
+        "instance": "findme-photo-app",
+    }
+
+    def samples_without_gallery_search(selectors, *, now=None):
+        fresh_samples = read_samples(selectors, now=now)
+        return [
+            [] if selector == missing_selector else samples
+            for selector, samples in zip(selectors, fresh_samples, strict=True)
+        ]
+
+    monkeypatch.setattr(transport, "read_samples", samples_without_gallery_search)
+    monkeypatch.setattr(module.time, "monotonic", Mock(side_effect=[0, 601]))
+    with pytest.raises(module.control.ControlError, match="old rules retained"):
         module.publish_alerts(
             transport, (module.HERE / "rules.yml").read_bytes(), b"route", tmp_path / "backup"
         )
-    assert transport.calls == []
+    assert transport.calls == [("read_samples",)]

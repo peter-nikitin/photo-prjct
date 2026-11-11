@@ -1,0 +1,70 @@
+{% extends "design_reference/base.html" %}
+{% load static %}
+{% block title %}Дизайн-система FindMe Photo{% endblock %}
+{% block page_class %} design-system-page{% endblock %}
+{% block page_styles %}
+  <link rel="stylesheet" href="{% static 'design-system-reference.css' %}">
+{% endblock %}
+{% block content %}
+  <header class="system-intro">
+    <p class="system-kicker">FindMe Photo · визуальный справочник</p>
+    <h1>Дизайн-система FindMe Photo</h1>
+    <p>Новая палитра и Manrope на действующих элементах интерфейса.</p>
+    <nav aria-label="Разделы страницы"><a href="#palette">Палитра</a><a href="#semantics">Роли</a><a href="#typography">Шрифт</a><a href="#components">Элементы</a><a href="#geometry">Геометрия</a><a href="#icons">Иконки</a></nav>
+  </header>
+
+  <section id="palette" class="system-section" aria-labelledby="palette-title">
+    <div class="system-section-heading"><span>01</span><div><h2 id="palette-title">Базовая палитра</h2><p>Восемь цветов брендборда. Значения считываются из подключённых CSS-токенов.</p></div></div>
+    <div class="swatch-grid">
+      {% for name, token in palette %}
+        <article class="swatch" data-token="{{ token }}"><div class="swatch-color" style="background: var({{ token }})"></div><div class="swatch-info"><strong>{{ name }}</strong><code>{{ token }}</code><output data-computed-value></output></div></article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section id="semantics" class="system-section" aria-labelledby="semantic-title">
+    <div class="system-section-heading"><span>02</span><div><h2 id="semantic-title">Семантические цвета</h2><p>Роли для фона, текста, действий и обратной связи.</p></div></div>
+    <div class="role-grid">
+      {% for label, token in semantic_colors %}
+        <div class="role-row" data-token="{{ token }}"><span class="role-dot" style="background: var({{ token }})"></span><span>{{ label }}</span><code>{{ token }}</code><output data-computed-value></output></div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section id="typography" class="system-section" aria-labelledby="type-title">
+    <div class="system-section-heading"><span>03</span><div><h2 id="type-title">Типографика</h2><p>Русский, Latin, цифры и сумма в локальном Manrope.</p></div></div>
+    <div class="type-panel panel">
+      <div class="type-example"><h2>Найдите своё фото</h2><small data-font-meta>Заголовок</small></div>
+      <div class="type-example"><p>FindMe Photo — моменты, которые хочется сохранить. London 10K · 2026</p><small data-font-meta>Основной текст</small></div>
+      <div class="type-example"><strong>1 250 ₽ · 1234567890</strong><small data-font-meta>Числа и сумма</small></div>
+      <div class="type-example"><span class="type-caption">Подпись к фотографии · Photo caption</span><small data-font-meta>Подпись</small></div>
+      <div class="weight-grid" aria-label="Веса Manrope от 200 до 800">
+        {% for weight in weights %}<div style="font-weight: var(--weight-{{ weight }})"><span>{{ weight }}</span><strong>Фото · Photo 1842</strong></div>{% endfor %}
+      </div>
+    </div>
+  </section>
+
+  <section id="components" class="system-section" aria-labelledby="components-title">
+    <div class="system-section-heading"><span>04</span><div><h2 id="components-title">Элементы и состояния</h2><p>Те же классы кнопок, полей и статусов. Наведите курсор или перемещайтесь Tab.</p></div></div>
+    <div class="component-grid">
+      <article class="panel"><h3>Действия</h3><div class="component-line"><button class="button primary" type="button">Найти фотографии</button><button class="button secondary" type="button">Сбросить</button><a href="#components">Текстовая ссылка</a></div><div class="component-line"><button class="button primary" type="button" disabled>Недоступно</button><button class="button secondary" type="button" disabled>Недоступно</button></div><p class="component-hint">Hover, pressed и focus доступны при взаимодействии.</p></article>
+      <article class="panel"><h3>Поля и выбор</h3><label class="field"><span>Номер участника</span><input type="text" placeholder="Например, 1842"></label><label class="field"><span>Email для фото</span><input type="email" value="runner@example.com" aria-invalid="true"></label><div class="chips" aria-label="Выбранная категория"><span class="chip active">Все</span><span class="chip">Старт</span><span class="chip">Финиш</span></div></article>
+      <article class="panel"><h3>Карточка и статусы</h3><div class="sample-card panel"><strong>London 10K</strong><span>Галерея мероприятия · 1 250 ₽</span></div><div class="component-line"><span class="status success">Успешно</span><span class="status warning">Внимание</span><span class="status error">Ошибка</span><span class="status new">Новое</span></div></article>
+    </div>
+  </section>
+
+  <section id="geometry" class="system-section" aria-labelledby="geometry-title">
+    <div class="system-section-heading"><span>05</span><div><h2 id="geometry-title">Действующая геометрия</h2><p>Радиус, ширина, граница и отступы сохраняют текущие размеры; цветовая тема добавляет мягкое свечение.</p></div></div>
+    <div class="geometry-grid"><div class="panel" data-geometry="--radius"><strong>Радиус</strong><output data-computed-value></output></div><div class="panel" data-geometry="--content-width"><strong>Ширина контента</strong><output data-computed-value></output></div><div class="panel" data-geometry="border-width"><strong>Граница карточки</strong><output data-computed-value></output></div><div class="panel" data-geometry="--shadow"><strong>Свечение</strong><output data-computed-value></output></div><div class="panel" data-geometry="padding"><strong>Отступ карточки</strong><output data-computed-value></output></div></div>
+  </section>
+
+  <section id="icons" class="system-section" aria-labelledby="icons-title">
+    <div class="system-section-heading"><span>06</span><div><h2 id="icons-title">Каталог SVG-иконок</h2><p>Все текущие символы общего спрайта. Каталог обновляется автоматически при изменении спрайта.</p></div></div>
+    <div class="icon-grid">
+      {% for icon_id in icon_ids %}<figure class="icon-tile" data-icon-id="{{ icon_id }}"><svg class="icon" aria-hidden="true"><use href="{% static 'ui/icons.svg' %}#{{ icon_id }}"></use></svg><figcaption><code>{{ icon_id }}</code></figcaption></figure>{% endfor %}
+    </div>
+    <h3>Отдельные фирменные ассеты</h3>
+    <div class="brand-assets"><figure><img src="{% static 'ui/logo.svg' %}" alt="Логотип FindMe Photo"><figcaption>Логотип · <code>ui/logo.svg</code></figcaption></figure><figure><img src="{% static 'ui/logo.svg' %}" alt="Favicon FindMe Photo"><figcaption>Favicon · <code>ui/logo.svg</code></figcaption></figure></div>
+  </section>
+{% endblock %}
+{% block page_scripts %}<script defer src="{% static 'design-system-reference.js' %}"></script>{% endblock %}

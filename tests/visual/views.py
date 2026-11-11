@@ -2,12 +2,15 @@
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 from urllib.parse import urlencode
+from xml.etree import ElementTree
 
 from commerce.forms import CheckoutForm
 from django import forms
+from django.contrib.staticfiles import finders
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
@@ -1208,6 +1211,53 @@ def _reference(request: HttpRequest, screen: str, **context: Any) -> HttpRespons
 
 def reference_search(request: HttpRequest) -> HttpResponse:
     return _reference(request, "search", photos=PHOTOS, selected=PHOTOS[1:3], events=EVENTS)
+
+
+def reference_design_system(request: HttpRequest) -> HttpResponse:
+    sprite_path = finders.find("ui/icons.svg")
+    if not sprite_path:
+        raise FileNotFoundError("ui/icons.svg")
+    sprite = Path(sprite_path)
+    icon_ids = tuple(
+        node.attrib["id"] for node in ElementTree.parse(sprite).findall(".//{*}symbol")
+    )
+    return _reference(
+        request,
+        "design_system",
+        icon_ids=icon_ids,
+        palette=(
+            ("Navy", "--brand-navy"),
+            ("Dark Blue", "--brand-dark-blue"),
+            ("Slate", "--brand-slate"),
+            ("White", "--brand-white"),
+            ("Blue", "--brand-blue"),
+            ("Sky", "--brand-sky"),
+            ("Success", "--brand-success"),
+            ("Danger", "--brand-danger"),
+        ),
+        semantic_colors=(
+            ("Фон страницы", "--color-page"),
+            ("Основная поверхность", "--color-surface"),
+            ("Выделенная поверхность", "--color-surface-raised"),
+            ("Основной текст", "--color-text"),
+            ("Вторичный текст", "--color-text-muted"),
+            ("Разделитель", "--color-border"),
+            ("Граница контрола", "--color-control-border"),
+            ("Ссылка и фокус", "--color-focus"),
+            ("Выбор и акцент", "--color-action"),
+            ("Нажатый выбор", "--color-action-pressed"),
+            ("Основная кнопка", "--color-primary-button"),
+            ("Основная кнопка · hover", "--color-primary-button-hover"),
+            ("Основная кнопка · pressed", "--color-primary-button-pressed"),
+            ("Текст основной кнопки", "--color-on-primary-button"),
+            ("Недоступный текст", "--color-text-disabled"),
+            ("Успех", "--color-success"),
+            ("Ошибка", "--color-danger"),
+            ("Предупреждение", "--color-warning"),
+            ("Затемнение", "--color-overlay"),
+        ),
+        weights=(200, 300, 400, 500, 600, 700, 800),
+    )
 
 
 def reference_dashboard(request: HttpRequest) -> HttpResponse:

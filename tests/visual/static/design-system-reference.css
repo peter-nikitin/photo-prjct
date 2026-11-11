@@ -1,0 +1,61 @@
+/* Reference layout; visual values are read from the shared design tokens. */
+.design-system-page .reference-main { width: min(1180px, calc(100% - 2rem)); }
+.system-intro { padding: 2.3rem 0 1.6rem; }
+.system-kicker { margin-bottom: .65rem; color: var(--color-link); font-size: .76rem; font-weight: var(--weight-800); letter-spacing: .12em; text-transform: uppercase; }
+.system-intro h1 { max-width: 900px; margin-bottom: .8rem; font-size: clamp(2.2rem, 6vw, 4.5rem); }
+.system-intro > p:not(.system-kicker) { max-width: 700px; color: var(--color-text-muted); }
+.system-intro nav { display: flex; flex-wrap: wrap; gap: .45rem 1rem; margin-top: 1.4rem; }
+.system-section { padding: 2rem 0; border-top: 1px solid var(--color-border); }
+.system-section-heading { display: flex; gap: 1rem; align-items: start; margin-bottom: 1.25rem; }
+.system-section-heading > span { padding-top: .3rem; color: var(--color-link); font-size: .75rem; font-weight: var(--weight-800); }
+.system-section-heading h2 { margin-bottom: .4rem; }
+.system-section-heading p { margin: 0; color: var(--color-text-muted); }
+.swatch-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem; }
+.swatch { min-width: 0; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); }
+.swatch-color { height: 94px; }
+.swatch-info { display: grid; gap: .15rem; padding: .8rem; }
+.swatch-info code, .role-row code, .icon-tile code { overflow-wrap: anywhere; color: var(--color-text-muted); font-size: .75rem; }
+.swatch-info output { font-size: .79rem; }
+.role-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+.role-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: .35rem .6rem; align-items: center; min-width: 0; padding: .7rem; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-surface); font-size: .82rem; }
+.role-dot { width: 18px; height: 18px; border: 1px solid var(--color-control-border); border-radius: 5px; }
+.role-row output { grid-column: 2 / -1; color: var(--color-text-muted); font-size: .75rem; }
+.type-panel { display: grid; gap: 1rem; }
+.type-example { padding-bottom: .8rem; border-bottom: 1px solid var(--color-border); }
+.type-example h2 { margin-bottom: .25rem; }
+.type-example p { margin-bottom: .25rem; }
+.type-example strong { display: block; font-size: 1.3rem; }
+.type-example small { display: block; margin-top: .4rem; color: var(--color-text-muted); }
+.type-caption { font-size: .76rem; }
+.weight-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
+.weight-grid > div { display: grid; min-width: 0; padding: .7rem; border: 1px solid var(--color-border); border-radius: 9px; }
+.weight-grid span { color: var(--color-text-muted); font-size: .7rem; }
+.weight-grid strong { overflow-wrap: anywhere; font: inherit; }
+.component-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; align-items: start; }
+.component-grid h3 { margin-top: 0; }
+.component-line { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; margin-bottom: .8rem; }
+.component-hint { margin-bottom: 0; color: var(--color-text-muted); font-size: .76rem; }
+.sample-card { display: grid; gap: .25rem; margin-bottom: 1rem; }
+.sample-card span { color: var(--color-text-muted); font-size: .8rem; }
+.geometry-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
+.geometry-grid .panel { display: grid; gap: .4rem; min-width: 0; }
+.geometry-grid output { overflow-wrap: anywhere; color: var(--color-text-muted); font-size: .78rem; }
+.icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: .65rem; }
+.icon-tile { display: grid; gap: .65rem; justify-items: center; min-width: 0; margin: 0; padding: 1rem .5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); text-align: center; }
+.icon-tile figcaption { max-width: 100%; }
+.brand-assets { display: flex; flex-wrap: wrap; gap: .8rem; }
+.brand-assets figure { display: grid; gap: .7rem; justify-items: center; min-width: 150px; margin: 0; padding: 1rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); font-size: .78rem; }
+.brand-assets img { width: 56px; height: 56px; }
+.brand-assets code { color: var(--color-text-muted); }
+@media (max-width: 760px) {
+  .design-system-page .reference-main { width: min(100% - 1.2rem, 1180px); }
+  .system-intro { padding-top: 1rem; }
+  .swatch-grid, .weight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .role-grid, .component-grid { grid-template-columns: 1fr; }
+  .geometry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 420px) {
+  .role-row { grid-template-columns: 20px minmax(0, 1fr); }
+  .role-row code { grid-column: 2; }
+  .geometry-grid { grid-template-columns: 1fr; }
+}

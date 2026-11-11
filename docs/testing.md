@@ -1,44 +1,56 @@
-# Testing
+# Тестирование
 
-FindMe Photo keeps its verification interfaces small: core checks run for every pull request, and
-the changed-path selector chooses the expensive layers. The executable authority is the
-[Makefile](../Makefile), [suite manifest](../tests/suite-selection.toml), and
-[selector](../scripts/select_test_suites.py); this page links to them rather than restating their
-path rules.
+В FindMe Photo основной набор проверок запускается для каждого pull request, а селектор
+по изменённым путям выбирает ресурсоёмкие уровни. Источники исполняемых правил —
+[Makefile](../Makefile), [манифест наборов](../tests/suite-selection.toml) и
+[селектор](../scripts/select_test_suites.py). Этот документ ссылается на них, не дублируя
+правила классификации путей.
 
-## Local interfaces
+## Локальные команды
 
-| Command | Purpose |
+| Команда | Назначение |
 | --- | --- |
-| `make test` | Required core: unit, database, and product-flow tests. |
-| `make test-operational` | Deployment, recovery, and other operational contracts. |
-| `make test-migrations` | Migration-layer rehearsal contracts. |
-| `make test-all` | Manual exhaustive Python interface. |
-| `make static` | Ruff formatting, Ruff lint, and mypy. |
-| `make check` | Static checks, core branch coverage, Django checks, and migration drift. |
+| `make test` | Обязательный основной набор: модульные тесты, проверки базы данных и продуктовых сценариев. |
+| `make test-operational` | Проверки контрактов развёртывания, восстановления и других операционных сценариев. |
+| `make test-migrations` | Проверки сценариев применения миграций. |
+| `make test-all` | Полный набор Python-тестов для ручного запуска. |
+| `make static` | Проверки форматирования и линтинга Ruff, а также типов mypy. |
+| `make check` | Статические проверки, покрытие ветвлений основного набора, проверки Django и согласованности моделей с миграциями. |
 
-Use the selector with explicit changed files or a base/head range before running expensive layers.
-Core is always required. CI keeps stable jobs for every layer; an unselected optional job succeeds
-with the selector's reason instead of running that layer. Unknown production, workflow, build, or
-infrastructure paths fail closed to every expensive suite.
+Перед запуском ресурсоёмких уровней передайте селектору список изменённых файлов или диапазон
+базовой и конечной ревизий. Основной набор обязателен всегда. В CI для каждого уровня
+сохраняется отдельная задача: если необязательный уровень не выбран, его задача завершается
+успешно с указанием причины из селектора, не запуская сами проверки. Если селектор не распознаёт
+путь продуктового кода, workflow, сборки или инфраструктуры, он выбирает все ресурсоёмкие наборы.
 
-For a selected final migration run, pair the migration-layer target with
-[`scripts/check_migration_immutability.py`](../scripts/check_migration_immutability.py) using the
-actual base and head revisions. The target exercises the layer; the script checks the package's
-historical migration identity.
+Если для итогового пакета выбран уровень миграций, помимо его Make-цели запустите
+[`scripts/check_migration_immutability.py`](../scripts/check_migration_immutability.py)
+с фактическими базовой и конечной ревизиями. Make-цель проверяет сценарии этого уровня,
+а скрипт — неизменность ранее существовавших миграций.
 
-## Layer ownership
+## Ответственность уровней
 
-Each Python test has one primary layer: `unit` for dependency-free decisions, `db` for PostgreSQL
-state and transactions, `product_flow` for a critical Django path, `operational` for deployment and
-recovery behavior, or `migration` for migration contracts. The manifest owns collection-time
-classification; keep an invariant at one primary surface and retain higher-layer tests only for
-their integration responsibility.
+Каждый Python-тест относится к одному основному уровню: `unit` — решения без внешних
+зависимостей, `db` — состояние и транзакции PostgreSQL, `product_flow` — критический
+сценарий Django, `operational` — развёртывание и восстановление, `migration` — контракты
+миграций. Классификацию при сборе тестов определяет манифест. Проверяйте каждый инвариант
+на одном основном уровне; тесты более высоких уровней сохраняйте только для проверки
+взаимодействия компонентов.
 
-## Evidence handoff
+## Передача результатов проверок
 
-Use the project [verification-selection skill](../.agents/skills/select-verification-suites/SKILL.md)
-for focused RED/GREEN checks, selection, fingerprints, and report contents. Evidence is reusable
-only when its whole-package fingerprint equals the final package fingerprint and it covers every
-selected suite. The root controller performs the final `make check` and any selector-required
-expensive layers once on that unchanged package; CI repeats verification after push.
+Для точечных циклов RED/GREEN, выбора наборов, вычисления отпечатков и подготовки отчётов
+используйте проектный [навык выбора проверок](../.agents/skills/select-verification-suites/SKILL.md).
+Результаты можно использовать повторно, только если отпечаток всего проверенного пакета
+совпадает с отпечатком итогового пакета и результаты охватывают все выбранные наборы.
+Корневой контроллер один раз выполняет итоговый `make check` и все назначенные селектором
+ресурсоёмкие уровни на этом неизменённом пакете; после push CI повторяет проверки.
+
+## Локальный просмотр дизайн-системы
+
+[Страница дизайн-системы](http://127.0.0.1:8001/__visual__/reference/design-system/)
+собирает на одном экране палитру, типографику Manrope, компоненты и их состояния,
+а также каталог SVG-иконок.
+
+Команда запуска локального сервера приведена в
+[разделе «Дизайн-система»](architecture.md#дизайн-система).

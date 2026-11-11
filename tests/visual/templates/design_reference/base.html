@@ -5,10 +5,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Визуальный эталон{% endblock %} — FindMe Photo</title>
+    {% include "ui/design_tokens.html" %}
     <link rel="stylesheet" href="{% static 'ui/design-system.css' %}">
     <link rel="stylesheet" href="{% static 'design-reference.css' %}">
+    {% block page_styles %}{% endblock %}
   </head>
-  <body class="reference-page">
+  <body class="reference-page{% block page_class %}{% endblock %}">
     <a class="skip-link" href="#reference-content">Перейти к содержанию</a>
     <div class="reference-shell">
       <header class="reference-topbar">
@@ -30,5 +32,6 @@
         {% block content %}{% endblock %}
       </main>
     </div>
+    {% block page_scripts %}{% endblock %}
   </body>
 </html>

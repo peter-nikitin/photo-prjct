@@ -1,6 +1,7 @@
 from commerce import views as commerce_views
 from django.contrib import admin
 from django.urls import include, path
+from django.views.decorators.gzip import gzip_page
 from processing.admin_progress import admin_processing_progress
 from processing.telemetry_views import metrics as worker_diagnostic_metrics
 
@@ -34,7 +35,7 @@ urlpatterns = [
         views.photo_download,
         name="photo_download",
     ),
-    path("events/<str:slug>/", views.event_detail, name="event_detail"),
+    path("events/<str:slug>/", gzip_page(views.event_detail), name="event_detail"),
     path("legal/", views.legal, name="legal"),
     path("photographer/", include("ingestion.urls")),
     path("admin/processing/", admin_processing_progress, name="admin_processing_progress"),

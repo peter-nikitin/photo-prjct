@@ -2,6 +2,7 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 from django.utils import timezone
+from selfie_search.tests.test_submission import GalleryPhotoSubmissionTests
 
 
 class SelfieSearchMigrationTests(TransactionTestCase):
@@ -157,10 +158,9 @@ class SelfieSearchResultProvenanceDataMigrationTests(TransactionTestCase):
 
 
 class GalleryQueueUpgradeTests(TransactionTestCase):
-    def test_existing_gallery_and_selfie_states_survive_and_only_gallery_is_claimed(self):
-        from selfie_search.services.gallery_queue import claim
-
+    def test_queue_fields_migration_preserves_existing_search_status(self):
         before = [("selfie_search", "0007_remove_reader_review_context")]
+        after = [("selfie_search", "0008_selfiesearch_gallery_attempt_count_and_more")]
         executor = MigrationExecutor(connection)
         leaves = executor.loader.graph.leaf_nodes()
         try:
@@ -174,8 +174,6 @@ class GalleryQueueUpgradeTests(TransactionTestCase):
                 start_date="2026-11-09",
                 end_date="2026-11-09",
                 city="Moscow",
-                access_type="free",
-                publication_status="published",
             )
             queued = Search.objects.create(
                 event=event,
@@ -191,27 +189,21 @@ class GalleryQueueUpgradeTests(TransactionTestCase):
                 configuration={"processor": "gallery_photo_query"},
                 matched_photo_count=7,
             )
-            selfie = Search.objects.create(
-                event=event, public_token_digest="3" * 64, temporary_object_key="selfie"
-            )
-            MigrationExecutor(connection).migrate(leaves)
-            from selfie_search.models import SelfieSearch
-
-            self.assertEqual(SelfieSearch.objects.get(pk=ready.pk).matched_photo_count, 7)
-            self.assertEqual(SelfieSearch.objects.get(pk=ready.pk).status, "ready")
-            claimed = claim()
-            assert claimed is not None
-            self.assertEqual(claimed.pk, queued.pk)
-            self.assertEqual(SelfieSearch.objects.get(pk=selfie.pk).status, "queued")
+            MigrationExecutor(connection).migrate(after)
+            new_apps = MigrationExecutor(connection).loader.project_state(after).apps
+            NewSearch = new_apps.get_model("selfie_search", "SelfieSearch")
+            self.assertEqual(NewSearch.objects.get(pk=queued.pk).status, "queued")
+            self.assertEqual(NewSearch.objects.get(pk=ready.pk).matched_photo_count, 7)
         finally:
             MigrationExecutor(connection).migrate(leaves)
 
 
 class GallerySearchTimingUpgradeTests(TransactionTestCase):
-    def test_upgrade_preserves_rows_and_results_without_fabricating_old_starts(self):
+    def test_upgrade_preserves_old_results_without_fabricating_old_starts(self):
         from uuid import uuid4
 
         before = [("selfie_search", "0008_selfiesearch_gallery_attempt_count_and_more")]
+        after = [("selfie_search", "0009_selfiesearch_gallery_started_at")]
         executor = MigrationExecutor(connection)
         leaves = executor.loader.graph.leaf_nodes()
         try:
@@ -228,37 +220,139 @@ class GallerySearchTimingUpgradeTests(TransactionTestCase):
                 start_date="2026-11-10",
                 end_date="2026-11-10",
             )
-            rows = [
-                Search.objects.create(
-                    event=event,
-                    public_token_digest=uuid4().hex * 2,
-                    temporary_object_key="",
-                    status=status,
-                    configuration={"processor": processor},
-                )
-                for status, processor in [
-                    ("queued", "gallery_photo_query"),
-                    ("processing", "gallery_photo_query"),
-                    ("ready", "gallery_photo_query"),
-                    ("queued", "selfie_query"),
-                ]
-            ]
+            ready = Search.objects.create(
+                event=event,
+                public_token_digest=uuid4().hex * 2,
+                temporary_object_key="",
+                status="ready",
+                configuration={"processor": "gallery_photo_query"},
+            )
             photo = Photo.objects.create(id="timing-upgrade-photo", event=event, src="photo.jpg")
-            Result.objects.create(search=rows[2], photo=photo, rank=1)
-            saved = list(Search.objects.order_by("pk").values())
+            Result.objects.create(search=ready, photo=photo, rank=1)
+            saved = Search.objects.values().get()
             saved_results = list(Result.objects.values())
+            MigrationExecutor(connection).migrate(after)
+            new_apps = MigrationExecutor(connection).loader.project_state(after).apps
+            NewSearch = new_apps.get_model("selfie_search", "SelfieSearch")
+            NewResult = new_apps.get_model("selfie_search", "SelfieSearchResult")
+            self.assertEqual(NewSearch.objects.values(*saved).get(), saved)
+            self.assertEqual(list(NewResult.objects.values()), saved_results)
+            self.assertIsNone(NewSearch.objects.get().gallery_started_at)
+        finally:
             MigrationExecutor(connection).migrate(leaves)
-            from selfie_search.models import SelfieSearch, SelfieSearchResult
 
-            self.assertEqual(list(SelfieSearch.objects.order_by("pk").values(*saved[0])), saved)
-            self.assertEqual(list(SelfieSearchResult.objects.values()), saved_results)
-            self.assertFalse(SelfieSearch.objects.filter(gallery_started_at__isnull=False).exists())
-            from selfie_search.services.gallery_queue import claim
 
-            claimed = claim()
-            assert claimed is not None
-            self.assertEqual(claimed.pk, rows[0].pk)
-            self.assertIsNotNone(claimed.gallery_started_at)
-            self.assertIsNone(SelfieSearch.objects.get(pk=rows[2].pk).gallery_started_at)
+class SharedFaceSearchUpgradeTests(TransactionTestCase):
+    make_event = GalleryPhotoSubmissionTests.make_event
+    make_eligible_embedding = GalleryPhotoSubmissionTests.make_eligible_embedding
+
+    def test_upgrade_resumes_gallery_and_preserves_live_ml_leases_and_prepared_results(self):
+        from datetime import timedelta
+        from uuid import uuid4
+
+        from selfie_search.models import FaceSearchTask, SelfieSearch
+        from selfie_search.services.face_search_queue import run_once
+        from selfie_search.services.jobs import complete_search_attempt
+        from selfie_search.services.submission import _configuration, _gallery_configuration
+        from selfie_search.tests.test_jobs import RecordingStorage
+
+        GalleryPhotoSubmissionTests.setUp(self)
+        photo = self.make_eligible_embedding(
+            event=self.event, photo_id="migration-source", vector=[1.0] + [0.0] * 511
+        )
+        selfie_config = _configuration(event=self.event, content_type="image/jpeg", content_size=1)
+        gallery_config = _gallery_configuration(
+            event=self.event, photo=photo.detection.attempt.photo, detection_id=photo.detection_id
+        )
+        before = [("selfie_search", "0009_selfiesearch_gallery_started_at")]
+        executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        now = timezone.now()
+        storage = RecordingStorage()
+
+        try:
+            executor.migrate(before)
+            apps = executor.loader.project_state(before).apps
+            Search = apps.get_model("selfie_search", "SelfieSearch")
+            Job = apps.get_model("selfie_search", "SelfieSearchJob")
+            Attempt = apps.get_model("selfie_search", "SelfieSearchAttempt")
+            Result = apps.get_model("selfie_search", "SelfieSearchResult")
+
+            def make_search(configuration, *, status="queued", temporary_object_key="", **kwargs):
+                return Search.objects.create(
+                    event_id=self.event.pk,
+                    public_token_digest=uuid4().hex * 2,
+                    configuration=configuration,
+                    status=status,
+                    temporary_object_key=temporary_object_key,
+                    **kwargs,
+                )
+
+            queued = make_search(gallery_config)
+            running = make_search(gallery_config, status="processing", gallery_started_at=now)
+            missing = make_search({"processor": "gallery_photo_query"})
+            ready = make_search(
+                gallery_config, status="ready", matched_photo_count=1, terminal_at=now
+            )
+            ready_result = Result.objects.create(
+                search=ready, photo_id=photo.detection.attempt.photo_id, rank=1
+            )
+            ml_waiting = make_search(
+                selfie_config, temporary_object_key=f"selfie-search/{'a' * 32}"
+            )
+            ml_active = make_search(
+                selfie_config, status="processing", temporary_object_key=f"selfie-search/{'b' * 32}"
+            )
+            legacy_cleanup = make_search(
+                selfie_config,
+                status="cleanup_pending",
+                temporary_object_key=f"selfie-search/{'c' * 32}",
+                intended_terminal_status="ready",
+                final_matched_photo_count=0,
+                direct_matched_photo_count=0,
+                cluster_expanded_photo_count=0,
+                state_changed_at=now - timedelta(minutes=1),
+            )
+            Job.objects.create(search=ml_waiting, configuration=selfie_config)
+            active_job = Job.objects.create(
+                search=ml_active, configuration=selfie_config, status="processing", claimed_at=now
+            )
+            active_attempt = Attempt.objects.create(
+                job=active_job, claimed_at=now, lease_expires_at=now + timedelta(minutes=5)
+            )
+            cleanup_job = Job.objects.create(
+                search=legacy_cleanup, configuration=selfie_config, status="succeeded"
+            )
+            Attempt.objects.create(job=cleanup_job, status="succeeded", terminal_at=now)
+
+            MigrationExecutor(connection).migrate(leaves)
+
+            self.assertSetEqual(
+                set(FaceSearchTask.objects.values_list("search_id", flat=True)),
+                {queued.pk, running.pk},
+            )
+            self.assertEqual(SelfieSearch.objects.get(pk=running.pk).matching_started_at, now)
+            self.assertEqual(SelfieSearch.objects.get(pk=missing.pk).status, "search_unavailable")
+            self.assertEqual(
+                SelfieSearch.objects.get(pk=ready.pk).results.get().pk, ready_result.pk
+            )
+            self.assertEqual(SelfieSearch.objects.get(pk=ml_waiting.pk).job.status, "queued")
+            complete_search_attempt(
+                active_attempt.pk,
+                result={"model": "adaface-ir18-webface4m", "embedding": [1.0] + [0.0] * 511},
+            )
+            for _ in range(3):
+                self.assertTrue(run_once(storage=storage))
+            self.assertFalse(run_once(storage=storage))
+            for search in (queued, running, ml_active):
+                self.assertEqual(
+                    SelfieSearch.objects.get(pk=search.pk).results.get().photo_id,
+                    photo.detection.attempt.photo_id,
+                )
+            self.assertEqual(SelfieSearch.objects.get(pk=legacy_cleanup.pk).status, "ready")
+            self.assertCountEqual(
+                storage.deleted,
+                [ml_active.temporary_object_key, legacy_cleanup.temporary_object_key],
+            )
         finally:
             MigrationExecutor(connection).migrate(leaves)

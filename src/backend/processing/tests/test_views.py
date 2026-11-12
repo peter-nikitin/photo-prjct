@@ -1857,6 +1857,13 @@ class SelfieWorkerApiTests(TestCase):
         )
         self.assertEqual(complete.json()["attempt"]["status"], "succeeded")
         self.search.refresh_from_db()
+        self.assertEqual(self.search.stage, SelfieSearch.Stage.MATCHING)
+        self.assertEqual(self.search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(self.storage.deleted, [])
+        from selfie_search.services.face_search_queue import run_once
+
+        self.assertTrue(run_once(storage=self.storage))
+        self.search.refresh_from_db()
         self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         self.assertEqual(self.search.temporary_object_key, "")
         self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])
@@ -1892,17 +1899,17 @@ class SelfieWorkerApiTests(TestCase):
         body = self.success_body(job)
         result = body["result"]
         assert isinstance(result, dict)
-        result["embedding"] = [1.0] * 512
+        for embedding in ([1.0] * 512, [10**320] + [0.0] * 511):
+            result["embedding"] = embedding
+            response = self.post(
+                f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
+                body,
+            )
+            self.assertEqual(
+                (response.status_code, response.json()["error"]["code"]), (400, "invalid_result")
+            )
 
-        response = self.post(
-            f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete",
-            body,
-        )
         self.search.refresh_from_db()
-
-        self.assertEqual(
-            (response.status_code, response.json()["error"]["code"]), (400, "invalid_result")
-        )
         self.assertEqual(self.search.status, SelfieSearch.Status.PROCESSING)
         self.assertEqual(
             self.search.temporary_object_key,

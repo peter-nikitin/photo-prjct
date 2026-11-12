@@ -6,9 +6,16 @@ import time
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError, connection
 
-from selfie_search.services.gallery_queue import recover_processing, run_once
+from selfie_search.services.face_search_queue import (
+    recover_missing_payloads,
+    recover_processing,
+    run_once,
+)
 
 logger = logging.getLogger(__name__)
+
+MATCHING_WATCHDOG_SECONDS = 150
+CLEANUP_WATCHDOG_SECONDS = 20
 
 
 def attempt_timeout(signum, frame):
@@ -19,8 +26,12 @@ def terminate_immediately(signum, frame):
     os._exit(0)
 
 
+def start_cleanup_watchdog() -> None:
+    signal.alarm(CLEANUP_WATCHDOG_SECONDS)
+
+
 class Command(BaseCommand):
-    help = "Run the single gallery-search executor; recover interrupted work on startup."
+    help = "Run the single face-search executor; recover interrupted work on startup."
 
     def handle(self, *args, **options):
         signal.signal(signal.SIGTERM, terminate_immediately)
@@ -33,17 +44,18 @@ class Command(BaseCommand):
         delay = 2
         while True:
             try:
-                signal.alarm(150)
+                signal.alarm(MATCHING_WATCHDOG_SECONDS)
                 if not startup_complete:
                     recover_processing()
+                    recover_missing_payloads()
                     startup_complete = True
-                worked = run_once()
+                worked = run_once(start_cleanup_watchdog=start_cleanup_watchdog)
             except DatabaseError:
-                logger.exception("Gallery-search database unavailable")
+                logger.error("Face-search database unavailable")
                 connection.close()
                 if startup_complete:
                     # Restart so interrupted processing is recovered before another claim.
-                    raise
+                    raise SystemExit(1) from None
                 worked = False
             finally:
                 signal.alarm(0)

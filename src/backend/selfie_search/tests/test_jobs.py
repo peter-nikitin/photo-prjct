@@ -43,6 +43,7 @@ from processing.services.enrollment import (
 )
 from processing.services.jobs import claim_job, complete_attempt
 from selfie_search.models import (
+    FaceSearchTask,
     SelfieSearch,
     SelfieSearchAttempt,
     SelfieSearchClusterEvidence,
@@ -50,9 +51,16 @@ from selfie_search.models import (
     SelfieSearchJob,
     SelfieSearchResult,
 )
+from selfie_search.services.face_search_queue import (
+    CLEANUP_RETRY_DELAY,
+    process_face_search,
+    run_once,
+)
+from selfie_search.services.face_search_queue import (
+    claim as claim_matching,
+)
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
-    CleanupPending,
     SearchCompletionConflict,
     claim_search_job,
     complete_search_attempt,
@@ -92,7 +100,7 @@ class SearchJobTests(TestCase):
         )
         self.storage = RecordingStorage()
 
-    def test_native_callback_publishes_after_cleanup_and_never_uses_legacy(self) -> None:
+    def test_native_callback_only_accepts_before_worker_publishes(self) -> None:
         search = self.make_search()
         claimed = self.claim(search)
         from selfie_search.services.vector_ranking import rank_vector_direct
@@ -102,8 +110,14 @@ class SearchJobTests(TestCase):
                 "selfie_search.services.read_selection.rank_vector_direct", wraps=rank_vector_direct
             ) as native,
         ):
-            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
-        native.assert_called_once()
+            complete_search_attempt(claimed.attempt.id, result=self.result())
+            self.assertEqual(native.call_count, 0)
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        self.assertEqual(search.results.count(), 0)
+        self.assertEqual(self.storage.deleted, [])
+
+        self.assertTrue(run_once(storage=self.storage))
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertIsNotNone(search.cleanup_confirmed_at)
@@ -118,7 +132,7 @@ class SearchJobTests(TestCase):
         ).update(accepted_attempt=None)
 
         claimed = self.claim(search)
-        complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        self.complete_and_run(claimed.attempt.id, result=self.result())
         search.refresh_from_db()
 
         self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
@@ -131,7 +145,7 @@ class SearchJobTests(TestCase):
         self.add_candidate(search=search, photo_id="later-candidate", distance=0.1)
 
         claimed = self.claim(search)
-        complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+        self.complete_and_run(claimed.attempt.id, result=self.result())
         search.refresh_from_db()
 
         self.assertEqual(search.status, SelfieSearch.Status.READY)
@@ -145,7 +159,7 @@ class SearchJobTests(TestCase):
 
         claimed = self.claim(search)
         with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
-            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+            self.complete_and_run(claimed.attempt.id, result=self.result())
         search.refresh_from_db()
 
         self.assertEqual(search.status, SelfieSearch.Status.READY)
@@ -158,9 +172,7 @@ class SearchJobTests(TestCase):
     def test_nonempty_corpus_without_match_still_finishes_ready(self) -> None:
         search = self.make_search()
         claimed = self.claim(search)
-        complete_search_attempt(
-            claimed.attempt.id, result=self.result(first=0.0), storage=self.storage
-        )
+        self.complete_and_run(claimed.attempt.id, result=self.result(first=0.0))
         search.refresh_from_db()
 
         self.assertEqual(search.status, SelfieSearch.Status.READY)
@@ -170,13 +182,14 @@ class SearchJobTests(TestCase):
     def test_native_database_error_fails_closed_after_private_cleanup(self) -> None:
         search = self.make_search()
         claimed = self.claim(search)
-        with (
-            patch(
-                "selfie_search.services.read_selection.rank_vector_direct",
-                side_effect=DatabaseError("secret query"),
-            ),
+        complete_search_attempt(claimed.attempt.id, result=self.result())
+        with patch(
+            "selfie_search.services.read_selection.rank_vector_direct",
+            side_effect=DatabaseError("secret query"),
         ):
-            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+            for _ in range(3):
+                self.assertTrue(run_once(storage=self.storage))
+                FaceSearchTask.objects.filter(search=search).update(available_at=timezone.now())
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.FAILED)
         self.assertEqual(search.results.count(), 0)
@@ -445,13 +458,11 @@ class SearchJobTests(TestCase):
         late = complete_search_attempt(
             claimed.attempt.id,
             result=self.result(),
-            storage=self.storage,
             now=now + timedelta(seconds=121),
         )
         repeated = complete_search_attempt(
             claimed.attempt.id,
             result=self.result(first=0.9),
-            storage=self.storage,
             now=now + timedelta(seconds=122),
         )
 
@@ -459,42 +470,66 @@ class SearchJobTests(TestCase):
         self.assertTrue(repeated.stale)
         self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 0)
 
-    def test_lease_expiring_during_unlocked_ranking_cannot_publish(self) -> None:
+    def test_expired_callback_does_not_enqueue_matching(self) -> None:
         search = self.make_search()
         claimed_at = timezone.now()
         claimed = self.claim(search, now=claimed_at)
-        publication_time = claimed_at + timedelta(seconds=121)
-        clock = [claimed_at]
+        now = claimed_at + timedelta(seconds=121)
 
-        def advance_past_expiry(_search: SelfieSearch, query, **kwargs):
-            clock[0] = publication_time
-            return rank_vector_direct(_search, query, **kwargs)
-
-        with (
-            patch("selfie_search.services.jobs.timezone.now", side_effect=lambda: clock[0]),
-            patch(
-                "selfie_search.services.jobs.rank_selected_direct",
-                side_effect=advance_past_expiry,
-            ),
-        ):
-            completion = complete_search_attempt(
-                claimed.attempt.id,
-                result=self.result(),
-                storage=self.storage,
-                jitter=lambda _low, _high: 0,
-            )
+        completion = complete_search_attempt(
+            claimed.attempt.id, result=self.result(), now=now, jitter=lambda _low, _high: 0
+        )
 
         search.refresh_from_db()
         job = SelfieSearchJob.objects.get(search=search)
-        completion.attempt.refresh_from_db()
         self.assertTrue(completion.stale)
         self.assertEqual(completion.attempt.status, SelfieSearchAttempt.Status.EXPIRED)
-        self.assertEqual(completion.attempt.terminal_at, publication_time)
-        self.assertEqual(job.status, SelfieSearchJob.Status.RETRY_WAIT)
-        self.assertEqual(job.available_at, publication_time + timedelta(seconds=30))
+        self.assertEqual(job.available_at, now + timedelta(seconds=30))
+        self.assertEqual(search.stage, SelfieSearch.Stage.RECOGNITION)
         self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
-        self.assertEqual(SelfieSearchResult.objects.filter(search=search).count(), 0)
+        self.assertFalse(FaceSearchTask.objects.filter(search=search).exists())
         self.assertEqual(self.storage.deleted, [])
+
+    def test_failed_receipt_rolls_back_matching_payload_and_stage(self) -> None:
+        search = self.make_search()
+        claimed = self.claim(search)
+
+        with (
+            patch(
+                "selfie_search.services.jobs._terminal_attempt",
+                side_effect=IntegrityError("receipt write failed"),
+            ),
+            self.assertRaises(IntegrityError),
+        ):
+            complete_search_attempt(claimed.attempt.id, result=self.result())
+
+        search.refresh_from_db()
+        claimed.attempt.refresh_from_db()
+        self.assertEqual(search.stage, SelfieSearch.Stage.RECOGNITION)
+        self.assertEqual(search.status, SelfieSearch.Status.PROCESSING)
+        self.assertEqual(claimed.attempt.status, SelfieSearchAttempt.Status.IN_PROGRESS)
+        self.assertFalse(FaceSearchTask.objects.filter(search=search).exists())
+        self.complete_and_run(claimed.attempt.id, result=self.result())
+        self.assertTrue(search.results.exists())
+
+    def test_expired_vector_is_never_ranked_and_private_selfie_is_deleted(self) -> None:
+        search = self.make_search()
+        claimed = self.claim(search)
+        SelfieSearchJob.objects.filter(pk=claimed.job.pk).update(
+            created_at=timezone.now() - timedelta(hours=24, minutes=1)
+        )
+        completion = complete_search_attempt(claimed.attempt.id, result=self.result())
+        with patch("selfie_search.services.face_search_queue.rank_selected_direct") as rank:
+            self.assertTrue(run_once(storage=self.storage))
+            self.assertEqual(rank.call_count, 0)
+
+        search.refresh_from_db()
+        self.assertEqual(completion.attempt.status, SelfieSearchAttempt.Status.SUCCEEDED)
+        self.assertEqual(search.status, SelfieSearch.Status.FAILED)
+        self.assertEqual(search.failure_code, "matching_query_expired")
+        self.assertEqual(search.temporary_object_key, "")
+        self.assertTrue(self.storage.deleted)
+        self.assertFalse(search.results.exists())
 
     @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
     def test_enabled_completion_persists_direct_and_cluster_provenance_before_cleanup(self) -> None:
@@ -557,10 +592,9 @@ class SearchJobTests(TestCase):
 
         with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
             with self.captureOnCommitCallbacks(execute=True):
-                complete_search_attempt(
+                self.complete_and_run(
                     claimed.attempt.id,
                     result=self.result(),
-                    storage=self.storage,
                 )
 
         search.refresh_from_db()
@@ -642,10 +676,9 @@ class SearchJobTests(TestCase):
 
         with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
             with self.captureOnCommitCallbacks(execute=True):
-                complete_search_attempt(
+                self.complete_and_run(
                     claimed.attempt.id,
                     result=self.result(),
-                    storage=self.storage,
                 )
 
         search.refresh_from_db()
@@ -735,7 +768,7 @@ class SearchJobTests(TestCase):
             "selfie_search.services.cluster_expansion._accepted_face_photo_queryset",
             side_effect=broken_retrieval_queryset,
         ):
-            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+            self.complete_and_run(claimed.attempt.id, result=self.result())
 
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.READY)
@@ -756,7 +789,7 @@ class SearchJobTests(TestCase):
         self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])
 
     @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
-    def test_cluster_evidence_persistence_failure_rolls_back_accepted_callback(self) -> None:
+    def test_cluster_evidence_persistence_failure_rolls_back_worker_publication(self) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="rollback-anchor", distance=0.1)
         member = self.add_candidate(search=search, photo_id="rollback-member", distance=0.45)
@@ -825,14 +858,16 @@ class SearchJobTests(TestCase):
             ).count()
             raise IntegrityError("cluster evidence persistence failed")
 
+        completion = complete_search_attempt(claimed.attempt.id, result=self.result())
+        matching_task = claim_matching()
+        assert matching_task is not None
         with patch(
             "selfie_search.services.jobs.SelfieSearchClusterEvidence.objects.bulk_create",
             side_effect=reject_cluster_evidence,
         ):
             with self.assertRaises(IntegrityError):
-                complete_search_attempt(
-                    claimed.attempt.id, result=self.result(), storage=self.storage
-                )
+                process_face_search(matching_task)
+        self.assertEqual(completion.attempt.status, SelfieSearchAttempt.Status.SUCCEEDED)
 
         self.assertEqual(observed, {"results": 2, "direct_evidence": 1})
         search.refresh_from_db()
@@ -856,14 +891,41 @@ class SearchJobTests(TestCase):
         )
         self.assertEqual(self.storage.deleted, [])
 
-    def test_cleanup_failure_keeps_progress_then_an_identical_callback_publishes_once(self) -> None:
+    def test_old_recognition_failure_replay_cannot_publish_matching_result(self) -> None:
+        search = self.make_search()
+        first = self.claim(search)
+
+        def replay_failure():
+            return fail_search_attempt(
+                first.attempt.id,
+                error_code="network_interruption",
+                retryable=True,
+                storage=self.storage,
+            )
+
+        replay_failure()
+        SelfieSearchJob.objects.filter(search=search).update(available_at=timezone.now())
+        next_claim = self.claim(search)
+        complete_search_attempt(next_claim.attempt.id, result=self.result())
+        self.storage.fail_delete = True
+        self.assertTrue(run_once(storage=self.storage))
+
+        self.storage.fail_delete = False
+        replay = replay_failure()
+
+        search.refresh_from_db()
+        self.assertTrue(replay.idempotent)
+        self.assertEqual(search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(self.storage.deleted, [])
+
+    def test_cleanup_retry_publishes_prepared_result_even_after_task_pruning(self) -> None:
         search = self.make_search()
         claimed = self.claim(search)
         self.storage.fail_delete = True
         payload = self.result()
 
-        with self.assertRaises(CleanupPending):
-            complete_search_attempt(claimed.attempt.id, result=payload, storage=self.storage)
+        complete_search_attempt(claimed.attempt.id, result=payload)
+        self.assertTrue(run_once(storage=self.storage))
 
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.CLEANUP_PENDING)
@@ -879,12 +941,22 @@ class SearchJobTests(TestCase):
         )
         self.assertEqual(search.matched_photo_count, 0)
 
+        from django.core.management import call_command
+
+        call_command("prune_face_search_tasks", batch_size=1)
+        self.assertFalse(FaceSearchTask.objects.filter(search=search).exists())
+        replay = complete_search_attempt(claimed.attempt.id, result=payload)
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertFalse(FaceSearchTask.objects.filter(search=search).exists())
+
         self.storage.fail_delete = False
+        SelfieSearch.objects.filter(pk=search.pk).update(
+            state_changed_at=timezone.now() - CLEANUP_RETRY_DELAY
+        )
         with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
             with self.captureOnCommitCallbacks(execute=True):
-                replay = complete_search_attempt(
-                    claimed.attempt.id, result=payload, storage=self.storage
-                )
+                self.assertTrue(run_once(storage=self.storage))
         search.refresh_from_db()
 
         self.assertTrue(replay.idempotent)
@@ -904,10 +976,9 @@ class SearchJobTests(TestCase):
 
         with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
             with self.captureOnCommitCallbacks(execute=True):
-                complete_search_attempt(
+                self.complete_and_run(
                     claimed.attempt.id,
                     result=self.result(),
-                    storage=self.storage,
                 )
 
         events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
@@ -928,12 +999,10 @@ class SearchJobTests(TestCase):
     ) -> None:
         first = self.make_search()
         second = self.make_search(with_candidate=False)
-        complete_search_attempt(
-            self.claim(first).attempt.id, result=self.result(), storage=self.storage
-        )
+        self.complete_and_run(self.claim(first).attempt.id, result=self.result())
         claimed = self.claim(second)
         with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
-            complete_search_attempt(claimed.attempt.id, result=self.result(), storage=self.storage)
+            self.complete_and_run(claimed.attempt.id, result=self.result())
         self.assertEqual(
             list(
                 first.results.values_list(
@@ -966,9 +1035,7 @@ class SearchJobTests(TestCase):
         ):
             with self.assertLogs("selfie_search.services.jobs", level="ERROR") as logs:
                 with self.captureOnCommitCallbacks(execute=True):
-                    completion = complete_search_attempt(
-                        claimed.attempt.id, result=self.result(), storage=self.storage
-                    )
+                    completion = self.complete_and_run(claimed.attempt.id, result=self.result())
 
         search.refresh_from_db()
         self.assertFalse(completion.idempotent)
@@ -988,9 +1055,7 @@ class SearchJobTests(TestCase):
             side_effect=RuntimeError("logger unavailable"),
         ):
             with self.captureOnCommitCallbacks(execute=True):
-                completion = complete_search_attempt(
-                    claimed.attempt.id, result=self.result(), storage=self.storage
-                )
+                completion = self.complete_and_run(claimed.attempt.id, result=self.result())
 
         search.refresh_from_db()
         self.assertFalse(completion.idempotent)
@@ -1003,11 +1068,10 @@ class SearchJobTests(TestCase):
         claimed = self.claim(search)
         accepted = self.result()
 
-        first = complete_search_attempt(claimed.attempt.id, result=accepted, storage=self.storage)
+        first = complete_search_attempt(claimed.attempt.id, result=accepted)
         repeated = complete_search_attempt(
             claimed.attempt.id,
             result=accepted,
-            storage=self.storage,
         )
 
         self.assertFalse(first.idempotent)
@@ -1031,7 +1095,6 @@ class SearchJobTests(TestCase):
             complete_search_attempt(
                 claimed.attempt.id,
                 result=self.result(first=0.9),
-                storage=self.storage,
             )
 
     def test_domain_failure_and_projected_cohort_delete_before_terminal_states(self) -> None:
@@ -1048,11 +1111,7 @@ class SearchJobTests(TestCase):
         PhotoProcessingState.objects.update(accepted_attempt=None)
         empty_search = self.make_search(with_candidate=False)
         empty_claim = self.claim(empty_search)
-        ready = complete_search_attempt(
-            empty_claim.attempt.id,
-            result=self.result(),
-            storage=self.storage,
-        )
+        ready = self.complete_and_run(empty_claim.attempt.id, result=self.result())
         empty_search.refresh_from_db()
 
         self.assertEqual(failure.attempt.status, SelfieSearchAttempt.Status.FAILED)
@@ -1061,6 +1120,11 @@ class SearchJobTests(TestCase):
         self.assertEqual(ready.attempt.status, SelfieSearchAttempt.Status.SUCCEEDED)
         self.assertEqual(empty_search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         self.assertEqual(empty_search.matched_photo_count, 0)
+
+    def complete_and_run(self, attempt_id, *, result):
+        completion = complete_search_attempt(attempt_id, result=result)
+        self.assertTrue(run_once(storage=self.storage))
+        return completion
 
 
 class SearchCompletionConcurrencyTests(TransactionTestCase):
@@ -1123,21 +1187,22 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
                 raise TimeoutError("test did not release cohort load")
             return rank_vector_direct(_search, query, **kwargs)
 
+        complete_search_attempt(
+            first_claim.attempt.id,
+            result={"model": "adaface-ir18-webface4m", "embedding": [1.0] + [0.0] * 511},
+        )
+
         def complete_first() -> None:
             close_old_connections()
             try:
-                complete_search_attempt(
-                    first_claim.attempt.id,
-                    result={"model": "adaface-ir18-webface4m", "embedding": [1.0] + [0.0] * 511},
-                    storage=RecordingStorage(),
-                )
+                self.assertTrue(run_once(storage=RecordingStorage()))
             except BaseException as error:
                 errors.put(error)
             finally:
                 close_old_connections()
 
         with patch(
-            "selfie_search.services.jobs.rank_selected_direct",
+            "selfie_search.services.face_search_queue.rank_selected_direct",
             side_effect=paused_candidates,
         ):
             thread = Thread(target=complete_first)

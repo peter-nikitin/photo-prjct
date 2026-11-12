@@ -92,8 +92,8 @@ groups:
       - alert: ReadyWorkStalled
         expr: |
           (
-            (findme_queue_oldest_ready_age_seconds{queue=~"^(gallery-search|selfie)$"} > 300
-             and on(queue,instance) (time() - findme_queue_last_success_timestamp_seconds{queue=~"^(gallery-search|selfie)$"} > 300))
+            (findme_queue_oldest_ready_age_seconds{queue=~"^(gallery-search|selfie|selfie_face_search)$"} > 300
+             and on(queue,instance) (time() - findme_queue_last_success_timestamp_seconds{queue=~"^(gallery-search|selfie|selfie_face_search)$"} > 300))
             or
             (findme_queue_oldest_ready_age_seconds{queue=~"^(photo|import|commerce)$"} > 900
              and on(queue,instance) (time() - findme_queue_last_success_timestamp_seconds{queue=~"^(photo|import|commerce)$"} > 900))

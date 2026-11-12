@@ -409,9 +409,11 @@ class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
     """The production break caught here is terminal publication before exact selfie deletion."""
 
     @patch("processing.views.TemporarySelfieStorage")
-    def test_cleanup_storage_failure_is_retryable_and_an_identical_callback_finalizes_once(
+    def test_callback_replay_is_idempotent_while_worker_retries_private_cleanup(
         self, storage
     ) -> None:
+        from selfie_search.services.face_search_queue import CLEANUP_RETRY_DELAY, run_once
+
         storage.return_value = self.storage
         job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
         body = self.success_body(job)
@@ -422,10 +424,10 @@ class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
         )
         self.search.refresh_from_db()
 
-        self.assertEqual(
-            (pending.status_code, pending.json()["error"]["code"]),
-            (503, "storage_unavailable"),
-        )
+        self.assertEqual(pending.status_code, 200)
+        self.assertEqual(self.search.status, SelfieSearch.Status.QUEUED)
+        self.assertTrue(run_once(storage=self.storage))
+        self.search.refresh_from_db()
         self.assertEqual(self.search.status, SelfieSearch.Status.CLEANUP_PENDING)
         self.assertEqual(
             self.search.temporary_object_key,
@@ -440,6 +442,12 @@ class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
 
         self.assertEqual(replay.status_code, 200)
         self.assertTrue(replay.json()["idempotent"])
+        self.assertEqual(self.search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        SelfieSearch.objects.filter(pk=self.search.pk).update(
+            state_changed_at=timezone.now() - CLEANUP_RETRY_DELAY
+        )
+        self.assertTrue(run_once(storage=self.storage))
+        self.search.refresh_from_db()
         self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         self.assertEqual(self.search.temporary_object_key, "")
         self.assertEqual(self.storage.deleted, ["selfie-search/0123456789abcdef0123456789abcdef"])

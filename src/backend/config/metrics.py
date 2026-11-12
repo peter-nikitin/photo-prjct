@@ -54,19 +54,33 @@ _DB_WAL_SQL = "SELECT wal_bytes::bigint FROM pg_stat_wal"
 
 _GALLERY_SEARCH_SQL = """
 SELECT
-    count(*) FILTER (WHERE status = 'queued'),
-    count(*) FILTER (WHERE measured),
-    coalesce(sum(extract(epoch FROM gallery_started_at - created_at))
-        FILTER (WHERE measured), 0)::float,
-    coalesce(sum(extract(epoch FROM terminal_at - gallery_started_at))
-        FILTER (WHERE measured), 0)::float
-FROM (
-    SELECT status, created_at, gallery_started_at, terminal_at,
-        status = 'ready' AND gallery_started_at IS NOT NULL AND terminal_at IS NOT NULL AS measured
-    FROM selfie_search_selfiesearch
-    WHERE configuration->>'processor' = 'gallery_photo_query'
-) AS gallery
+    (SELECT count(*) FROM selfie_search_facesearchtask
+        WHERE source = 'gallery' AND status = 'queued'),
+    count(*),
+    coalesce(sum(extract(epoch FROM matching_started_at - created_at)), 0)::float,
+    coalesce(sum(extract(epoch FROM terminal_at - matching_started_at)), 0)::float
+FROM selfie_search_selfiesearch
+WHERE configuration->>'processor' = 'gallery_photo_query'
+    AND status = 'ready' AND matching_started_at IS NOT NULL AND terminal_at IS NOT NULL
 """
+
+_SELFIE_SEARCH_SQL = """
+SELECT
+    (SELECT count(*) FROM selfie_search_selfiesearchjob
+        WHERE status IN ('queued', 'retry_wait')),
+    (SELECT count(*) FROM selfie_search_facesearchtask
+        WHERE source = 'selfie' AND status = 'queued'),
+    count(*),
+    coalesce(sum(extract(epoch FROM recognition_started_at - created_at)), 0)::float,
+    coalesce(sum(extract(epoch FROM matching_enqueued_at - recognition_started_at)), 0)::float,
+    coalesce(sum(extract(epoch FROM matching_started_at - matching_enqueued_at)), 0)::float,
+    coalesce(sum(extract(epoch FROM terminal_at - matching_started_at)), 0)::float
+FROM selfie_search_selfiesearch
+WHERE configuration->>'processor' = 'selfie_query' AND status = 'ready'
+    AND recognition_started_at IS NOT NULL AND matching_enqueued_at IS NOT NULL
+    AND matching_started_at IS NOT NULL AND terminal_at IS NOT NULL
+"""
+
 
 HTTP_REQUESTS = Counter(
     "findme_http_requests",
@@ -132,6 +146,7 @@ def generate_metrics() -> bytes:
     vacuum = None
     wal_bytes = None
     gallery = None
+    selfie = None
     try:
         with psycopg.connect(
             dbname=database["NAME"],
@@ -155,6 +170,10 @@ def generate_metrics() -> bytes:
                     pass
                 try:
                     gallery = connection.execute(_GALLERY_SEARCH_SQL).fetchone()
+                except psycopg.Error:
+                    pass
+                try:
+                    selfie = connection.execute(_SELFIE_SEARCH_SQL).fetchone()
                 except psycopg.Error:
                     pass
     except (psycopg.Error, OSError, TimeoutError):
@@ -236,6 +255,38 @@ def generate_metrics() -> bytes:
                 f"{processing_seconds}",
             )
         )
+    if selfie is not None:
+        (
+            recognition,
+            matching,
+            completed,
+            recognition_queue,
+            recognition_work,
+            matching_queue,
+            matching_work,
+        ) = selfie
+        lines.extend(
+            (
+                "# TYPE findme_selfie_search_queue_depth gauge",
+                "# TYPE findme_selfie_search_completed_total counter",
+                "# TYPE findme_selfie_search_phase_duration_seconds_total counter",
+            )
+        )
+        for stage, depth, queued, processing in (
+            ("recognition", recognition, recognition_queue, recognition_work),
+            ("matching", matching, matching_queue, matching_work),
+        ):
+            labels = f'stage="{stage}"'
+            lines.extend(
+                (
+                    f"findme_selfie_search_queue_depth{{{labels}}} {depth}",
+                    f"findme_selfie_search_completed_total{{{labels}}} {completed}",
+                    "findme_selfie_search_phase_duration_seconds_total"
+                    f'{{{labels},phase="queue"}} {queued}',
+                    "findme_selfie_search_phase_duration_seconds_total"
+                    f'{{{labels},phase="processing"}} {processing}',
+                )
+            )
     lines.extend(
         (
             "# TYPE findme_queue_ready_count gauge",

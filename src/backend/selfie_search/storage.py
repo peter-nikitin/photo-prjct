@@ -19,6 +19,7 @@ _KEY = re.compile(r"selfie-search/[0-9a-f]{32}")
 _CONTENT_TYPES = {"image/jpeg", "image/png"}
 _FEEDBACK_KEY = re.compile(r"[0-9a-f]{32}")
 _FEEDBACK_CONTENT_TYPES = {"image/jpeg", "image/png"}
+_TEMPORARY_CLIENT_CONFIG = Config(signature_version="s3v4")
 
 
 class _S3Client(Protocol):
@@ -45,7 +46,9 @@ class DownloadGrant:
 
 
 class TemporarySelfieStorage:
-    def __init__(self, client: _S3Client | None = None) -> None:
+    def __init__(
+        self, client: _S3Client | None = None, *, config: Config = _TEMPORARY_CLIENT_CONFIG
+    ) -> None:
         self._bucket = settings.PRIVATE_MEDIA_S3_BUCKET
         self._max_upload_bytes = settings.SELFIE_SEARCH_MAX_UPLOAD_BYTES
         self._ttl_seconds = settings.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS
@@ -58,9 +61,16 @@ class TemporarySelfieStorage:
                 aws_secret_access_key=settings.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY,
                 endpoint_url=settings.PRIVATE_MEDIA_S3_ENDPOINT_URL,
                 region_name=settings.PRIVATE_MEDIA_S3_REGION,
-                config=Config(signature_version="s3v4"),
+                config=config,
             )
         )
+
+    @classmethod
+    def for_matching_cleanup(cls) -> TemporarySelfieStorage:
+        config = _TEMPORARY_CLIENT_CONFIG.merge(
+            Config(connect_timeout=2, read_timeout=3, retries={"total_max_attempts": 1})
+        )
+        return cls(config=config)
 
     def put(self, *, key: str, content: bytes, content_type: str) -> StoredTemporarySelfie:
         _validate_key(key)

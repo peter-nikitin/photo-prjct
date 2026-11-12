@@ -268,6 +268,11 @@ class SelfieSearchEndToEndTests(TestCase):
 
         search.refresh_from_db()
         attempt = SelfieSearchAttempt.objects.get(job=search.job)
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        from selfie_search.services.face_search_queue import run_once
+
+        self.assertTrue(run_once(storage=self.storage))
+        search.refresh_from_db()
         rows = list(SelfieSearchResult.objects.filter(search=search).order_by("rank"))
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertEqual(search.matched_photo_count, 2)

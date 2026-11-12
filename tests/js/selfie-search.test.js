@@ -274,7 +274,6 @@ test('polls queued, processing, and cleanup states every two seconds before term
     url: '/status/',
     fetch: async () => ({ ok: true, json: async () => statuses.shift() }),
     onMessage() {},
-    onStatus() {},
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     reload: () => {
@@ -294,9 +293,9 @@ test('polls queued, processing, and cleanup states every two seconds before term
   assert.equal(timers.scheduled.length, 3);
 });
 
-test('gallery page changes queued heading to processing through status polling', async () => {
+test('gallery waiting heading stays the same through status polling', async () => {
   const timers = clock();
-  const heading = { textContent: 'Поиск в очереди' };
+  const heading = { textContent: 'Ищем фотографии…' };
   const result = { dataset: { galleryOrigin: 'true', statusUrl: '/status/' } };
   const statuses = ['queued', 'processing'];
   const document = {
@@ -312,9 +311,9 @@ test('gallery page changes queued heading to processing through status polling',
     location: { reload() { assert.fail('active state must not reload'); } },
   }, { storage: {} });
   for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
-  assert.equal(heading.textContent, 'Поиск в очереди');
+  assert.equal(heading.textContent, 'Ищем фотографии…');
   await timers.scheduled.find((timer) => timer.delay === 2000).callback();
-  assert.equal(heading.textContent, 'Ищем похожие фотографии');
+  assert.equal(heading.textContent, 'Ищем фотографии…');
   poller.stop();
 });
 
@@ -334,8 +333,7 @@ for (const stalledAt of ['headers', 'body']) {
       url: '/status/', setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
       reload() { assert.fail('must not reload on network timeout'); },
       onMessage(message) { messages.push(message); },
-      onStatus() {},
-      fetch: (_url, value) => {
+        fetch: (_url, value) => {
         options = value;
         return stalledAt === 'headers' ? stalled(value.signal)
           : Promise.resolve({ ok: true, json: () => stalled(value.signal) });
@@ -364,7 +362,6 @@ test('404 stops polling and explains unavailable link', async () => {
     fetch: async () => ({ok: false, status: 404}),
     reload() { assert.fail('404 must not reload'); },
     onMessage(message) { messages.push(message); },
-    onStatus() {},
   });
   await poller.poll();
   assert.equal(poller.stopped, true);
@@ -382,7 +379,6 @@ test('backs off after a network failure without creating duplicate polling timer
     clearTimeout: timers.clearTimeout,
     reload() {},
     onMessage() {},
-    onStatus() {},
   });
 
   await Promise.all([poller.poll(), poller.poll()]);

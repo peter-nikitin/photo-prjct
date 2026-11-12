@@ -18,6 +18,7 @@ class BibSearchUpgradeTests(TransactionTestCase):
                 {
                     "picflow": "0013_event_photo_price",
                     "processing": "0008_watermarked_preview_derivative_producer",
+                    "selfie_search": "0009_selfiesearch_gallery_started_at",
                 }.get(app, name),
             )
             for app, name in latest

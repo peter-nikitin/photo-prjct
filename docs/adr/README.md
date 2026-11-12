@@ -86,3 +86,4 @@ ADR фиксирует долговременный выбор, причины, 
 | 0063 | [Воспроизводить конфигурацию ОС из кода и выпускать её через общий пайплайн](0063-repeatable-host-configuration.md) | Accepted |
 | 0064 | [Выполнять поиск по фотографии галереи через очередь PostgreSQL](0064-queue-gallery-photo-search.md) | Accepted |
 | 0065 | [Проверять публичную доступность вне VM бессерверной функцией](0065-run-public-probe-as-serverless-function.md) | Proposed |
+| 0066 | [Передавать вектор в задаче общей очереди поиска по лицу](0066-store-vectors-in-face-search-queue.md) | Accepted |

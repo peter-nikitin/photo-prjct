@@ -161,6 +161,9 @@ case "$*" in
       exit 1
     fi
     ;;
+  'compose ps --status running --services gallery-search-worker')
+    printf 'gallery-search-worker\\n'
+    ;;
   *'pg_isready '*)
     printf 'postgres:5432 - accepting connections\\n'
     ;;
@@ -667,6 +670,7 @@ def test_dump_stream_uses_remote_container_and_publishes_validated_artifacts(
     ) in commands
     assert (
         "pg_dump --format=custom --no-owner --no-acl "
+        "--exclude-table-data=public.selfie_search_facesearchtask "
         "--username='staging user' --dbname='staging app; not-a-command'"
     ) in commands
     assert "pg_restore --list /dump" in commands
@@ -773,10 +777,9 @@ def test_restore_replaces_only_the_resolved_local_database_after_a_safety_dump(
     )
 
 
-def test_restore_stops_running_web_before_safety_dump_and_leaves_it_stopped(
+def test_restore_stops_web_and_face_search_worker_and_detaches_restored_selfies(
     clone_env: dict[str, str], tmp_path: Path
 ) -> None:
-    """Would fail if the normal web service could write during replacement or were restarted."""
     result = _run(
         env={
             **clone_env,
@@ -788,8 +791,8 @@ def test_restore_stops_running_web_before_safety_dump_and_leaves_it_stopped(
 
     assert result.returncode == 0, result.stderr
     lines = _commands(clone_env).splitlines()
-    ps_index = lines.index("docker compose ps --status running --services web")
-    stop_index = lines.index("docker compose stop web")
+    web_stop = lines.index("docker compose stop web")
+    worker_stop = lines.index("docker compose stop gallery-search-worker")
     safety_index = next(
         index
         for index, line in enumerate(lines)
@@ -799,9 +802,24 @@ def test_restore_stops_running_web_before_safety_dump_and_leaves_it_stopped(
     terminate_index = next(
         index for index, line in enumerate(lines) if "pg_terminate_backend" in line
     )
-    assert ps_index < stop_index < safety_index < terminate_index
+    assert max(web_stop, worker_stop) < safety_index < terminate_index
+    restore_index = next(
+        index for index, line in enumerate(lines) if "pg_restore --exit-on-error" in line
+    )
+    detach_index = next(
+        index
+        for index, line in enumerate(lines)
+        if "UPDATE public.selfie_search_selfiesearch" in line
+    )
+    assert restore_index < detach_index
+    clone_updates = "\n".join(lines[restore_index + 1 :])
+    assert "UPDATE public.selfie_search_selfiesearchattempt" in clone_updates
+    assert "UPDATE public.selfie_search_selfiesearchjob" in clone_updates
+    assert "temporary_object_key = ''" in clone_updates
+    assert "cloned_selfie_input_unavailable" in clone_updates
     assert not any(
-        line.startswith(("docker compose up ", "docker compose start ")) and "web" in line
+        line.startswith(("docker compose up ", "docker compose start "))
+        and ("web" in line or "gallery-search-worker" in line)
         for line in lines
     )
     assert "Local web service remains stopped" in result.stderr
@@ -854,7 +872,10 @@ def test_existing_dump_retry_avoids_staging_and_uses_the_guarded_local_restore(
     assert "ssh " not in commands
     assert f"--volume {dump_path}:/dump:ro" in commands
     assert "docker compose up -d db" in commands
-    assert "docker compose exec -T db pg_dump --format=custom" in commands
+    assert (
+        "docker compose exec -T db pg_dump --format=custom --no-owner --no-acl "
+        "--exclude-table-data=public.selfie_search_facesearchtask " in commands
+    )
     assert "docker compose exec -T db pg_restore --exit-on-error" in commands
     assert len(list((tmp_path / "backups").glob("*.local-safety.dump"))) == 1
 

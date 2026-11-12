@@ -23,7 +23,11 @@ _COUNT_CACHE_TTL_SECONDS = 60
 def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRankingOutcome:
     """Rank current vectors; fresh matches and emptiness share one database snapshot."""
     configuration = _configuration(search)
-    query = validate_query_vector(search, query_vector)
+    query = (
+        query_vector
+        if isinstance(query_vector, Subquery)
+        else list(validate_query_vector(search, query_vector))
+    )
     photos = retrieval_gallery_photo_queryset(event=search.event).order_by().values("pk")
     states = (
         PhotoProcessingState.objects.filter(
@@ -43,7 +47,7 @@ def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRank
                     Value(0.0),
                     CosineDistance(
                         "accepted_attempt__face_detections__embedding_vector__vector",
-                        list(query),
+                        query,
                     ),
                 ),
             ),

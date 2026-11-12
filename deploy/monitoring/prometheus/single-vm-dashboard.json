@@ -482,6 +482,224 @@
     },
     {
       "position": {
+        "y": "40",
+        "w": "24",
+        "h": "8"
+      },
+      "group": {
+        "id": "8122fe84-8afa-409c-9f88-2a05edfd2db7",
+        "title": "Поиск по селфи",
+        "widgets": [
+          {
+            "id": "4f85956b-36cc-424b-a1be-eacec5b98a4f",
+            "multiSourceChart": {
+              "id": "4f85956b-36cc-424b-a1be-eacec5b98a4f",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "7fa93085-e923-4d29-bf27-298fa18ba54c",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(findme_selfie_search_queue_depth{job=\"findme-http\",stage=\"recognition\"})",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "7fa93085-e923-4d29-bf27-298fa18ba54c",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(findme_selfie_search_queue_depth{job=\"findme-http\",stage=\"matching\"})",
+                    "textMode": true,
+                    "name": "B"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "7fa93085-e923-4d29-bf27-298fa18ba54c",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Селфи в очередях",
+              "description": "Ожидающие селфи по этапам распознавания и поиска совпадений, включая отложенные повторы.",
+              "displayLegend": true,
+              "seriesOverrides": [
+                {
+                  "matcher": {
+                    "query": {
+                      "names": [
+                        "A"
+                      ]
+                    }
+                  },
+                  "settings": {
+                    "name": "Распознавание"
+                  }
+                },
+                {
+                  "matcher": {
+                    "query": {
+                      "names": [
+                        "B"
+                      ]
+                    }
+                  },
+                  "settings": {
+                    "name": "Поиск совпадений"
+                  }
+                }
+              ]
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "f51f892d-7c6d-47ae-bbc2-3bc4dc07ae53",
+            "multiSourceChart": {
+              "id": "f51f892d-7c6d-47ae-bbc2-3bc4dc07ae53",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_selfie_search_phase_duration_seconds_total{job=\"findme-http\",stage=\"recognition\",phase=\"queue\"}[5m])) / (sum(rate(findme_selfie_search_completed_total{job=\"findme-http\",stage=\"recognition\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_selfie_search_phase_duration_seconds_total{job=\"findme-http\",stage=\"recognition\",phase=\"processing\"}[5m])) / (sum(rate(findme_selfie_search_completed_total{job=\"findme-http\",stage=\"recognition\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "B"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_selfie_search_phase_duration_seconds_total{job=\"findme-http\",stage=\"matching\",phase=\"queue\"}[5m])) / (sum(rate(findme_selfie_search_completed_total{job=\"findme-http\",stage=\"matching\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "C"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_selfie_search_phase_duration_seconds_total{job=\"findme-http\",stage=\"matching\",phase=\"processing\"}[5m])) / (sum(rate(findme_selfie_search_completed_total{job=\"findme-http\",stage=\"matching\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "D"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "15e79d62-fb1c-4891-a7f4-11991dac479d",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "Секунды"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Время поиска по селфи по этапам, с",
+              "description": "Среднее за 5 минут для успешных поисков с замерами всех этапов. Верхняя граница стека — время от постановки задачи до готовности результата. Обработка поиска включает публикацию.",
+              "displayLegend": true,
+              "seriesOverrides": [
+                {
+                  "matcher": {
+                    "query": {
+                      "names": [
+                        "A"
+                      ]
+                    }
+                  },
+                  "settings": {
+                    "name": "Ожидание распознавания"
+                  }
+                },
+                {
+                  "matcher": {
+                    "query": {
+                      "names": [
+                        "B"
+                      ]
+                    }
+                  },
+                  "settings": {
+                    "name": "Распознавание"
+                  }
+                },
+                {
+                  "matcher": {
+                    "query": {
+                      "names": [
+                        "C"
+                      ]
+                    }
+                  },
+                  "settings": {
+                    "name": "Ожидание поиска"
+                  }
+                },
+                {
+                  "matcher": {
+                    "query": {
+                      "names": [
+                        "D"
+                      ]
+                    }
+                  },
+                  "settings": {
+                    "name": "Поиск и публикация"
+                  }
+                }
+              ]
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "position": {
         "y": "48",
         "w": "24",
         "h": "16"

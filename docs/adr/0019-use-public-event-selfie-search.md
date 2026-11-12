@@ -10,7 +10,9 @@
   exclusion only; and [ADR 0029](0029-use-watermarked-previews-for-paid-photos.md) for original
   presentation by the new paid-photo generation only;
   [ADR 0040](0040-use-pgvector-for-exact-face-search.md) for in-memory direct comparison and
-  initial exclusion of vector infrastructure only
+  initial exclusion of vector infrastructure only, and
+  [ADR 0066](0066-store-vectors-in-face-search-queue.md) for ranking in the HTTP callback and the prohibition
+  on temporary query vector storage only
 
 ## Context
 

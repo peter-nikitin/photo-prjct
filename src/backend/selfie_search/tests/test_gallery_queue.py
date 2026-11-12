@@ -2,10 +2,11 @@ from contextlib import contextmanager
 from datetime import timedelta
 from uuid import uuid4
 
+from django.db import DatabaseError
 from django.test import TestCase, TransactionTestCase
 from django.urls import Resolver404, resolve
 from django.utils import timezone
-from selfie_search.models import SelfieSearch
+from selfie_search.models import FaceSearchTask, SelfieSearch
 from selfie_search.tests import test_submission as fixtures
 
 
@@ -28,30 +29,30 @@ class GalleryQueueTests(TestCase):
         ).search
 
     def test_first_claim_timestamp_survives_live_retry_and_startup_recovery(self):
-        from selfie_search.services.gallery_queue import claim, recover_processing, retry
+        from selfie_search.services.face_search_queue import claim, recover_processing, retry
 
         search = self.create_search()
-        self.assertIsNone(search.gallery_started_at)
+        self.assertIsNone(search.matching_started_at)
         first = claim()
         assert first is not None
-        started = first.gallery_started_at
+        started = first.search.matching_started_at
         self.assertIsNotNone(started)
         retry(first)
-        SelfieSearch.objects.filter(pk=search.pk).update(gallery_available_at=timezone.now())
+        FaceSearchTask.objects.filter(search=search).update(available_at=timezone.now())
         second = claim()
         assert second is not None
-        self.assertEqual(second.gallery_started_at, started)
+        self.assertEqual(second.search.matching_started_at, started)
         recover_processing()
         third = claim()
         assert third is not None
-        self.assertEqual(third.gallery_started_at, started)
+        self.assertEqual(third.search.matching_started_at, started)
 
     def test_browser_cannot_execute_gallery_search(self):
         with self.assertRaises(Resolver404):
             resolve("/events/gallery/selfie-search/token/process-gallery/")
 
     def test_worker_finishes_without_browser_and_does_not_claim_selfie(self):
-        from selfie_search.services.gallery_queue import run_once
+        from selfie_search.services.face_search_queue import run_once
 
         search = self.create_search()
         selfie = SelfieSearch.objects.create(
@@ -61,13 +62,13 @@ class GalleryQueueTests(TestCase):
         search.refresh_from_db()
         selfie.refresh_from_db()
         self.assertEqual(search.status, "ready")
-        self.assertEqual(search.gallery_attempt_count, 1)
+        self.assertEqual(search.matching_task.attempt_count, 1)
         self.assertEqual(search.results.count(), 1)
         self.assertEqual(selfie.status, "queued")
         self.assertFalse(run_once())
 
     def test_startup_reset_changes_only_gallery_processing_and_preserves_ready_snapshot(self):
-        from selfie_search.services.gallery_queue import recover_processing, run_once
+        from selfie_search.services.face_search_queue import recover_processing, run_once
 
         ready = self.create_search()
         self.assertTrue(run_once())
@@ -76,7 +77,9 @@ class GalleryQueueTests(TestCase):
         preserved = []
         for status in ("queued", "failed", "search_unavailable"):
             row = self.create_search()
-            SelfieSearch.objects.filter(pk=row.pk).update(status=status, gallery_attempt_count=3)
+            SelfieSearch.objects.filter(pk=row.pk).update(status=status)
+            if status != "queued":
+                FaceSearchTask.objects.filter(search=row).update(status="terminal")
             preserved.append(SelfieSearch.objects.filter(pk=row.pk).values().get())
         selfie = SelfieSearch.objects.create(
             event=self.event,
@@ -86,20 +89,21 @@ class GalleryQueueTests(TestCase):
         )
         saved_selfie = SelfieSearch.objects.filter(pk=selfie.pk).values().get()
         interrupted = self.create_search()
-        SelfieSearch.objects.filter(pk=interrupted.pk).update(
+        SelfieSearch.objects.filter(pk=interrupted.pk).update(status="processing")
+        FaceSearchTask.objects.filter(search=interrupted).update(
             status="processing",
-            gallery_attempt_count=99,
-            gallery_available_at=timezone.now() + timedelta(days=1),
+            attempt_count=99,
+            available_at=timezone.now() + timedelta(days=1),
         )
         now = timezone.now()
         from unittest.mock import patch
 
-        with patch("selfie_search.services.gallery_queue.timezone.now", return_value=now):
+        with patch("selfie_search.services.face_search_queue.timezone.now", return_value=now):
             self.assertEqual(recover_processing(), 1)
         interrupted.refresh_from_db()
         self.assertEqual(interrupted.status, "queued")
-        self.assertEqual(interrupted.gallery_attempt_count, 0)
-        self.assertEqual(interrupted.gallery_available_at, now)
+        self.assertEqual(interrupted.matching_task.attempt_count, 0)
+        self.assertEqual(interrupted.matching_task.available_at, now)
         self.assertEqual(SelfieSearch.objects.filter(pk=ready.pk).values().get(), saved_ready)
         self.assertEqual(list(ready.results.values()), saved_rows)
         self.assertEqual(SelfieSearch.objects.filter(pk=selfie.pk).values().get(), saved_selfie)
@@ -108,10 +112,29 @@ class GalleryQueueTests(TestCase):
                 SelfieSearch.objects.filter(pk=snapshot["id"]).values().get(), snapshot
             )
 
+    def test_logical_restore_fails_missing_payloads_and_preserves_ready_results(self):
+        from selfie_search.services.face_search_queue import recover_missing_payloads, run_once
+
+        ready = self.create_search()
+        self.assertTrue(run_once())
+        result_id = ready.results.get().pk
+        orphan = self.create_search()
+
+        FaceSearchTask.objects.all().delete()
+        recover_missing_payloads()
+
+        ready.refresh_from_db()
+        orphan.refresh_from_db()
+        self.assertEqual(ready.status, "ready")
+        self.assertEqual(ready.results.get().pk, result_id)
+        self.assertEqual(orphan.status, "failed")
+        self.assertEqual(orphan.failure_code, "matching_payload_missing")
+        self.assertFalse(run_once())
+
     def test_public_submission_is_processed_without_status_request(self):
         from django.test import override_settings
         from django.urls import reverse
-        from selfie_search.services.gallery_queue import run_once
+        from selfie_search.services.face_search_queue import run_once
 
         face = self.make_eligible_embedding(
             event=self.event, photo_id="public-queue", vector=[1.0] + [0.0] * 511
@@ -143,42 +166,40 @@ class GalleryQueueTests(TestCase):
     def test_transient_failure_retries_after_delay_then_finishes(self):
         from unittest.mock import patch
 
-        from selfie_search.services.gallery_queue import claim, run_once
-        from selfie_search.services.submission import GallerySearchFailed
+        from selfie_search.services.face_search_queue import claim, run_once
 
         search = self.create_search()
         with patch(
-            "selfie_search.services.gallery_queue.process_gallery_photo_search",
-            side_effect=GallerySearchFailed,
+            "selfie_search.services.face_search_queue.process_face_search",
+            side_effect=DatabaseError,
         ):
             self.assertTrue(run_once())
         search.refresh_from_db()
         self.assertEqual(search.status, "queued")
-        self.assertEqual(search.gallery_attempt_count, 1)
+        self.assertEqual(search.matching_task.attempt_count, 1)
         self.assertIsNone(claim())
-        SelfieSearch.objects.filter(pk=search.pk).update(gallery_available_at=timezone.now())
+        FaceSearchTask.objects.filter(search=search).update(available_at=timezone.now())
         self.assertTrue(run_once())
         search.refresh_from_db()
         self.assertEqual(search.status, "ready")
-        self.assertEqual(search.gallery_attempt_count, 2)
+        self.assertEqual(search.matching_task.attempt_count, 2)
 
     def test_live_transient_failures_stop_after_three_attempts(self):
         from unittest.mock import patch
 
-        from selfie_search.services.gallery_queue import run_once
-        from selfie_search.services.submission import GallerySearchFailed
+        from selfie_search.services.face_search_queue import run_once
 
         search = self.create_search()
         for attempt in range(1, 4):
             with patch(
-                "selfie_search.services.gallery_queue.process_gallery_photo_search",
-                side_effect=GallerySearchFailed,
+                "selfie_search.services.face_search_queue.process_face_search",
+                side_effect=DatabaseError,
             ):
                 self.assertTrue(run_once())
             search.refresh_from_db()
-            self.assertEqual(search.gallery_attempt_count, attempt)
+            self.assertEqual(search.matching_task.attempt_count, attempt)
             self.assertEqual(search.status, "failed" if attempt == 3 else "queued")
-            SelfieSearch.objects.filter(pk=search.pk).update(gallery_available_at=timezone.now())
+            FaceSearchTask.objects.filter(search=search).update(available_at=timezone.now())
         self.assertFalse(run_once())
 
     def test_startup_database_retry_recovers_before_any_claim(self):
@@ -186,12 +207,11 @@ class GalleryQueueTests(TestCase):
 
         from django.core.management import call_command
         from django.db import OperationalError
-        from selfie_search.services.gallery_queue import recover_processing
+        from selfie_search.services.face_search_queue import recover_processing
 
         search = self.create_search()
-        SelfieSearch.objects.filter(pk=search.pk).update(
-            status="processing", gallery_attempt_count=3
-        )
+        SelfieSearch.objects.filter(pk=search.pk).update(status="processing")
+        FaceSearchTask.objects.filter(search=search).update(status="processing", attempt_count=3)
         events = []
 
         def recover():
@@ -203,11 +223,11 @@ class GalleryQueueTests(TestCase):
         class ObservedClaim(Exception):
             pass
 
-        def observe_claim():
+        def observe_claim(**_kwargs):
             events.append("claim")
             search.refresh_from_db()
             self.assertEqual(search.status, "queued")
-            self.assertEqual(search.gallery_attempt_count, 0)
+            self.assertEqual(search.matching_task.attempt_count, 0)
             raise ObservedClaim()
 
         with (
@@ -239,7 +259,7 @@ class GalleryQueueTests(TestCase):
         from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
         from feature_flags.testing import override_feature_flags
         from picflow.models import Photo
-        from selfie_search.services.gallery_queue import run_once
+        from selfie_search.services.face_search_queue import run_once
         from selfie_search.services.submission import submit_gallery_photo_search
 
         cases = [
@@ -358,15 +378,16 @@ class GalleryWorkerRestartTests(TransactionTestCase):
         for attempts in (0, 3, 99):
             with self.subTest(attempts=attempts):
                 search = self.create_search()
-                SelfieSearch.objects.filter(pk=search.pk).update(
+                SelfieSearch.objects.filter(pk=search.pk).update(status="processing")
+                FaceSearchTask.objects.filter(search=search).update(
                     status="processing",
-                    gallery_attempt_count=attempts,
-                    gallery_available_at=timezone.now() + timedelta(days=1),
+                    attempt_count=attempts,
+                    available_at=timezone.now() + timedelta(days=1),
                 )
                 with self.worker() as worker:
                     self.wait_for_search(search, worker)
                     self.assertIsNone(worker.poll())
-                    self.assertEqual(search.gallery_attempt_count, 1)
+                    self.assertEqual(search.matching_task.attempt_count, 1)
                     self.assertTrue(
                         search.results.filter(
                             photo_id=search.configuration["query_source"]["photo_id"]
@@ -386,9 +407,9 @@ from unittest.mock import patch
 django.setup()
 from django.core.management import call_command
 from django.db import connection
-from selfie_search.services import submission
-rank = submission.rank_selected_direct
-persist = submission._persist_gallery_results
+from selfie_search.services import face_search_queue
+rank = face_search_queue.rank_selected_direct
+persist = face_search_queue.prepare_search_result
 
 def timeout_seconds():
     with connection.cursor() as cursor:
@@ -406,8 +427,8 @@ def observe_publication(*args, **kwargs):
     return persist(*args, **kwargs)
 
 with (
-    patch('selfie_search.services.submission.rank_selected_direct', observe_rank),
-    patch('selfie_search.services.submission._persist_gallery_results', observe_publication),
+    patch('selfie_search.services.face_search_queue.rank_selected_direct', observe_rank),
+    patch('selfie_search.services.face_search_queue.prepare_search_result', observe_publication),
 ):
     call_command('run_gallery_search_worker')
 """
@@ -424,12 +445,65 @@ with (
             self.assertEqual(search.results.count(), 1)
         self.assertEqual(worker.returncode, 0)
 
+    def test_stalled_selfie_delete_defers_cleanup_and_gallery_still_finishes(self):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from threading import Event, Thread
+
+        deleting = Event()
+        release_delete = Event()
+
+        class StalledDelete(BaseHTTPRequestHandler):
+            def do_DELETE(self):
+                deleting.set()
+                release_delete.wait(timeout=30)
+
+        pending = SelfieSearch.objects.create(
+            event=self.event,
+            public_token_digest=uuid4().hex * 2,
+            temporary_object_key=f"selfie-search/{uuid4().hex}",
+            stage=SelfieSearch.Stage.MATCHING,
+            status=SelfieSearch.Status.CLEANUP_PENDING,
+            intended_terminal_status=SelfieSearch.Status.READY,
+            final_matched_photo_count=0,
+            direct_matched_photo_count=0,
+            cluster_expanded_photo_count=0,
+            state_changed_at=timezone.now() - timedelta(minutes=1),
+        )
+        with HTTPServer(("127.0.0.1", 0), StalledDelete) as server:
+            endpoint = f"http://127.0.0.1:{server.server_port}"
+            code = f"""
+import django
+django.setup()
+from django.conf import settings
+from django.core.management import call_command
+settings.PRIVATE_MEDIA_S3_ENDPOINT_URL = {endpoint!r}
+settings.PRIVATE_MEDIA_S3_BUCKET = 'selfie-private-test'
+settings.PRIVATE_MEDIA_S3_ACCESS_KEY_ID = 'test-key'
+settings.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY = 'test-secret'
+settings.PRIVATE_MEDIA_S3_REGION = 'us-east-1'
+call_command('run_gallery_search_worker')
+"""
+            http_thread = Thread(target=server.serve_forever, daemon=True)
+            http_thread.start()
+            try:
+                with self.worker(code) as worker:
+                    self.assertTrue(deleting.wait(timeout=10))
+                    gallery = self.create_search()
+                    self.wait_for_search(gallery, worker)
+                    pending.refresh_from_db()
+                    self.assertEqual(pending.status, SelfieSearch.Status.CLEANUP_PENDING)
+                    self.assertEqual(gallery.results.count(), 1)
+            finally:
+                release_delete.set()
+                server.shutdown()
+                http_thread.join(timeout=3)
+
     def test_sigterm_stops_immediately_and_next_start_recovers_without_budget_wait(self):
         import select
         import signal
         import time
 
-        from selfie_search.services.gallery_queue import run_once
+        from selfie_search.services.face_search_queue import run_once
 
         ready = self.create_search()
         self.assertTrue(run_once())
@@ -442,14 +516,14 @@ import time
 from unittest.mock import patch
 django.setup()
 from django.core.management import call_command
-from selfie_search.services.submission import rank_selected_direct
+from selfie_search.services.face_search_queue import rank_selected_direct
 
 def paused_rank(*args, **kwargs):
     print('RANKING', flush=True)
     time.sleep(60)
     return rank_selected_direct(*args, **kwargs)
 
-with patch('selfie_search.services.submission.rank_selected_direct', paused_rank):
+with patch('selfie_search.services.face_search_queue.rank_selected_direct', paused_rank):
     call_command('run_gallery_search_worker')
 """
         with self.worker(code) as worker:
@@ -466,13 +540,13 @@ with patch('selfie_search.services.submission.rank_selected_direct', paused_rank
             self.assertEqual(worker.returncode, 0)
         search.refresh_from_db()
         self.assertEqual(search.status, "processing")
-        SelfieSearch.objects.filter(pk=search.pk).update(
-            gallery_attempt_count=3,
-            gallery_available_at=timezone.now() + timedelta(days=1),
+        FaceSearchTask.objects.filter(search=search).update(
+            attempt_count=3,
+            available_at=timezone.now() + timedelta(days=1),
         )
         with self.worker() as worker:
             self.wait_for_search(search, worker)
-            self.assertEqual(search.gallery_attempt_count, 1)
+            self.assertEqual(search.matching_task.attempt_count, 1)
             self.assertEqual(search.results.count(), 2)
         recovered = SelfieSearch.objects.filter(pk=search.pk).values().get()
         recovered_results = list(search.results.values())

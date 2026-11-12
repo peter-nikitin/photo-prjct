@@ -6,10 +6,12 @@ from enum import StrEnum
 from typing import Final, Literal, Protocol, Self
 from zoneinfo import ZoneInfo
 
+from django.core.cache import cache
 from django.core.paginator import Page, Paginator
 from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.db.models.functions import Lower
 from django.urls import reverse
+from django.utils.functional import cached_property
 from ingestion.storage import ObjectMismatch, ObjectMissing, OpenedObject, ReadableBody
 
 from picflow.models import Event, EventFolder, GalleryMediaProjection, Photo
@@ -19,6 +21,7 @@ GALLERY_VARIANTS: frozenset[GalleryVariant] = frozenset({"preview-small", "previ
 MediaUrlBuilder = Callable[[Photo, GalleryVariant], str]
 DownloadUrlBuilder = Callable[[Photo], str]
 GALLERY_PAGE_SIZE: Final = 100
+_GALLERY_COUNT_TTL_SECONDS: Final = 15 * 60
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +343,34 @@ def gallery_folder_choices(
     return folders, has_unfiled
 
 
+class _UnfilteredGalleryPaginator(Paginator):
+    def __init__(self, photos: QuerySet[Photo], count_cache_key: str) -> None:
+        super().__init__(photos, GALLERY_PAGE_SIZE)
+        self._photos = photos
+        self._count_cache_key = count_cache_key
+
+    @cached_property
+    def count(self) -> int:
+        cached_count: int | None = cache.get(self._count_cache_key)
+        if cached_count is not None:
+            return cached_count
+        count = self._photos.count()
+        cache.set(self._count_cache_key, count, _GALLERY_COUNT_TTL_SECONDS)
+        return count
+
+    def page(self, number: int | str) -> Page[Photo]:
+        page_number = self.validate_number(number)
+        start = (page_number - 1) * self.per_page
+        # Check one extra photo on the last page to detect growth across a page boundary.
+        limit = self.per_page + int(page_number == self.num_pages)
+        photos = self._photos[start : start + limit]
+        if len(photos) != min(self.per_page, self.count - start):
+            paginator = Paginator(self._photos, self.per_page)
+            cache.set(self._count_cache_key, paginator.count, _GALLERY_COUNT_TTL_SECONDS)
+            return paginator.page(page_number)
+        return Page(photos, page_number, self)
+
+
 def gallery_page(
     *,
     event: Event,
@@ -351,18 +382,28 @@ def gallery_page(
     bib_number: str | None = None,
     paid_watermarked_previews_enabled: bool = False,
 ) -> Page[Photo]:
-    return Paginator(
-        gallery_photo_queryset(
-            event=event,
-            capture_time_start=capture_time_start,
-            capture_time_end=capture_time_end,
-            folder_ids=folder_ids,
-            include_unfiled=include_unfiled,
-            bib_number=bib_number,
-            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-        ),
-        GALLERY_PAGE_SIZE,
-    ).page(page_number or 1)
+    photos = gallery_photo_queryset(
+        event=event,
+        capture_time_start=capture_time_start,
+        capture_time_end=capture_time_end,
+        folder_ids=folder_ids,
+        include_unfiled=include_unfiled,
+        bib_number=bib_number,
+        paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+    )
+    if (
+        folder_ids
+        or include_unfiled
+        or capture_time_start is not None
+        or capture_time_end is not None
+        or bib_number is not None
+    ):
+        return Paginator(photos, GALLERY_PAGE_SIZE).page(page_number or 1)
+
+    count_cache_key = (
+        f"gallery-count:{event.pk}:{event.access_type}:{int(paid_watermarked_previews_enabled)}"
+    )
+    return _UnfilteredGalleryPaginator(photos, count_cache_key).page(page_number or 1)
 
 
 @dataclass(frozen=True)

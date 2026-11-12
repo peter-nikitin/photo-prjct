@@ -5,7 +5,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
-from django.core.paginator import Paginator
+from django.core.paginator import EmptyPage, Paginator
 from django.http import QueryDict
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
@@ -35,6 +35,7 @@ from picflow.gallery import (
     ResolvedPublicMedia,
     gallery_face_crop,
     gallery_folder_choices,
+    gallery_page,
     gallery_photo_queryset,
     purchasable_paid_photo_queryset,
 )
@@ -625,6 +626,44 @@ class FilteredGalleryQuerysetTests(TestCase):
             original_content_type="image/jpeg",
             uploaded_at=timezone.now(),
         )
+
+    def test_unfiltered_gallery_reuses_count_across_pages_but_filtered_gallery_counts(self) -> None:
+        folder = EventFolder.objects.create(event=self.event, name="Selected")
+        first = self.photo("first")
+        second = self.photo("second")
+        Photo.objects.filter(pk=first.pk).update(folder=folder)
+
+        with patch("picflow.gallery.GALLERY_PAGE_SIZE", 1):
+            with self.assertNumQueries(2):
+                page = gallery_page(event=self.event, page_number="1")
+                self.assertEqual(list(page), [first])
+                self.assertEqual(page.paginator.count, 2)
+
+            with self.assertNumQueries(1):
+                page = gallery_page(event=self.event, page_number="2")
+                self.assertEqual(list(page), [second])
+                self.assertEqual(page.paginator.count, 2)
+
+            with self.assertNumQueries(2):
+                page = gallery_page(event=self.event, page_number="1", folder_ids=[folder.pk])
+                self.assertEqual(list(page), [first])
+                self.assertEqual(page.paginator.count, 1)
+
+    def test_unfiltered_gallery_refreshes_count_when_last_page_changes(self) -> None:
+        first = self.photo("first")
+        second = self.photo("second")
+        with patch("picflow.gallery.GALLERY_PAGE_SIZE", 2):
+            page = gallery_page(event=self.event, page_number="1")
+            self.assertEqual(page.paginator.num_pages, 1)
+
+            third = self.photo("third")
+            page = gallery_page(event=self.event, page_number="1")
+            self.assertEqual(list(page), [first, second])
+            self.assertEqual(page.paginator.num_pages, 2)
+
+            Photo.objects.filter(pk=third.pk).update(is_hidden=True)
+            with self.assertRaises(EmptyPage):
+                gallery_page(event=self.event, page_number="2")
 
     def capture_evidence(
         self,

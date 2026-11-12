@@ -118,7 +118,6 @@ jobs:
           PHOTO_IMPORT_BUILD: ${{ github.sha }}
           DEBUG: "False"
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
-          GUNICORN_WORKERS: ${{ vars.GUNICORN_WORKERS || '1' }}
           GUNICORN_TIMEOUT: ${{ vars.GUNICORN_TIMEOUT || '180' }}
           GUNICORN_MAX_REQUESTS: ${{ vars.GUNICORN_MAX_REQUESTS || '0' }}
           GUNICORN_MAX_REQUESTS_JITTER: ${{ vars.GUNICORN_MAX_REQUESTS_JITTER || '0' }}

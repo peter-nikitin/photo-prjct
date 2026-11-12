@@ -965,26 +965,14 @@ test('mobile archive action fills the result width and paid Order action hierarc
   await expect(page.locator('.order-resend--secondary button')).toHaveText(
     'Отправить письмо ещё раз',
   );
-  const hierarchy = await page.locator('.order-summary-panel').evaluate((summary) => {
+  const archiveBeforeResend = await page.locator('.order-summary-panel').evaluate((summary) => {
     const archive = summary.querySelector('.order-archive-action .button');
     const resend = summary.querySelector('.order-resend--secondary button');
-    const archiveStyle = archive && getComputedStyle(archive);
-    const resendStyle = resend && getComputedStyle(resend);
-    return {
-      archiveBeforeResend: Boolean(
-        archive && resend && archive.getBoundingClientRect().top < resend.getBoundingClientRect().top,
-      ),
-      archiveBackground: archiveStyle?.backgroundColor,
-      archiveColor: archiveStyle?.color,
-      resendBackground: resendStyle?.backgroundColor,
-      resendColor: resendStyle?.color,
-    };
+    return Boolean(
+      archive && resend && archive.getBoundingClientRect().top < resend.getBoundingClientRect().top,
+    );
   });
-  expect(hierarchy.archiveBeforeResend).toBe(true);
-  expect(hierarchy.archiveBackground).toBe('rgb(11, 107, 104)');
-  expect(hierarchy.archiveColor).toBe('rgb(255, 255, 255)');
-  expect(hierarchy.resendBackground).toBe('rgb(255, 255, 255)');
-  expect(hierarchy.resendColor).toBe('rgb(20, 20, 20)');
+  expect(archiveBeforeResend).toBe(true);
 });
 
 test('saved selfie-search history is private, event-scoped, navigable, and removable', async ({ page }) => {
@@ -2147,20 +2135,19 @@ test('mobile cart keeps each price on one line inside its card', async ({ page }
 test('gallery and ready result lightboxes keep original download as a compact icon action', async ({
   page,
 }) => {
-  for (const [path, cardSelector, viewport, snapshot, expectedColor] of [
+  await preloadCookieAcknowledgement(page);
+  for (const [path, cardSelector, viewport, snapshot] of [
     [
       '/__visual__/event/gallery-populated/',
       '.gallery-card-link',
       DESKTOP_VIEWPORT,
       'desktop-gallery-lightbox-download.png',
-      null,
     ],
     [
       '/__visual__/event/selfie-search/ready/',
       '.selfie-search-results .gallery-card-link',
       MOBILE_VIEWPORT,
       'mobile-selfie-search-result-lightbox-download.png',
-      'rgb(104, 111, 119)',
     ],
   ]) {
     await page.setViewportSize(viewport);
@@ -2174,11 +2161,7 @@ test('gallery and ready result lightboxes keep original download as a compact ic
     await expect(download).toHaveText('');
     await expect(download).toHaveCSS('width', '44px');
     await expect(download).toHaveCSS('height', '44px');
-    await expect(description).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
     await expect(description).toHaveCSS('height', '44px');
-    if (expectedColor) {
-      await expect(download).toHaveCSS('color', expectedColor);
-    }
     await expect(page).toHaveScreenshot(snapshot, { animations: 'disabled' });
 
     await page.keyboard.press('Escape');

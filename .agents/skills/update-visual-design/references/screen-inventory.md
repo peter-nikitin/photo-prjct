@@ -16,6 +16,7 @@ This inventory is the canonical map from visual concepts to Django templates and
 | Legal | production | `src/backend/templates/ui/legal.html` | `/legal/` | `/__visual__/legal/` | `desktop-legal.png`, `mobile-legal.png` |
 | Shared public shell | production | `src/backend/templates/ui/base.html` | none | covered by production screen routes | covered by production screen snapshots |
 | Search workspace | design-reference | `tests/visual/templates/design_reference/search.html` | none | `/__visual__/reference/search/` | `desktop-reference-search.png`, `mobile-reference-search.png` |
+| Дизайн-система FindMe Photo | design-reference | `tests/visual/templates/design_reference/design_system.html` | none | `/__visual__/reference/design-system/` | Нет — справочная страница без фиксации содержимого тестами |
 | Operator dashboard | design-reference | `tests/visual/templates/design_reference/dashboard.html` | none | `/__visual__/reference/dashboard/` | `desktop-reference-dashboard.png` |
 | Event metadata/catalog editor | design-reference | `tests/visual/templates/design_reference/events.html` | none | `/__visual__/reference/events/` | `desktop-reference-events.png` |
 | Workspace event chooser | production | `src/backend/templates/ingestion/upload.html` | `/photographer/uploads/` | `/__visual__/upload/chooser/` | `desktop-upload-chooser.png`, `mobile-upload-chooser.png` |
@@ -148,3 +149,8 @@ numbers and an editable card with no numbers; the hidden state covers the latter
 browser geometry check covers the downward editor overlay at desktop and 390px mobile widths. All
 eight administrative workspace baselines also render the exact `bib` input and explicit
 `without_bib` control in the deterministic filter form.
+
+Общая тёмная палитра, Manrope и свечение определяются в
+`src/backend/static/ui/design-tokens.css`. Публичные страницы и design-reference
+подключают их через `ui/design_tokens.html`; справочник показывает те же значения.
+Обновление цветовой системы не меняет статусы экранов или production URL.

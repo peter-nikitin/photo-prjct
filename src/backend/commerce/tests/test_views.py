@@ -16,6 +16,7 @@ from feature_flags.registry import (
     PAID_PHOTO_CART,
     PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
+    WEB_VITALS,
     FeatureDefinition,
 )
 from feature_flags.states import (
@@ -850,6 +851,7 @@ class CartViewTests(TestCase):
         self.enable()
         self.feature_flag_states[PAID_PHOTO_PURCHASE] = FLAG_ON
         self.feature_flag_states[GALLERY_CDN_IMAGES] = FLAG_ON
+        self.feature_flag_states[WEB_VITALS] = FLAG_ON
         order = self.make_paid_order(photo=self.photo, public_number="FM-ABCDEFGH")
         other = self.make_watermarked_photo(self.event, photo_id="other-order-photo")
         self.make_paid_order(photo=other, public_number="FM-BCDEFGHJ")
@@ -860,7 +862,8 @@ class CartViewTests(TestCase):
         self.photo.save(update_fields=["is_hidden"])
 
         browser = self.client.get(
-            reverse("commerce:order", kwargs={"public_number": order.public_number})
+            reverse("commerce:order", kwargs={"public_number": order.public_number}),
+            HTTP_X_FORWARDED_PROTO="https",
         )
         grant = create_order_access_grant(order=order, source="checkout")
         signature = sign_order_access_grant(grant=grant, signing_secret="commerce-cdn-test-secret")
@@ -873,12 +876,14 @@ class CartViewTests(TestCase):
                     "grant_identifier": grant.pk,
                     "signature": signature,
                 },
-            )
+            ),
+            HTTP_X_FORWARDED_PROTO="https",
         )
 
         for response in (browser, grant_response):
             self.assertEqual(response.status_code, 200)
             self.assertContains(response, "https://img.example.test/")
+            self.assertNotContains(response, "data-web-vitals-page=")
             (shown,) = response.context["order_presentation"].photos
             self.assertEqual(
                 cdn_source(shown.photo.preview_media_small.url),

@@ -53,6 +53,8 @@ EVENT_COVER_CDN_IMAGES: Final = FeatureDefinition(
     "event-cover-cdn-images", "Deliver event catalog covers through CDN"
 )
 
+WEB_VITALS: Final = FeatureDefinition("web-vitals", "Collect Web Vitals on public pages")
+
 FEATURE_DEFINITIONS: Final = (
     PAID_EVENTS,
     PAID_WATERMARKED_PREVIEWS,
@@ -63,6 +65,7 @@ FEATURE_DEFINITIONS: Final = (
     YANDEX_DISK_IMPORT,
     GALLERY_CDN_IMAGES,
     EVENT_COVER_CDN_IMAGES,
+    WEB_VITALS,
 )
 
 validate_feature_definitions(FEATURE_DEFINITIONS)

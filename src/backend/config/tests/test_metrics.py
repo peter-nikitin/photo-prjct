@@ -126,6 +126,53 @@ class MultiprocessMetricsTests(SimpleTestCase):
         queue_patch.start()
         self.addCleanup(queue_patch.stop)
 
+    def test_web_vitals_scrape_exposes_zero_series_before_the_first_packet(self) -> None:
+        scrape = """
+            import django
+            import psycopg
+            from unittest.mock import patch
+
+            django.setup()
+            from config.metrics import generate_metrics
+
+            with patch("config.metrics.psycopg.connect", side_effect=psycopg.OperationalError):
+                print(generate_metrics().decode(), end="")
+        """
+        with tempfile.TemporaryDirectory() as metrics_directory:
+            environment = {
+                **os.environ,
+                "PROMETHEUS_MULTIPROC_DIR": metrics_directory,
+                "DJANGO_SETTINGS_MODULE": "config.settings",
+                "DB_NAME": "app",
+                "DB_USER": "app",
+                "DB_PASSWORD": "app",
+                "DB_HOST": "localhost",
+                "DB_PORT": "5432",
+                "SECRET_KEY": "test",
+                "ALLOWED_HOSTS": "testserver",
+            }
+            result = subprocess.run(
+                [sys.executable, "-c", textwrap.dedent(scrape)],
+                cwd=BACKEND_DIR,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for metric in ("lcp_seconds", "inp_seconds", "cls", "ttfb_seconds"):
+            for page in ("catalog", "gallery", "legal", "photographer_login", "cart", "orders"):
+                for viewport in ("narrow", "wide"):
+                    expected = (
+                        f"findme_web_vitals_{metric}_count"
+                        f'{{page="{page}",viewport="{viewport}"}} 0.0'
+                    )
+                    self.assertIn(
+                        expected,
+                        result.stdout,
+                    )
+
     @patch("config.metrics.collect_queue_samples")
     @patch("config.metrics.psycopg.connect")
     def test_queue_samples_have_bounded_labels_and_keep_successful_sources(self, connect, collect):

@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from gzip import decompress
 from hashlib import sha256
 from html.parser import HTMLParser
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
@@ -13,6 +14,7 @@ from commerce.services import set_photo_selected
 from config import views
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser, Permission
+from django.core.management import call_command
 from django.core.paginator import Paginator
 from django.db import connection
 from django.template.base import Variable
@@ -34,7 +36,9 @@ from feature_flags.registry import (
     GALLERY_CDN_IMAGES,
     PAID_EVENTS,
     PAID_PHOTO_CART,
+    PAID_PHOTO_PURCHASE,
     PAID_WATERMARKED_PREVIEWS,
+    WEB_VITALS,
 )
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
@@ -258,6 +262,116 @@ class PageTests(TestCase):
     def test_catalog_has_empty_state(self) -> None:
         response = self.client.get(reverse("event_catalog"))
         self.assertContains(response, "Событий пока нет")
+
+    def test_web_vitals_flag_controls_new_public_pages_without_a_restart(self) -> None:
+        Event.objects.update(publication_status=Event.PublicationStatus.UNAVAILABLE)
+        event = self.make_event()
+        paths = (
+            (reverse("event_catalog"), "catalog"),
+            (reverse("event_detail", kwargs={"slug": event.slug}), "gallery"),
+            (reverse("legal"), "legal"),
+            (reverse("photographer_login"), "photographer_login"),
+        )
+
+        def check_pages(*, enabled: bool, authenticated: bool = False) -> None:
+            for url, page in paths:
+                response = self.client.get(url, HTTP_X_FORWARDED_PROTO="https")
+                if authenticated and page == "photographer_login":
+                    self.assertEqual(response.status_code, 302)
+                    continue
+                if enabled:
+                    self.assertContains(response, f'data-web-vitals-page="{page}"')
+                else:
+                    self.assertNotContains(response, "data-web-vitals-page=")
+
+        check_pages(enabled=False)
+        call_command("sync_feature_flags", stdout=StringIO())
+        flag = FeatureFlag.objects.get(key=WEB_VITALS.key)
+        self.assertEqual(flag.state, FEATURE_FLAG_OFF)
+        flag.state = FEATURE_FLAG_STAFF
+        flag.save(update_fields=("state",))
+        check_pages(enabled=False)
+        staff = get_user_model().objects.create_user(username="vitals-operator", is_staff=True)
+        self.client.force_login(staff)
+        check_pages(enabled=True, authenticated=True)
+        self.client.logout()
+        flag.state = FEATURE_FLAG_ON
+        flag.save(update_fields=("state",))
+        check_pages(enabled=True)
+        flag.state = FEATURE_FLAG_OFF
+        flag.save(update_fields=("state",))
+        check_pages(enabled=False)
+
+    @override_feature_flags({WEB_VITALS: FEATURE_FLAG_ON})
+    def test_web_vitals_excludes_admin_and_staff_preview(self) -> None:
+        self.assertNotContains(
+            self.client.get(reverse("admin:login"), HTTP_X_FORWARDED_PROTO="https"),
+            "data-web-vitals-page=",
+        )
+
+        draft = self.make_event(
+            name="Preview", slug="preview", publication_status=Event.PublicationStatus.DRAFT
+        )
+        staff = get_user_model().objects.create_user(username="vitals-staff", is_staff=True)
+        self.client.force_login(staff)
+        self.assertNotContains(
+            self.client.get(reverse("event_catalog"), HTTP_X_FORWARDED_PROTO="https"),
+            "data-web-vitals-page=",
+        )
+        self.assertNotContains(
+            self.client.get(
+                reverse("event_detail", kwargs={"slug": draft.slug}), HTTP_X_FORWARDED_PROTO="https"
+            ),
+            "data-web-vitals-page=",
+        )
+
+    def test_web_vitals_tracks_event_page_when_gallery_is_unavailable(self) -> None:
+        event = self.make_event(access_type=Event.AccessType.PAID)
+        with override_feature_flags(
+            {
+                PAID_EVENTS: FEATURE_FLAG_ON,
+                PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_OFF,
+                WEB_VITALS: FEATURE_FLAG_ON,
+            }
+        ):
+            response = self.client.get(
+                reverse("event_detail", kwargs={"slug": event.slug}), HTTP_X_FORWARDED_PROTO="https"
+            )
+        self.assertContains(response, 'data-web-vitals-page="gallery"')
+
+    @override_feature_flags({WEB_VITALS: FEATURE_FLAG_ON})
+    def test_web_vitals_tracks_detail_when_invalid_filter_hides_gallery(self) -> None:
+        event = self.make_event(bib_search_enabled=True)
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": event.slug}),
+            {"bib": "１２３"},
+            HTTP_X_FORWARDED_PROTO="https",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context["gallery_page"])
+        self.assertNotContains(response, 'class="event-gallery"')
+        self.assertContains(response, 'data-web-vitals-page="gallery"')
+
+    @override_feature_flags(
+        {
+            PAID_EVENTS: FEATURE_FLAG_ON,
+            PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_ON,
+            PAID_PHOTO_CART: FEATURE_FLAG_ON,
+            PAID_PHOTO_PURCHASE: FEATURE_FLAG_ON,
+            WEB_VITALS: FEATURE_FLAG_ON,
+        }
+    )
+    def test_web_vitals_tracks_public_commerce_entry_pages(self) -> None:
+        event = self.make_event(access_type=Event.AccessType.PAID)
+        cart = self.client.get(
+            reverse("commerce:detail", kwargs={"event_slug": event.slug}),
+            HTTP_X_FORWARDED_PROTO="https",
+        )
+        orders = self.client.get(reverse("commerce:order_list"), HTTP_X_FORWARDED_PROTO="https")
+        self.assertContains(cart, 'data-web-vitals-page="cart"')
+        self.assertContains(orders, 'data-web-vitals-page="orders"')
 
     def test_catalog_and_detail_apply_the_shared_publication_matrix(self) -> None:
         published = self.make_event()

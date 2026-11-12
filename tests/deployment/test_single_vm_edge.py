@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 IMAGE = "nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
 
 
-def request(port, path, host, tls=False, headers=None):
+def request(port, path, host, tls=False, headers=None, *, method="GET", body=None):
     conn = (
         http.client.HTTPSConnection(
             "127.0.0.1", port, context=ssl._create_unverified_context(), timeout=5
@@ -20,7 +20,7 @@ def request(port, path, host, tls=False, headers=None):
         if tls
         else http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     )
-    conn.request("GET", path, headers={"Host": host, **(headers or {})})
+    conn.request(method, path, body=body, headers={"Host": host, **(headers or {})})
     response = conn.getresponse()
     result = response.status, response.getheader("Location"), response.read()
     conn.close()
@@ -55,6 +55,8 @@ def test_edge_bootstrap_and_tls_routing(tmp_path: Path, tls: bool) -> None:
         "server { listen 8000; access_log off; "
         "location = /health/ { if ($host != localhost) { return 400; } "
         "if ($arg_down = 1) { return 503; } return 200; } "
+        "location = /telemetry/web-vitals/ { "
+        "if ($http_x_forwarded_proto != https) { return 400; } return 204; } "
         "location = /admin/login/ { return 200; } }"
     )
     if tls:
@@ -123,6 +125,8 @@ def test_edge_bootstrap_and_tls_routing(tmp_path: Path, tls: bool) -> None:
         assert (
             request(http_port, "/internal/photo-processing/v1/claim", "findme-photo.ru")[0] == 404
         )
+        telemetry = "/telemetry/web-vitals/"
+        assert request(http_port, telemetry, "findme-photo.ru", method="POST", body=b"{}")[0] == 404
         assert request(health_port, "/", "localhost")[0] == 404
         assert request(health_port, "/health/", "nlb.invalid")[0] == 200
         assert request(health_port, "/health/?down=1", "nlb.invalid")[0] == 503
@@ -132,6 +136,25 @@ def test_edge_bootstrap_and_tls_routing(tmp_path: Path, tls: bool) -> None:
             assert request(http_port, "/", "findme-photo.ru")[1] == "https://findme-photo.ru/"
             assert request(https_port, "/health/", "findme-photo.ru", True)[0] == 400
             assert request(https_port, "/internal/x", "findme-photo.ru", True)[0] == 404
+            assert (
+                request(https_port, telemetry, "findme-photo.ru", True, method="POST", body=b"{}")[
+                    0
+                ]
+                == 204
+            )
+            assert (
+                request(
+                    https_port, telemetry, "findme-photo.ru", True, method="POST", body=b"x" * 1025
+                )[0]
+                == 413
+            )
+            burst_statuses = {
+                request(https_port, telemetry, "findme-photo.ru", True, method="POST", body=b"{}")[
+                    0
+                ]
+                for _ in range(24)
+            }
+            assert burst_statuses == {204, 429}
             code, headers = private_response(
                 https_port, "/admin/login/?next=/admin/", "findme-photo.ru", True
             )

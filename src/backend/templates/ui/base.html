@@ -80,6 +80,10 @@
       <button class="button" type="button" data-cookie-notice-accept>OK</button>
     </aside>
     <script src="{% static 'ui/cookie-notice.js' %}" defer></script>
+    {% if web_vitals_page %}
+      <script src="{% static 'ui/web-vitals.iife.js' %}" defer></script>
+      <script src="{% static 'ui/web-vitals-telemetry.js' %}" data-web-vitals-page="{{ web_vitals_page }}" defer></script>
+    {% endif %}
     {% block extra_js %}{% endblock %}
   </body>
 </html>

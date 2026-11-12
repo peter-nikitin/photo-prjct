@@ -79,7 +79,12 @@ def _photo(now: datetime) -> QueueSample | None:
         ),
     )
     values = ready.aggregate(count=Count("pk"), oldest=Min("available_at"))
-    success = jobs.filter(status="succeeded").aggregate(last=Max("completed_at"))["last"]
+    success = (
+        jobs.filter(status="succeeded", completed_at__isnull=False)
+        .order_by("-completed_at")
+        .values_list("completed_at", flat=True)
+        .first()
+    )
     return _sample(values["count"], values["oldest"], success, now)
 
 

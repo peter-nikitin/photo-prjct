@@ -79,4 +79,25 @@ run "one_recovery_host" {
     condition     = strcontains(yandex_compute_instance.app.metadata["user-data"], "name: deploy") && strcontains(yandex_compute_instance.app.metadata["user-data"], "name: petrnikitin") && yandex_compute_instance.app.metadata["enable-oslogin"] == "false"
     error_message = "Cloud-init must provision both separate key-only SSH identities with OS Login disabled."
   }
+
+  assert {
+    condition = (
+      yandex_function.public_probe.service_account_id == yandex_iam_service_account.public_probe.id &&
+      yandex_function.public_probe.service_account_id != yandex_iam_service_account.backup_agent.id &&
+      yandex_function.public_probe.memory <= 128 &&
+      tonumber(yandex_function.public_probe.execution_timeout) <= 20 &&
+      toset(keys(yandex_function.public_probe.environment)) == toset(["PROMETHEUS_WORKSPACE_ID"])
+    )
+    error_message = "The public checker must use its own identity and reviewed resource bounds without VM/database credentials."
+  }
+
+  assert {
+    condition = (
+      yandex_function_iam_binding.public_probe_invoker.function_id == yandex_function.public_probe.id &&
+      yandex_function_iam_binding.public_probe_invoker.members == toset(["serviceAccount:${yandex_iam_service_account.public_probe.id}"]) &&
+      yandex_function_trigger.public_probe.function[0].id == yandex_function.public_probe.id &&
+      yandex_function_trigger.public_probe.function[0].service_account_id == yandex_iam_service_account.public_probe.id
+    )
+    error_message = "The timer must invoke only the private checker through the specifically granted service identity."
+  }
 }

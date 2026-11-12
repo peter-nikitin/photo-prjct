@@ -71,7 +71,9 @@ Require fresh points roughly every minute, liveness one for the enabled worker, 
 an empty ready queue. Compare against the read-only management command for a non-empty queue.
 Missing observation is **No data**, not proof that the worker died. Liveness monitoring treats
 missing data as requiring attention; the age alert cannot diagnose queue age without an observation.
-See `deploy/monitoring/alerts.md` for the alert selectors, thresholds and No data policy.
+Текущие критические правила находятся в `deploy/monitoring/prometheus/rules.yml`. Старый
+нативный collector из этой исторической процедуры не является источником текущего алерта:
+готовая работа Commerce наблюдается приватным endpoint приложения вместе с другими очередями.
 
 ## Disable and recovery
 

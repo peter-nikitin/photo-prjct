@@ -73,6 +73,55 @@ class CloudTransport:
         # Its channel factory retains SDK TLS/IAM handling without patching that registry.
         self.dashboard = DashboardServiceStub(self.sdk._channels.channel("monitoring"))
 
+    def _extensions(
+        self, method: str, suffix: str, *, payload: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        import requests
+
+        url = (
+            API
+            + "/prometheus/workspaces/"
+            + self.config["workspace_id"]
+            + "/extensions/v1/"
+            + suffix
+        )
+        try:
+            response = self.session.request(
+                method,
+                url,
+                headers={"Authorization": "Bearer " + self.token},
+                json=payload,
+                timeout=30,
+            )
+            expected = 204 if method == "PUT" else 200
+            if response.status_code != expected:
+                raise ControlError(
+                    f"Prometheus extensions {method} failed (HTTP {response.status_code})"
+                )
+            return response.json() if method == "GET" else {}
+        except requests.RequestException:
+            raise ControlError("Prometheus extensions request failed") from None
+
+    def rule_file(self, name: str) -> dict[str, Any]:
+        return self._extensions("GET", "rules/" + name)
+
+    def put_rule_file(self, name: str, content: bytes) -> None:
+        import base64
+
+        self._extensions(
+            "PUT", "rules", payload={"name": name, "content": base64.b64encode(content).decode()}
+        )
+
+    def rule_snapshots(self, name: str) -> dict[str, Any]:
+        return self._extensions("GET", "rules/" + name + "/snapshots")
+
+    def put_alertmanager(self, content: bytes) -> None:
+        import base64
+
+        self._extensions(
+            "PUT", "alertmanager", payload={"content": base64.b64encode(content).decode()}
+        )
+
     def read_samples(
         self, selectors: list[dict[str, str]], *, now: float | None = None
     ) -> list[list[list[tuple[float, float]]]]:

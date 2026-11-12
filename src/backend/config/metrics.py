@@ -75,6 +75,13 @@ ACCEPTED_PREVIEWS = Counter(
 )
 
 
+def collect_queue_samples() -> dict[str, tuple[int, float, float, float]]:
+    # Metrics are imported by Gunicorn before Django has populated its app registry.
+    from config.queue_metrics import collect_queue_samples as collect
+
+    return collect()
+
+
 def observe_accepted_preview() -> None:
     ACCEPTED_PREVIEWS.inc()
 
@@ -189,6 +196,25 @@ def generate_metrics() -> bytes:
                 f"{queue_seconds}",
                 'findme_gallery_search_phase_duration_seconds_total{phase="processing"} '
                 f"{processing_seconds}",
+            )
+        )
+    lines.extend(
+        (
+            "# TYPE findme_queue_ready_count gauge",
+            "# TYPE findme_queue_oldest_ready_age_seconds gauge",
+            "# TYPE findme_queue_last_success_timestamp_seconds gauge",
+            "# TYPE findme_queue_observed_timestamp_seconds gauge",
+        )
+    )
+    for queue, (count, age, success_at, observed_at) in (
+        collect_queue_samples().items() if success else ()
+    ):
+        lines.extend(
+            (
+                f'findme_queue_ready_count{{queue="{queue}"}} {count}',
+                f'findme_queue_oldest_ready_age_seconds{{queue="{queue}"}} {age}',
+                f'findme_queue_last_success_timestamp_seconds{{queue="{queue}"}} {success_at}',
+                f'findme_queue_observed_timestamp_seconds{{queue="{queue}"}} {observed_at}',
             )
         )
     return generate_latest(registry) + ("\n".join(lines) + "\n").encode()

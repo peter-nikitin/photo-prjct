@@ -76,7 +76,7 @@ ADR фиксирует долговременный выбор, причины, 
 | 0049 | [Retire local photo-worker recovery after remote acceptance](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md) | Accepted |
 | 0050 | [Decouple processing jobs and attempts from worker builds](0050-decouple-processing-queue-from-worker-builds.md) | Accepted |
 | 0051 | [Publish changed images and activate them from CI](0051-release-photo-worker-images-independently.md) | Accepted |
-| 0052 | [Notify only on actionable service degradation](0052-notify-only-on-actionable-service-degradation.md) | Accepted |
+| 0052 | [Уведомлять только об ухудшении работы сервиса, требующем вмешательства](0052-notify-only-on-actionable-service-degradation.md) | Accepted |
 | 0053 | [Reconcile observability independently on main](0053-reconcile-observability-independently-on-main.md) | Accepted |
 | 0054 | [Retire SFace and fix the AdaFace vector dimension](0054-retire-sface-and-fix-adaface-vector-dimension.md) | Accepted |
 | 0055 | [Хранить принятые решения, а не рабочие спецификации и планы](0055-keep-accepted-decisions-not-working-documents.md) | Accepted |
@@ -85,3 +85,4 @@ ADR фиксирует долговременный выбор, причины, 
 | 0058 | [Сохранять публичный адрес при изменении вычислительных ресурсов](0058-stable-public-entrypoint-nlb.md) | Accepted |
 | 0063 | [Воспроизводить конфигурацию ОС из кода и выпускать её через общий пайплайн](0063-repeatable-host-configuration.md) | Accepted |
 | 0064 | [Выполнять поиск по фотографии галереи через очередь PostgreSQL](0064-queue-gallery-photo-search.md) | Accepted |
+| 0065 | [Проверять публичную доступность вне VM бессерверной функцией](0065-run-public-probe-as-serverless-function.md) | Proposed |

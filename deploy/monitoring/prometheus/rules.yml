@@ -1,0 +1,112 @@
+groups:
+  - name: findme-critical
+    interval: 1m
+    rules:
+      - alert: PublicServiceUnavailable
+        expr: |
+          findme_probe_success{check="canonical-health"} == 0
+          and on(check,instance)
+          (time() - findme_probe_observed_timestamp_seconds{check="canonical-health"} >= 0)
+          and on(check,instance)
+          (time() - findme_probe_observed_timestamp_seconds{check="canonical-health"} < 300)
+        for: 3m
+        labels:
+          severity: critical
+          project: findme-photo
+          notification: actionable
+          incident: availability
+        annotations:
+          summary: "Публичный HTTPS сервис недоступен"
+          description: "Проверка canonical-health не проходит не менее 3 минут."
+      - alert: Application5xxDegradation
+        expr: |
+          sum by(instance) (increase(findme_http_requests_total{status_class="5xx",route!~"^(health|metrics|worker_diagnostic_metrics|payment_notification|admin_processing_progress|processing_.*|import_worker_.*|admin:.*)$"}[5m]))
+          /
+          sum by(instance) (increase(findme_http_requests_total{route!~"^(health|metrics|worker_diagnostic_metrics|payment_notification|admin_processing_progress|processing_.*|import_worker_.*|admin:.*)$"}[5m])) > 0.20
+          and on(instance)
+          sum by(instance) (increase(findme_http_requests_total{route!~"^(health|metrics|worker_diagnostic_metrics|payment_notification|admin_processing_progress|processing_.*|import_worker_.*|admin:.*)$"}[5m])) >= 5
+        for: 5m
+        labels:
+          severity: critical
+          project: findme-photo
+          notification: actionable
+          incident: application
+        annotations:
+          summary: "Устойчивые ошибки HTTP 5xx на пользовательских маршрутах"
+          description: "Более 20% из как минимум 5 запросов за 5 минут завершились 5xx."
+      - alert: ApplicationLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum by(le,instance) (rate(findme_http_request_duration_seconds_bucket{route!~"^(health|metrics|worker_diagnostic_metrics|payment_notification|admin_processing_progress|processing_.*|import_worker_.*|admin:.*)$"}[5m]))
+          ) > 3
+          and on(instance)
+          sum by(instance) (increase(findme_http_request_duration_seconds_count{route!~"^(health|metrics|worker_diagnostic_metrics|payment_notification|admin_processing_progress|processing_.*|import_worker_.*|admin:.*)$"}[5m])) >= 5
+        for: 5m
+        labels:
+          severity: critical
+          project: findme-photo
+          notification: actionable
+          incident: application
+        annotations:
+          summary: "Высокое время ответа пользовательских маршрутов"
+          description: "p95 выше 3 секунд при как минимум 5 запросах за 5 минут."
+      - alert: DatabaseUnavailableToDjango
+        expr: |
+          findme_db_usable == 0
+          and on(instance) (time() - findme_db_check_timestamp_seconds >= 0)
+          and on(instance) (time() - findme_db_check_timestamp_seconds < 300)
+        for: 3m
+        labels:
+          severity: critical
+          project: findme-photo
+          notification: actionable
+          incident: availability
+        annotations:
+          summary: "Django не может использовать PostgreSQL"
+          description: "Свежая SQL-проверка приложения не проходит не менее 3 минут."
+      - alert: DiskSpaceCritical
+        expr: |
+          (
+            sys_filesystem_FreeB{instance="findme-photo-app",mountpoint=~"^(/|/var/lib/findme-photo)$"} < 1073741824
+            or
+            sys_filesystem_FreeB{instance="findme-photo-app",mountpoint=~"^(/|/var/lib/findme-photo)$"}
+            / on(instance,mountpoint) sys_filesystem_SizeB{instance="findme-photo-app",mountpoint=~"^(/|/var/lib/findme-photo)$"} < 0.05
+          )
+          and on(instance,mountpoint)
+          (time() - timestamp(sys_filesystem_FreeB{instance="findme-photo-app",mountpoint=~"^(/|/var/lib/findme-photo)$"}) >= 0)
+          and on(instance,mountpoint)
+          (time() - timestamp(sys_filesystem_FreeB{instance="findme-photo-app",mountpoint=~"^(/|/var/lib/findme-photo)$"}) < 300)
+          and on(instance,mountpoint)
+          (time() - timestamp(sys_filesystem_SizeB{instance="findme-photo-app",mountpoint=~"^(/|/var/lib/findme-photo)$"}) >= 0)
+          and on(instance,mountpoint)
+          (time() - timestamp(sys_filesystem_SizeB{instance="findme-photo-app",mountpoint=~"^(/|/var/lib/findme-photo)$"}) < 300)
+        for: 5m
+        labels:
+          severity: critical
+          project: findme-photo
+          notification: actionable
+          incident: disk
+        annotations:
+          summary: "Критический остаток места на {{ $labels.mountpoint }}"
+          description: "На {{ $labels.mountpoint }} свободно менее 1 GiB или менее 5%."
+      - alert: ReadyWorkStalled
+        expr: |
+          (
+            (findme_queue_oldest_ready_age_seconds{queue=~"^(gallery-search|selfie)$"} > 300
+             and on(queue,instance) (time() - findme_queue_last_success_timestamp_seconds{queue=~"^(gallery-search|selfie)$"} > 300))
+            or
+            (findme_queue_oldest_ready_age_seconds{queue=~"^(photo|import|commerce)$"} > 900
+             and on(queue,instance) (time() - findme_queue_last_success_timestamp_seconds{queue=~"^(photo|import|commerce)$"} > 900))
+          )
+          and on(queue,instance) (findme_queue_ready_count > 0)
+          and on(queue,instance) (time() - findme_queue_observed_timestamp_seconds >= 0)
+          and on(queue,instance) (time() - findme_queue_observed_timestamp_seconds < 300)
+        for: 5m
+        labels:
+          severity: critical
+          project: findme-photo
+          notification: actionable
+          incident: queue
+        annotations:
+          summary: "Очередь {{ $labels.queue }} не продвигается"
+          description: "Готовая работа ожидает дольше порога без успешного прогресса."

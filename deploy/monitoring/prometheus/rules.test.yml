@@ -1,0 +1,307 @@
+rule_files:
+  - rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'findme_probe_success{check="canonical-health",instance="findme-photo-app"}'
+        values: '1 1 0 0 0 0 0 0 0 0'
+      - series: 'findme_probe_observed_timestamp_seconds{check="canonical-health",instance="findme-photo-app"}'
+        values: '0+60x9'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PublicServiceUnavailable
+        exp_alerts:
+          - exp_labels:
+              check: canonical-health
+              instance: findme-photo-app
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: availability
+            exp_annotations:
+              summary: Публичный HTTPS сервис недоступен
+              description: Проверка canonical-health не проходит не менее 3 минут.
+  - interval: 1m
+    input_series:
+      - series: 'findme_probe_success{check="canonical-health",instance="findme-photo-app"}'
+        values: '1 0 1 1 1 1 1'
+      - series: 'findme_probe_observed_timestamp_seconds{check="canonical-health",instance="findme-photo-app"}'
+        values: '0+60x6'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PublicServiceUnavailable
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_probe_success{check="canonical-health",instance="findme-photo-app"}'
+        values: '0+0x10'
+      - series: 'findme_probe_observed_timestamp_seconds{check="canonical-health",instance="findme-photo-app"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PublicServiceUnavailable
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_probe_success{check="canonical-health",instance="findme-photo-app"}'
+        values: '0+0x10'
+      - series: 'findme_probe_observed_timestamp_seconds{check="canonical-health",instance="other"}'
+        values: '0+60x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PublicServiceUnavailable
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_probe_success{check="canonical-health",instance="findme-photo-app"}'
+        values: '0+0x10'
+      - series: 'findme_probe_observed_timestamp_seconds{check="canonical-health",instance="findme-photo-app"}'
+        values: '6000+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PublicServiceUnavailable
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_http_requests_total{instance="findme-photo-app",route="event_detail",method="GET",status_class="5xx"}'
+        values: '0+1x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: Application5xxDegradation
+        exp_alerts:
+          - exp_labels:
+              instance: findme-photo-app
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: application
+            exp_annotations:
+              summary: Устойчивые ошибки HTTP 5xx на пользовательских маршрутах
+              description: Более 20% из как минимум 5 запросов за 5 минут завершились 5xx.
+  - interval: 1m
+    input_series:
+      - series: 'findme_http_requests_total{instance="findme-photo-app",route="processing_claim",method="POST",status_class="5xx"}'
+        values: '0+1x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: Application5xxDegradation
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_http_requests_total{instance="findme-photo-app",route="admin_processing_progress",method="GET",status_class="5xx"}'
+        values: '0+1x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: Application5xxDegradation
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_http_requests_total{instance="findme-photo-app",route="event_detail",method="GET",status_class="5xx"}'
+        values: '0 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: Application5xxDegradation
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_http_requests_total{instance="findme-photo-app",route="event_detail",method="GET",status_class="2xx"}'
+        values: '0+0x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: Application5xxDegradation
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_http_request_duration_seconds_bucket{instance="findme-photo-app",route="event_detail",method="GET",status_class="2xx",le="1"}'
+        values: '0+0x12'
+      - series: 'findme_http_request_duration_seconds_bucket{instance="findme-photo-app",route="event_detail",method="GET",status_class="2xx",le="3"}'
+        values: '0+0x12'
+      - series: 'findme_http_request_duration_seconds_bucket{instance="findme-photo-app",route="event_detail",method="GET",status_class="2xx",le="5"}'
+        values: '0+1x12'
+      - series: 'findme_http_request_duration_seconds_bucket{instance="findme-photo-app",route="event_detail",method="GET",status_class="2xx",le="+Inf"}'
+        values: '0+1x12'
+      - series: 'findme_http_request_duration_seconds_count{instance="findme-photo-app",route="event_detail",method="GET",status_class="2xx"}'
+        values: '0+1x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ApplicationLatencyHigh
+        exp_alerts:
+          - exp_labels:
+              instance: findme-photo-app
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: application
+            exp_annotations:
+              summary: Высокое время ответа пользовательских маршрутов
+              description: p95 выше 3 секунд при как минимум 5 запросах за 5 минут.
+  - interval: 1m
+    input_series:
+      - series: 'findme_http_request_duration_seconds_bucket{instance="findme-photo-app",route="admin_processing_progress",method="GET",status_class="2xx",le="1"}'
+        values: '0+0x12'
+      - series: 'findme_http_request_duration_seconds_bucket{instance="findme-photo-app",route="admin_processing_progress",method="GET",status_class="2xx",le="3"}'
+        values: '0+0x12'
+      - series: 'findme_http_request_duration_seconds_bucket{instance="findme-photo-app",route="admin_processing_progress",method="GET",status_class="2xx",le="5"}'
+        values: '0+1x12'
+      - series: 'findme_http_request_duration_seconds_bucket{instance="findme-photo-app",route="admin_processing_progress",method="GET",status_class="2xx",le="+Inf"}'
+        values: '0+1x12'
+      - series: 'findme_http_request_duration_seconds_count{instance="findme-photo-app",route="admin_processing_progress",method="GET",status_class="2xx"}'
+        values: '0+1x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ApplicationLatencyHigh
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_db_usable{instance="findme-photo-app"}'
+        values: '0+0x6'
+      - series: 'findme_db_check_timestamp_seconds{instance="findme-photo-app"}'
+        values: '0+60x6'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DatabaseUnavailableToDjango
+        exp_alerts:
+          - exp_labels:
+              instance: findme-photo-app
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: availability
+            exp_annotations:
+              summary: Django не может использовать PostgreSQL
+              description: Свежая SQL-проверка приложения не проходит не менее 3 минут.
+  - interval: 1m
+    input_series:
+      - series: 'findme_db_usable{instance="findme-photo-app"}'
+        values: '0+0x10'
+      - series: 'findme_db_check_timestamp_seconds{instance="findme-photo-app"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DatabaseUnavailableToDjango
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'sys_filesystem_FreeB{instance="findme-photo-app",mountpoint="/"}'
+        values: '500000000+0x12'
+      - series: 'sys_filesystem_SizeB{instance="findme-photo-app",mountpoint="/"}'
+        values: '100000000000+0x12'
+      - series: 'sys_filesystem_FreeB{instance="findme-photo-app",mountpoint="/var/lib/findme-photo"}'
+        values: '2000000000+0x12'
+      - series: 'sys_filesystem_SizeB{instance="findme-photo-app",mountpoint="/var/lib/findme-photo"}'
+        values: '100000000000+0x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DiskSpaceCritical
+        exp_alerts:
+          - exp_labels:
+              instance: findme-photo-app
+              mountpoint: /
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: disk
+            exp_annotations:
+              summary: Критический остаток места на /
+              description: На / свободно менее 1 GiB или менее 5%.
+          - exp_labels:
+              instance: findme-photo-app
+              mountpoint: /var/lib/findme-photo
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: disk
+            exp_annotations:
+              summary: Критический остаток места на /var/lib/findme-photo
+              description: На /var/lib/findme-photo свободно менее 1 GiB или менее 5%.
+  - interval: 1m
+    input_series:
+      - series: 'findme_queue_ready_count{queue="gallery-search",instance="findme-photo-app"}'
+        values: '1+0x12'
+      - series: 'findme_queue_oldest_ready_age_seconds{queue="gallery-search",instance="findme-photo-app"}'
+        values: '0+60x12'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
+        values: '0+0x12'
+      - series: 'findme_queue_observed_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
+        values: '0+60x12'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ReadyWorkStalled
+        exp_alerts:
+          - exp_labels:
+              queue: gallery-search
+              instance: findme-photo-app
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: queue
+            exp_annotations:
+              summary: Очередь gallery-search не продвигается
+              description: Готовая работа ожидает дольше порога без успешного прогресса.
+  - interval: 1m
+    input_series:
+      - series: 'findme_queue_ready_count{queue="selfie",instance="findme-photo-app"}'
+        values: '0+0x12'
+      - series: 'findme_queue_oldest_ready_age_seconds{queue="selfie",instance="findme-photo-app"}'
+        values: '0+0x12'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="selfie",instance="findme-photo-app"}'
+        values: '0+0x12'
+      - series: 'findme_queue_observed_timestamp_seconds{queue="selfie",instance="findme-photo-app"}'
+        values: '0+60x12'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ReadyWorkStalled
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_queue_ready_count{queue="gallery-search",instance="findme-photo-app"}'
+        values: '1+0x12'
+      - series: 'findme_queue_oldest_ready_age_seconds{queue="gallery-search",instance="findme-photo-app"}'
+        values: '0+60x12'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
+        values: '0+0x12'
+      - series: 'findme_queue_observed_timestamp_seconds{queue="gallery-search",instance="other"}'
+        values: '0+60x12'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ReadyWorkStalled
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_queue_ready_count{queue="photo",instance="findme-photo-app"}'
+        values: '1+0x22'
+      - series: 'findme_queue_oldest_ready_age_seconds{queue="photo",instance="findme-photo-app"}'
+        values: '0+60x22'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="photo",instance="findme-photo-app"}'
+        values: '0+60x22'
+      - series: 'findme_queue_observed_timestamp_seconds{queue="photo",instance="findme-photo-app"}'
+        values: '0+60x22'
+    alert_rule_test:
+      - eval_time: 22m
+        alertname: ReadyWorkStalled
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'findme_queue_ready_count{queue="import",instance="findme-photo-app"}'
+        values: '1+0x22'
+      - series: 'findme_queue_oldest_ready_age_seconds{queue="import",instance="findme-photo-app"}'
+        values: '0+60x22'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="import",instance="findme-photo-app"}'
+        values: '0+0x22'
+      - series: 'findme_queue_observed_timestamp_seconds{queue="import",instance="findme-photo-app"}'
+        values: '0+60x22'
+    alert_rule_test:
+      - eval_time: 22m
+        alertname: ReadyWorkStalled
+        exp_alerts:
+          - exp_labels:
+              queue: import
+              instance: findme-photo-app
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: queue
+            exp_annotations:
+              summary: Очередь import не продвигается
+              description: Готовая работа ожидает дольше порога без успешного прогресса.

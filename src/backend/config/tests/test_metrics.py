@@ -120,6 +120,42 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
 
 
 class MultiprocessMetricsTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        queue_patch = patch("config.metrics.collect_queue_samples", return_value={})
+        queue_patch.start()
+        self.addCleanup(queue_patch.stop)
+
+    @patch("config.metrics.collect_queue_samples")
+    @patch("config.metrics.psycopg.connect")
+    def test_queue_samples_have_bounded_labels_and_keep_successful_sources(self, connect, collect):
+        from config.metrics import generate_metrics
+
+        connection = connect.return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.side_effect = [
+            (1,),
+            (0, 0, 0, 0, 0, 0, 0, 97),
+            (0, 0, None, 0, 200_000_000),
+            (0,),
+            (0, 0, 0.0, 0.0),
+        ]
+        collect.return_value = {
+            "gallery-search": (2, 310.0, 0.0, 1_000.0),
+            "selfie": (0, 0.0, 950.0, 1_000.0),
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"PROMETHEUS_MULTIPROC_DIR": directory}),
+        ):
+            output = generate_metrics().decode()
+        self.assertIn('findme_queue_ready_count{queue="gallery-search"} 2', output)
+        self.assertIn('findme_queue_oldest_ready_age_seconds{queue="gallery-search"} 310.0', output)
+        self.assertIn('findme_queue_last_success_timestamp_seconds{queue="selfie"} 950.0', output)
+        self.assertIn(
+            'findme_queue_observed_timestamp_seconds{queue="gallery-search"} 1000.0', output
+        )
+        self.assertNotIn('queue="photo"', output)
+
     @patch("config.metrics.psycopg.connect")
     def test_database_check_uses_app_credentials_and_exports_fresh_success(self, connect) -> None:
         from config.metrics import generate_metrics
@@ -504,6 +540,198 @@ class GallerySearchMetricsTests(TransactionTestCase):
         values = self.samples()
         self.assertEqual(len(values), 4)
         self.assertEqual(set(values.values()), {0})
+
+    def test_ready_gallery_observation_excludes_future_retry_and_uses_durable_success(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from selfie_search.models import SelfieSearch
+
+        from config.queue_metrics import collect_queue_samples
+
+        now = timezone.now()
+        ready = self.search()
+        SelfieSearch.objects.filter(pk=ready.pk).update(
+            gallery_available_at=now - timedelta(minutes=7)
+        )
+        future = self.search()
+        SelfieSearch.objects.filter(pk=future.pk).update(
+            gallery_available_at=now + timedelta(minutes=5)
+        )
+        done = self.search(status="ready", terminal=now - timedelta(minutes=1))
+        sample = collect_queue_samples()["gallery-search"]
+        self.assertEqual(sample[0], 1)
+        self.assertGreaterEqual(sample[1], 420)
+        self.assertAlmostEqual(sample[2], done.terminal_at.timestamp(), delta=0.1)
+
+    def test_import_observation_respects_owner_permission_and_feature_gate(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Permission
+        from feature_flags.models import FeatureFlag
+        from ingestion.models import ImportBatch
+
+        from config.queue_metrics import collect_queue_samples
+
+        owner = get_user_model().objects.create_user(username="metrics-import-owner")
+        batch = ImportBatch.objects.create(
+            owner=owner,
+            event=self.event,
+            submitted_source_key="public-folder",
+            submission_key="metrics-import",
+        )
+        flag, _ = FeatureFlag.objects.update_or_create(
+            key="yandex-disk-import",
+            defaults={"description": "Import", "state": "on"},
+        )
+        self.assertEqual(collect_queue_samples()["import"][0], 0)
+        owner.user_permissions.add(Permission.objects.get(codename="upload_photos"))
+        self.assertEqual(collect_queue_samples()["import"][0], 1)
+        flag.state = "off"
+        flag.save(update_fields=["state"])
+        self.assertEqual(collect_queue_samples()["import"][0], 0)
+        self.assertEqual(batch.status, "queued")
+
+    def test_failed_queue_observation_omits_only_that_queue(self):
+        from django.db import DatabaseError
+
+        from config.queue_metrics import collect_queue_samples
+
+        with patch("config.queue_metrics._gallery", side_effect=DatabaseError("private")):
+            samples = collect_queue_samples()
+        self.assertNotIn("gallery-search", samples)
+        self.assertIn("commerce", samples)
+        self.assertEqual(samples["commerce"][:3], (0, 0.0, 0.0))
+
+    def test_observation_restores_outer_transaction_statement_timeout(self):
+        from django.db import connection, transaction
+
+        from config.queue_metrics import collect_queue_samples
+
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL statement_timeout = 7000")
+                cursor.execute("SHOW statement_timeout")
+                before = cursor.fetchone()[0]
+            collect_queue_samples()
+            with connection.cursor() as cursor:
+                cursor.execute("SHOW statement_timeout")
+                after = cursor.fetchone()[0]
+        self.assertEqual(before, after)
+
+    @override_settings(PHOTO_PROCESSING_ENABLED=False)
+    def test_disabled_processing_queues_publish_explicit_nonrunnable_zero(self):
+        from config.queue_metrics import collect_queue_samples
+
+        samples = collect_queue_samples()
+        self.assertEqual(samples["selfie"][:3], (0, 0.0, 0.0))
+        self.assertEqual(samples["photo"][:3], (0, 0.0, 0.0))
+
+    @override_settings(
+        PHOTO_PROCESSING_ENABLED=True,
+        PHOTO_PROCESSING_FACE_ENABLED=False,
+        PHOTO_PROCESSING_PREVIEW_ENABLED=False,
+    )
+    def test_existing_photo_jobs_remain_ready_when_enrollment_flags_turn_off(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from picflow.models import Photo
+        from processing.models import EventProcessingRun, PhotoProcessingState, ProcessingJob
+
+        from config.queue_metrics import collect_queue_samples
+
+        for index, (contract, processor, version) in enumerate(
+            ((3, "face_embedding", 5), (2, "generate_preview", 1))
+        ):
+            photo = Photo.objects.create(
+                id=f"metrics-photo-{index}", event=self.event, src="https://example.test/photo.jpg"
+            )
+            run = EventProcessingRun.objects.create(
+                event=self.event,
+                contract_version=contract,
+                processor_type=processor,
+                processor_version=version,
+                configuration_hash="a" * 64,
+                status="collecting",
+            )
+            job = ProcessingJob.objects.create(
+                event=self.event,
+                photo=photo,
+                run=run,
+                contract_version=contract,
+                processor_type=processor,
+                processor_version=version,
+                configuration_hash="a" * 64,
+                available_at=timezone.now() - timedelta(minutes=10),
+            )
+            PhotoProcessingState.objects.create(
+                photo=photo,
+                processor_type=processor,
+                status="queued",
+                current_run=run,
+                current_job=job,
+            )
+        self.assertEqual(collect_queue_samples()["photo"][0], 2)
+
+    def test_expired_import_file_lease_is_ready_for_immediate_reclaim(self):
+        from datetime import timedelta
+
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Permission
+        from django.utils import timezone
+        from feature_flags.models import FeatureFlag
+        from ingestion.models import ImportAttempt, ImportBatch, ImportItem
+        from ingestion.services.imports import claim_import_work
+
+        from config.queue_metrics import collect_queue_samples
+
+        now = timezone.now()
+        owner = get_user_model().objects.create_user(username="metrics-reclaim-owner")
+        owner.user_permissions.add(Permission.objects.get(codename="upload_photos"))
+        FeatureFlag.objects.update_or_create(
+            key="yandex-disk-import", defaults={"description": "Import", "state": "on"}
+        )
+        for index, (status, expires_at, attempts) in enumerate(
+            (
+                ("claimed", now - timedelta(minutes=1), 1),
+                ("uploading", now + timedelta(minutes=1), 1),
+                ("claimed", now - timedelta(minutes=1), 4),
+            )
+        ):
+            batch = ImportBatch.objects.create(
+                owner=owner,
+                event=self.event,
+                submitted_source_key=f"folder-{index}",
+                submission_key=f"reclaim-{index}",
+                status="transferring",
+                manifest_complete=True,
+                last_activity_at=now - timedelta(minutes=20),
+            )
+            item = ImportItem.objects.create(
+                batch=batch,
+                source_path=f"photo-{index}.jpg",
+                filename=f"photo-{index}.jpg",
+                byte_size=1,
+                status=status,
+                download_attempts=attempts,
+            )
+            if index == 0:
+                reclaimable_item_id = item.id
+            ImportAttempt.objects.create(
+                batch=batch,
+                item=item,
+                kind="file",
+                status="active",
+                claimed_at=now - timedelta(minutes=5),
+                heartbeat_at=now - timedelta(minutes=5),
+                lease_expires_at=expires_at,
+            )
+        sample = collect_queue_samples()["import"]
+        self.assertEqual(sample[0], 1)
+        self.assertGreaterEqual(sample[1], 60)
+        self.assertLess(sample[1], 120)
+        claim = claim_import_work(now=now)
+        self.assertEqual((claim.kind, claim.item_id), ("file", reclaimable_item_id))
 
     def test_actual_gallery_completion_exports_both_measured_phases(self):
         from django.contrib.auth import get_user_model

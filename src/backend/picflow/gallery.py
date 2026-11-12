@@ -7,7 +7,7 @@ from typing import Final, Literal, Protocol, Self
 from zoneinfo import ZoneInfo
 
 from django.core.paginator import Page, Paginator
-from django.db.models import Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.db.models.functions import Lower
 from django.urls import reverse
 from ingestion.storage import ObjectMismatch, ObjectMissing, OpenedObject, ReadableBody
@@ -331,9 +331,10 @@ def gallery_folder_choices(
 ) -> tuple[tuple[EventFolder, ...], bool]:
     """Return folder controls derived only from the event's base public gallery."""
     folders = tuple(
-        EventFolder.objects.filter(event=event, photos__in=base_queryset)
-        .order_by(Lower("name"), "id")
-        .distinct()
+        EventFolder.objects.filter(
+            Exists(base_queryset.filter(folder_id=OuterRef("pk"))),
+            event=event,
+        ).order_by(Lower("name"), "id")
     )
     has_unfiled = base_queryset.filter(folder_id__isnull=True).exists()
     return folders, has_unfiled

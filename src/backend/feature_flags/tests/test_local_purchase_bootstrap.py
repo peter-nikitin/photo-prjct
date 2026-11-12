@@ -3,10 +3,12 @@ from django.test import TestCase, override_settings
 
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import (
-    EVENT_COVER_CDN_IMAGES,
-    FEATURE_DEFINITIONS,
-    GALLERY_CDN_IMAGES,
-    YANDEX_DISK_IMPORT,
+    BULK_PHOTO_DOWNLOAD,
+    PAID_EVENTS,
+    PAID_PHOTO_CART,
+    PAID_PHOTO_PAYMENT_SIMULATOR,
+    PAID_PHOTO_PURCHASE,
+    PAID_WATERMARKED_PREVIEWS,
 )
 
 
@@ -16,23 +18,20 @@ class LocalPurchaseBootstrapTests(TestCase):
         call_command("sync_feature_flags", verbosity=0)
         call_command("bootstrap_local_purchase_review", verbosity=0)
 
-        self.assertEqual(
-            list(FeatureFlag.objects.values_list("key", "description", "state")),
-            sorted(
-                (
-                    definition.key,
-                    definition.description,
-                    FeatureFlag.State.OFF
-                    if definition
-                    in {
-                        GALLERY_CDN_IMAGES,
-                        EVENT_COVER_CDN_IMAGES,
-                        YANDEX_DISK_IMPORT,
-                    }
-                    else FeatureFlag.State.ON,
+        enabled = FeatureFlag.objects.exclude(state=FeatureFlag.State.OFF)
+        self.assertCountEqual(
+            enabled.values_list("key", "state"),
+            [
+                (definition.key, FeatureFlag.State.ON)
+                for definition in (
+                    BULK_PHOTO_DOWNLOAD,
+                    PAID_EVENTS,
+                    PAID_PHOTO_CART,
+                    PAID_PHOTO_PAYMENT_SIMULATOR,
+                    PAID_PHOTO_PURCHASE,
+                    PAID_WATERMARKED_PREVIEWS,
                 )
-                for definition in FEATURE_DEFINITIONS
-            ),
+            ],
         )
 
     @override_settings(DEBUG=False)

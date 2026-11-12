@@ -626,6 +626,435 @@
           }
         ]
       }
+    },
+    {
+      "position": {
+        "y": "64",
+        "w": "24",
+        "h": "32"
+      },
+      "group": {
+        "id": "26ced42e-9b1e-59bb-be93-db12283083e1",
+        "title": "Web Vitals",
+        "widgets": [
+          {
+            "id": "1910c5d9-a363-5024-a5b8-da4eaf6f0822",
+            "multiSourceChart": {
+              "id": "1910c5d9-a363-5024-a5b8-da4eaf6f0822",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "9a3b18a0-bc9d-597e-8e11-7adac5587c7d",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "histogram_quantile(0.75, sum by (le, page, viewport) (increase(findme_web_vitals_ttfb_seconds_bucket{job=\"findme-http\"}[24h]))) and on (page, viewport) (sum by (page, viewport) (increase(findme_web_vitals_ttfb_seconds_count{job=\"findme-http\"}[24h])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "9a3b18a0-bc9d-597e-8e11-7adac5587c7d",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "TTFB p75 за 24 ч, с",
+              "description": "От начала навигации до первого байта HTML, включая сеть и сервер. Хорошее значение — до 0,8 с. Разбивка по публичной странице и ширине окна.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "8",
+              "h": "8"
+            }
+          },
+          {
+            "id": "f72eb084-4364-5500-be1c-6a54d3ffcf8d",
+            "multiSourceChart": {
+              "id": "f72eb084-4364-5500-be1c-6a54d3ffcf8d",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "629c25b6-f28c-55a7-9a21-a1b1b68d6a8f",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "histogram_quantile(0.75, sum by (le, route) (increase(findme_http_request_duration_seconds_bucket{job=\"findme-http\",route=~\"event_catalog|event_detail|legal|photographer_login|commerce:detail|commerce:order_list\",method=\"GET\",status_class=\"2xx\"}[24h]))) and on (route) (sum by (route) (increase(findme_http_request_duration_seconds_count{job=\"findme-http\",route=~\"event_catalog|event_detail|legal|photographer_login|commerce:detail|commerce:order_list\",method=\"GET\",status_class=\"2xx\"}[24h])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "629c25b6-f28c-55a7-9a21-a1b1b68d6a8f",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Django p75 за 24 ч, с",
+              "description": "Время внутри Django для успешных GET публичных страниц. Серверная выборка включает запросы без браузерной телеметрии и общая для всех размеров окна.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "8",
+              "h": "8",
+              "x": "8"
+            }
+          },
+          {
+            "id": "350fd785-028b-5c83-b97b-c0e95d764205",
+            "multiSourceChart": {
+              "id": "350fd785-028b-5c83-b97b-c0e95d764205",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "82159149-4bef-5d84-942d-1ba184f4babe",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "round(sum by (page, viewport) (increase(findme_web_vitals_ttfb_seconds_count{job=\"findme-http\"}[24h])))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "82159149-4bef-5d84-942d-1ba184f4babe",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "TTFB, замеры за 24 ч",
+              "description": "Оценка числа принятых замеров по публичной странице и ширине окна. Восстановление страницы из back/forward cache не учитывается.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "8",
+              "h": "8",
+              "x": "16"
+            }
+          },
+          {
+            "id": "efc8688c-22b7-5861-87ce-7cfb5269e23a",
+            "multiSourceChart": {
+              "id": "efc8688c-22b7-5861-87ce-7cfb5269e23a",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "609d7a9f-0729-58fb-87de-691ddbb182dc",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "histogram_quantile(0.75, sum by (le, page, viewport) (increase(findme_web_vitals_lcp_seconds_bucket{job=\"findme-http\"}[24h]))) and on (page, viewport) (sum by (page, viewport) (increase(findme_web_vitals_lcp_seconds_count{job=\"findme-http\"}[24h])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "609d7a9f-0729-58fb-87de-691ddbb182dc",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "LCP p75 за 24 ч, с",
+              "description": "Момент отрисовки основного контента. Хорошее значение — до 2,5 с. Оценка 75-го процентиля по корзинам гистограммы. При малом числе замеров смотрите на объём выборки.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "8"
+            }
+          },
+          {
+            "id": "b1137fef-daab-56e6-a2d2-e4389768662d",
+            "multiSourceChart": {
+              "id": "b1137fef-daab-56e6-a2d2-e4389768662d",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "6878a0c9-4c5d-5520-82b6-34e78c41eea5",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "round(sum by (page, viewport) (increase(findme_web_vitals_lcp_seconds_count{job=\"findme-http\"}[24h])))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "6878a0c9-4c5d-5520-82b6-34e78c41eea5",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "LCP: замеры за 24 ч",
+              "description": "Оценка числа принятых замеров за 24 часа. page — тип публичной страницы, viewport — ширина окна меньше 768 CSS-пикселей (narrow) или от 768 (wide).",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "8"
+            }
+          },
+          {
+            "id": "51256bfb-d265-5367-90de-9799733cc4eb",
+            "multiSourceChart": {
+              "id": "51256bfb-d265-5367-90de-9799733cc4eb",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "0095b724-fbc1-56c9-812d-716685939c57",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "histogram_quantile(0.75, sum by (le, page, viewport) (increase(findme_web_vitals_inp_seconds_bucket{job=\"findme-http\"}[24h]))) and on (page, viewport) (sum by (page, viewport) (increase(findme_web_vitals_inp_seconds_count{job=\"findme-http\"}[24h])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "0095b724-fbc1-56c9-812d-716685939c57",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "INP p75 за 24 ч, с",
+              "description": "Отзывчивость при взаимодействии. Хорошее значение — до 0,2 с. Оценка 75-го процентиля по корзинам гистограммы. При малом числе замеров смотрите на объём выборки.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "16"
+            }
+          },
+          {
+            "id": "b1737ee5-25e9-5d88-ba78-dde3c17398ae",
+            "multiSourceChart": {
+              "id": "b1737ee5-25e9-5d88-ba78-dde3c17398ae",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "79d3a14e-20d3-5801-92f6-45f8317a281f",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "round(sum by (page, viewport) (increase(findme_web_vitals_inp_seconds_count{job=\"findme-http\"}[24h])))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "79d3a14e-20d3-5801-92f6-45f8317a281f",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "INP: замеры за 24 ч",
+              "description": "Оценка числа принятых замеров за 24 часа. page — тип публичной страницы, viewport — ширина окна меньше 768 CSS-пикселей (narrow) или от 768 (wide). Для INP учитываются только визиты с измеренным взаимодействием.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "16"
+            }
+          },
+          {
+            "id": "878e9378-1400-58e9-b237-b1ecbdbe1f1a",
+            "multiSourceChart": {
+              "id": "878e9378-1400-58e9-b237-b1ecbdbe1f1a",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "131b6aaf-23e6-5859-9b7f-c63430127050",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "histogram_quantile(0.75, sum by (le, page, viewport) (increase(findme_web_vitals_cls_bucket{job=\"findme-http\"}[24h]))) and on (page, viewport) (sum by (page, viewport) (increase(findme_web_vitals_cls_count{job=\"findme-http\"}[24h])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "131b6aaf-23e6-5859-9b7f-c63430127050",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "CLS p75 за 24 ч, балл",
+              "description": "Сдвиги вёрстки. Хорошее значение — до 0,1. Оценка 75-го процентиля по корзинам гистограммы. При малом числе замеров смотрите на объём выборки.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "24"
+            }
+          },
+          {
+            "id": "78c893a5-c5d2-57a9-b5dd-d95c0260e38d",
+            "multiSourceChart": {
+              "id": "78c893a5-c5d2-57a9-b5dd-d95c0260e38d",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "b90374fb-90ba-5110-9578-09e2c87882c5",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "round(sum by (page, viewport) (increase(findme_web_vitals_cls_count{job=\"findme-http\"}[24h])))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "b90374fb-90ba-5110-9578-09e2c87882c5",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "CLS: замеры за 24 ч",
+              "description": "Оценка числа принятых замеров за 24 часа. page — тип публичной страницы, viewport — ширина окна меньше 768 CSS-пикселей (narrow) или от 768 (wide).",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "24"
+            }
+          }
+        ]
+      }
     }
   ]
 }

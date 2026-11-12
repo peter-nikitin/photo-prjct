@@ -26,7 +26,8 @@ class SyncFeatureFlagsTests(TestCase):
         )
         self.assertEqual(
             output,
-            "Feature flags synchronized: created=9 updated=0 preserved=0 deleted=0.\n",
+            f"Feature flags synchronized: created={len(FEATURE_DEFINITIONS)} "
+            "updated=0 preserved=0 deleted=0.\n",
         )
 
     def test_preserves_registered_states_and_creation_timestamp(self) -> None:
@@ -56,7 +57,8 @@ class SyncFeatureFlagsTests(TestCase):
         )
         self.assertEqual(
             output,
-            "Feature flags synchronized: created=6 updated=0 preserved=3 deleted=0.\n",
+            f"Feature flags synchronized: created={len(FEATURE_DEFINITIONS) - len(flags)} "
+            "updated=0 preserved=3 deleted=0.\n",
         )
 
     def test_refreshes_description_without_changing_state_or_creation_timestamp(self) -> None:
@@ -76,7 +78,8 @@ class SyncFeatureFlagsTests(TestCase):
         self.assertEqual(flag.created_at, created_at)
         self.assertEqual(
             output,
-            "Feature flags synchronized: created=8 updated=1 preserved=0 deleted=0.\n",
+            f"Feature flags synchronized: created={len(FEATURE_DEFINITIONS) - 1} "
+            "updated=1 preserved=0 deleted=0.\n",
         )
 
     def test_deletes_stale_rows_and_is_idempotent(self) -> None:
@@ -88,12 +91,14 @@ class SyncFeatureFlagsTests(TestCase):
 
         self.assertEqual(
             self.sync(),
-            "Feature flags synchronized: created=9 updated=0 preserved=0 deleted=1.\n",
+            f"Feature flags synchronized: created={len(FEATURE_DEFINITIONS)} "
+            "updated=0 preserved=0 deleted=1.\n",
         )
         self.assertFalse(FeatureFlag.objects.filter(key="pgvector-face-search-read").exists())
         self.assertEqual(
             self.sync(),
-            "Feature flags synchronized: created=0 updated=0 preserved=9 deleted=0.\n",
+            f"Feature flags synchronized: created=0 updated=0 "
+            f"preserved={len(FEATURE_DEFINITIONS)} deleted=0.\n",
         )
 
     def test_invalid_registry_aborts_before_mutating_existing_rows(self) -> None:

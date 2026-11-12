@@ -12,8 +12,14 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+DEPLOY_LOG_PATTERN = (
+    r"DEPLOY_STAGE=(?:stop-workers|pull-images|commerce-check|database|migrate|"
+    r"sync-feature-flags|static|web)"
+    r"|Feature flags synchronized: created=[0-9]{1,9} updated=[0-9]{1,9} "
+    r"preserved=[0-9]{1,9} deleted=[0-9]{1,9}\."
+)
 
-REMOTE = r"""import base64, fcntl, io, json, os, subprocess, sys, tarfile, tempfile
+REMOTE = r"""import base64, fcntl, io, json, os, re, subprocess, sys, tarfile, tempfile
 from pathlib import Path
 payload = json.load(sys.stdin)
 root = Path('/opt/photo-prjct')
@@ -25,7 +31,6 @@ with (root / '.deployment.lock').open('w') as lock:
     images = ('APP_IMAGE', 'PHOTO_WORKER_IMAGE', 'IMPORT_WORKER_IMAGE')
     missing = [name for name in images if not env.get(name)]
     if missing:
-        import re
         existing = {}
         for line in (root / '.env').read_text().splitlines():
             if '=' in line:
@@ -56,14 +61,12 @@ with (root / '.deployment.lock').open('w') as lock:
         candidate.replace(root / '.env')
         result = subprocess.run(['sh', str(root / 'deploy/apply-deployment.sh')], env=child_env,
                                 capture_output=True, text=True)
-        stages = {'stop-workers', 'pull-images', 'commerce-check',
-                  'database', 'migrate', 'static', 'web'}
         for line in result.stdout.splitlines():
-            if line.startswith('DEPLOY_STAGE=') and line.removeprefix('DEPLOY_STAGE=') in stages:
+            if re.fullmatch(__DEPLOY_LOG_PATTERN__, line):
                 print(line, flush=True)
         if result.returncode:
             raise SystemExit(1)
-"""
+""".replace("__DEPLOY_LOG_PATTERN__", repr(DEPLOY_LOG_PATTERN))
 
 
 REMOTE_MONITORING = r"""import base64, fcntl, io, json, os, subprocess, sys, tarfile, tempfile
@@ -218,15 +221,7 @@ def main() -> None:
         ]
         result = subprocess.run(command, input=payload, text=True, capture_output=True)
         for line in result.stdout.splitlines():
-            if line in {
-                "DEPLOY_STAGE=stop-workers",
-                "DEPLOY_STAGE=pull-images",
-                "DEPLOY_STAGE=commerce-check",
-                "DEPLOY_STAGE=database",
-                "DEPLOY_STAGE=migrate",
-                "DEPLOY_STAGE=static",
-                "DEPLOY_STAGE=web",
-            }:
+            if re.fullmatch(DEPLOY_LOG_PATTERN, line):
                 print(line)
         if result.returncode:
             raise RuntimeError("remote deployment failed")

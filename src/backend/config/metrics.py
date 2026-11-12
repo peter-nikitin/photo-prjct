@@ -11,6 +11,15 @@ from prometheus_client import (
 )
 
 _LABEL_NAMES = ("route", "method", "status_class")
+WEB_VITALS_PAGE_BY_ROUTE = {
+    "event_catalog": "catalog",
+    "event_detail": "gallery",
+    "legal": "legal",
+    "photographer_login": "photographer_login",
+    "commerce:detail": "cart",
+    "commerce:order_list": "orders",
+}
+WEB_VITALS_VIEWPORTS = ("narrow", "wide")
 _ALLOWED_HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 _DB_ACTIVITY_SQL = """
 SELECT
@@ -73,6 +82,31 @@ ACCEPTED_PREVIEWS = Counter(
     "findme_accepted_previews",
     "Accepted clean preview publications observed since the current deployment.",
 )
+WEB_VITALS_LCP = Histogram(
+    "findme_web_vitals_lcp_seconds",
+    "Largest Contentful Paint in seconds.",
+    ("page", "viewport"),
+    buckets=(0.5, 1, 1.5, 2.5, 4, 8, 16, 32, float("inf")),
+)
+WEB_VITALS_INP = Histogram(
+    "findme_web_vitals_inp_seconds",
+    "Interaction to Next Paint in seconds.",
+    ("page", "viewport"),
+    buckets=(0.05, 0.1, 0.2, 0.5, 1, 2, 4, float("inf")),
+)
+WEB_VITALS_CLS = Histogram(
+    "findme_web_vitals_cls",
+    "Cumulative Layout Shift score.",
+    ("page", "viewport"),
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, float("inf")),
+)
+
+WEB_VITALS_TTFB = Histogram(
+    "findme_web_vitals_ttfb_seconds",
+    "Navigation time to first byte in seconds.",
+    ("page", "viewport"),
+    buckets=(0.05, 0.1, 0.25, 0.5, 0.8, 1.2, 1.8, 2.5, 4, 8, 16, 32, float("inf")),
+)
 
 
 def collect_queue_samples() -> dict[str, tuple[int, float, float, float]]:
@@ -87,6 +121,10 @@ def observe_accepted_preview() -> None:
 
 
 def generate_metrics() -> bytes:
+    for histogram in (WEB_VITALS_LCP, WEB_VITALS_INP, WEB_VITALS_CLS, WEB_VITALS_TTFB):
+        for page in WEB_VITALS_PAGE_BY_ROUTE.values():
+            for viewport in WEB_VITALS_VIEWPORTS:
+                histogram.labels(page=page, viewport=viewport)
     registry = CollectorRegistry()
     multiprocess.MultiProcessCollector(registry)
     database = settings.DATABASES["default"]
@@ -230,6 +268,8 @@ class HttpMetricsMiddleware:
 
         started_at = time.perf_counter()
         response = self.get_response(request)
+        if request.resolver_match is not None and request.resolver_match.view_name == "web_vitals":
+            return response
         labels = {
             "route": self._route_name(request),
             "method": self._method_name(request),

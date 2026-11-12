@@ -14,6 +14,8 @@ if [ "$DEPLOY_WEB" = true ]; then
     compose stop web
     printf '%s\n' 'DEPLOY_STAGE=migrate'
     compose run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput
+    printf '%s\n' 'DEPLOY_STAGE=sync-feature-flags'
+    compose run --rm --no-deps -T --entrypoint python web manage.py sync_feature_flags
     printf '%s\n' 'DEPLOY_STAGE=static'
     compose run --rm --no-deps -T --entrypoint python web manage.py collectstatic --noinput
     printf '%s\n' 'DEPLOY_STAGE=web'

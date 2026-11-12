@@ -741,7 +741,9 @@ def _gallery_context(
 
 
 def catalog_populated(request: HttpRequest) -> HttpResponse:
-    return _render(request, "catalog/event_catalog.html", {"events": EVENTS})
+    return _render(
+        request, "catalog/event_catalog.html", {"events": EVENTS, "web_vitals_page": "catalog"}
+    )
 
 
 def catalog_staff_preview(request: HttpRequest) -> HttpResponse:
@@ -766,7 +768,9 @@ def event_uncovered(request: HttpRequest) -> HttpResponse:
 
 
 def event_gallery_populated(request: HttpRequest) -> HttpResponse:
-    return _render(request, "catalog/event_detail.html", _gallery_context())
+    return _render(
+        request, "catalog/event_detail.html", {**_gallery_context(), "web_vitals_page": "gallery"}
+    )
 
 
 def event_gallery_paid(request: HttpRequest) -> HttpResponse:

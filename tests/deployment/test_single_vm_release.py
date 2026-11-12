@@ -35,6 +35,8 @@ def test_release_stops_old_search_owners_before_schema_and_starts_executor(tmp_p
     assert "pull db web gallery-search-worker nginx certbot-renew" in calls
     assert calls.index("stop --timeout 0 gallery-search-worker") < calls.index("stop web")
     assert calls.index("stop web") < calls.index("manage.py migrate")
+    assert calls.index("manage.py migrate") < calls.index("manage.py sync_feature_flags")
+    assert calls.index("manage.py sync_feature_flags") < calls.index("up -d --wait web")
     assert calls.index("up -d --wait web") < calls.index("up -d --no-deps gallery-search-worker")
     assert "--wait gallery-search-worker" not in calls
     assert "up -d --wait --force-recreate --no-deps nginx" in calls
@@ -134,7 +136,14 @@ os.execv(sys.executable, [sys.executable, '-c', program])
 """)
     ssh.chmod(0o755)
     docker = tmp_path / "docker"
-    docker.write_text("#!/bin/sh\nexit 0\n")
+    sync_summary = "Feature flags synchronized: created=1 updated=0 preserved=9 deleted=0."
+    docker.write_text(f"""#!/bin/sh
+case "$*" in
+    *"manage.py sync_feature_flags")
+        printf '%s\n' '{sync_summary}' '{sync_summary} unsafe-output'
+        ;;
+esac
+""")
     docker.chmod(0o755)
     digest = "a" * 64
     values = {
@@ -162,6 +171,8 @@ os.execv(sys.executable, [sys.executable, '-c', program])
     )
     assert result.returncode == 0, result.stderr
     assert value not in result.stdout + result.stderr
+    assert sync_summary in result.stdout.splitlines()
+    assert "unsafe-output" not in result.stdout + result.stderr
     values.update(
         {
             "DEPLOY_WEB": "false",

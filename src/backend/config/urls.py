@@ -6,6 +6,7 @@ from processing.admin_progress import admin_processing_progress
 from processing.telemetry_views import metrics as worker_diagnostic_metrics
 
 from config import views
+from config.web_vitals import web_vitals
 
 urlpatterns = [
     path("", include("picflow.event_management_urls")),
@@ -20,6 +21,7 @@ urlpatterns = [
     path("", include("selfie_search.urls")),
     path("health/", views.health, name="health"),
     path("metrics/", views.metrics, name="metrics"),
+    path("telemetry/web-vitals/", web_vitals, name="web_vitals"),
     path(
         "worker-diagnostics/metrics/", worker_diagnostic_metrics, name="worker_diagnostic_metrics"
     ),

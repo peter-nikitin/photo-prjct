@@ -27,6 +27,7 @@ from feature_flags.registry import (
     PAID_EVENTS,
     PAID_PHOTO_CART,
     PAID_WATERMARKED_PREVIEWS,
+    WEB_VITALS,
 )
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON, FEATURE_FLAG_STAFF
 from feature_flags.testing import override_feature_flags
@@ -1475,14 +1476,19 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertNotContains(paid, "Скачать все")
         self.assertNotContains(paid, "Скачать эту страницу")
 
-    def test_bearer_result_suppresses_metrika_while_catalog_keeps_one_counter(self) -> None:
+    @override_feature_flags({WEB_VITALS: FEATURE_FLAG_ON})
+    def test_bearer_result_excludes_analytics_scripts_while_catalog_has_them(self) -> None:
         search, token = self.make_search()
 
-        bearer_response = self.client.get(self.result_url(event=search.event, token=token))
-        catalog_response = self.client.get(reverse("event_catalog"))
+        bearer_response = self.client.get(
+            self.result_url(event=search.event, token=token), HTTP_X_FORWARDED_PROTO="https"
+        )
+        catalog_response = self.client.get(reverse("event_catalog"), HTTP_X_FORWARDED_PROTO="https")
 
         self.assertEqual(bearer_response.status_code, 200)
         self.assertNotContains(bearer_response, "mc.yandex.ru")
+        self.assertNotContains(bearer_response, "data-web-vitals-page=")
+        self.assertContains(catalog_response, 'data-web-vitals-page="catalog"')
         self.assertContains(bearer_response, "data-cookie-notice")
         self.assertEqual(catalog_response.content.count(b'ym(111239706, "init", {'), 1)
 

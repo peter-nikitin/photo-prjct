@@ -1,5 +1,46 @@
 const { expect, test } = require('@playwright/test');
 
+test('web vitals sends a private single packet on hidden only from enabled pages', async ({ page }) => {
+  const telemetry = [];
+  page.on('request', request => {
+    if (request.url().endsWith('/telemetry/web-vitals/')) telemetry.push(request);
+  });
+  await page.context().addCookies([{
+    name: 'private_session', value: 'do-not-send', url: 'http://127.0.0.1:8001',
+  }]);
+  await page.goto('/__visual__/catalog/populated/');
+  await expect(page.locator('[data-web-vitals-page="catalog"]')).toHaveCount(1);
+  await page.waitForTimeout(300);
+  const responsePromise = page.waitForResponse(response => response.url().endsWith('/telemetry/web-vitals/'));
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  const response = await responsePromise;
+  expect(response.status()).toBe(204);
+  expect(telemetry).toHaveLength(1);
+  const requestHeaders = await telemetry[0].allHeaders();
+  expect(requestHeaders.cookie).toBeUndefined();
+  expect(requestHeaders.referer).toBeFalsy();
+  expect(telemetry[0].postDataJSON().page).toBe('catalog');
+  expect(telemetry[0].postDataJSON().metrics.LCP).toBeGreaterThanOrEqual(0);
+  expect(telemetry[0].postDataJSON().metrics.CLS).toBeGreaterThanOrEqual(0);
+  expect(telemetry[0].postDataJSON().metrics.TTFB).toBeGreaterThan(0);
+  expect(telemetry[0].postDataJSON().metrics.INP).toBeUndefined();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.waitForTimeout(200);
+  expect(telemetry).toHaveLength(1);
+
+  await page.goto('/__visual__/workspace/photos/');
+  await expect(page.locator('[data-web-vitals-page]')).toHaveCount(0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForTimeout(200);
+  expect(telemetry).toHaveLength(1);
+});
+
 const DESKTOP_VIEWPORT = { width: 1440, height: 1000 };
 const INTERMEDIATE_DESKTOP_VIEWPORT = { width: 1072, height: 780 };
 const MOBILE_VIEWPORT = { width: 390, height: 844 };

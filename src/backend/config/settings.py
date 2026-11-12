@@ -83,6 +83,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "config.context_processors.analytics",
+                "config.context_processors.web_vitals",
                 "ingestion.context_processors.photographer_navigation",
                 "commerce.context_processors.purchase_navigation",
             ],

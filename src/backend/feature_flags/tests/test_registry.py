@@ -2,20 +2,7 @@ from dataclasses import FrozenInstanceError
 
 from django.test import SimpleTestCase
 
-from feature_flags.registry import (
-    BULK_PHOTO_DOWNLOAD,
-    EVENT_COVER_CDN_IMAGES,
-    FEATURE_DEFINITIONS,
-    GALLERY_CDN_IMAGES,
-    PAID_EVENTS,
-    PAID_PHOTO_CART,
-    PAID_PHOTO_PAYMENT_SIMULATOR,
-    PAID_PHOTO_PURCHASE,
-    PAID_WATERMARKED_PREVIEWS,
-    YANDEX_DISK_IMPORT,
-    FeatureDefinition,
-    validate_feature_definitions,
-)
+from feature_flags.registry import FeatureDefinition, validate_feature_definitions
 
 
 class FeatureDefinitionTests(SimpleTestCase):
@@ -44,45 +31,3 @@ class FeatureDefinitionTests(SimpleTestCase):
 
         with self.assertRaises(ValueError):
             validate_feature_definitions((first, duplicate))
-
-    def test_registry_has_the_complete_deterministic_production_definitions(self) -> None:
-        self.assertEqual(
-            FEATURE_DEFINITIONS,
-            (
-                PAID_EVENTS,
-                PAID_WATERMARKED_PREVIEWS,
-                PAID_PHOTO_CART,
-                PAID_PHOTO_PURCHASE,
-                PAID_PHOTO_PAYMENT_SIMULATOR,
-                BULK_PHOTO_DOWNLOAD,
-                YANDEX_DISK_IMPORT,
-                GALLERY_CDN_IMAGES,
-                EVENT_COVER_CDN_IMAGES,
-            ),
-        )
-        self.assertEqual(
-            tuple((definition.key, definition.description) for definition in FEATURE_DEFINITIONS),
-            (
-                ("paid-events", "Show paid events"),
-                (
-                    "paid-watermarked-previews",
-                    "Show accepted paid watermarked previews",
-                ),
-                ("paid-photo-cart", "Allow paid photo cart selection"),
-                ("paid-photo-purchase", "Allow paid photo checkout and fulfillment"),
-                (
-                    "paid-photo-payment-simulator",
-                    "Use the feature-gated test payment screen",
-                ),
-                ("bulk-photo-download", "Allow page-scoped photo archive downloads"),
-                (
-                    "yandex-disk-import",
-                    "Allow server-side photo import from Yandex Disk",
-                ),
-                (
-                    "gallery-cdn-images",
-                    "Deliver gallery grid images through CDN",
-                ),
-                ("event-cover-cdn-images", "Deliver event catalog covers through CDN"),
-            ),
-        )

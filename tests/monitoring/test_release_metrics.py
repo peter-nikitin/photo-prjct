@@ -63,6 +63,27 @@ def test_application_rejects_missing_stale_nonfinite_future_or_disconnected_post
         checker.check(Transport(), "application", now=1000)
 
 
+@pytest.mark.parametrize("has_current_http_series", [True, False])
+def test_application_ignores_empty_http_series_but_requires_samples(has_current_http_series):
+    checker = load("release_metrics_empty_series", "deploy/monitoring/prometheus/verify_metrics.py")
+
+    class Transport:
+        def read_samples(self, selectors, *, now):
+            http_series = [[], [(990, 1)]] if has_current_http_series else [[], []]
+            return [
+                http_series
+                if selector["__name__"] == "findme_http_requests_total"
+                else [[(990, 1)]]
+                for selector in selectors
+            ]
+
+    if has_current_http_series:
+        checker.check(Transport(), "application", now=1000)
+    else:
+        with pytest.raises(checker.control.ControlError, match="findme_http_requests_total"):
+            checker.check(Transport(), "application", now=1000)
+
+
 def test_freshness_is_measured_after_slow_read(monkeypatch):
     checker = load("release_metrics_clock", "deploy/monitoring/prometheus/verify_metrics.py")
     monkeypatch.setattr(checker.time, "time", lambda: 1200)

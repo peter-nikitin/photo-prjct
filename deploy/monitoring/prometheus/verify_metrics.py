@@ -53,11 +53,11 @@ def check(transport, scope: str, *, now: float | None = None) -> None:
         raise control.ControlError("Monitoring read result count mismatch")
     for selector, series_set in zip(selectors, results, strict=True):
         key = str(selector)
-        if not series_set:
+        # Remote Read can return labels for series with no points in the requested window.
+        sampled_series = [series for series in series_set if series]
+        if not sampled_series:
             raise control.ControlError(f"expected sample missing: {key}")
-        for series in series_set:
-            if not series:
-                raise control.ControlError(f"expected sample missing: {key}")
+        for series in sampled_series:
             if any(not math.isfinite(timestamp) for timestamp, _ in series):
                 raise control.ControlError(f"sample stale/nonfinite: {key}")
             timestamp, value = max(series, key=lambda point: point[0])

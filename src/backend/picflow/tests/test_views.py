@@ -1,6 +1,7 @@
 import base64
 import json
 from datetime import UTC, date, datetime, timedelta
+from gzip import decompress
 from hashlib import sha256
 from html.parser import HTMLParser
 from pathlib import Path
@@ -26,6 +27,7 @@ from django.test import (
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.cache import has_vary_header
 from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import (
@@ -1441,7 +1443,7 @@ class GalleryPageTests(TestCase):
             response, 'name="return_to" value="/events/paid-cart-gallery/"', count=4
         )
         self.assertEqual(response["Cache-Control"], "private, no-store")
-        self.assertEqual(response["Vary"], "Cookie")
+        self.assertTrue(has_vary_header(response, "Cookie"))
 
     @override_settings(DEBUG=False)
     def test_paid_gallery_template_exception_report_redacts_cart_context_only(self) -> None:
@@ -1630,6 +1632,23 @@ class GalleryPageTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertNotIn(derivative.final_key, response.content.decode(response.charset))
         self.assertNotIn("signature", response.content.decode(response.charset).lower())
+
+    def test_event_detail_serves_gzip_to_clients_that_accept_it(self) -> None:
+        event = self.make_event()
+        self.make_private_photo(event, id="gzip-gallery-photo")
+        url = reverse("event_detail", kwargs={"slug": event.slug})
+
+        compressed = self.client.get(url, headers={"Accept-Encoding": "gzip"})
+        plain = self.client.get(url, headers={"Accept-Encoding": "identity"})
+
+        self.assertEqual(compressed.status_code, 200)
+        self.assertEqual(compressed.headers["Content-Encoding"], "gzip")
+        self.assertTrue(has_vary_header(compressed, "Accept-Encoding"))
+        self.assertLess(len(compressed.content), len(plain.content))
+        self.assertIn(b'data-photo-id="gzip-gallery-photo"', decompress(compressed.content))
+        self.assertNotIn("Content-Encoding", plain.headers)
+        self.assertTrue(has_vary_header(plain, "Accept-Encoding"))
+        self.assertContains(plain, 'data-photo-id="gzip-gallery-photo"')
 
     def test_event_detail_gallery_markup_and_loading_policy(self) -> None:
         event = self.make_event(timezone_name="Europe/London")

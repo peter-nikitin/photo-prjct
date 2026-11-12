@@ -59,10 +59,14 @@ jobs:
         with:
           terraform_version: 1.17.0
           terraform_wrapper: false
+      - name: Build the public probe source archive
+        run: |
+          python -m venv /tmp/public-probe-build
+          /tmp/public-probe-build/bin/pip install --no-deps -r deploy/public-probe/build-requirements.txt
+          /tmp/public-probe-build/bin/python deploy/public-probe/package.py
       - name: Validate Terraform without backend or cloud identity
         run: |
           set -euo pipefail
-          python deploy/public-probe/package.py
           terraform -chdir=infra/terraform fmt -check -recursive
           terraform -chdir=infra/terraform init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra/terraform validate
@@ -106,11 +110,15 @@ jobs:
         with:
           terraform_version: 1.17.0
           terraform_wrapper: false
+      - name: Build the public probe source archive
+        run: |
+          python -m venv /tmp/public-probe-build
+          /tmp/public-probe-build/bin/pip install --no-deps -r deploy/public-probe/build-requirements.txt
+          /tmp/public-probe-build/bin/python deploy/public-probe/package.py
       - name: Create saved resource plan
         run: |
           set -euo pipefail
           terraform -chdir=infra/terraform init -input=false -lockfile=readonly
-          python deploy/public-probe/package.py
           terraform -chdir=infra/terraform fmt -check -recursive
           terraform -chdir=infra/terraform validate
           terraform -chdir=infra/terraform plan -input=false -var-file=project.tfvars -out=plan.tfplan

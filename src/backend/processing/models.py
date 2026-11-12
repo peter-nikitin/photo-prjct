@@ -242,6 +242,11 @@ class ProcessingJob(models.Model):  # noqa: DJ008
                 fields=["contract_version", "processor_type", "processor_version", "status"],
                 name="proc_job_contract_claim_idx",
             ),
+            models.Index(
+                fields=["-completed_at"],
+                condition=models.Q(status="succeeded", completed_at__isnull=False),
+                name="proc_job_last_success_idx",
+            ),
         ]
 
     def clean(self) -> None:

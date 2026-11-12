@@ -61,7 +61,11 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result, {"success": False})
         publish.assert_called_once_with(observation, token="private", workspace_id="workspace")
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("remote_pb2"), "probe build dependencies required"
+    )
     def test_package_is_reproducible_and_contains_its_runtime_dependencies(self):
+        import subprocess
         import tempfile
 
         package = load("public_probe_package", "deploy/public-probe/package.py")
@@ -73,11 +77,31 @@ class ProbeTests(unittest.TestCase):
             with ZipFile(first) as archive:
                 self.assertEqual(
                     set(archive.namelist()),
-                    {"index.py", "monitor_public_health.py", "requirements.txt"},
+                    {
+                        "index.py",
+                        "monitor_public_health.py",
+                        "requirements.txt",
+                        "remote_pb2.py",
+                        "types_pb2.py",
+                        "gogoproto/gogo_pb2.py",
+                    },
                 )
                 self.assertEqual(
                     archive.read("index.py"), (ROOT / "deploy/public-probe/index.py").read_bytes()
                 )
+                archive.extractall(tmp)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; from remote_pb2 import WriteRequest; "
+                    "from gogoproto import gogo_pb2; "
+                    "assert Path(gogo_pb2.__file__).resolve().is_relative_to(Path.cwd()); "
+                    "assert WriteRequest().SerializeToString() == b''",
+                ],
+                cwd=tmp,
+                check=True,
+            )
 
 
 @unittest.skipUnless(importlib.util.find_spec("remote_pb2"), "probe runtime SDK required")

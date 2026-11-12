@@ -97,15 +97,6 @@ def test_plan_step_writes_json_where_summary_command_reads_it(tmp_path: Path) ->
     (tmp_path / "infra/ci/plan_summary.py").write_bytes(
         (ROOT / "infra/ci/plan_summary.py").read_bytes()
     )
-    for source in (
-        "deploy/public-probe/package.py",
-        "deploy/public-probe/index.py",
-        "deploy/public-probe/requirements.txt",
-        "scripts/monitor_public_health.py",
-    ):
-        target = tmp_path / source
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes((ROOT / source).read_bytes())
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "python").symlink_to(sys.executable)
@@ -127,7 +118,6 @@ def test_plan_step_writes_json_where_summary_command_reads_it(tmp_path: Path) ->
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "infra/terraform/public-probe.zip").is_file()
     assert json.loads((tmp_path / "infra/terraform/plan.json").read_text())["resource_changes"]
     assert (tmp_path / "resource-diff.txt").read_text().strip() == (
         "create: yandex_compute_instance.app"

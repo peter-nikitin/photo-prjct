@@ -640,6 +640,7 @@ class GallerySearchMetricsTests(TransactionTestCase):
 
         from config.queue_metrics import collect_queue_samples
 
+        last_success = timezone.now() - timedelta(minutes=5)
         for index, (contract, processor, version) in enumerate(
             ((3, "face_embedding", 5), (2, "generate_preview", 1))
         ):
@@ -671,7 +672,23 @@ class GallerySearchMetricsTests(TransactionTestCase):
                 current_run=run,
                 current_job=job,
             )
-        self.assertEqual(collect_queue_samples()["photo"][0], 2)
+            processed_photo = Photo.objects.create(
+                id=f"metrics-processed-{index}", event=self.event, src="https://example.test/ok.jpg"
+            )
+            ProcessingJob.objects.create(
+                event=self.event,
+                photo=processed_photo,
+                run=run,
+                contract_version=contract,
+                processor_type=processor,
+                processor_version=version,
+                configuration_hash="a" * 64,
+                status="succeeded",
+                completed_at=last_success - timedelta(minutes=index),
+            )
+        sample = collect_queue_samples()["photo"]
+        self.assertEqual(sample[0], 2)
+        self.assertEqual(sample[2], last_success.timestamp())
 
     def test_expired_import_file_lease_is_ready_for_immediate_reclaim(self):
         from datetime import timedelta

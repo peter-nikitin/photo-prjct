@@ -11,8 +11,9 @@ resource "yandex_resourcemanager_folder_iam_member" "public_probe_writer" {
 
 resource "yandex_resourcemanager_folder_iam_member" "infrastructure_functions" {
   folder_id = var.folder_id
-  role      = "functions.editor"
-  member    = "serviceAccount:ajema849qjho2lgjaqvo"
+  # The release account also manages the private function's access bindings.
+  role   = "functions.admin"
+  member = "serviceAccount:ajema849qjho2lgjaqvo"
 }
 
 resource "yandex_iam_service_account_iam_member" "infrastructure_public_probe" {

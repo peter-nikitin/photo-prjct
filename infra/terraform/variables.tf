@@ -71,3 +71,24 @@ variable "postgres_disk_gb" {
     error_message = "PostgreSQL disk must be at least 10 GiB."
   }
 }
+
+variable "postbox_access_key" {
+  type        = string
+  sensitive   = true
+  nullable    = false
+  description = "Existing separately authorized Postbox management access key, supplied externally."
+  validation {
+    condition     = length(trimspace(var.postbox_access_key)) > 0
+    error_message = "Postbox management access key must be nonempty."
+  }
+}
+variable "postbox_secret_key" {
+  type        = string
+  sensitive   = true
+  nullable    = false
+  description = "Existing separately authorized Postbox management secret key, supplied externally."
+  validation {
+    condition     = length(trimspace(var.postbox_secret_key)) > 0
+    error_message = "Postbox management secret key must be nonempty."
+  }
+}

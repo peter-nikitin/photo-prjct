@@ -3,7 +3,7 @@ name: Infrastructure
 on:
   pull_request:
     branches: [main]
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
   issue_comment:
     types: [created]
   push:
@@ -75,7 +75,7 @@ jobs:
           ansible-playbook -i /tmp/findme-inventory infra/ansible/install-backup-agent.yml --syntax-check
 
   plan:
-    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed == 'true' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository
     needs: [classify, validate]
     runs-on: ubuntu-latest
     environment: infrastructure
@@ -89,6 +89,8 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
+      TF_VAR_postbox_access_key: ${{ secrets.INFRA_POSTBOX_ACCESS_KEY_ID }}
+      TF_VAR_postbox_secret_key: ${{ secrets.INFRA_POSTBOX_SECRET_ACCESS_KEY }}
       TF_VAR_ssh_public_key: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
       TF_VAR_admin_ssh_public_key: ${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}
       YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
@@ -99,6 +101,16 @@ jobs:
           persist-credentials: false
       - name: Require a trusted write-authorized PR author
         run: python infra/ci/release.py authorize-actor '${{ github.event.pull_request.user.login }}'
+      - name: Require Postbox management credentials
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${TF_VAR_postbox_access_key:-}" ] || missing+=(INFRA_POSTBOX_ACCESS_KEY_ID)
+          [ -n "${TF_VAR_postbox_secret_key:-}" ] || missing+=(INFRA_POSTBOX_SECRET_ACCESS_KEY)
+          if ((${#missing[@]})); then
+            printf 'Missing infrastructure environment secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
       - name: Exchange short-lived infrastructure OIDC token
         run: python infra/ci/identity.py
       - uses: hashicorp/setup-terraform@v3
@@ -163,6 +175,24 @@ jobs:
             -f state=pending -f context=infra/approved \
             -f description="Approve this plan run in the PR after reviewing resources and cost" >/dev/null
 
+  draft-resource-plan:
+    if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed == 'true' && github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository
+    needs: [classify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Defer live Terraform plan until ready for review
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD" \
+            -f state=pending -f context=infra/approved \
+            -f description="Draft: live Terraform plan deferred until ready for review" >/dev/null
+          echo 'Живой Terraform plan отложен до Ready for review. Offline validate обязателен; infra/approved остаётся pending.' >> "$GITHUB_STEP_SUMMARY"
+
   no-resource-plan:
     if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed != 'true'
     needs: [classify]
@@ -199,6 +229,11 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
+          draft="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq ".draft")"
+          if [ "$draft" != false ]; then
+            echo 'Draft infrastructure PR cannot be approved before a new ready-state plan.' >&2
+            exit 1
+          fi
           python infra/ci/release.py verify-pr "$PR_NUMBER" > /tmp/approved-plan.json
           head_sha="$(python -c 'import json; print(json.load(open("/tmp/approved-plan.json"))["head_sha"])')"
           gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$head_sha" \
@@ -219,6 +254,8 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       AWS_ACCESS_KEY_ID: ${{ secrets.INFRA_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.INFRA_S3_SECRET_ACCESS_KEY }}
+      TF_VAR_postbox_access_key: ${{ secrets.INFRA_POSTBOX_ACCESS_KEY_ID }}
+      TF_VAR_postbox_secret_key: ${{ secrets.INFRA_POSTBOX_SECRET_ACCESS_KEY }}
       TF_VAR_ssh_public_key: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
       TF_VAR_admin_ssh_public_key: ${{ vars.INFRA_ADMIN_SSH_PUBLIC_KEY }}
       YC_INFRA_SERVICE_ACCOUNT_ID: ${{ vars.YC_INFRA_SERVICE_ACCOUNT_ID }}
@@ -236,6 +273,17 @@ jobs:
           artifact_id="$(python -c 'import json; print(json.load(open("/tmp/approved-plan.json"))["artifact_id"])')"
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > /tmp/approved-plan.zip
           unzip -j /tmp/approved-plan.zip plan.tfplan -d infra/terraform
+      - name: Require Postbox management credentials
+        if: needs.classify.outputs.terraform_changed == 'true'
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${TF_VAR_postbox_access_key:-}" ] || missing+=(INFRA_POSTBOX_ACCESS_KEY_ID)
+          [ -n "${TF_VAR_postbox_secret_key:-}" ] || missing+=(INFRA_POSTBOX_SECRET_ACCESS_KEY)
+          if ((${#missing[@]})); then
+            printf 'Missing infrastructure environment secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
       - name: Exchange short-lived infrastructure OIDC token
         run: python infra/ci/identity.py
       - uses: hashicorp/setup-terraform@v3

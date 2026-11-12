@@ -46,6 +46,10 @@ manifest `deploy/environment-secrets.json`. CI не читает админис�
 
 ## Что делает выпуск
 
+Число потоков Gunicorn на процесс web задано в
+[`docker-compose.deployment.yml`](../../docker-compose.deployment.yml). Сейчас используются
+четыре потока. Чтобы изменить число потоков, обновите Compose и выпустите web штатным Deploy.
+
 Выпуски сериализованы. Для выбранного web скрипт подтягивает immutable образы, проверяет
 конфигурацию Commerce, запускает PostgreSQL, применяет Django-миграции, собирает staticfiles и
 поднимает web и единый Nginx. Выбранный обработчик обновляется, только если уже запущен;

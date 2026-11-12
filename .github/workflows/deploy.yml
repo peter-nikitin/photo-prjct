@@ -119,7 +119,6 @@ jobs:
           DEBUG: "False"
           ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
           GUNICORN_WORKERS: ${{ vars.GUNICORN_WORKERS || '1' }}
-          GUNICORN_THREADS: ${{ vars.GUNICORN_THREADS || '2' }}
           GUNICORN_TIMEOUT: ${{ vars.GUNICORN_TIMEOUT || '180' }}
           GUNICORN_MAX_REQUESTS: ${{ vars.GUNICORN_MAX_REQUESTS || '0' }}
           GUNICORN_MAX_REQUESTS_JITTER: ${{ vars.GUNICORN_MAX_REQUESTS_JITTER || '0' }}

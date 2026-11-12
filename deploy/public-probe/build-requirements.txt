@@ -1,0 +1,3 @@
+--extra-index-url https://buf.build/gen/python
+prometheus-prometheus-protocolbuffers-python==31.1.0.2.20261001224011+d7f6cfecf2b8
+gogo-protobuf-protocolbuffers-python==31.1.0.2.20240617172848+e1dbca2775a7

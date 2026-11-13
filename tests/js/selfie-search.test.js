@@ -261,12 +261,11 @@ test('focuses an existing selfie rejection summary when the page starts', () => 
   assert.equal(focusCount, 1);
 });
 
-test('polls queued, processing, and cleanup states every two seconds before terminal refresh', async () => {
+test('polls queued and processing states every two seconds before terminal refresh', async () => {
   const timers = clock();
   const statuses = [
     { status: 'queued' },
     { status: 'processing' },
-    { status: 'cleanup_pending' },
     { status: 'ready' },
   ];
   let reloads = 0;
@@ -286,11 +285,9 @@ test('polls queued, processing, and cleanup states every two seconds before term
   await timers.scheduled[0].callback();
   assert.equal(timers.scheduled[1].delay, 2000);
   await timers.scheduled[1].callback();
-  assert.equal(timers.scheduled[2].delay, 2000);
-  await timers.scheduled[2].callback();
 
   assert.equal(reloads, 1);
-  assert.equal(timers.scheduled.length, 3);
+  assert.equal(timers.scheduled.length, 2);
 });
 
 test('gallery waiting heading stays the same through status polling', async () => {

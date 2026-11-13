@@ -262,10 +262,10 @@ def complete_search_attempt(
         search, job, attempt = _locked_context(attempt_id)
         now = now or timezone.now()
         if attempt.status != SelfieSearchAttempt.Status.IN_PROGRESS:
-            completion, _ = _existing_completion(search, attempt, payload_hash)
+            completion = _existing_completion(attempt, payload_hash)
             return completion
         if not _owns_current_lease(search, job, attempt, now):
-            completion, _ = _stale_or_expired(
+            completion = _stale_or_expired(
                 search, job, attempt, payload_hash, now=now, jitter=jitter
             )
             return completion
@@ -300,7 +300,6 @@ def fail_search_attempt(
     *,
     error_code: str,
     retryable: bool,
-    storage: _CleanupStorage,
     error_detail: str = "",
     download_duration_ms: int | None = None,
     compute_duration_ms: int | None = None,
@@ -322,14 +321,13 @@ def fail_search_attempt(
         worker_finished_at=worker_finished_at,
     )
     payload_hash = _canonical_hash(payload)
-    needs_cleanup = False
     completion: SearchAttemptCompletion
     with transaction.atomic():
         search, job, attempt = _locked_context(attempt_id)
         if attempt.status != SelfieSearchAttempt.Status.IN_PROGRESS:
-            completion, needs_cleanup = _existing_completion(search, attempt, payload_hash)
+            completion = _existing_completion(attempt, payload_hash)
         elif not _owns_current_lease(search, job, attempt, now):
-            completion, needs_cleanup = _stale_or_expired(
+            completion = _stale_or_expired(
                 search, job, attempt, payload_hash, now=now, jitter=jitter
             )
         else:
@@ -347,9 +345,7 @@ def fail_search_attempt(
                 worker_finished_at=worker_finished_at,
             )
             if retryable:
-                needs_cleanup = _transition_retry_or_cleanup(
-                    search, job, attempt, now=now, jitter=jitter
-                )
+                _retry_or_finish(search, job, now=now, jitter=jitter)
             else:
                 job.status = SelfieSearchJob.Status.FAILED
                 job.completed_at = now
@@ -362,35 +358,20 @@ def fail_search_attempt(
                     expansion=None,
                     now=now,
                 )
-                needs_cleanup = True
             completion = SearchAttemptCompletion(attempt=attempt)
-    if needs_cleanup:
-        confirm_search_cleanup(search_id=search.id, storage=storage, now=now)
     return completion
 
 
 def recover_expired_search_attempts(
     *,
-    storage: _CleanupStorage,
     now: timezone.datetime | None = None,
     jitter: Callable[[int, int], int] | None = None,
     limit: int = DEFAULT_RECOVERY_LIMIT,
 ) -> list[SelfieSearchAttempt]:
-    """Recover bounded expired work and retry already-persisted cleanup safely."""
+    """Recover bounded expired recognition work."""
     if limit < 1:
         raise ValueError("limit must be positive")
     now = now or timezone.now()
-    for pending_search_id in (
-        SelfieSearch.objects.filter(
-            status=SelfieSearch.Status.CLEANUP_PENDING, stage=SelfieSearch.Stage.RECOGNITION
-        )
-        .order_by("state_changed_at", "id")
-        .values_list("id", flat=True)[:limit]
-    ):
-        try:
-            confirm_search_cleanup(search_id=pending_search_id, storage=storage, now=now)
-        except CleanupPending:
-            pass
     candidate_ids = list(
         SelfieSearchAttempt.objects.filter(
             status=SelfieSearchAttempt.Status.IN_PROGRESS,
@@ -400,7 +381,6 @@ def recover_expired_search_attempts(
         .values_list("id", flat=True)[:limit]
     )
     recovered: list[SelfieSearchAttempt] = []
-    cleanup_search_ids: list[UUID] = []
     for attempt_id in candidate_ids:
         with transaction.atomic():
             search, job, attempt = _locked_context(attempt_id)
@@ -421,14 +401,8 @@ def recover_expired_search_attempts(
                 error_detail="",
                 now=now,
             )
-            if _transition_retry_or_cleanup(search, job, attempt, now=now, jitter=jitter):
-                cleanup_search_ids.append(search.id)
+            _retry_or_finish(search, job, now=now, jitter=jitter)
             recovered.append(attempt)
-    for search_id in cleanup_search_ids:
-        try:
-            confirm_search_cleanup(search_id=search_id, storage=storage, now=now)
-        except CleanupPending:
-            pass
     return recovered
 
 
@@ -653,26 +627,6 @@ def _verify_prepared_result_identity(search: SelfieSearch, expansion: RankedPhot
         raise SearchCompletionConflict("prepared selfie result identity failed")
 
 
-def _verify_terminal_result_identity(search: SelfieSearch) -> None:
-    if (
-        search.direct_matched_photo_count is None
-        or search.cluster_expanded_photo_count is None
-        or search.final_matched_photo_count is None
-        or search.final_matched_photo_count
-        != search.direct_matched_photo_count + search.cluster_expanded_photo_count
-        or SelfieSearchResult.objects.filter(search=search).count()
-        != search.final_matched_photo_count
-        or SelfieSearchDirectEvidence.objects.filter(result__search=search).count()
-        != search.direct_matched_photo_count
-        or SelfieSearchResult.objects.filter(
-            search=search,
-            primary_source=SelfieSearchResult.PrimarySource.FACE_CLUSTER_EXPANSION,
-        ).count()
-        != search.cluster_expanded_photo_count
-    ):
-        raise SearchCompletionConflict("terminal selfie result identity failed")
-
-
 def prepare_search_result(
     search: SelfieSearch,
     *,
@@ -681,11 +635,9 @@ def prepare_search_result(
     expansion: RankedPhotoExpansion | None = None,
     now: timezone.datetime | None = None,
 ) -> None:
-    if search.status == SelfieSearch.Status.CLEANUP_PENDING:
-        return
     if intended_status == SelfieSearch.Status.READY:
         if expansion is None:
-            raise SearchCompletionConflict("ready cleanup requires ranked results")
+            raise SearchCompletionConflict("ready search requires ranked results")
         result_rows = [
             SelfieSearchResult(
                 search=search,
@@ -735,14 +687,11 @@ def prepare_search_result(
         search.cluster_configuration_hash = expansion.cluster_configuration_hash
         search.cluster_expansion_outcome = expansion.outcome
     now = now or timezone.now()
-    search.status = (
-        SelfieSearch.Status.CLEANUP_PENDING if search.temporary_object_key else intended_status
-    )
+    search.status = intended_status
+    search.terminal_at = now
     if not search.temporary_object_key:
-        search.terminal_at = now
         search.cleanup_confirmed_at = now
-        search.matched_photo_count = search.final_matched_photo_count or 0
-    search.intended_terminal_status = intended_status
+    search.matched_photo_count = search.final_matched_photo_count or 0
     search.failure_code = failure_code
     search.state_changed_at = now
     search.save(
@@ -751,7 +700,6 @@ def prepare_search_result(
             "terminal_at",
             "cleanup_confirmed_at",
             "matched_photo_count",
-            "intended_terminal_status",
             "failure_code",
             "state_changed_at",
             "eligible_photo_count",
@@ -769,52 +717,32 @@ def prepare_search_result(
     )
 
 
-def confirm_search_cleanup(
-    *,
-    search_id: UUID,
-    storage: _CleanupStorage,
-    now: timezone.datetime | None = None,
-) -> None:
+def confirm_search_cleanup(*, search_id: UUID, storage: _CleanupStorage) -> None:
     search = SelfieSearch.objects.get(pk=search_id)
-    if search.status != SelfieSearch.Status.CLEANUP_PENDING:
-        return
     key = search.temporary_object_key
-    if key:
-        try:
-            storage.delete(key=key)
-        except StorageUnavailable as error:
-            raise CleanupPending() from error
+    if search.terminal_at is None or not key:
+        return
+    try:
+        storage.delete(key=key)
+    except StorageUnavailable as error:
+        raise CleanupPending() from error
     with transaction.atomic():
         search = SelfieSearch.objects.select_for_update().get(pk=search_id)
-        now = now or timezone.now()
-        if search.status != SelfieSearch.Status.CLEANUP_PENDING:
+        if search.temporary_object_key != key:
             return
-        intended_status = search.intended_terminal_status
-        if intended_status not in _terminal_statuses():
-            raise SearchCompletionConflict("cleanup has no terminal target")
-        search.status = intended_status
         search.temporary_object_key = ""
-        search.cleanup_confirmed_at = now
-        search.terminal_at = now
-        search.state_changed_at = now
-        if intended_status == SelfieSearch.Status.READY:
-            if search.final_matched_photo_count is None:
-                raise SearchCompletionConflict("ready cleanup has no final count")
-            _verify_terminal_result_identity(search)
-            search.matched_photo_count = search.final_matched_photo_count
-        else:
-            search.matched_photo_count = 0
+        search.temporary_object_etag = ""
+        search.cleanup_confirmed_at = timezone.now()
         search.save(
             update_fields=[
-                "status",
                 "temporary_object_key",
+                "temporary_object_etag",
                 "cleanup_confirmed_at",
-                "terminal_at",
-                "state_changed_at",
-                "matched_photo_count",
             ]
         )
-        transaction.on_commit(lambda: _emit_search_terminal(search=search, now=now))
+        terminal_at = search.terminal_at
+        assert terminal_at is not None
+        transaction.on_commit(lambda: _emit_search_terminal(search=search, now=terminal_at))
 
 
 def emit_ranking_finished(
@@ -939,23 +867,17 @@ def _terminal_attempt_count(search: SelfieSearch) -> int:
 
 
 def _existing_completion(
-    search: SelfieSearch, attempt: SelfieSearchAttempt, payload_hash: str
-) -> tuple[SearchAttemptCompletion, bool]:
+    attempt: SelfieSearchAttempt, payload_hash: str
+) -> SearchAttemptCompletion:
     if attempt.status == SelfieSearchAttempt.Status.EXPIRED:
-        # A late worker may still hold the raw query.  Its receipt is deliberately not retained,
-        # because this search's retry state already owns the only durable outcome.
-        return SearchAttemptCompletion(attempt=attempt, stale=True), False
+        # An expired attempt cannot replace the current search outcome.
+        return SearchAttemptCompletion(attempt=attempt, stale=True)
     if attempt.result_hash != payload_hash:
         raise SearchCompletionConflict("a different terminal payload was already recorded")
-    return (
-        SearchAttemptCompletion(
-            attempt=attempt,
-            idempotent=True,
-            stale=attempt.status
-            in (SelfieSearchAttempt.Status.EXPIRED, SelfieSearchAttempt.Status.STALE),
-        ),
-        search.stage == SelfieSearch.Stage.RECOGNITION
-        and search.status == SelfieSearch.Status.CLEANUP_PENDING,
+    return SearchAttemptCompletion(
+        attempt=attempt,
+        idempotent=True,
+        stale=attempt.status == SelfieSearchAttempt.Status.STALE,
     )
 
 
@@ -967,7 +889,7 @@ def _stale_or_expired(
     *,
     now: timezone.datetime,
     jitter: Callable[[int, int], int] | None,
-) -> tuple[SearchAttemptCompletion, bool]:
+) -> SearchAttemptCompletion:
     if attempt.lease_expires_at is not None and attempt.lease_expires_at <= now:
         _terminal_attempt(
             attempt,
@@ -979,25 +901,24 @@ def _stale_or_expired(
             error_detail="",
             now=now,
         )
-        needs_cleanup = _transition_retry_or_cleanup(search, job, attempt, now=now, jitter=jitter)
-        return SearchAttemptCompletion(attempt=attempt, stale=True), needs_cleanup
+        _retry_or_finish(search, job, now=now, jitter=jitter)
+        return SearchAttemptCompletion(attempt=attempt, stale=True)
     _terminal_attempt(
         attempt,
         status=str(SelfieSearchAttempt.Status.STALE),
         payload_hash=payload_hash,
         now=now,
     )
-    return SearchAttemptCompletion(attempt=attempt, stale=True), False
+    return SearchAttemptCompletion(attempt=attempt, stale=True)
 
 
-def _transition_retry_or_cleanup(
+def _retry_or_finish(
     search: SelfieSearch,
     job: SelfieSearchJob,
-    attempt: SelfieSearchAttempt,
     *,
     now: timezone.datetime,
     jitter: Callable[[int, int], int] | None,
-) -> bool:
+) -> None:
     attempts_used = SelfieSearchAttempt.objects.filter(job=job).count()
     if attempts_used < _RETRY_POLICY["max_attempts"]:
         retry_at = now + timedelta(seconds=_backoff_seconds(attempts_used, jitter))
@@ -1007,7 +928,7 @@ def _transition_retry_or_cleanup(
         search.status = SelfieSearch.Status.QUEUED
         search.state_changed_at = now
         search.save(update_fields=["status", "state_changed_at"])
-        return False
+        return
     job.status = SelfieSearchJob.Status.FAILED
     job.completed_at = now
     job.save(update_fields=["status", "completed_at"])
@@ -1018,7 +939,6 @@ def _transition_retry_or_cleanup(
         expansion=None,
         now=now,
     )
-    return True
 
 
 def _backoff_seconds(attempts_used: int, jitter: Callable[[int, int], int] | None) -> int:
@@ -1047,17 +967,6 @@ def _safe_failure_detail(error_code: str, detail: str) -> str:
     if not isinstance(detail, str) or len(detail) > 512 or not detail:
         return _terminal_failure_status(error_code)[1]
     return detail
-
-
-def _terminal_statuses() -> set[str]:
-    return {
-        str(SelfieSearch.Status.READY),
-        str(SelfieSearch.Status.NO_FACE),
-        str(SelfieSearch.Status.MULTIPLE_FACES),
-        str(SelfieSearch.Status.QUALITY_REJECTED),
-        str(SelfieSearch.Status.SEARCH_UNAVAILABLE),
-        str(SelfieSearch.Status.FAILED),
-    }
 
 
 def _canonical_hash(payload: dict[str, Any]) -> str:

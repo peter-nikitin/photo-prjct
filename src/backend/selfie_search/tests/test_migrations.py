@@ -351,7 +351,7 @@ class SharedFaceSearchUpgradeTests(TransactionTestCase):
                 "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
                 return_value=storage,
             ):
-                call_command("publish_pending_face_searches")
+                call_command("delete_temporary_selfies")
             for search in (queued, running, ml_active):
                 self.assertEqual(
                     SelfieSearch.objects.get(pk=search.pk).results.get().photo_id,

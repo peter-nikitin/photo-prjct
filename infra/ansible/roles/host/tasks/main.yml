@@ -122,7 +122,7 @@
       -f docker-compose.deployment.yml exec -T web python manage.py
       prune_face_search_tasks --batch-size 500
 
-- name: Publish face-search results after deleting temporary selfies
+- name: Delete temporary selfies after face-search completion
   ansible.builtin.cron:
     name: findme-face-search-publish
     user: root
@@ -133,7 +133,7 @@
       /usr/bin/timeout --kill-after=2s 50s
       /usr/bin/docker compose --project-name photo-prjct --env-file .env
       -f docker-compose.deployment.yml exec -T web
-      timeout --kill-after=2s 45s python manage.py publish_pending_face_searches --batch-size 10
+      timeout --kill-after=2s 45s python manage.py delete_temporary_selfies --batch-size 10
 
 - name: Create PostgreSQL disk mountpoint
   ansible.builtin.file:

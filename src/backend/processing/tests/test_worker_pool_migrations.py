@@ -143,7 +143,12 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
                 preserved_fields = [
                     field.attname
                     for field in apps.get_model(app, name)._meta.concrete_fields
-                    if field.attname not in {"reader_staff_eligible", "reader_comparison_requested"}
+                    if field.attname
+                    not in {
+                        "reader_staff_eligible",
+                        "reader_comparison_requested",
+                        "intended_terminal_status",
+                    }
                 ]
                 rows = list(
                     registry.get_model(app, name).objects.order_by("pk").values(*preserved_fields)

@@ -1496,7 +1496,6 @@ class PublicSelfieResultViewTests(TestCase):
         state_copy = {
             SelfieSearch.Status.QUEUED: "Ищем фотографии…",
             SelfieSearch.Status.PROCESSING: "Ищем фотографии…",
-            SelfieSearch.Status.CLEANUP_PENDING: "Ищем фотографии…",
             SelfieSearch.Status.READY: "Возможные совпадения",
             SelfieSearch.Status.NO_FACE: "На селфи не удалось найти подходящее лицо.",
             SelfieSearch.Status.MULTIPLE_FACES: "На селфи должно быть только одно лицо.",
@@ -1548,7 +1547,6 @@ class PublicSelfieResultViewTests(TestCase):
         for status in (
             SelfieSearch.Status.QUEUED,
             SelfieSearch.Status.PROCESSING,
-            SelfieSearch.Status.CLEANUP_PENDING,
             SelfieSearch.Status.NO_FACE,
             SelfieSearch.Status.MULTIPLE_FACES,
             SelfieSearch.Status.QUALITY_REJECTED,

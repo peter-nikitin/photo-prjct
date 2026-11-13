@@ -238,7 +238,7 @@ def test_remote_selfie_callback_accepts_before_worker_uses_native_reader(client,
             "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
             return_value=storage,
         ):
-            call_command("publish_pending_face_searches")
+            call_command("delete_temporary_selfies")
         assert any("<=>" in row["sql"] for row in worker_queries.captured_queries)
         search.refresh_from_db()
         assert search.status == SelfieSearch.Status.READY
@@ -297,7 +297,7 @@ def test_maximum_selfie_callback_accepts_for_private_cleanup_in_worker(client, s
     with patch(
         "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup", return_value=h.storage
     ):
-        call_command("publish_pending_face_searches")
+        call_command("delete_temporary_selfies")
     h.search.refresh_from_db()
     assert h.search.temporary_object_key == "" and len(h.storage.deleted) == 1
     assert SelfieSearchAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease

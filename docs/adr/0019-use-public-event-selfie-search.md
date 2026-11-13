@@ -61,8 +61,9 @@ Django validates the returned embedding and performs direct exact cosine compari
 against the frozen compatible accepted face embeddings of that event. PostgreSQL stores the
 immutable ordered photo-result snapshot, score evidence, state, and model/threshold versions.
 Django never persists the query embedding. The result cannot become publicly terminal until the
-temporary selfie has been deleted; application cleanup retry and a bounded temporary-prefix
-lifecycle cover deletion failures and abandoned objects.
+temporary selfie has been deleted (this publication condition was superseded by
+[ADR 0066](0066-store-vectors-in-face-search-queue.md)). Cleanup retries and a bounded
+temporary-prefix lifecycle cover deletion failures and abandoned objects.
 
 The stable result is a non-expiring public bearer resource. Anyone with its URL may view the saved
 snapshot without authentication. New photos, embeddings, or model versions do not recompute it.

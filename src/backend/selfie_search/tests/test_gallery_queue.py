@@ -451,8 +451,8 @@ with (
             public_token_digest=uuid4().hex * 2,
             temporary_object_key=f"selfie-search/{uuid4().hex}",
             stage=SelfieSearch.Stage.MATCHING,
-            status=SelfieSearch.Status.CLEANUP_PENDING,
-            intended_terminal_status=SelfieSearch.Status.READY,
+            status=SelfieSearch.Status.READY,
+            terminal_at=timezone.now() - timedelta(minutes=1),
             final_matched_photo_count=0,
             direct_matched_photo_count=0,
             cluster_expanded_photo_count=0,
@@ -473,7 +473,7 @@ with patch(
         with self.worker(code) as worker:
             self.wait_for_search(gallery, worker)
             pending.refresh_from_db()
-            self.assertEqual(pending.status, SelfieSearch.Status.CLEANUP_PENDING)
+            self.assertEqual(pending.status, SelfieSearch.Status.READY)
             self.assertEqual(gallery.results.count(), 1)
 
     def test_sigterm_stops_immediately_and_next_start_recovers_without_budget_wait(self):

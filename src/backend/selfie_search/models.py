@@ -46,7 +46,6 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     class Status(models.TextChoices):
         QUEUED = "queued", "Queued"
         PROCESSING = "processing", "Processing"
-        CLEANUP_PENDING = "cleanup_pending", "Cleanup pending"
         READY = "ready", "Ready"
         NO_FACE = "no_face", "No face"
         MULTIPLE_FACES = "multiple_faces", "Multiple faces"
@@ -104,7 +103,6 @@ class SelfieSearch(models.Model):  # noqa: DJ008
         blank=True,
     )
     failure_code = models.CharField(max_length=64, blank=True, default="")
-    intended_terminal_status = models.CharField(max_length=24, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     state_changed_at = models.DateTimeField(default=timezone.now)
     terminal_at = models.DateTimeField(null=True, blank=True)
@@ -117,7 +115,6 @@ class SelfieSearch(models.Model):  # noqa: DJ008
                     status__in=(
                         "queued",
                         "processing",
-                        "cleanup_pending",
                         "ready",
                         "no_face",
                         "multiple_faces",
@@ -127,20 +124,6 @@ class SelfieSearch(models.Model):  # noqa: DJ008
                     )
                 ),
                 name="selfie_search_status_chk",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(
-                    intended_terminal_status__in=(
-                        "",
-                        "ready",
-                        "no_face",
-                        "multiple_faces",
-                        "quality_rejected",
-                        "search_unavailable",
-                        "failed",
-                    )
-                ),
-                name="selfie_search_intended_status_chk",
             ),
             models.CheckConstraint(
                 condition=models.Q(cluster_corpus_version__isnull=True)

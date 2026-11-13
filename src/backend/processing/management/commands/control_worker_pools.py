@@ -63,9 +63,8 @@ def recover(name: str) -> None:
     # Reuse the existing durable recovery authority and its bounded batches.
     if name == "selfie":
         from selfie_search.services.jobs import recover_expired_search_attempts
-        from selfie_search.storage import TemporarySelfieStorage
 
-        recover_expired_search_attempts(storage=TemporarySelfieStorage(), limit=2)
+        recover_expired_search_attempts(limit=2)
     elif name == "bulk":
         from processing.services.jobs import recover_expired_attempts
 

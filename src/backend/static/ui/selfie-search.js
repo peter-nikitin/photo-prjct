@@ -5,7 +5,7 @@
 })(typeof globalThis === 'undefined' ? this : globalThis, function buildSelfieSearch() {
   'use strict';
 
-  const ACTIVE_STATES = new Set(['queued', 'processing', 'cleanup_pending']);
+  const ACTIVE_STATES = new Set(['queued', 'processing']);
   const POLL_DELAY_MS = 2000;
   const MAX_BACKOFF_MS = 30000;
   const FEEDBACK_PENDING_KEY = 'findme_selfie_feedback_pending';

@@ -15,7 +15,7 @@ from ingestion.models import ImportAttempt, ImportBatch, ImportItem
 from ingestion.services.imports import MAX_OPERATION_ATTEMPTS, _owner_is_eligible
 from processing.models import EventProcessingRun, PhotoProcessingState, ProcessingJob
 from processing.services.worker_pool_state import BULK_IDENTITIES
-from selfie_search.models import SelfieSearch, SelfieSearchJob
+from selfie_search.models import FaceSearchTask, SelfieSearch, SelfieSearchJob
 
 type QueueSample = tuple[int, float, float, float]
 
@@ -31,12 +31,25 @@ def _sample(
     return count, age, _stamp(success), time.time()
 
 
-def _gallery(now: datetime) -> QueueSample:
-    gallery = SelfieSearch.objects.filter(configuration__processor="gallery_photo_query")
-    ready = gallery.filter(status="queued", gallery_available_at__lte=now)
-    values = ready.aggregate(count=Count("pk"), oldest=Min("gallery_available_at"))
-    success = gallery.filter(status="ready").aggregate(last=Max("terminal_at"))["last"]
+def _matching(now: datetime, *, source: str, processor: str) -> QueueSample:
+    ready = FaceSearchTask.objects.filter(
+        source=source, status=FaceSearchTask.Status.QUEUED
+    ).filter(Q(available_at__lte=now) | Q(expires_at__lte=now))
+    values = ready.aggregate(count=Count("pk"), oldest=Min("available_at"))
+    success = SelfieSearch.objects.filter(
+        configuration__processor=processor, status=SelfieSearch.Status.READY
+    ).aggregate(last=Max("terminal_at"))["last"]
     return _sample(values["count"], values["oldest"], success, now)
+
+
+def _gallery(now: datetime) -> QueueSample:
+    return _matching(
+        now, source=str(FaceSearchTask.Source.GALLERY), processor="gallery_photo_query"
+    )
+
+
+def _selfie_matching(now: datetime) -> QueueSample:
+    return _matching(now, source=str(FaceSearchTask.Source.SELFIE), processor="selfie_query")
 
 
 def _selfie(now: datetime) -> QueueSample | None:
@@ -46,6 +59,7 @@ def _selfie(now: datetime) -> QueueSample | None:
         status__in=("queued", "retry_wait"),
         available_at__lte=now,
         search__status="queued",
+        search__stage=SelfieSearch.Stage.RECOGNITION,
         search__temporary_object_key__gt="",
     )
     values = ready.aggregate(count=Count("pk"), oldest=Min("available_at"))
@@ -192,6 +206,7 @@ def collect_queue_samples() -> dict[str, QueueSample]:
     for name, collector in (
         ("gallery-search", _gallery),
         ("selfie", _selfie),
+        ("selfie_face_search", _selfie_matching),
         ("photo", _photo),
         ("import", _import),
         ("commerce", _commerce),

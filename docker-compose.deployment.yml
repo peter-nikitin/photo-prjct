@@ -228,7 +228,7 @@ services:
   gallery-search-worker:
     image: ${APP_IMAGE:?APP_IMAGE must be set}
     environment:
-      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      SECRET_KEY: gallery-search-worker-unused
       DEBUG: ${DEBUG:?DEBUG must be set}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set}
       DB_NAME: ${DB_NAME:?DB_NAME must be set}

@@ -18,6 +18,7 @@ from urllib.request import Request
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -268,6 +269,18 @@ class SelfieSearchEndToEndTests(TestCase):
 
         search.refresh_from_db()
         attempt = SelfieSearchAttempt.objects.get(job=search.job)
+        self.assertEqual(search.status, SelfieSearch.Status.QUEUED)
+        from selfie_search.services.face_search_queue import run_once
+
+        self.assertTrue(run_once())
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=self.storage,
+        ):
+            call_command("publish_pending_face_searches")
+        search.refresh_from_db()
         rows = list(SelfieSearchResult.objects.filter(search=search).order_by("rank"))
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertEqual(search.matched_photo_count, 2)

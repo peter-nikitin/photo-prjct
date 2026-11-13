@@ -418,7 +418,7 @@ else
 
     dump_tmp="$(mktemp "$backup_dir/$timestamp.dump.XXXXXX")" || fail "Could not create temporary dump file"
     if ! ssh "$VM_SSH_TARGET" \
-        "$remote_compose exec -T db pg_dump --format=custom --no-owner --no-acl --username=$source_user_quoted --dbname=$source_database_quoted" \
+        "$remote_compose exec -T db pg_dump --format=custom --no-owner --no-acl --exclude-table-data=public.selfie_search_facesearchtask --username=$source_user_quoted --dbname=$source_database_quoted" \
         > "$dump_tmp"; then
         fail "Deployed dump stream failed"
     fi
@@ -540,6 +540,45 @@ restore_local_dump() {
         --username="$local_user" --dbname="$local_database" < "$archive_path"
 }
 
+detach_deployed_selfie_inputs() {
+    # A local worker must never fetch or delete temporary objects owned by the deployed app.
+    docker compose exec -T db psql --username="$local_user" --dbname="$local_database" \
+        -v ON_ERROR_STOP=1 -c "
+        DO \$\$
+        BEGIN
+            IF to_regclass('public.selfie_search_selfiesearch') IS NOT NULL THEN
+                UPDATE public.selfie_search_selfiesearchattempt AS attempt
+                SET status = 'expired',
+                    terminal_at = statement_timestamp(),
+                    error_code = 'cloned_selfie_input_unavailable'
+                FROM public.selfie_search_selfiesearchjob AS job
+                JOIN public.selfie_search_selfiesearch AS search ON search.id = job.search_id
+                WHERE attempt.job_id = job.id AND attempt.status = 'in_progress'
+                    AND search.temporary_object_key <> '' AND search.status IN ('queued', 'processing');
+
+                UPDATE public.selfie_search_selfiesearchjob AS job
+                SET status = 'failed', completed_at = statement_timestamp()
+                FROM public.selfie_search_selfiesearch AS search
+                WHERE job.search_id = search.id AND job.status IN ('queued', 'processing', 'retry_wait')
+                    AND search.temporary_object_key <> '' AND search.status IN ('queued', 'processing');
+
+                UPDATE public.selfie_search_selfiesearch
+                SET status = 'failed',
+                    intended_terminal_status = 'failed',
+                    failure_code = 'cloned_selfie_input_unavailable',
+                    state_changed_at = statement_timestamp(),
+                    terminal_at = statement_timestamp(),
+                    cleanup_confirmed_at = statement_timestamp()
+                WHERE temporary_object_key <> '' AND status IN ('queued', 'processing');
+
+                UPDATE public.selfie_search_selfiesearch
+                SET temporary_object_key = '', temporary_object_etag = ''
+                WHERE temporary_object_key <> '';
+            END IF;
+        END;
+        \$\$;"
+}
+
 attempt_safety_recovery() {
     failure_reason="$1"
     recovery_attempted=1
@@ -618,24 +657,31 @@ if applied_migrations - set(loader.disk_migrations):
 start_and_wait_for_local_db
 verify_local_collation_compatibility || fail "Local database collation versions are incompatible; restore the previous database image"
 
-if web_running_services="$(docker compose ps --status running --services web 2>/dev/null)"; then
-    :
-else
-    fail "Could not determine whether the local web service is running"
-fi
-if [ "$web_running_services" = web ]; then
-    if ! docker compose stop web; then
-        fail "Could not stop the running local web service; local database replacement was not started"
+stop_local_service() {
+    service="$1"
+    if running_services="$(docker compose ps --status running --services "$service" 2>/dev/null)"; then
+        :
+    else
+        fail "Could not determine whether the local $service service is running"
     fi
-elif [ -n "$web_running_services" ]; then
-    fail "Could not safely determine whether the local web service is running"
-fi
+    if [ "$running_services" = "$service" ]; then
+        if ! docker compose stop "$service"; then
+            fail "Could not stop the running local $service service; local database replacement was not started"
+        fi
+    elif [ -n "$running_services" ]; then
+        fail "Could not safely determine whether the local $service service is running"
+    fi
+}
+
+stop_local_service gallery-search-worker
+stop_local_service web
 
 safety_name="$timestamp.local-safety.dump"
 safety_dump_path="$backup_dir/$safety_name"
 [ ! -e "$safety_dump_path" ] || fail "Local safety dump output already exists for timestamp $timestamp"
 safety_tmp="$(mktemp "$backup_dir/$safety_name.XXXXXX")" || fail "Could not create temporary local safety dump file"
 if ! docker compose exec -T db pg_dump --format=custom --no-owner --no-acl \
+    --exclude-table-data=public.selfie_search_facesearchtask \
     --username="$local_user" --dbname="$local_database" > "$safety_tmp"; then
     fail "Could not create local safety dump"
 fi
@@ -666,6 +712,11 @@ if ! restore_local_dump "$dump_path"; then
     exit 1
 fi
 
+if ! detach_deployed_selfie_inputs; then
+    attempt_safety_recovery "Could not detach deployed selfie inputs from the local clone" || true
+    exit 1
+fi
+
 if ! verify_local_collation_compatibility; then
     attempt_safety_recovery "Restored database collation versions are incompatible" || true
     exit 1
@@ -675,3 +726,4 @@ validate_restored_database
 
 printf 'Local database replacement completed using validated deployed dump %s.\n' "$dump_path" >&2
 printf 'Local web service remains stopped; restart it explicitly after validation with: docker compose up -d web\n' >&2
+printf 'Local gallery-search-worker remains stopped; restart it explicitly after validation with: docker compose up -d gallery-search-worker\n' >&2

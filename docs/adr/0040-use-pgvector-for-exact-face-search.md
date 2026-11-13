@@ -4,7 +4,8 @@
 - Date: 2026-09-27
 - Deciders: project maintainer; explicitly accepted in conversation on 2026-09-27
 - Supersedes: [ADR 0019](0019-use-public-event-selfie-search.md), in-memory direct comparison and initial exclusion of vector infrastructure only
-- Superseded by: [ADR 0041](0041-accept-pgvector-numerical-boundaries.md), strict numerical parity requirement only
+- Superseded by: [ADR 0041](0041-accept-pgvector-numerical-boundaries.md) for strict numerical parity only, and
+  [ADR 0066](0066-store-vectors-in-face-search-queue.md) for the prohibition on temporary query vector storage only
 
 ## Context
 

@@ -409,4 +409,13 @@ def test_gallery_executor_stops_immediately_without_lock_or_health_wait() -> Non
     assert worker["pids_limit"] == 32
     assert worker["restart"] == "unless-stopped"
     assert "profiles" not in worker
-    assert not any("SECRET_ACCESS_KEY" in key or "TBANK" in key for key in worker["environment"])
+    local = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    for compose in (deployment, local):
+        executor = compose["services"]["gallery-search-worker"]
+        assert "env_file" not in executor
+        assert "volumes" not in executor
+        assert executor["environment"]["SECRET_KEY"] == "gallery-search-worker-unused"
+        assert not any(
+            "S3" in key or "ACCESS_KEY" in key or key.startswith("TBANK_")
+            for key in executor["environment"]
+        )

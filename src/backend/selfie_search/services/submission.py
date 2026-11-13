@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from django.conf import settings
-from django.db import DatabaseError, connection, transaction
+from django.db import DatabaseError, transaction
 from django.db.models import QuerySet
 from django.utils import timezone
+from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import (
     GalleryFaceCrop,
     gallery_face_crop,
@@ -20,7 +20,6 @@ from picflow.gallery import (
 )
 from picflow.models import Event, Photo
 from processing.models import (
-    EventFaceClusterActivation,
     FaceEmbeddingVector,
     PhotoFaceDetection,
     PhotoProcessingState,
@@ -29,23 +28,12 @@ from processing.services.face_quality import active_face_embedding_generations
 
 from selfie_search.images import PreparedSelfie
 from selfie_search.models import (
+    FaceSearchTask,
     SelfieSearch,
-    SelfieSearchClusterEvidence,
-    SelfieSearchDirectEvidence,
     SelfieSearchJob,
-    SelfieSearchResult,
 )
-from selfie_search.services.cluster_expansion import (
-    RankedPhotoExpansion,
-    direct_only_ranked_photos,
-    expand_ranked_photos,
-)
-from selfie_search.services.ranking import (
-    CandidateEmbedding,
-    RankingError,
-    validate_query_vector,
-)
-from selfie_search.services.read_selection import rank_selected_direct
+from selfie_search.services.jobs import enqueue_face_search
+from selfie_search.services.ranking import RankingError, validate_query_vector
 
 
 @dataclass(frozen=True)
@@ -60,27 +48,6 @@ class GallerySearchUnavailable(LookupError):
 
 class GallerySearchFailed(RuntimeError):
     """A direct gallery search could not be atomically published."""
-
-
-class _MissingGallerySourceResult(RuntimeError):
-    pass
-
-
-_GALLERY_RANKING_TIMEOUT_MS = 120_000
-
-
-def _rank_gallery_with_timeout(search: SelfieSearch, query: object):
-    with transaction.atomic():
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT set_config('statement_timeout', %s, true)",
-                [str(_GALLERY_RANKING_TIMEOUT_MS)],
-            )
-        return rank_selected_direct(search, query)
-
-
-def _is_statement_timeout(error: DatabaseError) -> bool:
-    return getattr(error.__cause__, "sqlstate", None) == "57014"
 
 
 def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user) -> CreatedSearch:
@@ -170,6 +137,7 @@ def gallery_search_faces_by_photo(
     return {photo_id: tuple(crops) for photo_id, crops in results.items()}
 
 
+@sensitive_variables("query")
 def submit_gallery_photo_search(
     *,
     event: Event,
@@ -201,10 +169,7 @@ def submit_gallery_photo_search(
             configuration = _gallery_configuration(
                 event=event, photo=photo, detection_id=detection_id
             )
-            _gallery_source_candidate(
-                event=event,
-                configuration=configuration,
-            )
+            query = _gallery_source_vector(event=event, configuration=configuration)
 
             public_token = secrets.token_urlsafe(32)
             search = SelfieSearch.objects.create(
@@ -215,6 +180,12 @@ def submit_gallery_photo_search(
                 configuration_hash=_configuration_hash(configuration),
                 state_changed_at=now,
             )
+            enqueue_face_search(
+                search,
+                source=str(FaceSearchTask.Source.GALLERY),
+                query=query,
+                now=search.created_at,
+            )
     except GallerySearchUnavailable:
         raise
     except DatabaseError as error:
@@ -222,139 +193,11 @@ def submit_gallery_photo_search(
     return CreatedSearch(search=search, public_token=public_token)
 
 
-def process_gallery_photo_search(
-    *,
-    search: SelfieSearch,
-    now: datetime | None = None,
-) -> SelfieSearch:
-    """Rank an immutable gallery snapshot before briefly locking to publish it."""
-    try:
-        snapshot = SelfieSearch.objects.select_related("event").get(pk=search.pk)
-        if snapshot.status != SelfieSearch.Status.PROCESSING:
-            return snapshot
-        if snapshot.configuration.get("processor") != "gallery_photo_query":
-            raise GallerySearchUnavailable()
-        source_candidate = _gallery_source_candidate(
-            event=snapshot.event,
-            configuration=snapshot.configuration,
-        )
-        try:
-            ranking = _rank_gallery_with_timeout(snapshot, source_candidate.vector)
-        except DatabaseError as error:
-            if _is_statement_timeout(error):
-                return fail_gallery_attempt(
-                    search_id=search.pk, status="failed", now=now or timezone.now()
-                )
-            raise
-        ranked = ranking.photos
-        source = snapshot.configuration.get("query_source")
-        if not isinstance(source, dict) or not any(
-            row.photo_id == source.get("photo_id") for row in ranked
-        ):
-            raise _MissingGallerySourceResult()
-        expansion = _expand_gallery_ranking(
-            search=snapshot,
-            ranked=ranked,
-            query=source_candidate.vector,
-        )
-        eligible_photo_count = ranking.eligible_photo_count
-        eligible_face_count = ranking.eligible_face_count
-        with transaction.atomic():
-            locked_search = (
-                SelfieSearch.objects.select_for_update().select_related("event").get(pk=search.pk)
-            )
-            if locked_search.status != SelfieSearch.Status.PROCESSING:
-                return locked_search
-            if (
-                locked_search.event_id != snapshot.event_id
-                or locked_search.configuration_hash != snapshot.configuration_hash
-                or locked_search.configuration != snapshot.configuration
-            ):
-                raise GallerySearchUnavailable()
-            current_source = _gallery_source_candidate(
-                event=locked_search.event,
-                configuration=locked_search.configuration,
-            )
-            if current_source != source_candidate:
-                raise GallerySearchUnavailable()
-            _persist_gallery_results(search=locked_search, expansion=expansion)
-            now = now or timezone.now()
-            locked_search.status = SelfieSearch.Status.READY
-            locked_search.eligible_photo_count = eligible_photo_count
-            locked_search.eligible_face_count = eligible_face_count
-            locked_search.matched_photo_count = expansion.final_matched_photo_count
-            locked_search.final_matched_photo_count = expansion.final_matched_photo_count
-            locked_search.direct_matched_photo_count = expansion.direct_matched_photo_count
-            locked_search.cluster_expanded_photo_count = expansion.cluster_expanded_photo_count
-            locked_search.strong_anchor_count = expansion.strong_anchor_count
-            locked_search.expanded_cluster_count = expansion.expanded_cluster_count
-            locked_search.cluster_corpus_id = expansion.cluster_corpus_id
-            locked_search.cluster_corpus_version = expansion.cluster_corpus_version
-            locked_search.cluster_configuration_hash = expansion.cluster_configuration_hash
-            locked_search.cluster_expansion_outcome = expansion.outcome
-            locked_search.state_changed_at = now
-            locked_search.terminal_at = now
-            locked_search.cleanup_confirmed_at = now
-            locked_search.save(
-                update_fields=[
-                    "status",
-                    "eligible_photo_count",
-                    "eligible_face_count",
-                    "matched_photo_count",
-                    "final_matched_photo_count",
-                    "direct_matched_photo_count",
-                    "cluster_expanded_photo_count",
-                    "strong_anchor_count",
-                    "expanded_cluster_count",
-                    "cluster_corpus",
-                    "cluster_corpus_version",
-                    "cluster_configuration_hash",
-                    "cluster_expansion_outcome",
-                    "state_changed_at",
-                    "terminal_at",
-                    "cleanup_confirmed_at",
-                ]
-            )
-    except (GallerySearchUnavailable, _MissingGallerySourceResult):
-        return fail_gallery_attempt(
-            search_id=search.pk,
-            status="search_unavailable",
-            now=now or timezone.now(),
-        )
-    except RankingError:
-        return fail_gallery_attempt(search_id=search.pk, status="failed", now=now or timezone.now())
-    except DatabaseError as error:
-        raise GallerySearchFailed() from error
-    return locked_search
-
-
-def fail_gallery_attempt(*, search_id, status: str, now: datetime) -> SelfieSearch:
-    with transaction.atomic():
-        search = SelfieSearch.objects.select_for_update().get(pk=search_id)
-        if search.status != SelfieSearch.Status.PROCESSING:
-            return search
-        search.status = status
-        search.failure_code = status
-        search.state_changed_at = now
-        search.terminal_at = now
-        search.cleanup_confirmed_at = now
-        search.save(
-            update_fields=[
-                "status",
-                "failure_code",
-                "state_changed_at",
-                "terminal_at",
-                "cleanup_confirmed_at",
-            ]
-        )
-    return search
-
-
-def _gallery_source_candidate(
+def _gallery_source_vector(
     *,
     event: Event,
     configuration: dict[str, object],
-) -> CandidateEmbedding:
+) -> tuple[float, ...]:
     source = configuration.get("query_source")
     if (
         not isinstance(source, dict)
@@ -407,16 +250,11 @@ def _gallery_source_candidate(
         is None
     ):
         raise GallerySearchUnavailable()
-    candidate = CandidateEmbedding(
-        vector=[float(value) for value in vector] if vector is not None else vector,
-        model_version=model_version,
-        detection_id=detection_id,
-        photo_id=str(photo.pk),
-    )
     validation_search = SelfieSearch(event=event, configuration=configuration)
-    if not _is_usable_gallery_query(search=validation_search, vector=candidate.vector):
-        raise GallerySearchUnavailable()
-    return candidate
+    try:
+        return validate_query_vector(validation_search, [float(value) for value in vector])
+    except RankingError:
+        raise GallerySearchUnavailable() from None
 
 
 def resolve_public_search(event_slug: str, public_token: str) -> SelfieSearch:
@@ -486,68 +324,6 @@ def _usable_gallery_vectors(
         detection__geometry__pixel_width__gt=0,
         detection__geometry__pixel_height__gt=0,
         detection__geometry__bbox__isnull=False,
-    )
-
-
-def _is_usable_gallery_query(*, search: SelfieSearch, vector: object) -> bool:
-    try:
-        validate_query_vector(search, vector)
-    except RankingError:
-        return False
-    return True
-
-
-def _expand_gallery_ranking(
-    *, search: SelfieSearch, ranked: tuple, query: object
-) -> RankedPhotoExpansion:
-    if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
-        return direct_only_ranked_photos(ranked, outcome="disabled")
-    activation = (
-        EventFaceClusterActivation.objects.select_related("corpus")
-        .filter(event=search.event, active=True)
-        .first()
-    )
-    return expand_ranked_photos(search, ranked, query, activation)
-
-
-def _persist_gallery_results(*, search: SelfieSearch, expansion: RankedPhotoExpansion) -> None:
-    results = [
-        SelfieSearchResult(
-            search=search,
-            photo_id=row.photo_id,
-            primary_source=row.primary_source,
-            rank=position,
-        )
-        for position, row in enumerate(expansion.results, start=1)
-    ]
-    SelfieSearchResult.objects.bulk_create(results)
-    result_by_photo = {row.photo_id: row for row in results}
-    SelfieSearchDirectEvidence.objects.bulk_create(
-        [
-            SelfieSearchDirectEvidence(
-                result=result_by_photo[row.photo_id],
-                detection_id=row.direct.detection_id,
-                cosine_distance=row.direct.cosine_distance,
-            )
-            for row in expansion.results
-            if row.direct is not None
-        ]
-    )
-    SelfieSearchClusterEvidence.objects.bulk_create(
-        [
-            SelfieSearchClusterEvidence(
-                result=result_by_photo[row.photo_id],
-                corpus_id=expansion.cluster_corpus_id,
-                cluster_id=evidence.cluster_id,
-                anchor_result=result_by_photo[evidence.anchor_photo_id],
-                anchor_detection_id=evidence.anchor_detection_id,
-                member_detection_id=evidence.member_detection_id,
-                representative_distance=evidence.representative_distance,
-                source_order=evidence.source_order,
-            )
-            for row in expansion.results
-            for evidence in row.cluster_evidence
-        ]
     )
 
 

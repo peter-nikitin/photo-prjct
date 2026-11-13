@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pytest
+from django.core.management import call_command
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -195,10 +196,9 @@ def test_maximum_gallery_callback_publication(client, settings, dimensions, remo
 
 
 @pytest.mark.django_db
-def test_remote_selfie_callback_uses_native_reader_with_gate_off_and_keeps_results_immutable(
-    client, settings
-):
+def test_remote_selfie_callback_accepts_before_worker_uses_native_reader(client, settings):
     from selfie_search.models import SelfieSearch, SelfieSearchAttempt
+    from selfie_search.services.face_search_queue import run_once
     from selfie_search.tests.test_jobs import SearchJobTests
 
     from processing.models import WorkerPoolMember
@@ -227,7 +227,19 @@ def test_remote_selfie_callback_uses_native_reader_with_gate_off_and_keeps_resul
                 f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body
             )
         assert complete.status_code == 200, complete.content
-        assert any("<=>" in row["sql"] for row in queries.captured_queries)
+        assert not any("<=>" in row["sql"] for row in queries.captured_queries)
+        search.refresh_from_db()
+        assert search.status == SelfieSearch.Status.QUEUED
+        assert storage.deleted == []
+        assert not search.results.exists()
+        with CaptureQueriesContext(connection) as worker_queries:
+            assert run_once()
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=storage,
+        ):
+            call_command("publish_pending_face_searches")
+        assert any("<=>" in row["sql"] for row in worker_queries.captured_queries)
         search.refresh_from_db()
         assert search.status == SelfieSearch.Status.READY
         assert search.temporary_object_key == "" and len(storage.deleted) == 1
@@ -244,8 +256,9 @@ def test_remote_selfie_callback_uses_native_reader_with_gate_off_and_keeps_resul
 
 
 @pytest.mark.django_db
-def test_maximum_selfie_callback_cleanup_and_wire(client, settings):
-    from selfie_search.models import SelfieSearchAttempt
+def test_maximum_selfie_callback_accepts_for_private_cleanup_in_worker(client, settings):
+    from selfie_search.models import SelfieSearch, SelfieSearchAttempt
+    from selfie_search.services.face_search_queue import run_once
     from selfie_search.services.submission import _configuration
 
     from processing.tests import test_views
@@ -277,6 +290,14 @@ def test_maximum_selfie_callback_cleanup_and_wire(client, settings):
             f"/internal/photo-processing/v1/attempts/{job['attempt_id']}/complete", body
         )
         assert complete.status_code == 200, complete.json()
+    h.search.refresh_from_db()
+    assert h.search.status == SelfieSearch.Status.QUEUED
+    assert h.storage.deleted == []
+    assert run_once()
+    with patch(
+        "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup", return_value=h.storage
+    ):
+        call_command("publish_pending_face_searches")
     h.search.refresh_from_db()
     assert h.search.temporary_object_key == "" and len(h.storage.deleted) == 1
     assert SelfieSearchAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease

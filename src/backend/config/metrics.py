@@ -52,21 +52,48 @@ FROM pg_stat_user_tables
 """
 _DB_WAL_SQL = "SELECT wal_bytes::bigint FROM pg_stat_wal"
 
+_FACE_SEARCH_P75_SQL = """
+SELECT
+    CASE configuration->>'processor' WHEN 'selfie_query' THEN 'selfie' ELSE 'gallery' END,
+    percentile_cont(0.75) WITHIN GROUP (ORDER BY extract(epoch FROM terminal_at - created_at))
+FROM selfie_search_selfiesearch
+WHERE status = 'ready'
+    AND terminal_at > statement_timestamp() - interval '24 hours'
+    AND terminal_at <= statement_timestamp()
+    AND terminal_at >= created_at
+    AND configuration->>'processor' IN ('selfie_query', 'gallery_photo_query')
+GROUP BY 1
+"""
+
 _GALLERY_SEARCH_SQL = """
 SELECT
-    count(*) FILTER (WHERE status = 'queued'),
-    count(*) FILTER (WHERE measured),
-    coalesce(sum(extract(epoch FROM gallery_started_at - created_at))
-        FILTER (WHERE measured), 0)::float,
-    coalesce(sum(extract(epoch FROM terminal_at - gallery_started_at))
-        FILTER (WHERE measured), 0)::float
-FROM (
-    SELECT status, created_at, gallery_started_at, terminal_at,
-        status = 'ready' AND gallery_started_at IS NOT NULL AND terminal_at IS NOT NULL AS measured
-    FROM selfie_search_selfiesearch
-    WHERE configuration->>'processor' = 'gallery_photo_query'
-) AS gallery
+    (SELECT count(*) FROM selfie_search_facesearchtask
+        WHERE source = 'gallery' AND status = 'queued'),
+    count(*),
+    coalesce(sum(extract(epoch FROM matching_started_at - created_at)), 0)::float,
+    coalesce(sum(extract(epoch FROM terminal_at - matching_started_at)), 0)::float
+FROM selfie_search_selfiesearch
+WHERE configuration->>'processor' = 'gallery_photo_query'
+    AND status = 'ready' AND matching_started_at IS NOT NULL AND terminal_at IS NOT NULL
 """
+
+_SELFIE_SEARCH_SQL = """
+SELECT
+    (SELECT count(*) FROM selfie_search_selfiesearchjob
+        WHERE status IN ('queued', 'retry_wait')),
+    (SELECT count(*) FROM selfie_search_facesearchtask
+        WHERE source = 'selfie' AND status = 'queued'),
+    count(*),
+    coalesce(sum(extract(epoch FROM recognition_started_at - created_at)), 0)::float,
+    coalesce(sum(extract(epoch FROM matching_enqueued_at - recognition_started_at)), 0)::float,
+    coalesce(sum(extract(epoch FROM matching_started_at - matching_enqueued_at)), 0)::float,
+    coalesce(sum(extract(epoch FROM terminal_at - matching_started_at)), 0)::float
+FROM selfie_search_selfiesearch
+WHERE configuration->>'processor' = 'selfie_query' AND status = 'ready'
+    AND recognition_started_at IS NOT NULL AND matching_enqueued_at IS NOT NULL
+    AND matching_started_at IS NOT NULL AND terminal_at IS NOT NULL
+"""
+
 
 HTTP_REQUESTS = Counter(
     "findme_http_requests",
@@ -132,6 +159,8 @@ def generate_metrics() -> bytes:
     vacuum = None
     wal_bytes = None
     gallery = None
+    selfie = None
+    face_search_p75 = []
     try:
         with psycopg.connect(
             dbname=database["NAME"],
@@ -155,6 +184,14 @@ def generate_metrics() -> bytes:
                     pass
                 try:
                     gallery = connection.execute(_GALLERY_SEARCH_SQL).fetchone()
+                except psycopg.Error:
+                    pass
+                try:
+                    selfie = connection.execute(_SELFIE_SEARCH_SQL).fetchone()
+                except psycopg.Error:
+                    pass
+                try:
+                    face_search_p75 = connection.execute(_FACE_SEARCH_P75_SQL).fetchall()
                 except psycopg.Error:
                     pass
     except (psycopg.Error, OSError, TimeoutError):
@@ -235,6 +272,44 @@ def generate_metrics() -> bytes:
                 'findme_gallery_search_phase_duration_seconds_total{phase="processing"} '
                 f"{processing_seconds}",
             )
+        )
+    if selfie is not None:
+        (
+            recognition,
+            matching,
+            completed,
+            recognition_queue,
+            recognition_work,
+            matching_queue,
+            matching_work,
+        ) = selfie
+        lines.extend(
+            (
+                "# TYPE findme_selfie_search_queue_depth gauge",
+                "# TYPE findme_selfie_search_completed_total counter",
+                "# TYPE findme_selfie_search_phase_duration_seconds_total counter",
+            )
+        )
+        for stage, depth, queued, processing in (
+            ("recognition", recognition, recognition_queue, recognition_work),
+            ("matching", matching, matching_queue, matching_work),
+        ):
+            labels = f'stage="{stage}"'
+            lines.extend(
+                (
+                    f"findme_selfie_search_queue_depth{{{labels}}} {depth}",
+                    f"findme_selfie_search_completed_total{{{labels}}} {completed}",
+                    "findme_selfie_search_phase_duration_seconds_total"
+                    f'{{{labels},phase="queue"}} {queued}',
+                    "findme_selfie_search_phase_duration_seconds_total"
+                    f'{{{labels},phase="processing"}} {processing}',
+                )
+            )
+    if face_search_p75:
+        lines.append("# TYPE findme_face_search_total_duration_p75_seconds gauge")
+        lines.extend(
+            f'findme_face_search_total_duration_p75_seconds{{source="{source}"}} {seconds}'
+            for source, seconds in face_search_p75
         )
     lines.extend(
         (

@@ -91,17 +91,19 @@ services:
 
   gallery-search-worker:
     build: .
-    env_file:
-      - path: .env
-        required: false
     environment:
+      SECRET_KEY: gallery-search-worker-unused
+      DB_NAME: ${DB_NAME:-app}
+      DB_USER: ${DB_USER:-app}
+      DB_PASSWORD: ${DB_PASSWORD:-app}
       DB_HOST: db
       DB_PORT: "5432"
+      PHOTO_PROCESSING_ENABLED: ${PHOTO_PROCESSING_ENABLED:-False}
+      PHOTO_PROCESSING_FACE_ENABLED: ${PHOTO_PROCESSING_FACE_ENABLED:-False}
+      SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED: ${SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED:-False}
     entrypoint: ["python", "manage.py", "run_gallery_search_worker"]
     command: []
     working_dir: /app/src/backend
-    volumes:
-      - .:/app
     depends_on:
       - db
     restart: unless-stopped

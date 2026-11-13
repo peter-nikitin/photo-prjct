@@ -1494,9 +1494,9 @@ class PublicSelfieResultViewTests(TestCase):
 
     def test_page_exposes_each_public_state_with_bearer_headers(self) -> None:
         state_copy = {
-            SelfieSearch.Status.QUEUED: "Ищем ваши фотографии…",
-            SelfieSearch.Status.PROCESSING: "Ищем ваши фотографии…",
-            SelfieSearch.Status.CLEANUP_PENDING: "Ищем ваши фотографии…",
+            SelfieSearch.Status.QUEUED: "Ищем фотографии…",
+            SelfieSearch.Status.PROCESSING: "Ищем фотографии…",
+            SelfieSearch.Status.CLEANUP_PENDING: "Ищем фотографии…",
             SelfieSearch.Status.READY: "Возможные совпадения",
             SelfieSearch.Status.NO_FACE: "На селфи не удалось найти подходящее лицо.",
             SelfieSearch.Status.MULTIPLE_FACES: "На селфи должно быть только одно лицо.",

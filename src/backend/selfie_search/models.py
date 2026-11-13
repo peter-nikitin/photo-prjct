@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
+from pgvector.django import VectorField
 from picflow.models import Event, Photo
 from processing.models import (
     FaceCluster,
@@ -53,6 +54,10 @@ class SelfieSearch(models.Model):  # noqa: DJ008
         SEARCH_UNAVAILABLE = "search_unavailable", "Search unavailable"
         FAILED = "failed", "Failed"
 
+    class Stage(models.TextChoices):
+        RECOGNITION = "recognition", "Recognition"
+        MATCHING = "matching", "Matching"
+
     class ClusterExpansionOutcome(models.TextChoices):
         EXPANDED = "expanded", "Expanded"
         NO_STRONG_ANCHOR = "no_strong_anchor", "No strong anchor"
@@ -65,9 +70,10 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="selfie_searches")
     public_token_digest = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=24, choices=Status, default=Status.QUEUED)
-    gallery_started_at = models.DateTimeField(null=True, blank=True)
-    gallery_attempt_count = models.PositiveSmallIntegerField(default=0)
-    gallery_available_at = models.DateTimeField(default=timezone.now)
+    stage = models.CharField(max_length=12, choices=Stage, default=Stage.RECOGNITION)
+    recognition_started_at = models.DateTimeField(null=True, blank=True)
+    matching_enqueued_at = models.DateTimeField(null=True, blank=True)
+    matching_started_at = models.DateTimeField(null=True, blank=True)
     temporary_object_key = models.CharField(max_length=255)
     temporary_object_etag = models.CharField(max_length=128, blank=True, default="")
     configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
@@ -160,10 +166,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
         ]
         indexes = [
             models.Index(fields=["event", "status"], name="selfie_search_event_status_idx"),
-            models.Index(
-                fields=["status", "gallery_available_at", "created_at"],
-                name="gallery_search_claim_idx",
-            ),
+            models.Index(fields=["stage", "status"], name="face_search_stage_status_idx"),
         ]
 
     def clean(self) -> None:
@@ -200,6 +203,40 @@ class SelfieSearch(models.Model):  # noqa: DJ008
             errors["final_matched_photo_count"] = "Search result counts must reconcile."
         if errors:
             raise ValidationError(errors)
+
+
+class FaceSearchTask(models.Model):  # noqa: DJ008
+    class Source(models.TextChoices):
+        GALLERY = "gallery", "Gallery"
+        SELFIE = "selfie", "Selfie"
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        PROCESSING = "processing", "Processing"
+        TERMINAL = "terminal", "Terminal"
+
+    search = models.OneToOneField(
+        SelfieSearch, on_delete=models.CASCADE, related_name="matching_task"
+    )
+    event = models.ForeignKey(Event, on_delete=models.PROTECT)
+    source = models.CharField(max_length=8, choices=Source)
+    embedding_model = models.CharField(max_length=100)
+    vector = VectorField(dimensions=512)
+    status = models.CharField(max_length=12, choices=Status, default=Status.QUEUED)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    available_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "available_at"], name="face_search_task_claim_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(status__in=("queued", "processing", "terminal")),
+                name="face_search_task_status_chk",
+            ),
+        ]
 
 
 class SelfieSearchJob(models.Model):  # noqa: DJ008

@@ -6,16 +6,17 @@ import json
 import re
 from collections.abc import Callable
 from datetime import datetime
-from math import floor, isfinite
+from math import floor
 from typing import Any, cast
 from uuid import UUID
 
 from django.conf import settings
 from django.core.exceptions import RequestDataTooBig
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.debug import sensitive_variables
 from ingestion.storage import ObjectMissing, StorageUnavailable
 from selfie_search.models import SelfieSearch, SelfieSearchAttempt
 from selfie_search.services.jobs import (
@@ -412,6 +413,7 @@ def refresh_download(request: HttpRequest, attempt_id: str) -> JsonResponse:
 
 
 @_endpoint
+@sensitive_variables("data", "completion_kwargs")
 def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
     reference, error = _attempt_reference(attempt_id)
     if error is not None:
@@ -435,7 +437,6 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
             search_completion = complete_search_attempt(
                 reference.attempt_id,
                 result=data["result"],
-                storage=TemporarySelfieStorage(),
                 download_duration_ms=data["download_ms"],
                 compute_duration_ms=data["compute_ms"],
                 total_duration_ms=data["total_ms"],
@@ -448,9 +449,9 @@ def complete(request: HttpRequest, attempt_id: str) -> JsonResponse:
             return _invalid_result()
         except SearchCompletionConflict:
             return _completion_conflict()
-        except CleanupPending:
+        except DatabaseError:
             return _error(
-                "storage_unavailable", "Object storage is temporarily unavailable.", status=503
+                "database_unavailable", "The database is temporarily unavailable.", status=503
             )
         return JsonResponse(
             _completion_payload(
@@ -1278,6 +1279,7 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
     )
 
 
+@sensitive_variables("data")
 def _valid_selfie_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> bool:
     """Validate the strict selfie worker union before touching durable search transitions."""
     try:
@@ -1318,6 +1320,7 @@ def _valid_selfie_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: s
     )
 
 
+@sensitive_variables("value")
 def _valid_selfie_result(value: object, search: SelfieSearch) -> bool:
     if not isinstance(value, dict) or set(value) != {
         "model",
@@ -1342,7 +1345,6 @@ def _valid_selfie_result(value: object, search: SelfieSearch) -> bool:
         _valid_face_bbox(value["bbox"])
         and isinstance(confidence, (int, float))
         and not isinstance(confidence, bool)
-        and isfinite(confidence)
         and 0.0 <= confidence <= 1.0
     ):
         return False
@@ -1569,12 +1571,7 @@ def _valid_face_bbox(value: object) -> bool:
 
 
 def _safe_face_coordinate(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and isfinite(value)
-        and 0 <= value <= 10_000
-    )
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 10_000
 
 
 def _safe_source_value(value: object) -> bool:

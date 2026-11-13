@@ -30,14 +30,6 @@ class RankedPhoto:
 
 
 @dataclass(frozen=True)
-class CandidateEmbedding:
-    vector: object
-    model_version: str
-    detection_id: UUID
-    photo_id: str
-
-
-@dataclass(frozen=True)
 class _SearchConfiguration:
     model: str
     dimensions: int
@@ -65,7 +57,7 @@ def _configuration(search: SelfieSearch) -> _SearchConfiguration:
 
 
 def validate_query_vector(search: SelfieSearch, query_vector: object) -> tuple[float, ...]:
-    """Validate a callback vector without persisting or logging it."""
+    """Check that a query vector is finite, normalized, and matches its model."""
     return _normalized_vector(
         query_vector,
         dimensions=_configuration(search).dimensions,
@@ -79,9 +71,14 @@ def _normalized_vector(
     if not isinstance(value, (list, tuple)) or len(value) != dimensions:
         raise error_type("embedding dimensions are incompatible")
     vector: list[float] = []
+    component_limit = 1.0 + _NORMALIZATION_TOLERANCE
     for item in value:
-        if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item):
-            raise error_type("embedding contains a non-finite value")
+        if (
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not -component_limit <= item <= component_limit
+        ):
+            raise error_type("embedding contains an invalid component")
         vector.append(float(item))
     norm = math.sqrt(math.fsum(item * item for item in vector))
     if not math.isfinite(norm) or not math.isclose(

@@ -811,14 +811,13 @@
   }
 
   class SelfieSearchPoller {
-    constructor({ url, fetch, setTimeout, clearTimeout, reload, onMessage, onStatus }) {
+    constructor({ url, fetch, setTimeout, clearTimeout, reload, onMessage }) {
       this.url = url;
       this.fetch = fetch;
       this.setTimeout = setTimeout;
       this.clearTimeout = clearTimeout;
       this.reload = reload;
       this.onMessage = onMessage;
-      this.onStatus = onStatus;
       this.timer = null;
       this.inFlight = false;
       this.stopped = false;
@@ -857,7 +856,6 @@
         }
         this.failureCount = 0;
         this.onMessage('');
-        this.onStatus(payload.status);
         this.schedule(POLL_DELAY_MS);
       } catch (_error) {
         this.onMessage('Не удалось обновить статус. Проверьте подключение; поиск продолжается.');
@@ -920,12 +918,6 @@
       setTimeout: window.setTimeout.bind(window),
       clearTimeout: window.clearTimeout.bind(window),
       reload: () => window.location.reload(),
-      onStatus: (status) => {
-        if (!galleryOrigin) return;
-        const heading = document.querySelector('#selfie-search-state-title');
-        if (heading) heading.textContent = status === 'queued'
-          ? 'Поиск в очереди' : 'Ищем похожие фотографии';
-      },
       onMessage: (message) => {
         const element = document.querySelector('[data-selfie-search-connection]');
         if (element) { element.textContent = message; element.hidden = !message; }

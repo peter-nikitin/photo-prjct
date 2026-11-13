@@ -28,6 +28,9 @@ This inventory is the canonical map from visual concepts to Django templates and
 
 Snapshot files live in `tests/visual/visual.spec.js-snapshots/`. The `/__visual__/` routes exist only with `tests.visual.settings`.
 
+Эталоны `desktop-selfie-search-processing.png` и `mobile-selfie-search-processing.png`
+показывают общее состояние «Ищем фотографии…» для ожидания результата.
+
 The existing covered/uncovered event fixtures intentionally hide `.event-gallery`; their four
 snapshots remain focused regression surfaces for the event header and hero. Gallery layout and
 states are covered separately by the populated/empty event-gallery fixtures.

@@ -31,7 +31,14 @@ SOURCE_SELECTORS = (
             "queue": queue,
             "instance": INSTANCE,
         }
-        for queue in ("gallery-search", "selfie", "photo", "import", "commerce")
+        for queue in (
+            "gallery-search",
+            "selfie",
+            "selfie_face_search",
+            "photo",
+            "import",
+            "commerce",
+        )
     ),
     {"__name__": "findme_db_usable", "instance": INSTANCE},
     {"__name__": "findme_db_check_timestamp_seconds", "instance": INSTANCE},

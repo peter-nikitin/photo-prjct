@@ -16,6 +16,7 @@ from urllib.request import HTTPSHandler, ProxyHandler, build_opener
 from uuid import uuid4
 
 import pytest
+from django.core.management import call_command
 from django.utils import timezone
 from photo_worker.client import ApiError, HttpClient, _RejectApiRedirects
 from photo_worker.contracts import FaceEmbeddingFace, FaceEmbeddingResult, SelfieEmbeddingResult
@@ -38,7 +39,8 @@ from processing.services.enrollment import (
 from processing.services.worker_pool_metrics import observe_metrics
 from processing.tests import test_views as api_fixtures
 from processing.tests import test_worker_pool_state_command as state_fixtures
-from selfie_search.models import SelfieSearch, SelfieSearchJob
+from selfie_search.models import FaceSearchTask, SelfieSearch, SelfieSearchAttempt, SelfieSearchJob
+from selfie_search.services.face_search_queue import run_once
 from selfie_search.services.submission import _configuration
 from selfie_search.storage import StoredTemporarySelfie
 
@@ -383,6 +385,25 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
         body = terminal(selfie_claim, selfie_result)
         assert len(json.dumps(body, separators=(",", ":")).encode()) < 16_384
         assert selfie.complete(selfie_claim.job.attempt_id, body).status == "succeeded"
+        search.refresh_from_db()
+        assert search.stage == SelfieSearch.Stage.MATCHING
+        assert search.status == SelfieSearch.Status.QUEUED
+        assert SelfieSearchAttempt.objects.get(job__search=search).status == "succeeded"
+        assert FaceSearchTask.objects.filter(
+            search=search, event=fixture.event, source="selfie", status="queued"
+        ).exists()
+        assert not search.results.exists()
+        storage.delete.assert_not_called()
+
+        assert run_once()
+        search.refresh_from_db()
+        assert search.status == SelfieSearch.Status.CLEANUP_PENDING
+        storage.delete.assert_not_called()
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=storage,
+        ):
+            call_command("publish_pending_face_searches")
         search.refresh_from_db()
         assert search.status == "ready" and search.results.count() == 1
         saved_results = list(search.results.values())

@@ -41,6 +41,24 @@ SOURCES = {
             "job": "findme-http",
             "phase": "processing",
         },
+        *(
+            {"__name__": metric, "job": "findme-http", "stage": stage}
+            for stage in ("recognition", "matching")
+            for metric in (
+                "findme_selfie_search_queue_depth",
+                "findme_selfie_search_completed_total",
+            )
+        ),
+        *(
+            {
+                "__name__": "findme_selfie_search_phase_duration_seconds_total",
+                "job": "findme-http",
+                "stage": stage,
+                "phase": phase,
+            }
+            for stage in ("recognition", "matching")
+            for phase in ("queue", "processing")
+        ),
     ),
 }
 

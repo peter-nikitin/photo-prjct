@@ -241,6 +241,30 @@ tests:
               description: Готовая работа ожидает дольше порога без успешного прогресса.
   - interval: 1m
     input_series:
+      - series: 'findme_queue_ready_count{queue="selfie_face_search",instance="findme-photo-app"}'
+        values: '1+0x12'
+      - series: 'findme_queue_oldest_ready_age_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
+        values: '0+60x12'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
+        values: '0+0x12'
+      - series: 'findme_queue_observed_timestamp_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
+        values: '0+60x12'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ReadyWorkStalled
+        exp_alerts:
+          - exp_labels:
+              queue: selfie_face_search
+              instance: findme-photo-app
+              severity: critical
+              project: findme-photo
+              notification: actionable
+              incident: queue
+            exp_annotations:
+              summary: Очередь selfie_face_search не продвигается
+              description: Готовая работа ожидает дольше порога без успешного прогресса.
+  - interval: 1m
+    input_series:
       - series: 'findme_queue_ready_count{queue="selfie",instance="findme-photo-app"}'
         values: '0+0x12'
       - series: 'findme_queue_oldest_ready_age_seconds{queue="selfie",instance="findme-photo-app"}'

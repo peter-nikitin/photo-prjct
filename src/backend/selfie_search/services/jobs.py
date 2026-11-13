@@ -13,12 +13,16 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from django.conf import settings
-from django.db import DatabaseError, transaction
+from django.db import DatabaseError, connection, transaction
 from django.utils import timezone
+from django.views.decorators.debug import sensitive_variables
 from ingestion.storage import StorageUnavailable
+from pgvector import Vector
 from processing.contracts import SELFIE_ATTEMPT_PREFIX
+from psycopg import Cursor
 
 from selfie_search.models import (
+    FaceSearchTask,
     SelfieSearch,
     SelfieSearchAttempt,
     SelfieSearchClusterEvidence,
@@ -40,11 +44,9 @@ from selfie_search.services.cluster_expansion import (
 from selfie_search.services.direct_ranking import DirectRankingOutcome
 from selfie_search.services.ranking import (
     QueryVectorError,
-    RankingError,
     _configuration,
     validate_query_vector,
 )
-from selfie_search.services.read_selection import rank_selected_direct
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +142,7 @@ def claim_search_job(
                 status__in=(SelfieSearchJob.Status.QUEUED, SelfieSearchJob.Status.RETRY_WAIT),
                 available_at__lte=now,
                 search__status=SelfieSearch.Status.QUEUED,
+                search__stage=SelfieSearch.Stage.RECOGNITION,
                 search__temporary_object_key__gt="",
             )
             .order_by("available_at", "created_at", "id")
@@ -160,7 +163,9 @@ def claim_search_job(
         search = job.search
         search.status = SelfieSearch.Status.PROCESSING
         search.state_changed_at = now
-        search.save(update_fields=["status", "state_changed_at"])
+        if search.recognition_started_at is None:
+            search.recognition_started_at = now
+        search.save(update_fields=["status", "state_changed_at", "recognition_started_at"])
         return ClaimedSearchJob(job=job, attempt=attempt)
 
 
@@ -191,11 +196,50 @@ def refresh_search_download(
         return attempt if _owns_current_lease(search, job, attempt, now) else None
 
 
+@sensitive_variables("query")
+def enqueue_face_search(
+    search: SelfieSearch,
+    *,
+    source: str,
+    query: tuple[float, ...],
+    now: timezone.datetime,
+    expires_at: timezone.datetime | None = None,
+) -> None:
+    """Insert a validated payload and advance its search within the caller's transaction."""
+    # Django's PostgreSQL client cursor interpolates parameters into statement text.
+    # A server cursor keeps this sensitive parameter out of both SQL text and Django SQL logs.
+    model = _configuration(search).model
+    with connection.wrap_database_errors, Cursor(connection.connection) as cursor:
+        cursor.execute("SET LOCAL log_parameter_max_length_on_error = 0")
+        cursor.execute(
+            """
+            INSERT INTO selfie_search_facesearchtask
+                (search_id, event_id, source, embedding_model, vector, status,
+                 attempt_count, available_at, expires_at)
+            VALUES (%s, %s, %s, %s, %s::vector, 'queued', 0, %s, %s)
+            """,
+            (
+                search.id,
+                search.event_id,
+                source,
+                model,
+                Vector(list(query)).to_text(),
+                now,
+                expires_at,
+            ),
+        )
+    search.stage = SelfieSearch.Stage.MATCHING
+    search.status = SelfieSearch.Status.QUEUED
+    search.matching_enqueued_at = now
+    search.state_changed_at = now
+    search.save(update_fields=["stage", "status", "matching_enqueued_at", "state_changed_at"])
+
+
+@sensitive_variables("result", "payload", "query")
 def complete_search_attempt(
     attempt_id: UUID,
     *,
     result: dict[str, Any],
-    storage: _CleanupStorage,
     download_duration_ms: int | None = None,
     compute_duration_ms: int | None = None,
     total_duration_ms: int | None = None,
@@ -204,9 +248,7 @@ def complete_search_attempt(
     now: timezone.datetime | None = None,
     jitter: Callable[[int, int], int] | None = None,
 ) -> SearchAttemptCompletion:
-    """Accept a transient query, prepare hidden rows, then publish only after exact deletion."""
-    clock = (lambda: now) if now is not None else timezone.now
-    snapshot_time = clock()
+    """Acknowledge recognition only after its receipt and matching task commit together."""
     payload = _success_payload(
         result=result,
         download_duration_ms=download_duration_ms,
@@ -216,209 +258,41 @@ def complete_search_attempt(
         worker_finished_at=worker_finished_at,
     )
     payload_hash = _canonical_hash(payload)
-    needs_cleanup = False
-    completion: SearchAttemptCompletion
-    cohort_lookup: DirectRankingOutcome | None = None
-    shortlist_count = 0
-    snapshot_attempt = SelfieSearchAttempt.objects.select_related("job__search__event").get(
-        pk=attempt_id
-    )
-    snapshot_job = snapshot_attempt.job
-    snapshot_search = snapshot_job.search
-    reader = "pgvector"
-    prepared: (
-        tuple[
-            str,
-            int,
-            int,
-            bool,
-            int | None,
-            int | None,
-            RankedPhotoExpansion | None,
-        ]
-        | None
-    ) = None
-    if _owns_current_lease(snapshot_search, snapshot_job, snapshot_attempt, snapshot_time):
-        eligible_photo_count = 0
-        eligible_face_count = 0
-        try:
-            query = _query_from_result(snapshot_search, result)
-            cohort_lookup = rank_selected_direct(snapshot_search, query)
-            eligible_photo_count = cohort_lookup.eligible_photo_count
-            eligible_face_count = cohort_lookup.eligible_face_count
-            shortlist_count = cohort_lookup.shortlist_count
-            expansion = _expand_direct_ranking(
-                search=snapshot_search,
-                ranked=cohort_lookup.photos,
-                query=query,
-            )
-            prepared = (
-                "succeeded",
-                eligible_photo_count,
-                eligible_face_count,
-                cohort_lookup.has_vectors,
-                round(cohort_lookup.identity_ms + cohort_lookup.build_ms),
-                round(cohort_lookup.ranking_ms),
-                expansion,
-            )
-        except QueryVectorError:
-            raise
-        except (RankingError, DatabaseError):
-            prepared = (
-                "incompatible",
-                eligible_photo_count,
-                eligible_face_count,
-                False,
-                None,
-                None,
-                None,
-            )
     with transaction.atomic():
         search, job, attempt = _locked_context(attempt_id)
-        publication_time = clock()
+        now = now or timezone.now()
         if attempt.status != SelfieSearchAttempt.Status.IN_PROGRESS:
-            completion, needs_cleanup = _existing_completion(search, attempt, payload_hash)
-        elif not _owns_current_lease(search, job, attempt, publication_time):
-            completion, needs_cleanup = _stale_or_expired(
-                search,
-                job,
-                attempt,
-                payload_hash,
-                now=publication_time,
-                jitter=jitter,
+            completion, _ = _existing_completion(search, attempt, payload_hash)
+            return completion
+        if not _owns_current_lease(search, job, attempt, now):
+            completion, _ = _stale_or_expired(
+                search, job, attempt, payload_hash, now=now, jitter=jitter
             )
-        else:
-            if prepared is None or not _completion_snapshot_matches(
-                snapshot_search=snapshot_search,
-                snapshot_job=snapshot_job,
-                snapshot_attempt=snapshot_attempt,
-                search=search,
-                job=job,
-                attempt=attempt,
-            ):
-                raise SearchCompletionConflict("selfie completion identity changed during ranking")
-            (
-                ranking_outcome,
-                eligible_photo_count,
-                eligible_face_count,
-                has_vectors,
-                load_ms,
-                rank_ms,
-                prepared_expansion,
-            ) = prepared
-            search.eligible_photo_count = eligible_photo_count
-            search.eligible_face_count = eligible_face_count
-            if ranking_outcome == "incompatible":
-                _emit_ranking_finished(
-                    search=search,
-                    attempt=attempt,
-                    outcome="incompatible",
-                    eligible_photo_count=eligible_photo_count,
-                    eligible_face_count=eligible_face_count,
-                    matched_photo_count=0,
-                    load_ms=None,
-                    rank_ms=None,
-                    expansion=None,
-                    cohort_lookup=cohort_lookup,
-                    reader=reader,
-                    shortlist_count=shortlist_count,
-                )
-                _terminal_attempt(
-                    attempt,
-                    status=str(SelfieSearchAttempt.Status.FAILED),
-                    payload_hash=payload_hash,
-                    error_code="ranking_incompatible",
-                    error_detail="failed",
-                    now=publication_time,
-                    download_duration_ms=download_duration_ms,
-                    compute_duration_ms=compute_duration_ms,
-                    total_duration_ms=total_duration_ms,
-                    worker_started_at=worker_started_at,
-                    worker_finished_at=worker_finished_at,
-                )
-                job.status = SelfieSearchJob.Status.FAILED
-                job.completed_at = publication_time
-                job.save(update_fields=["status", "completed_at"])
-                _prepare_cleanup(
-                    search,
-                    intended_status=str(SelfieSearch.Status.FAILED),
-                    failure_code="failed",
-                    expansion=None,
-                    now=publication_time,
-                )
-                completion = SearchAttemptCompletion(attempt=attempt)
-                needs_cleanup = True
-            else:
-                assert prepared_expansion is not None
-                expansion = prepared_expansion
-                intended_status = str(
-                    SelfieSearch.Status.SEARCH_UNAVAILABLE
-                    if not has_vectors
-                    else SelfieSearch.Status.READY
-                )
-                _emit_ranking_finished(
-                    search=search,
-                    attempt=attempt,
-                    outcome="succeeded",
-                    eligible_photo_count=eligible_photo_count,
-                    eligible_face_count=eligible_face_count,
-                    matched_photo_count=expansion.final_matched_photo_count,
-                    load_ms=load_ms,
-                    rank_ms=rank_ms,
-                    expansion=expansion,
-                    cohort_lookup=cohort_lookup,
-                    reader=reader,
-                    shortlist_count=shortlist_count,
-                    retain_expansion_snapshot=intended_status == str(SelfieSearch.Status.READY),
-                )
-                _terminal_attempt(
-                    attempt,
-                    status=str(SelfieSearchAttempt.Status.SUCCEEDED),
-                    payload_hash=payload_hash,
-                    now=publication_time,
-                    download_duration_ms=download_duration_ms,
-                    compute_duration_ms=compute_duration_ms,
-                    total_duration_ms=total_duration_ms,
-                    worker_started_at=worker_started_at,
-                    worker_finished_at=worker_finished_at,
-                )
-                job.status = SelfieSearchJob.Status.SUCCEEDED
-                job.completed_at = publication_time
-                job.save(update_fields=["status", "completed_at"])
-                _prepare_cleanup(
-                    search,
-                    intended_status=intended_status,
-                    failure_code="",
-                    expansion=expansion,
-                    now=publication_time,
-                )
-                completion = SearchAttemptCompletion(attempt=attempt)
-                needs_cleanup = True
-    if needs_cleanup:
-        _confirm_cleanup(attempt_id=attempt_id, storage=storage, now=publication_time)
-    return completion
-
-
-def _completion_snapshot_matches(
-    *,
-    snapshot_search: SelfieSearch,
-    snapshot_job: SelfieSearchJob,
-    snapshot_attempt: SelfieSearchAttempt,
-    search: SelfieSearch,
-    job: SelfieSearchJob,
-    attempt: SelfieSearchAttempt,
-) -> bool:
-    return bool(
-        search.id == snapshot_search.id
-        and search.event_id == snapshot_search.event_id
-        and search.configuration_hash == snapshot_search.configuration_hash
-        and search.configuration == snapshot_search.configuration
-        and job.id == snapshot_job.id
-        and job.search_id == snapshot_job.search_id
-        and job.configuration == snapshot_job.configuration
-        and attempt.id == snapshot_attempt.id
-        and attempt.job_id == snapshot_attempt.job_id
-    )
+            return completion
+        query = _query_from_result(search, result)
+        enqueue_face_search(
+            search,
+            source=str(FaceSearchTask.Source.SELFIE),
+            query=query,
+            now=now,
+            expires_at=job.created_at
+            + timedelta(hours=settings.SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS),
+        )
+        _terminal_attempt(
+            attempt,
+            status=str(SelfieSearchAttempt.Status.SUCCEEDED),
+            payload_hash=payload_hash,
+            now=now,
+            download_duration_ms=download_duration_ms,
+            compute_duration_ms=compute_duration_ms,
+            total_duration_ms=total_duration_ms,
+            worker_started_at=worker_started_at,
+            worker_finished_at=worker_finished_at,
+        )
+        job.status = SelfieSearchJob.Status.SUCCEEDED
+        job.completed_at = now
+        job.save(update_fields=["status", "completed_at"])
+        return SearchAttemptCompletion(attempt=attempt)
 
 
 def fail_search_attempt(
@@ -481,7 +355,7 @@ def fail_search_attempt(
                 job.completed_at = now
                 job.save(update_fields=["status", "completed_at"])
                 intended_status, failure_code = _terminal_failure_status(error_code)
-                _prepare_cleanup(
+                prepare_search_result(
                     search,
                     intended_status=intended_status,
                     failure_code=failure_code,
@@ -491,7 +365,7 @@ def fail_search_attempt(
                 needs_cleanup = True
             completion = SearchAttemptCompletion(attempt=attempt)
     if needs_cleanup:
-        _confirm_cleanup(attempt_id=attempt_id, storage=storage, now=now)
+        confirm_search_cleanup(search_id=search.id, storage=storage, now=now)
     return completion
 
 
@@ -506,13 +380,15 @@ def recover_expired_search_attempts(
     if limit < 1:
         raise ValueError("limit must be positive")
     now = now or timezone.now()
-    for pending_attempt_id in (
-        SelfieSearchAttempt.objects.filter(job__search__status=SelfieSearch.Status.CLEANUP_PENDING)
-        .order_by("id")
+    for pending_search_id in (
+        SelfieSearch.objects.filter(
+            status=SelfieSearch.Status.CLEANUP_PENDING, stage=SelfieSearch.Stage.RECOGNITION
+        )
+        .order_by("state_changed_at", "id")
         .values_list("id", flat=True)[:limit]
     ):
         try:
-            _confirm_cleanup(attempt_id=pending_attempt_id, storage=storage, now=now)
+            confirm_search_cleanup(search_id=pending_search_id, storage=storage, now=now)
         except CleanupPending:
             pass
     candidate_ids = list(
@@ -524,7 +400,7 @@ def recover_expired_search_attempts(
         .values_list("id", flat=True)[:limit]
     )
     recovered: list[SelfieSearchAttempt] = []
-    cleanup_attempt_ids: list[UUID] = []
+    cleanup_search_ids: list[UUID] = []
     for attempt_id in candidate_ids:
         with transaction.atomic():
             search, job, attempt = _locked_context(attempt_id)
@@ -546,11 +422,11 @@ def recover_expired_search_attempts(
                 now=now,
             )
             if _transition_retry_or_cleanup(search, job, attempt, now=now, jitter=jitter):
-                cleanup_attempt_ids.append(attempt.id)
+                cleanup_search_ids.append(search.id)
             recovered.append(attempt)
-    for attempt_id in cleanup_attempt_ids:
+    for search_id in cleanup_search_ids:
         try:
-            _confirm_cleanup(attempt_id=attempt_id, storage=storage, now=now)
+            confirm_search_cleanup(search_id=search_id, storage=storage, now=now)
         except CleanupPending:
             pass
     return recovered
@@ -638,6 +514,7 @@ def _owns_current_lease(
 ) -> bool:
     return bool(
         search.status == SelfieSearch.Status.PROCESSING
+        and search.stage == SelfieSearch.Stage.RECOGNITION
         and job.status == SelfieSearchJob.Status.PROCESSING
         and attempt.status == SelfieSearchAttempt.Status.IN_PROGRESS
         and attempt.lease_expires_at is not None
@@ -738,8 +615,8 @@ def _terminal_attempt(
     )
 
 
-def _expand_direct_ranking(
-    *, search: SelfieSearch, ranked: tuple, query: tuple[float, ...]
+def expand_direct_ranking(
+    *, search: SelfieSearch, ranked: tuple, query: object
 ) -> RankedPhotoExpansion:
     """Read optional immutable corpus evidence before the publication transaction."""
     if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
@@ -796,13 +673,13 @@ def _verify_terminal_result_identity(search: SelfieSearch) -> None:
         raise SearchCompletionConflict("terminal selfie result identity failed")
 
 
-def _prepare_cleanup(
+def prepare_search_result(
     search: SelfieSearch,
     *,
     intended_status: str,
     failure_code: str,
     expansion: RankedPhotoExpansion | None = None,
-    now: timezone.datetime,
+    now: timezone.datetime | None = None,
 ) -> None:
     if search.status == SelfieSearch.Status.CLEANUP_PENDING:
         return
@@ -857,13 +734,23 @@ def _prepare_cleanup(
         search.cluster_corpus_version = expansion.cluster_corpus_version
         search.cluster_configuration_hash = expansion.cluster_configuration_hash
         search.cluster_expansion_outcome = expansion.outcome
-    search.status = SelfieSearch.Status.CLEANUP_PENDING
+    now = now or timezone.now()
+    search.status = (
+        SelfieSearch.Status.CLEANUP_PENDING if search.temporary_object_key else intended_status
+    )
+    if not search.temporary_object_key:
+        search.terminal_at = now
+        search.cleanup_confirmed_at = now
+        search.matched_photo_count = search.final_matched_photo_count or 0
     search.intended_terminal_status = intended_status
     search.failure_code = failure_code
     search.state_changed_at = now
     search.save(
         update_fields=[
             "status",
+            "terminal_at",
+            "cleanup_confirmed_at",
+            "matched_photo_count",
             "intended_terminal_status",
             "failure_code",
             "state_changed_at",
@@ -882,24 +769,24 @@ def _prepare_cleanup(
     )
 
 
-def _confirm_cleanup(
+def confirm_search_cleanup(
     *,
-    attempt_id: UUID,
+    search_id: UUID,
     storage: _CleanupStorage,
-    now: timezone.datetime,
+    now: timezone.datetime | None = None,
 ) -> None:
-    with transaction.atomic():
-        search, _job, _attempt = _locked_context(attempt_id)
-        if search.status != SelfieSearch.Status.CLEANUP_PENDING:
-            return
-        key = search.temporary_object_key
+    search = SelfieSearch.objects.get(pk=search_id)
+    if search.status != SelfieSearch.Status.CLEANUP_PENDING:
+        return
+    key = search.temporary_object_key
     if key:
         try:
             storage.delete(key=key)
         except StorageUnavailable as error:
             raise CleanupPending() from error
     with transaction.atomic():
-        search, _job, _attempt = _locked_context(attempt_id)
+        search = SelfieSearch.objects.select_for_update().get(pk=search_id)
+        now = now or timezone.now()
         if search.status != SelfieSearch.Status.CLEANUP_PENDING:
             return
         intended_status = search.intended_terminal_status
@@ -927,10 +814,10 @@ def _confirm_cleanup(
                 "matched_photo_count",
             ]
         )
-        transaction.on_commit(lambda: _emit_search_terminal(search=search, job=_job, now=now))
+        transaction.on_commit(lambda: _emit_search_terminal(search=search, now=now))
 
 
-def _emit_ranking_finished(
+def emit_ranking_finished(
     *,
     search: SelfieSearch,
     attempt: SelfieSearchAttempt,
@@ -1023,9 +910,7 @@ def _emit_ranking_finished(
     )
 
 
-def _emit_search_terminal(
-    *, search: SelfieSearch, job: SelfieSearchJob, now: timezone.datetime
-) -> None:
+def _emit_search_terminal(*, search: SelfieSearch, now: timezone.datetime) -> None:
     try:
         elapsed_ms = max(0, round((now - search.created_at).total_seconds() * 1_000))
         ready = search.status == SelfieSearch.Status.READY
@@ -1036,7 +921,7 @@ def _emit_search_terminal(
             search_id=search.id,
             status=search.status,
             matched_photo_count=search.matched_photo_count,
-            attempt_count=_terminal_attempt_count(job),
+            attempt_count=_terminal_attempt_count(search),
             elapsed_ms=elapsed_ms,
             failure_code=search.failure_code,
             cleanup_confirmed=True,
@@ -1049,8 +934,8 @@ def _emit_search_terminal(
         emit_selfie_observability_failure(logger)
 
 
-def _terminal_attempt_count(job: SelfieSearchJob) -> int:
-    return SelfieSearchAttempt.objects.filter(job=job).count()
+def _terminal_attempt_count(search: SelfieSearch) -> int:
+    return SelfieSearchAttempt.objects.filter(job__search=search).count()
 
 
 def _existing_completion(
@@ -1069,7 +954,8 @@ def _existing_completion(
             stale=attempt.status
             in (SelfieSearchAttempt.Status.EXPIRED, SelfieSearchAttempt.Status.STALE),
         ),
-        search.status == SelfieSearch.Status.CLEANUP_PENDING,
+        search.stage == SelfieSearch.Stage.RECOGNITION
+        and search.status == SelfieSearch.Status.CLEANUP_PENDING,
     )
 
 
@@ -1125,7 +1011,7 @@ def _transition_retry_or_cleanup(
     job.status = SelfieSearchJob.Status.FAILED
     job.completed_at = now
     job.save(update_fields=["status", "completed_at"])
-    _prepare_cleanup(
+    prepare_search_result(
         search,
         intended_status=str(SelfieSearch.Status.FAILED),
         failure_code="failed",

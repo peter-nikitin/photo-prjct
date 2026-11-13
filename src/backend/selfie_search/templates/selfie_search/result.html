@@ -21,7 +21,7 @@
 
     {% if search.status == "queued" or search.status == "processing" or search.status == "cleanup_pending" %}
       <section class="selfie-search-state" aria-labelledby="selfie-search-state-title">
-        <h2 id="selfie-search-state-title">{% if is_gallery_origin %}{% if search.status == "queued" %}Поиск в очереди{% else %}Ищем похожие фотографии{% endif %}{% else %}Ищем ваши фотографии…{% endif %}</h2>
+        <h2 id="selfie-search-state-title">Ищем фотографии…</h2>
         <p role="status" aria-live="polite">Страница обновится автоматически, когда результат будет готов.</p>
         <p role="status" data-selfie-search-connection hidden></p>
         <noscript><p>Поиск выполняется автоматически. Обновите страницу, чтобы увидеть результат.</p></noscript>

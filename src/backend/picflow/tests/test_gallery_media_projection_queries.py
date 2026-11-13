@@ -398,7 +398,10 @@ class GalleryMediaProjectionQueryTests(TestCase):
     ) -> None:
         photo = self.photo("gallery-search-source")
         with (
-            patch("selfie_search.services.submission._gallery_source_candidate"),
+            patch(
+                "selfie_search.services.submission._gallery_source_vector",
+                return_value=(1.0,) + (0.0,) * 511,
+            ),
             CaptureQueriesContext(connection) as queries,
         ):
             created = submit_gallery_photo_search(

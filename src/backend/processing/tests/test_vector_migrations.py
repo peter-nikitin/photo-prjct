@@ -184,6 +184,16 @@ def test_previous_processing_and_search_rows_survive_vector_schema_expansion():
             assert rows == before[name]
         with pytest.raises(LookupError):
             current.get_model("processing", "FaceEmbedding")
+        for row in before_search:
+            row.pop("intended_terminal_status")
+            if row["status"] == "cleanup_pending":
+                row["status"] = "failed"
+                row["terminal_at"] = (
+                    current.get_model("selfie_search", "SelfieSearch")
+                    .objects.get(pk=row["id"])
+                    .terminal_at
+                )
+                assert row["terminal_at"] is not None
         rows = list(
             current.get_model("selfie_search", "SelfieSearch")
             .objects.order_by("pk")

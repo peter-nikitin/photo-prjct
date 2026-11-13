@@ -340,7 +340,7 @@ class SubmissionTests(TestCase):
                 "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
                 return_value=RecordingStorage(),
             ):
-                call_command("publish_pending_face_searches")
+                call_command("delete_temporary_selfies")
         native.assert_called_once()
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
@@ -377,7 +377,7 @@ class SubmissionTests(TestCase):
                 "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
                 return_value=RecordingStorage(),
             ):
-                call_command("publish_pending_face_searches")
+                call_command("delete_temporary_selfies")
         native.assert_called_once()
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
@@ -517,7 +517,7 @@ class SubmissionTests(TestCase):
                 "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
                 return_value=storage,
             ):
-                call_command("publish_pending_face_searches")
+                call_command("delete_temporary_selfies")
         search.refresh_from_db()
 
         self.assertEqual(search.status, SelfieSearch.Status.READY)

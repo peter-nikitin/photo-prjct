@@ -7,7 +7,7 @@ from selfie_search.storage import TemporarySelfieStorage
 
 
 class Command(BaseCommand):
-    help = "Delete private inputs and publish a bounded batch of prepared face searches."
+    help = "Delete temporary selfies for a bounded batch of completed searches."
 
     def add_arguments(self, parser):
         parser.add_argument("--batch-size", type=int, default=10)
@@ -18,12 +18,12 @@ class Command(BaseCommand):
             raise CommandError("--batch-size must be positive")
 
         pending = SelfieSearch.objects.filter(
-            stage=SelfieSearch.Stage.MATCHING, status=SelfieSearch.Status.CLEANUP_PENDING
+            terminal_at__isnull=False, temporary_object_key__gt=""
         )
         ids = list(
             pending.order_by("state_changed_at", "id").values_list("id", flat=True)[:batch_size]
         )
-        published = 0
+        deleted = 0
         deferred = 0
         if ids:
             storage = TemporarySelfieStorage.for_matching_cleanup()
@@ -36,7 +36,7 @@ class Command(BaseCommand):
                 except CleanupPending:
                     deferred += 1
                     continue
-                published += 1
+                deleted += 1
         if deferred:
             self.stderr.write(f"Private selfie cleanup deferred for {deferred} searches.")
-        self.stdout.write(str(published))
+        self.stdout.write(str(deleted))

@@ -343,7 +343,7 @@ ranking/terminal до того, как worker attempt event станет вид�
 | `selfie_submission_finished` | `outcome`, `reason_code`, формат, size bucket, `duration_ms` | До создания search; `accepted` содержит opaque `search_id`. |
 | `selfie_worker_attempt_finished` | `outcome`, bounded `reason_code`, `retryable`, download/compute/total ms | Один worker attempt; service `worker`. |
 | `selfie_ranking_finished` (v2) | Cohort/ranking fields plus direct/expanded/final counts, strong anchors, selected clusters, bounded corpus version/hash, expansion ms/outcome | Ranking and optional expansion; `final = direct + expanded`; service `web`. |
-| `selfie_search_terminal` (v2) | `status`, final matches, direct/expanded counts, corpus version/hash, attempt count, elapsed, failure code, `cleanup_confirmed` | Published source counts after cleanup; non-ready statuses have zero source counts. Empty-cohort `search_unavailable` clears corpus identity in both v2 events and is not an eligible expansion sample. |
+| `selfie_search_terminal` (v2) | `status`, final matches, direct/expanded counts, corpus version/hash, attempt count, elapsed, failure code, `cleanup_confirmed` | Событие записывается после подтверждения удаления, поле `elapsed_ms` измеряется до публикации; non-ready statuses have zero source counts. Empty-cohort `search_unavailable` clears corpus identity in both v2 events and is not an eligible expansion sample. |
 
 Разбирайте «результатов нет» сверху вниз:
 

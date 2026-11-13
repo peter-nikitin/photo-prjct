@@ -19,7 +19,7 @@
       <p class="selfie-search-lead">Поиск показывает вероятные совпадения. Селфи удаляется после подготовки поиска, а результат увидит любой, у кого есть эта ссылка.</p>
     {% endif %}
 
-    {% if search.status == "queued" or search.status == "processing" or search.status == "cleanup_pending" %}
+    {% if search.status == "queued" or search.status == "processing" %}
       <section class="selfie-search-state" aria-labelledby="selfie-search-state-title">
         <h2 id="selfie-search-state-title">Ищем фотографии…</h2>
         <p role="status" aria-live="polite">Страница обновится автоматически, когда результат будет готов.</p>

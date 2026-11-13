@@ -397,13 +397,13 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
 
         assert run_once()
         search.refresh_from_db()
-        assert search.status == SelfieSearch.Status.CLEANUP_PENDING
+        assert search.status == SelfieSearch.Status.READY
         storage.delete.assert_not_called()
         with patch(
             "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
             return_value=storage,
         ):
-            call_command("publish_pending_face_searches")
+            call_command("delete_temporary_selfies")
         search.refresh_from_db()
         assert search.status == "ready" and search.results.count() == 1
         saved_results = list(search.results.values())

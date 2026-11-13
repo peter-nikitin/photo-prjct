@@ -21,7 +21,6 @@ from ingestion.storage import ObjectMissing, StorageUnavailable
 from selfie_search.models import SelfieSearch, SelfieSearchAttempt
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
-    CleanupPending,
     EmptySearchClaim,
     SearchCompletionConflict,
     claim_search_job,
@@ -249,7 +248,7 @@ def claim(request: HttpRequest) -> JsonResponse:
     except worker_pool_lifecycle.AdmissionDenied:
         return _invalid_request()
     if data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type:
-        recover_expired_search_attempts(storage=TemporarySelfieStorage())
+        recover_expired_search_attempts()
     else:
         recover_expired_attempts()
     try:
@@ -523,7 +522,6 @@ def fail(request: HttpRequest, attempt_id: str) -> JsonResponse:
                 error_code=data["error_code"],
                 error_detail=_processor_error_detail(data["processor_type"], data["error_code"]),
                 retryable=_processor_retryable(data["processor_type"], data["error_code"]),
-                storage=TemporarySelfieStorage(),
                 download_duration_ms=data["download_ms"],
                 compute_duration_ms=data["compute_ms"],
                 total_duration_ms=data["total_ms"],
@@ -534,10 +532,6 @@ def fail(request: HttpRequest, attempt_id: str) -> JsonResponse:
             return _not_found()
         except SearchCompletionConflict:
             return _completion_conflict()
-        except CleanupPending:
-            return _error(
-                "storage_unavailable", "Object storage is temporarily unavailable.", status=503
-            )
         return JsonResponse(
             _completion_payload(
                 search_completion.attempt,

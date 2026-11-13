@@ -653,9 +653,8 @@ def wait_for_local_drain(
             return False
         if name == "selfie":
             from selfie_search.services.jobs import recover_expired_search_attempts
-            from selfie_search.storage import TemporarySelfieStorage
 
-            recover_expired_search_attempts(storage=TemporarySelfieStorage(), limit=2)
+            recover_expired_search_attempts(limit=2)
         else:
             from processing.services.jobs import recover_expired_attempts
 

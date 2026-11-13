@@ -564,7 +564,6 @@ detach_deployed_selfie_inputs() {
 
                 UPDATE public.selfie_search_selfiesearch
                 SET status = 'failed',
-                    intended_terminal_status = 'failed',
                     failure_code = 'cloned_selfie_input_unavailable',
                     state_changed_at = statement_timestamp(),
                     terminal_at = statement_timestamp(),

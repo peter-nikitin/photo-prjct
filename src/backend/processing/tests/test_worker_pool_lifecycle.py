@@ -158,7 +158,6 @@ class LifecycleTests(TransactionTestCase):
             job["attempt_id"],
             error_code="no_face_detected",
             retryable=False,
-            storage=storage,
         )
         self.assertEqual(completion.attempt.status, "failed")
 
@@ -516,13 +515,11 @@ class LifecycleTests(TransactionTestCase):
             self.assertFalse(admission.allowed)
         heartbeat_search_attempt(job["attempt_id"], lease_seconds=120)
         result = fail_search_attempt(
-            job["attempt_id"], error_code="no_face_detected", retryable=False, storage=storage
+            job["attempt_id"], error_code="no_face_detected", retryable=False
         )
         self.assertEqual(result.attempt.status, "failed")
         with self.assertRaises(SearchCompletionConflict):
-            fail_search_attempt(
-                job["attempt_id"], error_code="model_unavailable", retryable=True, storage=storage
-            )
+            fail_search_attempt(job["attempt_id"], error_code="model_unavailable", retryable=True)
         with lifecycle.claim_admission(identity, candidate) as admission:
             self.assertTrue(admission.allowed)
 

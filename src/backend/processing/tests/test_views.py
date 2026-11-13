@@ -1868,7 +1868,7 @@ class SelfieWorkerApiTests(TestCase):
             "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
             return_value=self.storage,
         ):
-            call_command("publish_pending_face_searches")
+            call_command("delete_temporary_selfies")
         self.search.refresh_from_db()
         self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         self.assertEqual(self.search.temporary_object_key, "")

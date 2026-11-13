@@ -430,9 +430,9 @@ class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
             "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
             return_value=self.storage,
         ):
-            call_command("publish_pending_face_searches")
+            call_command("delete_temporary_selfies")
         self.search.refresh_from_db()
-        self.assertEqual(self.search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         self.assertEqual(
             self.search.temporary_object_key,
             "selfie-search/0123456789abcdef0123456789abcdef",
@@ -446,12 +446,12 @@ class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
 
         self.assertEqual(replay.status_code, 200)
         self.assertTrue(replay.json()["idempotent"])
-        self.assertEqual(self.search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         with patch(
             "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
             return_value=self.storage,
         ):
-            call_command("publish_pending_face_searches")
+            call_command("delete_temporary_selfies")
         self.search.refresh_from_db()
         self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         self.assertEqual(self.search.temporary_object_key, "")

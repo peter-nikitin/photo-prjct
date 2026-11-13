@@ -274,12 +274,12 @@ class SelfieSearchEndToEndTests(TestCase):
 
         self.assertTrue(run_once())
         search.refresh_from_db()
-        self.assertEqual(search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(search.status, SelfieSearch.Status.READY)
         with patch(
             "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
             return_value=self.storage,
         ):
-            call_command("publish_pending_face_searches")
+            call_command("delete_temporary_selfies")
         search.refresh_from_db()
         rows = list(SelfieSearchResult.objects.filter(search=search).order_by("rank"))
         self.assertEqual(search.status, SelfieSearch.Status.READY)

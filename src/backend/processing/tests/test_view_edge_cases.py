@@ -6,6 +6,7 @@ from io import BytesIO
 from unittest.mock import patch
 
 from django.conf import settings
+from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import RequestFactory
 from django.utils import timezone
@@ -409,10 +410,8 @@ class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
     """The production break caught here is terminal publication before exact selfie deletion."""
 
     @patch("processing.views.TemporarySelfieStorage")
-    def test_callback_replay_is_idempotent_while_worker_retries_private_cleanup(
-        self, storage
-    ) -> None:
-        from selfie_search.services.face_search_queue import CLEANUP_RETRY_DELAY, run_once
+    def test_callback_replay_is_idempotent_while_web_retries_private_cleanup(self, storage) -> None:
+        from selfie_search.services.face_search_queue import run_once
 
         storage.return_value = self.storage
         job = self.post("/internal/photo-processing/v1/claim", self.claim_body()).json()["job"]
@@ -426,7 +425,12 @@ class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
 
         self.assertEqual(pending.status_code, 200)
         self.assertEqual(self.search.status, SelfieSearch.Status.QUEUED)
-        self.assertTrue(run_once(storage=self.storage))
+        self.assertTrue(run_once())
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=self.storage,
+        ):
+            call_command("publish_pending_face_searches")
         self.search.refresh_from_db()
         self.assertEqual(self.search.status, SelfieSearch.Status.CLEANUP_PENDING)
         self.assertEqual(
@@ -443,10 +447,11 @@ class SelfieWorkerApiEdgeCases(SelfieWorkerApiTests):
         self.assertEqual(replay.status_code, 200)
         self.assertTrue(replay.json()["idempotent"])
         self.assertEqual(self.search.status, SelfieSearch.Status.CLEANUP_PENDING)
-        SelfieSearch.objects.filter(pk=self.search.pk).update(
-            state_changed_at=timezone.now() - CLEANUP_RETRY_DELAY
-        )
-        self.assertTrue(run_once(storage=self.storage))
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=self.storage,
+        ):
+            call_command("publish_pending_face_searches")
         self.search.refresh_from_db()
         self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         self.assertEqual(self.search.temporary_object_key, "")

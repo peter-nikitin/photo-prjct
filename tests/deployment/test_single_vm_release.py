@@ -409,15 +409,13 @@ def test_gallery_executor_stops_immediately_without_lock_or_health_wait() -> Non
     assert worker["pids_limit"] == 32
     assert worker["restart"] == "unless-stopped"
     assert "profiles" not in worker
-    cleanup_settings = {
-        "PRIVATE_MEDIA_S3_BUCKET",
-        "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
-        "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
-        "MEDIA_S3_ENDPOINT_URL",
-        "MEDIA_S3_REGION",
-    }
-    assert cleanup_settings <= worker["environment"].keys()
-    unrelated_credentials = {
-        key for key in worker["environment"] if "ACCESS_KEY" in key or key.startswith("TBANK_")
-    } - cleanup_settings
-    assert unrelated_credentials == set()
+    local = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    for compose in (deployment, local):
+        executor = compose["services"]["gallery-search-worker"]
+        assert "env_file" not in executor
+        assert "volumes" not in executor
+        assert executor["environment"]["SECRET_KEY"] == "gallery-search-worker-unused"
+        assert not any(
+            "S3" in key or "ACCESS_KEY" in key or key.startswith("TBANK_")
+            for key in executor["environment"]
+        )

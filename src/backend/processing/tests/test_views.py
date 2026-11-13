@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.http import HttpResponse
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -1862,7 +1863,12 @@ class SelfieWorkerApiTests(TestCase):
         self.assertEqual(self.storage.deleted, [])
         from selfie_search.services.face_search_queue import run_once
 
-        self.assertTrue(run_once(storage=self.storage))
+        self.assertTrue(run_once())
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=self.storage,
+        ):
+            call_command("publish_pending_face_searches")
         self.search.refresh_from_db()
         self.assertEqual(self.search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
         self.assertEqual(self.search.temporary_object_key, "")

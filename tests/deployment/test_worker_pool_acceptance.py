@@ -16,6 +16,7 @@ from urllib.request import HTTPSHandler, ProxyHandler, build_opener
 from uuid import uuid4
 
 import pytest
+from django.core.management import call_command
 from django.utils import timezone
 from photo_worker.client import ApiError, HttpClient, _RejectApiRedirects
 from photo_worker.contracts import FaceEmbeddingFace, FaceEmbeddingResult, SelfieEmbeddingResult
@@ -394,7 +395,15 @@ def test_maximum_face_and_selfie_callback_cross_verified_https_and_persist(tls_p
         assert not search.results.exists()
         storage.delete.assert_not_called()
 
-        assert run_once(storage=storage)
+        assert run_once()
+        search.refresh_from_db()
+        assert search.status == SelfieSearch.Status.CLEANUP_PENDING
+        storage.delete.assert_not_called()
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=storage,
+        ):
+            call_command("publish_pending_face_searches")
         search.refresh_from_db()
         assert search.status == "ready" and search.results.count() == 1
         saved_results = list(search.results.values())

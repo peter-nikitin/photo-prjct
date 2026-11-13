@@ -14,6 +14,7 @@ from zlib import crc32
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -334,7 +335,12 @@ class SubmissionTests(TestCase):
                 claimed.attempt.id,
                 result={"model": "adaface-ir18-webface4m", "embedding": [1.0] + [0.0] * 511},
             )
-            self.assertTrue(run_once(storage=RecordingStorage()))
+            self.assertTrue(run_once())
+            with patch(
+                "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+                return_value=RecordingStorage(),
+            ):
+                call_command("publish_pending_face_searches")
         native.assert_called_once()
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
@@ -366,7 +372,12 @@ class SubmissionTests(TestCase):
                 claimed.attempt.id,
                 result={"model": "adaface-ir18-webface4m", "embedding": [1.0] + [0.0] * 511},
             )
-            self.assertTrue(run_once(storage=RecordingStorage()))
+            self.assertTrue(run_once())
+            with patch(
+                "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+                return_value=RecordingStorage(),
+            ):
+                call_command("publish_pending_face_searches")
         native.assert_called_once()
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.SEARCH_UNAVAILABLE)
@@ -501,7 +512,12 @@ class SubmissionTests(TestCase):
                 claimed.attempt.id,
                 result={"model": "adaface-ir18-webface4m", "embedding": [1.0] + [0.0] * 511},
             )
-            self.assertTrue(run_once(storage=storage))
+            self.assertTrue(run_once())
+            with patch(
+                "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+                return_value=storage,
+            ):
+                call_command("publish_pending_face_searches")
         search.refresh_from_db()
 
         self.assertEqual(search.status, SelfieSearch.Status.READY)

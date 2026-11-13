@@ -445,18 +445,7 @@ with (
             self.assertEqual(search.results.count(), 1)
         self.assertEqual(worker.returncode, 0)
 
-    def test_stalled_selfie_delete_defers_cleanup_and_gallery_still_finishes(self):
-        from http.server import BaseHTTPRequestHandler, HTTPServer
-        from threading import Event, Thread
-
-        deleting = Event()
-        release_delete = Event()
-
-        class StalledDelete(BaseHTTPRequestHandler):
-            def do_DELETE(self):
-                deleting.set()
-                release_delete.wait(timeout=30)
-
+    def test_sql_worker_ignores_pending_selfie_cleanup_and_finishes_gallery(self):
         pending = SelfieSearch.objects.create(
             event=self.event,
             public_token_digest=uuid4().hex * 2,
@@ -469,34 +458,23 @@ with (
             cluster_expanded_photo_count=0,
             state_changed_at=timezone.now() - timedelta(minutes=1),
         )
-        with HTTPServer(("127.0.0.1", 0), StalledDelete) as server:
-            endpoint = f"http://127.0.0.1:{server.server_port}"
-            code = f"""
+        gallery = self.create_search()
+        code = """
 import django
 django.setup()
-from django.conf import settings
 from django.core.management import call_command
-settings.PRIVATE_MEDIA_S3_ENDPOINT_URL = {endpoint!r}
-settings.PRIVATE_MEDIA_S3_BUCKET = 'selfie-private-test'
-settings.PRIVATE_MEDIA_S3_ACCESS_KEY_ID = 'test-key'
-settings.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY = 'test-secret'
-settings.PRIVATE_MEDIA_S3_REGION = 'us-east-1'
-call_command('run_gallery_search_worker')
+from unittest.mock import patch
+with patch(
+    'selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup',
+    side_effect=AssertionError('SQL worker cannot access private storage'),
+):
+    call_command('run_gallery_search_worker')
 """
-            http_thread = Thread(target=server.serve_forever, daemon=True)
-            http_thread.start()
-            try:
-                with self.worker(code) as worker:
-                    self.assertTrue(deleting.wait(timeout=10))
-                    gallery = self.create_search()
-                    self.wait_for_search(gallery, worker)
-                    pending.refresh_from_db()
-                    self.assertEqual(pending.status, SelfieSearch.Status.CLEANUP_PENDING)
-                    self.assertEqual(gallery.results.count(), 1)
-            finally:
-                release_delete.set()
-                server.shutdown()
-                http_thread.join(timeout=3)
+        with self.worker(code) as worker:
+            self.wait_for_search(gallery, worker)
+            pending.refresh_from_db()
+            self.assertEqual(pending.status, SelfieSearch.Status.CLEANUP_PENDING)
+            self.assertEqual(gallery.results.count(), 1)
 
     def test_sigterm_stops_immediately_and_next_start_recovers_without_budget_wait(self):
         import select

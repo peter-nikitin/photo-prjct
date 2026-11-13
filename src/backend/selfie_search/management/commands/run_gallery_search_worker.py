@@ -15,7 +15,6 @@ from selfie_search.services.face_search_queue import (
 logger = logging.getLogger(__name__)
 
 MATCHING_WATCHDOG_SECONDS = 150
-CLEANUP_WATCHDOG_SECONDS = 20
 
 
 def attempt_timeout(signum, frame):
@@ -24,10 +23,6 @@ def attempt_timeout(signum, frame):
 
 def terminate_immediately(signum, frame):
     os._exit(0)
-
-
-def start_cleanup_watchdog() -> None:
-    signal.alarm(CLEANUP_WATCHDOG_SECONDS)
 
 
 class Command(BaseCommand):
@@ -49,7 +44,7 @@ class Command(BaseCommand):
                     recover_processing()
                     recover_missing_payloads()
                     startup_complete = True
-                worked = run_once(start_cleanup_watchdog=start_cleanup_watchdog)
+                worked = run_once()
             except DatabaseError:
                 logger.error("Face-search database unavailable")
                 connection.close()

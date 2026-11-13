@@ -1,3 +1,6 @@
+from unittest.mock import patch
+
+from django.core.management import call_command
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
@@ -342,8 +345,13 @@ class SharedFaceSearchUpgradeTests(TransactionTestCase):
                 result={"model": "adaface-ir18-webface4m", "embedding": [1.0] + [0.0] * 511},
             )
             for _ in range(3):
-                self.assertTrue(run_once(storage=storage))
-            self.assertFalse(run_once(storage=storage))
+                self.assertTrue(run_once())
+            self.assertFalse(run_once())
+            with patch(
+                "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+                return_value=storage,
+            ):
+                call_command("publish_pending_face_searches")
             for search in (queued, running, ml_active):
                 self.assertEqual(
                     SelfieSearch.objects.get(pk=search.pk).results.get().photo_id,

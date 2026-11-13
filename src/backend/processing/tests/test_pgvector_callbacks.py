@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pytest
+from django.core.management import call_command
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -232,7 +233,12 @@ def test_remote_selfie_callback_accepts_before_worker_uses_native_reader(client,
         assert storage.deleted == []
         assert not search.results.exists()
         with CaptureQueriesContext(connection) as worker_queries:
-            assert run_once(storage=storage)
+            assert run_once()
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=storage,
+        ):
+            call_command("publish_pending_face_searches")
         assert any("<=>" in row["sql"] for row in worker_queries.captured_queries)
         search.refresh_from_db()
         assert search.status == SelfieSearch.Status.READY
@@ -287,7 +293,11 @@ def test_maximum_selfie_callback_accepts_for_private_cleanup_in_worker(client, s
     h.search.refresh_from_db()
     assert h.search.status == SelfieSearch.Status.QUEUED
     assert h.storage.deleted == []
-    assert run_once(storage=h.storage)
+    assert run_once()
+    with patch(
+        "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup", return_value=h.storage
+    ):
+        call_command("publish_pending_face_searches")
     h.search.refresh_from_db()
     assert h.search.temporary_object_key == "" and len(h.storage.deleted) == 1
     assert SelfieSearchAttempt.objects.get(pk=job["attempt_id"]).lease_expires_at == lease

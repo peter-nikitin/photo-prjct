@@ -1,9 +1,7 @@
 """Shared PostgreSQL work queue for face matching and result publication."""
 
 import logging
-from collections.abc import Callable
 from datetime import datetime, timedelta
-from uuid import UUID
 
 from django.db import DatabaseError, connection, transaction
 from django.db.models import Q, Subquery
@@ -12,22 +10,17 @@ from django.utils import timezone
 from selfie_search.models import FaceSearchTask, SelfieSearch, SelfieSearchAttempt
 from selfie_search.observability import emit_selfie_observability_failure
 from selfie_search.services.jobs import (
-    CleanupPending,
-    _CleanupStorage,
-    confirm_search_cleanup,
     emit_ranking_finished,
     expand_direct_ranking,
     prepare_search_result,
 )
 from selfie_search.services.ranking import RankingError, _configuration
 from selfie_search.services.read_selection import rank_selected_direct
-from selfie_search.storage import TemporarySelfieStorage
 
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
 RETRY_DELAY = timedelta(seconds=5)
-CLEANUP_RETRY_DELAY = timedelta(seconds=30)
 RANKING_TIMEOUT_MS = 120_000
 
 
@@ -215,11 +208,7 @@ def retry(task: FaceSearchTask) -> None:
             task.save(update_fields=["status", "available_at"])
 
 
-def run_once(
-    *,
-    storage: _CleanupStorage | None = None,
-    start_cleanup_watchdog: Callable[[], None] | None = None,
-) -> bool:
+def run_once() -> bool:
     task = claim()
     if task is not None:
         try:
@@ -234,32 +223,7 @@ def run_once(
             # Do not expose per-task input or a SQL exception containing query parameters.
             _fail(task, code="failed")
 
-    if start_cleanup_watchdog is not None:
-        start_cleanup_watchdog()
-    now = timezone.now()
-    pending = SelfieSearch.objects.filter(
-        stage=SelfieSearch.Stage.MATCHING, status=SelfieSearch.Status.CLEANUP_PENDING
-    )
-    ready_pending = pending.filter(state_changed_at__lte=now - CLEANUP_RETRY_DELAY)
-    if task is not None:
-        ready_pending = pending.filter(
-            Q(pk=task.search_id) | Q(state_changed_at__lte=now - CLEANUP_RETRY_DELAY)
-        )
-    pending_search_id: UUID | None = (
-        ready_pending.order_by("state_changed_at", "id").values_list("id", flat=True).first()
-    )
-    if pending_search_id is None:
-        return task is not None
-    # Reserve the next retry before I/O so a watchdog exit also defers this cleanup.
-    pending.filter(pk=pending_search_id).update(state_changed_at=timezone.now())
-    try:
-        confirm_search_cleanup(
-            search_id=pending_search_id,
-            storage=storage or TemporarySelfieStorage.for_matching_cleanup(),
-        )
-    except CleanupPending:
-        return task is not None
-    return True
+    return task is not None
 
 
 def prune_terminal_tasks(*, batch_size: int) -> int:

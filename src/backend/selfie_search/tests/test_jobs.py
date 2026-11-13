@@ -52,12 +52,11 @@ from selfie_search.models import (
     SelfieSearchResult,
 )
 from selfie_search.services.face_search_queue import (
-    CLEANUP_RETRY_DELAY,
-    process_face_search,
-    run_once,
+    claim as claim_matching,
 )
 from selfie_search.services.face_search_queue import (
-    claim as claim_matching,
+    process_face_search,
+    run_once,
 )
 from selfie_search.services.jobs import (
     ClaimedSearchJob,
@@ -100,7 +99,20 @@ class SearchJobTests(TestCase):
         )
         self.storage = RecordingStorage()
 
-    def test_native_callback_only_accepts_before_worker_publishes(self) -> None:
+    def publish_pending(self, *, batch_size=10):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        output = StringIO()
+        with patch(
+            "selfie_search.storage.TemporarySelfieStorage.for_matching_cleanup",
+            return_value=self.storage,
+        ):
+            call_command("publish_pending_face_searches", batch_size=batch_size, stdout=output)
+        return int(output.getvalue())
+
+    def test_worker_prepares_private_result_for_web_publication(self) -> None:
         search = self.make_search()
         claimed = self.claim(search)
         from selfie_search.services.vector_ranking import rank_vector_direct
@@ -117,7 +129,13 @@ class SearchJobTests(TestCase):
         self.assertEqual(search.results.count(), 0)
         self.assertEqual(self.storage.deleted, [])
 
-        self.assertTrue(run_once(storage=self.storage))
+        self.assertTrue(run_once())
+        search.refresh_from_db()
+        self.assertEqual(search.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(search.matched_photo_count, 0)
+        self.assertIsNone(search.cleanup_confirmed_at)
+        self.assertEqual(self.storage.deleted, [])
+        self.assertEqual(self.publish_pending(), 1)
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertIsNotNone(search.cleanup_confirmed_at)
@@ -188,8 +206,9 @@ class SearchJobTests(TestCase):
             side_effect=DatabaseError("secret query"),
         ):
             for _ in range(3):
-                self.assertTrue(run_once(storage=self.storage))
+                self.assertTrue(run_once())
                 FaceSearchTask.objects.filter(search=search).update(available_at=timezone.now())
+        self.assertEqual(self.publish_pending(), 1)
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.FAILED)
         self.assertEqual(search.results.count(), 0)
@@ -520,8 +539,9 @@ class SearchJobTests(TestCase):
         )
         completion = complete_search_attempt(claimed.attempt.id, result=self.result())
         with patch("selfie_search.services.face_search_queue.rank_selected_direct") as rank:
-            self.assertTrue(run_once(storage=self.storage))
+            self.assertTrue(run_once())
             self.assertEqual(rank.call_count, 0)
+        self.assertEqual(self.publish_pending(), 1)
 
         search.refresh_from_db()
         self.assertEqual(completion.attempt.status, SelfieSearchAttempt.Status.SUCCEEDED)
@@ -907,10 +927,8 @@ class SearchJobTests(TestCase):
         SelfieSearchJob.objects.filter(search=search).update(available_at=timezone.now())
         next_claim = self.claim(search)
         complete_search_attempt(next_claim.attempt.id, result=self.result())
-        self.storage.fail_delete = True
-        self.assertTrue(run_once(storage=self.storage))
+        self.assertTrue(run_once())
 
-        self.storage.fail_delete = False
         replay = replay_failure()
 
         search.refresh_from_db()
@@ -925,7 +943,8 @@ class SearchJobTests(TestCase):
         payload = self.result()
 
         complete_search_attempt(claimed.attempt.id, result=payload)
-        self.assertTrue(run_once(storage=self.storage))
+        self.assertTrue(run_once())
+        self.assertEqual(self.publish_pending(), 0)
 
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.CLEANUP_PENDING)
@@ -951,12 +970,9 @@ class SearchJobTests(TestCase):
         self.assertFalse(FaceSearchTask.objects.filter(search=search).exists())
 
         self.storage.fail_delete = False
-        SelfieSearch.objects.filter(pk=search.pk).update(
-            state_changed_at=timezone.now() - CLEANUP_RETRY_DELAY
-        )
         with self.assertLogs("selfie_search.services.jobs", level="INFO") as logs:
             with self.captureOnCommitCallbacks(execute=True):
-                self.assertTrue(run_once(storage=self.storage))
+                self.assertEqual(self.publish_pending(), 1)
         search.refresh_from_db()
 
         self.assertTrue(replay.idempotent)
@@ -969,6 +985,33 @@ class SearchJobTests(TestCase):
         terminal = next(event for event in events if event["event"] == "selfie_search_terminal")
         self.assertEqual(terminal["status"], SelfieSearch.Status.READY)
         self.assertTrue(terminal["cleanup_confirmed"])
+
+    def test_publish_batch_rotates_failed_cleanup_behind_older_pending_searches(self) -> None:
+        first = self.make_search()
+        second = self.make_search(with_candidate=False)
+        second.temporary_object_key = f"selfie-search/{second.id.hex}"
+        second.save(update_fields=["temporary_object_key"])
+        for search in (first, second):
+            claimed = self.claim(search)
+            complete_search_attempt(claimed.attempt.id, result=self.result())
+            self.assertTrue(run_once())
+
+        self.storage.fail_delete = True
+        self.assertEqual(self.publish_pending(batch_size=1), 0)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(second.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertGreater(first.state_changed_at, second.state_changed_at)
+
+        self.storage.fail_delete = False
+        self.assertEqual(self.publish_pending(batch_size=1), 1)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, SelfieSearch.Status.CLEANUP_PENDING)
+        self.assertEqual(second.status, SelfieSearch.Status.READY)
+        self.assertEqual(self.publish_pending(batch_size=1), 1)
+        self.assertEqual(self.publish_pending(batch_size=1), 0)
 
     def test_successful_completion_emits_v2_ranking_and_terminal_source_counts(self) -> None:
         search = self.make_search()
@@ -1123,7 +1166,8 @@ class SearchJobTests(TestCase):
 
     def complete_and_run(self, attempt_id, *, result):
         completion = complete_search_attempt(attempt_id, result=result)
-        self.assertTrue(run_once(storage=self.storage))
+        self.assertTrue(run_once())
+        self.assertEqual(self.publish_pending(), 1)
         return completion
 
 
@@ -1195,7 +1239,7 @@ class SearchCompletionConcurrencyTests(TransactionTestCase):
         def complete_first() -> None:
             close_old_connections()
             try:
-                self.assertTrue(run_once(storage=RecordingStorage()))
+                self.assertTrue(run_once())
             except BaseException as error:
                 errors.put(error)
             finally:

@@ -270,6 +270,7 @@ class MultiprocessMetricsTests(SimpleTestCase):
             psycopg.OperationalError("sensitive activity detail"),
             SimpleNamespace(fetchone=lambda: (0, 0, 0.0, 0.0)),
             SimpleNamespace(fetchone=lambda: (0, 0, 0, 0.0, 0.0, 0.0, 0.0)),
+            SimpleNamespace(fetchall=list),
         ]
         with (
             tempfile.TemporaryDirectory() as metrics_directory,
@@ -295,6 +296,7 @@ class MultiprocessMetricsTests(SimpleTestCase):
             psycopg.OperationalError("private WAL detail"),
             SimpleNamespace(fetchone=lambda: (0, 0, 0.0, 0.0)),
             SimpleNamespace(fetchone=lambda: (0, 0, 0, 0.0, 0.0, 0.0, 0.0)),
+            SimpleNamespace(fetchall=list),
         ]
         with (
             tempfile.TemporaryDirectory() as metrics_directory,
@@ -338,6 +340,7 @@ class MultiprocessMetricsTests(SimpleTestCase):
             SimpleNamespace(fetchone=lambda: (1024,)),
             psycopg.OperationalError("private search details"),
             SimpleNamespace(fetchone=lambda: (0, 0, 0, 0.0, 0.0, 0.0, 0.0)),
+            SimpleNamespace(fetchall=list),
         ]
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -556,6 +559,39 @@ class GallerySearchMetricsTests(TransactionTestCase):
             for sample in family.samples
             if sample.name.startswith("findme_gallery_search_")
         }
+
+    def test_total_search_p75_uses_recent_successes_per_source(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from prometheus_client.parser import text_string_to_metric_families
+        from selfie_search.models import SelfieSearch
+
+        now = timezone.now()
+        metric = "findme_face_search_total_duration_p75_seconds"
+
+        def p75_by_source():
+            return {
+                sample.labels["source"]: sample.value
+                for family in text_string_to_metric_families(self.exposition())
+                for sample in family.samples
+                if sample.name == metric
+            }
+
+        def search(processor, duration, *, terminal=now, status="ready"):
+            row = self.search(processor=processor, status=status, terminal=terminal)
+            SelfieSearch.objects.filter(pk=row.pk).update(
+                created_at=terminal - timedelta(seconds=duration)
+            )
+
+        self.assertEqual(p75_by_source(), {})
+        for duration in (10, 20, 30, 50):
+            search("gallery_photo_query", duration)
+        search("gallery_photo_query", 500, status="failed")
+        search("gallery_photo_query", 600, terminal=now - timedelta(hours=25))
+        search("selfie_query", 80)
+
+        self.assertEqual(p75_by_source(), {"gallery": 35, "selfie": 80})
 
     def test_ready_cohort_phases_sum_to_submit_to_done_and_queue_is_gallery_only(self):
         from datetime import timedelta

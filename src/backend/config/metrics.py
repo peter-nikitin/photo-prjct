@@ -52,6 +52,19 @@ FROM pg_stat_user_tables
 """
 _DB_WAL_SQL = "SELECT wal_bytes::bigint FROM pg_stat_wal"
 
+_FACE_SEARCH_P75_SQL = """
+SELECT
+    CASE configuration->>'processor' WHEN 'selfie_query' THEN 'selfie' ELSE 'gallery' END,
+    percentile_cont(0.75) WITHIN GROUP (ORDER BY extract(epoch FROM terminal_at - created_at))
+FROM selfie_search_selfiesearch
+WHERE status = 'ready'
+    AND terminal_at > statement_timestamp() - interval '24 hours'
+    AND terminal_at <= statement_timestamp()
+    AND terminal_at >= created_at
+    AND configuration->>'processor' IN ('selfie_query', 'gallery_photo_query')
+GROUP BY 1
+"""
+
 _GALLERY_SEARCH_SQL = """
 SELECT
     (SELECT count(*) FROM selfie_search_facesearchtask
@@ -147,6 +160,7 @@ def generate_metrics() -> bytes:
     wal_bytes = None
     gallery = None
     selfie = None
+    face_search_p75 = []
     try:
         with psycopg.connect(
             dbname=database["NAME"],
@@ -174,6 +188,10 @@ def generate_metrics() -> bytes:
                     pass
                 try:
                     selfie = connection.execute(_SELFIE_SEARCH_SQL).fetchone()
+                except psycopg.Error:
+                    pass
+                try:
+                    face_search_p75 = connection.execute(_FACE_SEARCH_P75_SQL).fetchall()
                 except psycopg.Error:
                     pass
     except (psycopg.Error, OSError, TimeoutError):
@@ -287,6 +305,12 @@ def generate_metrics() -> bytes:
                     f'{{{labels},phase="processing"}} {processing}',
                 )
             )
+    if face_search_p75:
+        lines.append("# TYPE findme_face_search_total_duration_p75_seconds gauge")
+        lines.extend(
+            f'findme_face_search_total_duration_p75_seconds{{source="{source}"}} {seconds}'
+            for source, seconds in face_search_p75
+        )
     lines.extend(
         (
             "# TYPE findme_queue_ready_count gauge",

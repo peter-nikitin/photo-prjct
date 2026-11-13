@@ -344,7 +344,7 @@
       "position": {
         "y": "32",
         "w": "24",
-        "h": "8"
+        "h": "16"
       },
       "group": {
         "id": "21267d26-2b21-5007-afd9-1936ab183f84",
@@ -476,15 +476,61 @@
               "h": "8",
               "x": "12"
             }
+          },
+          {
+            "id": "424f57ff-9382-4b8a-9619-b634e96d4e5b",
+            "multiSourceChart": {
+              "id": "424f57ff-9382-4b8a-9619-b634e96d4e5b",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "e022db75-f493-4647-884c-235836cde87b",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_face_search_total_duration_p75_seconds{job=\"findme-http\",source=\"gallery\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "e022db75-f493-4647-884c-235836cde87b",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "Секунды"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Полное время поиска, p75",
+              "description": "От постановки до готового результата. 75-й перцентиль успешных поисков за последние 24 часа. При пустой выборке точек нет."
+            },
+            "position": {
+              "y": "8",
+              "w": "24",
+              "h": "8"
+            }
           }
         ]
       }
     },
     {
       "position": {
-        "y": "40",
+        "y": "48",
         "w": "24",
-        "h": "8"
+        "h": "16"
       },
       "group": {
         "id": "8122fe84-8afa-409c-9f88-2a05edfd2db7",
@@ -694,13 +740,59 @@
               "h": "8",
               "x": "12"
             }
+          },
+          {
+            "id": "927706d1-0338-474c-86fb-bfd432c251b7",
+            "multiSourceChart": {
+              "id": "927706d1-0338-474c-86fb-bfd432c251b7",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "388028f9-2896-4dec-a314-89eef1356899",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_face_search_total_duration_p75_seconds{job=\"findme-http\",source=\"selfie\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "388028f9-2896-4dec-a314-89eef1356899",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "Секунды"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Полное время поиска, p75",
+              "description": "От постановки до готового результата. 75-й перцентиль успешных поисков за последние 24 часа. При пустой выборке точек нет."
+            },
+            "position": {
+              "y": "8",
+              "w": "24",
+              "h": "8"
+            }
           }
         ]
       }
     },
     {
       "position": {
-        "y": "48",
+        "y": "64",
         "w": "24",
         "h": "16"
       },
@@ -847,7 +939,7 @@
     },
     {
       "position": {
-        "y": "64",
+        "y": "80",
         "w": "24",
         "h": "32"
       },

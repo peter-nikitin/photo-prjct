@@ -18,7 +18,7 @@ def charts(widgets):
             yield widget["multiSourceChart"]
 
 
-def test_queue_queries_use_consistent_measured_cohorts_and_pie_uses_right_edge(tmp_path):
+def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tmp_path):
     dashboard = json.loads(
         (ROOT / "deploy/monitoring/prometheus/single-vm-dashboard.json").read_text()
     )
@@ -38,25 +38,40 @@ def test_queue_queries_use_consistent_measured_cohorts_and_pie_uses_right_edge(t
         ),
     ):
         by_visualization = {
-            chart["visualizationSettings"]["type"]: target["prometheusTarget"]["query"]
+            (
+                chart["visualizationSettings"]["type"],
+                chart["visualizationSettings"]
+                .get("yaxisSettings", {})
+                .get("left", {})
+                .get("title"),
+            ): target["prometheusTarget"]["query"]
             for chart in charts(dashboard["widgets"])
             for target in chart["targets"]
             if f'queue="{queue}"' in target["prometheusTarget"]["query"]
             and "findme_queue_segment_duration_seconds_total" in target["prometheusTarget"]["query"]
         }
-        stack = by_visualization["VISUALIZATION_TYPE_STACK"]
-        pie = by_visualization["VISUALIZATION_TYPE_PIE"]
+        stack = by_visualization["VISUALIZATION_TYPE_STACK", "Секунды"]
+        share = by_visualization["VISUALIZATION_TYPE_STACK", "%"]
+        pie = by_visualization["VISUALIZATION_TYPE_PIE", None]
         labels = f'job="findme-queue-telemetry",queue="{queue}"'
         series.append(
-            {"series": f"findme_queue_completed_total{{{labels}}}", "values": "0+1x5 5+0x5"}
+            {"series": f"findme_queue_completed_total{{{labels}}}", "values": "0+1x10 10+0x5"}
         )
+        later_segments = {
+            name: value * (2 if name.endswith("_wait") else 1) for name, value in segments.items()
+        }
         for segment, seconds in segments.items():
+            later_seconds = later_segments[segment]
             series.append(
                 {
                     "series": (
                         f'findme_queue_segment_duration_seconds_total{{{labels},segment="{segment}"}}'
                     ),
-                    "values": f"0+{seconds}x5 {5 * seconds}+0x5",
+                    "values": (
+                        f"0+{seconds}x5 "
+                        f"{5 * seconds + later_seconds}+{later_seconds}x4 "
+                        f"{5 * (seconds + later_seconds)}+0x5"
+                    ),
                 }
             )
         expected = [
@@ -78,12 +93,34 @@ def test_queue_queries_use_consistent_measured_cohorts_and_pie_uses_right_edge(t
                 },
             ]
         )
+        for minute, window in ((5, segments), (10, later_segments)):
+            expressions.extend(
+                [
+                    {
+                        "expr": share,
+                        "eval_time": f"{minute}m",
+                        "exp_samples": [
+                            {
+                                "labels": f'{{segment="{segment}"}}',
+                                "value": 100 * seconds / sum(window.values()),
+                            }
+                            for segment, seconds in window.items()
+                        ],
+                    },
+                    {
+                        "expr": f"sum({share})",
+                        "eval_time": f"{minute}m",
+                        "exp_samples": [{"labels": "{}", "value": 100}],
+                    },
+                ]
+            )
         idle_expressions.extend(
             [
-                {"expr": stack, "eval_time": "10m", "exp_samples": []},
+                {"expr": stack, "eval_time": "15m", "exp_samples": []},
+                {"expr": share, "eval_time": "15m", "exp_samples": []},
                 {
                     "expr": f"sum({pie})",
-                    "eval_time": "10m",
+                    "eval_time": "15m",
                     "exp_samples": [{"labels": "{}", "value": 0}],
                 },
             ]
@@ -91,6 +128,7 @@ def test_queue_queries_use_consistent_measured_cohorts_and_pie_uses_right_edge(t
 
     tests = {
         "evaluation_interval": "1m",
+        "fuzzy_compare": True,
         "tests": [
             {
                 "interval": "1m",

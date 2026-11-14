@@ -344,7 +344,7 @@
       "position": {
         "y": "32",
         "w": "24",
-        "h": "16"
+        "h": "24"
       },
       "group": {
         "id": "21267d26-2b21-5007-afd9-1936ab183f84",
@@ -528,15 +528,65 @@
               "h": "8",
               "x": "12"
             }
+          },
+          {
+            "id": "47cfcd89-f269-5af6-8159-f0d7e870264b",
+            "multiSourceChart": {
+              "id": "47cfcd89-f269-5af6-8159-f0d7e870264b",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "%",
+                    "min": "0",
+                    "max": "100"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Доли времени по этапам в динамике, %",
+              "description": "В каждой точке показаны доли суммарного времени наблюдаемых успешных поисков за предыдущие 5 минут. Если завершений не было или суммарное время равно нулю, на графике разрыв.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "16",
+              "w": "24",
+              "h": "8"
+            }
           }
         ]
       }
     },
     {
       "position": {
-        "y": "48",
+        "y": "56",
         "w": "24",
-        "h": "16"
+        "h": "24"
       },
       "group": {
         "id": "8122fe84-8afa-409c-9f88-2a05edfd2db7",
@@ -756,13 +806,63 @@
               "h": "8",
               "x": "12"
             }
+          },
+          {
+            "id": "13ddbd09-14ff-5f7d-8865-7e7944405cb9",
+            "multiSourceChart": {
+              "id": "13ddbd09-14ff-5f7d-8865-7e7944405cb9",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "15e79d62-fb1c-4891-a7f4-11991dac479d",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "%",
+                    "min": "0",
+                    "max": "100"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Доли времени по этапам в динамике, %",
+              "description": "В каждой точке показаны доли суммарного времени наблюдаемых успешных поисков за предыдущие 5 минут. Если завершений не было или суммарное время равно нулю, на графике разрыв.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "16",
+              "w": "24",
+              "h": "8"
+            }
           }
         ]
       }
     },
     {
       "position": {
-        "y": "64",
+        "y": "80",
         "w": "24",
         "h": "16"
       },
@@ -909,7 +1009,7 @@
     },
     {
       "position": {
-        "y": "80",
+        "y": "96",
         "w": "24",
         "h": "32"
       },
@@ -1338,7 +1438,7 @@
     },
     {
       "position": {
-        "y": "112",
+        "y": "128",
         "w": "24",
         "h": "16"
       },

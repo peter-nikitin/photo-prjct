@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify fresh raw samples for the released VM or application sources."""
+"""Verify fresh raw samples for VM, application, or queue telemetry sources."""
 
 from __future__ import annotations
 
@@ -30,35 +30,13 @@ SOURCES = {
         {"__name__": "findme_http_requests_total", "job": "findme-http"},
         {"__name__": "pg_up", "job": "findme-postgres"},
         {"__name__": "findme_gallery_search_queue_depth", "job": "findme-http"},
-        {"__name__": "findme_gallery_search_completed_total", "job": "findme-http"},
-        {
-            "__name__": "findme_gallery_search_phase_duration_seconds_total",
-            "job": "findme-http",
-            "phase": "queue",
-        },
-        {
-            "__name__": "findme_gallery_search_phase_duration_seconds_total",
-            "job": "findme-http",
-            "phase": "processing",
-        },
         *(
-            {"__name__": metric, "job": "findme-http", "stage": stage}
+            {"__name__": "findme_selfie_search_queue_depth", "job": "findme-http", "stage": stage}
             for stage in ("recognition", "matching")
-            for metric in (
-                "findme_selfie_search_queue_depth",
-                "findme_selfie_search_completed_total",
-            )
         ),
-        *(
-            {
-                "__name__": "findme_selfie_search_phase_duration_seconds_total",
-                "job": "findme-http",
-                "stage": stage,
-                "phase": phase,
-            }
-            for stage in ("recognition", "matching")
-            for phase in ("queue", "processing")
-        ),
+    ),
+    "queue-telemetry": (
+        {"__name__": "findme_queue_telemetry_listening", "job": "findme-queue-telemetry"},
     ),
 }
 
@@ -83,17 +61,18 @@ def check(transport, scope: str, *, now: float | None = None) -> None:
                 raise control.ControlError(f"sample stale/nonfinite: {key}")
             if selector["__name__"] == "pg_up" and value != 1:
                 raise control.ControlError("PostgreSQL exporter cannot connect")
+            if selector["__name__"] == "findme_queue_telemetry_listening" and value != 1:
+                raise control.ControlError("Queue telemetry listener is disconnected")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scope", choices=tuple(SOURCES))
-    parser.add_argument("--oidc-config", type=Path, required=True)
+    parser.add_argument("--oidc-config", type=Path)
     args = parser.parse_args()
     try:
-        transport = control.CloudTransport(
-            CONFIG, control.identity("github-oidc", args.oidc_config)
-        )
+        mode = "github-oidc" if args.oidc_config else "yc"
+        transport = control.CloudTransport(CONFIG, control.identity(mode, args.oidc_config))
         deadline = time.monotonic() + 300
         while True:
             try:
@@ -106,6 +85,7 @@ def main() -> int:
                             "expected sample missing:",
                             "sample stale/nonfinite:",
                             "PostgreSQL exporter",
+                            "Queue telemetry listener",
                         )
                     )
                     or time.monotonic() >= deadline

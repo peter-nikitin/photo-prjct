@@ -403,18 +403,9 @@
                   "prometheusTarget": {
                     "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum(rate(findme_gallery_search_phase_duration_seconds_total{job=\"findme-http\",phase=\"queue\"}[5m])) / (sum(rate(findme_gallery_search_completed_total{job=\"findme-http\"}[5m])) > 0)",
+                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
-                  }
-                },
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum(rate(findme_gallery_search_phase_duration_seconds_total{job=\"findme-http\",phase=\"processing\"}[5m])) / (sum(rate(findme_gallery_search_completed_total{job=\"findme-http\"}[5m])) > 0)",
-                    "textMode": true,
-                    "name": "B"
                   }
                 }
               ],
@@ -442,34 +433,8 @@
                 "type": "VISUALIZATION_TYPE_STACK"
               },
               "title": "Время поиска от отправки до готовности, с",
-              "description": "Среднее за 5 минут для новых измеренных успешных поисков по фотографии галереи. Слои: ожидание до первого запуска и этап обработки от первого запуска до ready, включая повторы и восстановление. Верхняя граница — полное время от отправки до готовности; это elapsed time, не CPU time. Без завершений за окно точек нет. Исторические результаты без времени первого старта исключены.",
-              "displayLegend": true,
-              "seriesOverrides": [
-                {
-                  "matcher": {
-                    "query": {
-                      "names": [
-                        "A"
-                      ]
-                    }
-                  },
-                  "settings": {
-                    "name": "Ожидание в очереди"
-                  }
-                },
-                {
-                  "matcher": {
-                    "query": {
-                      "names": [
-                        "B"
-                      ]
-                    }
-                  },
-                  "settings": {
-                    "name": "Обработка и повторы"
-                  }
-                }
-              ]
+              "description": "Средняя длительность каждого этапа за 5 минут по наблюдаемым успешным поискам. Этапы включают ожидание первых запусков и время до готовности с повторами. Сумма слоёв показывает среднее полное время. Без завершений за окно точек нет.",
+              "displayLegend": true
             },
             "position": {
               "w": "12",
@@ -519,8 +484,49 @@
             },
             "position": {
               "y": "8",
-              "w": "24",
+              "w": "12",
               "h": "8"
+            }
+          },
+          {
+            "id": "73f76260-3c73-5e76-bd43-8227e9d780bd",
+            "multiSourceChart": {
+              "id": "73f76260-3c73-5e76-bd43-8227e9d780bd",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "bdc430df-8f37-5c29-8a74-26bb00e80a1a",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m] @ end()))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "bdc430df-8f37-5c29-8a74-26bb00e80a1a",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "type": "VISUALIZATION_TYPE_PIE",
+                "aggregation": "SERIES_AGGREGATION_LAST"
+              },
+              "title": "Доли времени по этапам",
+              "description": "Суммарное время по этапам для наблюдаемых успешных поисков за 5 минут до конца выбранного периода. Без завершений за окно долей нет.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "8",
+              "w": "12",
+              "h": "8",
+              "x": "12"
             }
           }
         ]
@@ -625,36 +631,9 @@
                   "prometheusTarget": {
                     "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum(rate(findme_selfie_search_phase_duration_seconds_total{job=\"findme-http\",stage=\"recognition\",phase=\"queue\"}[5m])) / (sum(rate(findme_selfie_search_completed_total{job=\"findme-http\",stage=\"recognition\"}[5m])) > 0)",
+                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
-                  }
-                },
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum(rate(findme_selfie_search_phase_duration_seconds_total{job=\"findme-http\",stage=\"recognition\",phase=\"processing\"}[5m])) / (sum(rate(findme_selfie_search_completed_total{job=\"findme-http\",stage=\"recognition\"}[5m])) > 0)",
-                    "textMode": true,
-                    "name": "B"
-                  }
-                },
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum(rate(findme_selfie_search_phase_duration_seconds_total{job=\"findme-http\",stage=\"matching\",phase=\"queue\"}[5m])) / (sum(rate(findme_selfie_search_completed_total{job=\"findme-http\",stage=\"matching\"}[5m])) > 0)",
-                    "textMode": true,
-                    "name": "C"
-                  }
-                },
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum(rate(findme_selfie_search_phase_duration_seconds_total{job=\"findme-http\",stage=\"matching\",phase=\"processing\"}[5m])) / (sum(rate(findme_selfie_search_completed_total{job=\"findme-http\",stage=\"matching\"}[5m])) > 0)",
-                    "textMode": true,
-                    "name": "D"
                   }
                 }
               ],
@@ -682,58 +661,8 @@
                 "type": "VISUALIZATION_TYPE_STACK"
               },
               "title": "Время поиска по селфи по этапам, с",
-              "description": "Среднее за 5 минут для успешных поисков с замерами всех этапов. Верхняя граница стека — время от постановки задачи до готовности результата. Обработка поиска включает публикацию.",
-              "displayLegend": true,
-              "seriesOverrides": [
-                {
-                  "matcher": {
-                    "query": {
-                      "names": [
-                        "A"
-                      ]
-                    }
-                  },
-                  "settings": {
-                    "name": "Ожидание распознавания"
-                  }
-                },
-                {
-                  "matcher": {
-                    "query": {
-                      "names": [
-                        "B"
-                      ]
-                    }
-                  },
-                  "settings": {
-                    "name": "Распознавание"
-                  }
-                },
-                {
-                  "matcher": {
-                    "query": {
-                      "names": [
-                        "C"
-                      ]
-                    }
-                  },
-                  "settings": {
-                    "name": "Ожидание поиска"
-                  }
-                },
-                {
-                  "matcher": {
-                    "query": {
-                      "names": [
-                        "D"
-                      ]
-                    }
-                  },
-                  "settings": {
-                    "name": "Поиск и публикация"
-                  }
-                }
-              ]
+              "description": "Средняя длительность каждого этапа за 5 минут по наблюдаемым успешным поискам. Этапы включают ожидание первых запусков и время до готовности с повторами. Сумма слоёв показывает среднее полное время. Без завершений за окно точек нет.",
+              "displayLegend": true
             },
             "position": {
               "w": "12",
@@ -783,8 +712,49 @@
             },
             "position": {
               "y": "8",
-              "w": "24",
+              "w": "12",
               "h": "8"
+            }
+          },
+          {
+            "id": "7e89b3cb-480a-5050-85bf-599ab577c022",
+            "multiSourceChart": {
+              "id": "7e89b3cb-480a-5050-85bf-599ab577c022",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "79660805-d9d3-5620-a83f-8f0c50521706",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m] @ end()))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "79660805-d9d3-5620-a83f-8f0c50521706",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "type": "VISUALIZATION_TYPE_PIE",
+                "aggregation": "SERIES_AGGREGATION_LAST"
+              },
+              "title": "Доли времени по этапам",
+              "description": "Суммарное время по этапам для наблюдаемых успешных поисков за 5 минут до конца выбранного периода. Без завершений за окно долей нет.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "8",
+              "w": "12",
+              "h": "8",
+              "x": "12"
             }
           }
         ]

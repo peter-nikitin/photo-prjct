@@ -14,34 +14,50 @@ def load(name, path):
     return module
 
 
-@pytest.mark.parametrize("scope", ["vm", "application"])
-def test_scope_reads_exact_selectors_in_one_batch(scope):
+def test_application_check_succeeds_without_completion_traffic():
     checker = load("release_metrics", "deploy/monitoring/prometheus/verify_metrics.py")
-    calls = []
+    samples = {
+        ("findme_http_requests_total", "findme-http", None): 1,
+        ("pg_up", "findme-postgres", None): 1,
+        ("findme_gallery_search_queue_depth", "findme-http", None): 0,
+        ("findme_selfie_search_queue_depth", "findme-http", "recognition"): 0,
+        ("findme_selfie_search_queue_depth", "findme-http", "matching"): 0,
+    }
 
     class Transport:
         def read_samples(self, selectors, *, now):
-            calls.append(selectors)
-            return [[[(990, 1.0)]] for _ in selectors]
+            return [
+                [[(990, samples[key])]] if key in samples else []
+                for selector in selectors
+                for key in [(selector["__name__"], selector["job"], selector.get("stage"))]
+            ]
 
-    checker.check(Transport(), scope, now=1000)
-    assert len(calls) == 1
-    selectors = calls[0]
-    if scope == "vm":
-        assert len(selectors) == 3
-        assert {item.get("mountpoint") for item in selectors} >= {"/", "/var/lib/findme-photo"}
+    checker.check(Transport(), "application", now=1000)
+
+
+@pytest.mark.parametrize("listening", [1, 0, None])
+def test_queue_telemetry_check_requires_a_live_listener_without_completion_traffic(listening):
+    checker = load("release_queue_telemetry", "deploy/monitoring/prometheus/verify_metrics.py")
+
+    class Transport:
+        def read_samples(self, selectors, *, now):
+            return [
+                [[(990, listening)]]
+                if listening is not None
+                and selector
+                == {
+                    "__name__": "findme_queue_telemetry_listening",
+                    "job": "findme-queue-telemetry",
+                }
+                else []
+                for selector in selectors
+            ]
+
+    if listening == 1:
+        checker.check(Transport(), "queue-telemetry", now=1000)
     else:
-        assert {item["__name__"] for item in selectors} >= {
-            "pg_up",
-            "findme_http_requests_total",
-            "findme_gallery_search_queue_depth",
-            "findme_gallery_search_completed_total",
-            "findme_gallery_search_phase_duration_seconds_total",
-        }
-        assert {item.get("phase") for item in selectors if "phase" in item} == {
-            "queue",
-            "processing",
-        }
+        with pytest.raises(checker.control.ControlError):
+            checker.check(Transport(), "queue-telemetry", now=1000)
 
 
 @pytest.mark.parametrize("sample", [None, (0, 1), (990, float("nan")), (1001, 1), (990, 0)])
@@ -135,26 +151,3 @@ def test_cli_stops_at_deadline_and_reports_source(monkeypatch, capsys):
     monkeypatch.setattr(checker, "check", check)
     assert checker.main() == 1
     assert "root disk" in capsys.readouterr().err
-
-
-def test_application_accepts_zero_initialized_search_metrics_and_rejects_each_missing_phase():
-    checker = load("release_metrics_search", "deploy/monitoring/prometheus/verify_metrics.py")
-
-    class Transport:
-        missing = None
-
-        def read_samples(self, selectors, *, now):
-            return [
-                []
-                if selector == self.missing
-                else [[(990, 1 if selector["__name__"] == "pg_up" else 0)]]
-                for selector in selectors
-            ]
-
-    transport = Transport()
-    checker.check(transport, "application", now=1000)
-    for selector in checker.SOURCES["application"]:
-        if selector["__name__"].startswith("findme_gallery_search_"):
-            transport.missing = selector
-            with pytest.raises(checker.control.ControlError, match="expected sample missing"):
-                checker.check(transport, "application", now=1000)

@@ -18,48 +18,84 @@ def charts(widgets):
             yield widget["multiSourceChart"]
 
 
-def test_phase_queries_preserve_end_to_end_sum_and_no_completions_are_missing(tmp_path):
+def test_queue_queries_use_consistent_measured_cohorts_and_pie_uses_right_edge(tmp_path):
     dashboard = json.loads(
         (ROOT / "deploy/monitoring/prometheus/single-vm-dashboard.json").read_text()
     )
-    queries = [
-        target["prometheusTarget"]["query"]
-        for chart in charts(dashboard["widgets"])
-        for target in chart["targets"]
-        if "findme_gallery_search_phase_duration_seconds_total"
-        in target["prometheusTarget"]["query"]
-    ]
-    queue, processing = queries
-    expressions = [
-        {"expr": queue, "eval_time": "5m", "exp_samples": [{"labels": "{}", "value": 5}]},
-        {"expr": processing, "eval_time": "5m", "exp_samples": [{"labels": "{}", "value": 15}]},
-        {
-            "expr": f"({queue}) + ({processing})",
-            "eval_time": "5m",
-            "exp_samples": [{"labels": "{}", "value": 20}],
-        },
-    ]
-    series = [
-        {"series": 'findme_gallery_search_completed_total{job="findme-http"}', "values": "0+1x5"},
-        {
-            "series": "findme_gallery_search_phase_duration_seconds_total"
-            '{job="findme-http",phase="queue"}',
-            "values": "0+5x5",
-        },
-        {
-            "series": "findme_gallery_search_phase_duration_seconds_total"
-            '{job="findme-http",phase="processing"}',
-            "values": "0+15x5",
-        },
-    ]
+    series = []
+    expressions = []
+    idle_expressions = []
+    for queue, segments in (
+        ("gallery_search", {"matching_wait": 5, "matching_elapsed": 15}),
+        (
+            "selfie_search",
+            {
+                "recognition_wait": 3,
+                "recognition_elapsed": 9,
+                "matching_wait": 6,
+                "matching_elapsed": 12,
+            },
+        ),
+    ):
+        by_visualization = {
+            chart["visualizationSettings"]["type"]: target["prometheusTarget"]["query"]
+            for chart in charts(dashboard["widgets"])
+            for target in chart["targets"]
+            if f'queue="{queue}"' in target["prometheusTarget"]["query"]
+            and "findme_queue_segment_duration_seconds_total" in target["prometheusTarget"]["query"]
+        }
+        stack = by_visualization["VISUALIZATION_TYPE_STACK"]
+        pie = by_visualization["VISUALIZATION_TYPE_PIE"]
+        labels = f'job="findme-queue-telemetry",queue="{queue}"'
+        series.append(
+            {"series": f"findme_queue_completed_total{{{labels}}}", "values": "0+1x5 5+0x5"}
+        )
+        for segment, seconds in segments.items():
+            series.append(
+                {
+                    "series": (
+                        f'findme_queue_segment_duration_seconds_total{{{labels},segment="{segment}"}}'
+                    ),
+                    "values": f"0+{seconds}x5 {5 * seconds}+0x5",
+                }
+            )
+        expected = [
+            {"labels": f'{{segment="{segment}"}}', "value": value}
+            for segment, value in segments.items()
+        ]
+        expressions.extend(
+            [
+                {"expr": stack, "eval_time": "5m", "exp_samples": expected},
+                {
+                    "expr": f"sum({stack})",
+                    "eval_time": "5m",
+                    "exp_samples": [{"labels": "{}", "value": sum(segments.values())}],
+                },
+                {
+                    "expr": f"sum({pie})",
+                    "eval_time": "5m",
+                    "exp_samples": [{"labels": "{}", "value": sum(segments.values()) * 5}],
+                },
+            ]
+        )
+        idle_expressions.extend(
+            [
+                {"expr": stack, "eval_time": "10m", "exp_samples": []},
+                {
+                    "expr": f"sum({pie})",
+                    "eval_time": "10m",
+                    "exp_samples": [{"labels": "{}", "value": 0}],
+                },
+            ]
+        )
+
     tests = {
         "evaluation_interval": "1m",
         "tests": [
-            {"interval": "1m", "input_series": series, "promql_expr_test": expressions},
             {
                 "interval": "1m",
-                "input_series": [{**item, "values": "0+0x5"} for item in series],
-                "promql_expr_test": [{**item, "exp_samples": []} for item in expressions],
+                "input_series": series,
+                "promql_expr_test": expressions + idle_expressions,
             },
         ],
     }

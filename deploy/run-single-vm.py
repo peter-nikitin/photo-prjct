@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_LOG_PATTERN = (
     r"DEPLOY_STAGE=(?:stop-workers|pull-images|commerce-check|database|migrate|"
     r"sync-feature-flags|static|web)"
+    r"|QUEUE_TELEMETRY_START=failed"
     r"|Feature flags synchronized: created=[0-9]{1,9} updated=[0-9]{1,9} "
     r"preserved=[0-9]{1,9} deleted=[0-9]{1,9}\."
 )

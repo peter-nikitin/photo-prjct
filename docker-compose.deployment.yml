@@ -225,6 +225,28 @@ services:
     mem_limit: 256m
     pids_limit: 32
 
+  queue-telemetry:
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    environment:
+      SECRET_KEY: queue-telemetry-unused
+      DB_NAME: ${DB_NAME:?DB_NAME must be set}
+      DB_USER: ${DB_USER:?DB_USER must be set}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      DB_HOST: db
+      DB_PORT: "5432"
+    entrypoint: ["python", "manage.py", "run_queue_telemetry"]
+    command: []
+    working_dir: /app/src/backend
+    ports:
+      - "127.0.0.1:9188:9188"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "0.2"
+    mem_limit: 128m
+    pids_limit: 32
+
   gallery-search-worker:
     image: ${APP_IMAGE:?APP_IMAGE must be set}
     environment:

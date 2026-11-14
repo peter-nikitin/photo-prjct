@@ -23,6 +23,9 @@ if [ "$DEPLOY_WEB" = true ]; then
     compose up -d --no-deps gallery-search-worker
     compose up -d --wait --force-recreate --no-deps nginx
     compose up -d certbot-renew
+    if ! compose up -d --no-deps queue-telemetry; then
+        printf '%s\n' 'QUEUE_TELEMETRY_START=failed'
+    fi
 fi
 update_worker() {
     profile=$1

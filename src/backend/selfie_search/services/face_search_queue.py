@@ -2,7 +2,9 @@
 
 import logging
 from datetime import datetime, timedelta
+from functools import partial
 
+from config.queue_events import notify_queue_completion
 from django.db import DatabaseError, connection, transaction
 from django.db.models import Q, Subquery
 from django.utils import timezone
@@ -145,6 +147,8 @@ def process_face_search(task: FaceSearchTask) -> None:
             expansion=expansion,
         )
         _terminal(task)
+        if intended_status == SelfieSearch.Status.READY:
+            transaction.on_commit(partial(_publish_completion, search, task.source), robust=True)
     try:
         attempt = (
             SelfieSearchAttempt.objects.filter(
@@ -171,6 +175,37 @@ def process_face_search(task: FaceSearchTask) -> None:
             )
     except Exception:
         emit_selfie_observability_failure(logger)
+
+
+def _publish_completion(search: SelfieSearch, source: str) -> None:
+    boundaries: tuple[tuple[str, datetime | None], ...]
+    if source == FaceSearchTask.Source.GALLERY:
+        queue = "gallery_search"
+        boundaries = (
+            ("matching_wait", search.matching_started_at),
+            ("matching_elapsed", search.terminal_at),
+        )
+    elif source == FaceSearchTask.Source.SELFIE:
+        queue = "selfie_search"
+        boundaries = (
+            ("recognition_wait", search.recognition_started_at),
+            ("recognition_elapsed", search.matching_enqueued_at),
+            ("matching_wait", search.matching_started_at),
+            ("matching_elapsed", search.terminal_at),
+        )
+    else:
+        return
+
+    previous_at = search.created_at
+    previous_ms = 0
+    segments_ms: dict[str, int] = {}
+    for name, boundary in boundaries:
+        if boundary is None or boundary < previous_at:
+            return
+        elapsed_ms = round((boundary - search.created_at).total_seconds() * 1000)
+        segments_ms[name] = elapsed_ms - previous_ms
+        previous_at, previous_ms = boundary, elapsed_ms
+    notify_queue_completion(queue, segments_ms)
 
 
 def _terminal(task: FaceSearchTask) -> None:

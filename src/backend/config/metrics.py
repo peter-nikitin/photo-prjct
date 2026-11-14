@@ -66,15 +66,8 @@ GROUP BY 1
 """
 
 _GALLERY_SEARCH_SQL = """
-SELECT
-    (SELECT count(*) FROM selfie_search_facesearchtask
-        WHERE source = 'gallery' AND status = 'queued'),
-    count(*),
-    coalesce(sum(extract(epoch FROM matching_started_at - created_at)), 0)::float,
-    coalesce(sum(extract(epoch FROM terminal_at - matching_started_at)), 0)::float
-FROM selfie_search_selfiesearch
-WHERE configuration->>'processor' = 'gallery_photo_query'
-    AND status = 'ready' AND matching_started_at IS NOT NULL AND terminal_at IS NOT NULL
+SELECT count(*) FROM selfie_search_facesearchtask
+WHERE source = 'gallery' AND status = 'queued'
 """
 
 _SELFIE_SEARCH_SQL = """
@@ -82,16 +75,7 @@ SELECT
     (SELECT count(*) FROM selfie_search_selfiesearchjob
         WHERE status IN ('queued', 'retry_wait')),
     (SELECT count(*) FROM selfie_search_facesearchtask
-        WHERE source = 'selfie' AND status = 'queued'),
-    count(*),
-    coalesce(sum(extract(epoch FROM recognition_started_at - created_at)), 0)::float,
-    coalesce(sum(extract(epoch FROM matching_enqueued_at - recognition_started_at)), 0)::float,
-    coalesce(sum(extract(epoch FROM matching_started_at - matching_enqueued_at)), 0)::float,
-    coalesce(sum(extract(epoch FROM terminal_at - matching_started_at)), 0)::float
-FROM selfie_search_selfiesearch
-WHERE configuration->>'processor' = 'selfie_query' AND status = 'ready'
-    AND recognition_started_at IS NOT NULL AND matching_enqueued_at IS NOT NULL
-    AND matching_started_at IS NOT NULL AND terminal_at IS NOT NULL
+        WHERE source = 'selfie' AND status = 'queued')
 """
 
 
@@ -261,58 +245,23 @@ def generate_metrics() -> bytes:
             )
         )
     if gallery is not None:
-        queued, completed, queue_seconds, processing_seconds = gallery
         lines.extend(
             (
                 "# HELP findme_gallery_search_queue_depth "
                 "Gallery searches waiting, including retries.",
                 "# TYPE findme_gallery_search_queue_depth gauge",
-                f"findme_gallery_search_queue_depth {queued}",
-                "# HELP findme_gallery_search_completed_total "
-                "Measured successful gallery searches.",
-                "# TYPE findme_gallery_search_completed_total counter",
-                f"findme_gallery_search_completed_total {completed}",
-                "# HELP findme_gallery_search_phase_duration_seconds_total "
-                "Elapsed phase seconds for the same measured successful gallery searches.",
-                "# TYPE findme_gallery_search_phase_duration_seconds_total counter",
-                'findme_gallery_search_phase_duration_seconds_total{phase="queue"} '
-                f"{queue_seconds}",
-                'findme_gallery_search_phase_duration_seconds_total{phase="processing"} '
-                f"{processing_seconds}",
+                f"findme_gallery_search_queue_depth {gallery[0]}",
             )
         )
     if selfie is not None:
-        (
-            recognition,
-            matching,
-            completed,
-            recognition_queue,
-            recognition_work,
-            matching_queue,
-            matching_work,
-        ) = selfie
+        recognition, matching = selfie
         lines.extend(
             (
                 "# TYPE findme_selfie_search_queue_depth gauge",
-                "# TYPE findme_selfie_search_completed_total counter",
-                "# TYPE findme_selfie_search_phase_duration_seconds_total counter",
+                f'findme_selfie_search_queue_depth{{stage="recognition"}} {recognition}',
+                f'findme_selfie_search_queue_depth{{stage="matching"}} {matching}',
             )
         )
-        for stage, depth, queued, processing in (
-            ("recognition", recognition, recognition_queue, recognition_work),
-            ("matching", matching, matching_queue, matching_work),
-        ):
-            labels = f'stage="{stage}"'
-            lines.extend(
-                (
-                    f"findme_selfie_search_queue_depth{{{labels}}} {depth}",
-                    f"findme_selfie_search_completed_total{{{labels}}} {completed}",
-                    "findme_selfie_search_phase_duration_seconds_total"
-                    f'{{{labels},phase="queue"}} {queued}',
-                    "findme_selfie_search_phase_duration_seconds_total"
-                    f'{{{labels},phase="processing"}} {processing}',
-                )
-            )
     if face_search_p75:
         lines.append("# TYPE findme_face_search_total_duration_p75_seconds gauge")
         lines.extend(

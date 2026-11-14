@@ -44,6 +44,37 @@ def test_release_stops_old_search_owners_before_schema_and_starts_executor(tmp_p
     assert "up -d --wait photo-worker" not in calls
 
 
+def test_telemetry_start_failure_leaves_application_release_healthy(tmp_path):
+    commands = tmp_path / "commands"
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\n" "$*" >> "$COMMANDS"\n'
+        'case "$*" in *"up "*"queue-telemetry"*) exit 1 ;; esac\n'
+    )
+    docker.chmod(0o755)
+    result = subprocess.run(
+        ["sh", str(ROOT / "deploy/apply-deployment.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "COMMANDS": str(commands),
+            "DEPLOY_ROOT": str(tmp_path),
+            "DEPLOY_WEB": "true",
+            "DEPLOY_WORKER": "false",
+            "DEPLOY_IMPORT": "false",
+            "DEPLOY_COMMERCE": "false",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = commands.read_text()
+    assert calls.index("up -d --wait --force-recreate --no-deps nginx") < calls.index(
+        "up -d --no-deps queue-telemetry"
+    )
+    assert "QUEUE_TELEMETRY_START=failed" in result.stdout
+
+
 def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch) -> None:
     import json
     import runpy

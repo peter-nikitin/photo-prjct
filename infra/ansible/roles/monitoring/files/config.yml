@@ -73,3 +73,22 @@ routes:
         config:
           labels:
           - instance: findme-photo-app
+- input:
+    plugin: metrics_pull
+    config:
+      url: http://127.0.0.1:9188/metrics
+      format:
+        prometheus: {}
+      poll_period: 60s
+      timeout: 10s
+      prometheus_config:
+        job_name: findme-queue-telemetry
+  channel:
+    channel_ref:
+      name: findme_prometheus_remote_write
+    pipe:
+    - filter:
+        plugin: transform_metric_labels
+        config:
+          labels:
+          - instance: findme-photo-app

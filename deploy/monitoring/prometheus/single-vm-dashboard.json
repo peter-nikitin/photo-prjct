@@ -1365,6 +1365,153 @@
           }
         ]
       }
+    },
+    {
+      "position": {
+        "y": "112",
+        "w": "24",
+        "h": "16"
+      },
+      "group": {
+        "id": "ee3aeb91-90a8-5d0e-b72c-e89417c945af",
+        "title": "Импорт с Яндекс Диска",
+        "widgets": [
+          {
+            "id": "d21e8ede-4c50-5771-bc3f-b126d22764c8",
+            "multiSourceChart": {
+              "id": "d21e8ede-4c50-5771-bc3f-b126d22764c8",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "db6f0615-f923-5356-b17b-f460fe880e17",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_queue_ready_count{job=\"findme-http\",queue=\"import\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "db6f0615-f923-5356-b17b-f460fe880e17",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Готовые к обработке партии",
+              "description": "Число партий импорта с работой, которую воркер может взять сейчас. Партии с активной обработкой не входят. Ноль означает, что готовых партий нет. Отсутствие линии означает отсутствие данных."
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "ab490744-34f7-5e53-96cb-ae04e8f97347",
+            "multiSourceChart": {
+              "id": "ab490744-34f7-5e53-96cb-ae04e8f97347",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "53d69af7-f0ff-54ea-866e-e351e21b8e2a",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_queue_oldest_ready_age_seconds{job=\"findme-http\",queue=\"import\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "53d69af7-f0ff-54ea-866e-e351e21b8e2a",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Возраст самой старой готовой партии, с",
+              "description": "Секунды с последней активности самой давно ожидающей партии. Для файла с истёкшим сроком обработки время отсчитывается с истечения этого срока. Ноль означает, что готовых партий нет. Отсутствие линии означает отсутствие данных."
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12"
+            }
+          },
+          {
+            "id": "77625c0c-08ca-5a24-8f9d-44bd4706bf42",
+            "multiSourceChart": {
+              "id": "77625c0c-08ca-5a24-8f9d-44bd4706bf42",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "f17c4c74-cd0a-5dc0-b7bb-306a40597c95",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_imported_photos_total{job=\"findme-http\"}[5m])) * 60",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "f17c4c74-cd0a-5dc0-b7bb-306a40597c95",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Импортировано фото в минуту",
+              "description": "Среднее число новых фотографий, успешно импортированных за последние 5 минут, в пересчёте на минуту. Дубликаты, ошибки и повторные подтверждения не учитываются. Отсутствие линии означает, что данных для расчёта пока недостаточно."
+            },
+            "position": {
+              "w": "24",
+              "h": "8",
+              "y": "8"
+            }
+          }
+        ]
+      }
     }
   ]
 }

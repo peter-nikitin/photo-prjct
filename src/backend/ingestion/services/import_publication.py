@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from config.metrics import observe_imported_photo
 from django.db import transaction
 from django.utils import timezone
 
@@ -321,6 +322,7 @@ def _publish_checkpointed_item(
                 source_item=item,
             )
             item.status = ImportItem.Status.IMPORTED
+            transaction.on_commit(observe_imported_photo, robust=True)
         completed_at = clock()
         if attempt.lease_expires_at <= completed_at:
             raise ImportConflict("stale_attempt", "The import lease is no longer current.")

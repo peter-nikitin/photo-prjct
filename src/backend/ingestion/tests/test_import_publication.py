@@ -26,6 +26,7 @@ from ingestion.services.imports import (
 from ingestion.storage import ObjectIdentity, ObjectMissing, UploadGrant
 from picflow.models import Event, Photo
 from processing.models import PhotoProcessingState
+from prometheus_client import REGISTRY
 
 
 class FakeImportStorage:
@@ -155,7 +156,9 @@ class ImportPublicationTests(TestCase):
         )
         self.assertEqual(prepared.status, "upload")
 
-        with override_feature_flags(self.flags):
+        metric = "findme_imported_photos_total"
+        before = REGISTRY.get_sample_value(metric) or 0.0
+        with override_feature_flags(self.flags), self.captureOnCommitCallbacks(execute=True):
             first = complete_import_item(
                 attempt_id=claim.attempt_id,
                 item_id=item.id,
@@ -168,6 +171,7 @@ class ImportPublicationTests(TestCase):
                 clock=lambda: claim.lease_expires_at + timedelta(days=1),
             )
 
+        self.assertEqual(REGISTRY.get_sample_value(metric), before + 1)
         self.assertEqual(first.photo_id, replay.photo_id)
         self.assertEqual(Photo.objects.filter(import_items__batch_id=batch.id).count(), 1)
         self.assertEqual(UploadItem.objects.count(), 0)

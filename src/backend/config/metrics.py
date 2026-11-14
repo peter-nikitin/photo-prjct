@@ -109,6 +109,10 @@ ACCEPTED_PREVIEWS = Counter(
     "findme_accepted_previews",
     "Accepted clean preview publications observed since the current deployment.",
 )
+IMPORTED_PHOTOS = Counter(
+    "findme_imported_photos",
+    "New photos successfully imported from Yandex Disk.",
+)
 WEB_VITALS_LCP = Histogram(
     "findme_web_vitals_lcp_seconds",
     "Largest Contentful Paint in seconds.",
@@ -145,6 +149,10 @@ def collect_queue_samples() -> dict[str, tuple[int, float, float, float]]:
 
 def observe_accepted_preview() -> None:
     ACCEPTED_PREVIEWS.inc()
+
+
+def observe_imported_photo() -> None:
+    IMPORTED_PHOTOS.inc()
 
 
 def generate_metrics() -> bytes:

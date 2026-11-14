@@ -1370,7 +1370,7 @@
       "position": {
         "y": "112",
         "w": "24",
-        "h": "8"
+        "h": "16"
       },
       "group": {
         "id": "ee3aeb91-90a8-5d0e-b72c-e89417c945af",
@@ -1463,6 +1463,51 @@
               "w": "12",
               "h": "8",
               "x": "12"
+            }
+          },
+          {
+            "id": "77625c0c-08ca-5a24-8f9d-44bd4706bf42",
+            "multiSourceChart": {
+              "id": "77625c0c-08ca-5a24-8f9d-44bd4706bf42",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "f17c4c74-cd0a-5dc0-b7bb-306a40597c95",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum(rate(findme_imported_photos_total{job=\"findme-http\"}[5m])) * 60",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "f17c4c74-cd0a-5dc0-b7bb-306a40597c95",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Импортировано фото в минуту",
+              "description": "Среднее число новых фотографий, успешно импортированных за последние 5 минут, в пересчёте на минуту. Дубликаты, ошибки и повторные подтверждения не учитываются. Отсутствие линии означает, что данных для расчёта пока недостаточно."
+            },
+            "position": {
+              "w": "24",
+              "h": "8",
+              "y": "8"
             }
           }
         ]

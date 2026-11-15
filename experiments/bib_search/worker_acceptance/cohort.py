@@ -59,7 +59,8 @@ def seed():
     )
     for attempt in range(30):
         try:
-            s3.create_bucket(Bucket="local-private")
+            for bucket in ("local-originals", "local-event-media", "local-operational"):
+                s3.create_bucket(Bucket=bucket)
             return
         except Exception:
             if attempt == 29:

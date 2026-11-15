@@ -90,7 +90,7 @@ class S3EventOriginalStorage:
     """The cache's deliberately small, read-only Object Storage adapter."""
 
     def __init__(self, client: _S3Client | None = None) -> None:
-        self._bucket = settings.PRIVATE_MEDIA_S3_BUCKET
+        self._bucket = settings.ORIGINALS_S3_BUCKET
         self._client = (
             client
             if client is not None

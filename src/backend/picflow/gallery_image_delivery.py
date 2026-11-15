@@ -7,7 +7,6 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import ClassVar
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -15,12 +14,12 @@ from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.validators import URLValidator
 from ingestion.storage import validate_accepted_preview_key
 
+from picflow.event_media_storage import is_event_cover_key
 from picflow.gallery_preview_grants import GALLERY_PREVIEW_URL_TTL_SECONDS
 
 
 @dataclass(frozen=True)
 class GalleryImageDeliverySettings:
-    bucket_setting: ClassVar[str] = "PRIVATE_MEDIA_S3_BUCKET"
     cdn_origin: str
     cdn_token_secret: str = field(repr=False)
     imgproxy_key: str = field(repr=False)
@@ -56,7 +55,7 @@ class GalleryImageDeliverySettings:
             or re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", self.bucket) is None
             or ".." in self.bucket
         ):
-            raise ImproperlyConfigured(f"{self.bucket_setting} must be a valid bucket name")
+            raise ImproperlyConfigured("EVENT_MEDIA_S3_BUCKET must be a valid bucket name")
 
     @classmethod
     def from_django_settings(cls) -> GalleryImageDeliverySettings:
@@ -65,12 +64,8 @@ class GalleryImageDeliverySettings:
             cdn_token_secret=getattr(settings, "GALLERY_CDN_TOKEN_SECRET", ""),
             imgproxy_key=getattr(settings, "GALLERY_IMGPROXY_KEY", ""),
             imgproxy_salt=getattr(settings, "GALLERY_IMGPROXY_SALT", ""),
-            bucket=getattr(settings, cls.bucket_setting, ""),
+            bucket=settings.EVENT_MEDIA_S3_BUCKET,
         )
-
-
-class EventCoverImageDeliverySettings(GalleryImageDeliverySettings):
-    bucket_setting = "MEDIA_S3_PUBLIC_BUCKET"
 
 
 class GalleryImageUrlSigner:
@@ -95,14 +90,7 @@ class GalleryImageUrlSigner:
 
     def sign_event_cover(self, *, key: str) -> str:
         # upload_to generates a UUID and retains only the lower-case filename suffix.
-        if (
-            re.fullmatch(
-                r"event-covers/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-                r"(?:\.[a-z0-9]{1,10})?",
-                key,
-            )
-            is None
-        ):
+        if not is_event_cover_key(key):
             raise ValueError("Invalid managed event cover object key")
         return self._sign_source(
             source=f"https://storage.yandexcloud.net/{self._config.bucket}/{key}",

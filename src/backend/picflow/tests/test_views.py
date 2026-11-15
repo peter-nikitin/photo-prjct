@@ -75,7 +75,7 @@ GALLERY_CDN_TEST_SETTINGS = {
     "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
     "GALLERY_IMGPROXY_KEY": "736563726574",
     "GALLERY_IMGPROXY_SALT": "68656c6c6f",
-    "PRIVATE_MEDIA_S3_BUCKET": "gallery-media",
+    "EVENT_MEDIA_S3_BUCKET": "gallery-media",
 }
 
 

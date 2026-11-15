@@ -15,7 +15,7 @@ VALID_SETTINGS = {
     "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
     "GALLERY_IMGPROXY_KEY": "736563726574",
     "GALLERY_IMGPROXY_SALT": "68656c6c6f",
-    "PRIVATE_MEDIA_S3_BUCKET": "gallery-media",
+    "EVENT_MEDIA_S3_BUCKET": "gallery-media",
 }
 # Independently calculated with OpenSSL using the published imgproxy and Yandex algorithms.
 ENCODED_SOURCE = (
@@ -55,8 +55,8 @@ def test_accepted_preview_gets_the_golden_six_hour_cdn_capability() -> None:
         ("GALLERY_IMGPROXY_KEY", "123"),
         ("GALLERY_IMGPROXY_SALT", "not-hex"),
         ("GALLERY_IMGPROXY_SALT", "aa bb"),
-        ("PRIVATE_MEDIA_S3_BUCKET", "gallery-media/originals"),
-        ("PRIVATE_MEDIA_S3_BUCKET", "user@other-bucket"),
+        ("EVENT_MEDIA_S3_BUCKET", "gallery-media/originals"),
+        ("EVENT_MEDIA_S3_BUCKET", "user@other-bucket"),
     ],
 )
 def test_invalid_delivery_configuration_fails_at_construction(name: str, value: str) -> None:

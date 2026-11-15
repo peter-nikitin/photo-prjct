@@ -85,7 +85,7 @@ class ExactObjectDownloadStorage:
     """Create a GET-only grant for a final key selected by Django, never by a worker request."""
 
     def __init__(self, client: _S3Client | None = None) -> None:
-        self._bucket = settings.PRIVATE_MEDIA_S3_BUCKET
+        self._bucket = settings.ORIGINALS_S3_BUCKET
         self._ttl_seconds = settings.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS
         self._client = (
             client
@@ -138,7 +138,8 @@ class ExactPreviewStorage:
     """Django-only exact staging access and content-addressed preview publication primitives."""
 
     def __init__(self, client: _S3Client | None = None) -> None:
-        self._bucket = settings.PRIVATE_MEDIA_S3_BUCKET
+        self._operational_bucket = settings.OPERATIONAL_S3_BUCKET
+        self._event_media_bucket = settings.EVENT_MEDIA_S3_BUCKET
         self._ttl_seconds = settings.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS
         self._client = (
             client
@@ -163,7 +164,7 @@ class ExactPreviewStorage:
             url = self._client.generate_presigned_url(
                 ClientMethod="get_object",
                 Params={
-                    "Bucket": self._bucket,
+                    "Bucket": self._event_media_bucket,
                     "Key": final_key,
                     "ResponseContentType": "image/jpeg",
                     "ResponseContentDisposition": 'attachment; filename="preview.jpg"',
@@ -190,7 +191,7 @@ class ExactPreviewStorage:
             url = self._client.generate_presigned_url(
                 ClientMethod="put_object",
                 Params={
-                    "Bucket": self._bucket,
+                    "Bucket": self._operational_bucket,
                     "Key": staging_key,
                     "ContentType": "image/jpeg",
                 },
@@ -215,7 +216,7 @@ class ExactPreviewStorage:
             raise ObjectMismatch()
         try:
             response = self._client.get_object(
-                Bucket=self._bucket,
+                Bucket=self._bucket_for_key(key),
                 Key=key,
                 IfMatch=identity.etag_wire,
             )
@@ -298,9 +299,9 @@ class ExactPreviewStorage:
             raise ObjectChanged()
         try:
             response = self._client.copy_object(
-                Bucket=self._bucket,
+                Bucket=self._event_media_bucket,
                 Key=final_key,
-                CopySource={"Bucket": self._bucket, "Key": staging_key},
+                CopySource={"Bucket": self._operational_bucket, "Key": staging_key},
                 CopySourceIfMatch=source_etag,
             )
             copied_etag = _etag_value(response["CopyObjectResult"]["ETag"])
@@ -331,8 +332,13 @@ class ExactPreviewStorage:
             raise ValueError("preview grant must have positive remaining lease time")
         return expires_in
 
+    def _bucket_for_key(self, key: str) -> str:
+        if key.startswith("processing-pending/previews/"):
+            return self._operational_bucket
+        return self._event_media_bucket
+
     def _inspect(self, key: str, *, if_match: str | None = None) -> PreviewObject:
-        kwargs: dict[str, Any] = {"Bucket": self._bucket, "Key": key}
+        kwargs: dict[str, Any] = {"Bucket": self._bucket_for_key(key), "Key": key}
         if if_match is not None:
             _etag_value(if_match)
             kwargs["IfMatch"] = if_match

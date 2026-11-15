@@ -47,7 +47,7 @@ class PutCapableFakeS3Client:
 
 
 @override_settings(
-    PRIVATE_MEDIA_S3_BUCKET="private-selfies",
+    OPERATIONAL_S3_BUCKET="private-selfies",
     SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS=90,
     SELFIE_SEARCH_MAX_UPLOAD_BYTES=20 * 1024 * 1024,
 )

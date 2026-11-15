@@ -65,9 +65,7 @@ class Command(BaseCommand):
 
 def _verify_lifecycle(client: Any) -> None:
     try:
-        response = client.get_bucket_lifecycle_configuration(
-            Bucket=settings.PRIVATE_MEDIA_S3_BUCKET
-        )
+        response = client.get_bucket_lifecycle_configuration(Bucket=settings.OPERATIONAL_S3_BUCKET)
     except (BotoCoreError, ClientError, TypeError):
         raise CommandError("Selfie-search lifecycle preflight failed.") from None
     if not _has_required_lifecycle_rule(response):
@@ -76,7 +74,7 @@ def _verify_lifecycle(client: Any) -> None:
 
 def _verify_unversioned_bucket(client: Any) -> None:
     try:
-        response = client.get_bucket_versioning(Bucket=settings.PRIVATE_MEDIA_S3_BUCKET)
+        response = client.get_bucket_versioning(Bucket=settings.OPERATIONAL_S3_BUCKET)
     except (BotoCoreError, ClientError, TypeError):
         raise CommandError("Selfie-search versioning preflight failed.") from None
     if not isinstance(response, dict) or "Status" in response:

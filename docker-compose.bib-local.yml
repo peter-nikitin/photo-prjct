@@ -33,7 +33,10 @@ services:
       PHOTO_PROCESSING_FACE_ENABLED: 'True'
       PHOTO_PROCESSING_WORKER_TOKEN: local-bib-worker-token
       PRIVATE_MEDIA_ALLOWED_ORIGINS: http://web:8000
-      PRIVATE_MEDIA_S3_BUCKET: local-private
+      ORIGINALS_S3_BUCKET: local-originals
+      EVENT_MEDIA_S3_BUCKET: local-event-media
+      OPERATIONAL_S3_BUCKET: local-operational
+      ORIGINALS_S3_STORAGE_CLASS: STANDARD
       PRIVATE_MEDIA_S3_ACCESS_KEY_ID: local-minio
       PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: local-minio-password
       MEDIA_S3_ENDPOINT_URL: http://minio:9000

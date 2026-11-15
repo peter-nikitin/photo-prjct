@@ -1198,7 +1198,9 @@ def test_image_origin_resolver_projection_executes_reviewed_credential_probe(
     counter = tmp_path / "curl-count"
     for name, value in {
         "CANONICAL_VM_ID": "canonical-vm-id",
-        "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
+        "EVENT_MEDIA_S3_BUCKET": "canonical-media",
+        "ORIGINALS_S3_BUCKET": "canonical-originals",
+        "OPERATIONAL_S3_BUCKET": "canonical-operational",
         "IMAGE_ORIGIN_ZONE_ID": "ru-central1-a",
         "IMAGE_ORIGIN_BOOT_IMAGE_ID": "immutable-image-id",
         "IMAGE_ORIGIN_SSH_PUBLIC_KEY_FILE": str(ssh_key),

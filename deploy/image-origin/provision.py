@@ -64,8 +64,9 @@ APPLICATION_GET_PROBE_CODE = (
     "aws_secret_access_key=settings.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY,"
     "endpoint_url=settings.PRIVATE_MEDIA_S3_ENDPOINT_URL,"
     "region_name=settings.PRIVATE_MEDIA_S3_REGION,config=Config(signature_version='s3v4')); "
-    "response=client.get_object(Bucket=settings.PRIVATE_MEDIA_S3_BUCKET,"
-    "Key=__import__('os').environ['IMAGE_ORIGIN_APPLICATION_PROBE_KEY']); "
+    "environment=__import__('os').environ; "
+    "response=client.get_object(Bucket=environment['IMAGE_ORIGIN_APPLICATION_PROBE_BUCKET'],"
+    "Key=environment['IMAGE_ORIGIN_APPLICATION_PROBE_KEY']); "
     "body=response['Body']; body.read(1); body.close()"
 )
 
@@ -169,10 +170,10 @@ def policy(
                 "Sid": APPLICATION_POLICY_SID,
                 "Effect": "Allow",
                 "Principal": "*",
-                "Action": "s3:*",
+                "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
                 "Resource": [
                     f"arn:aws:s3:::{bucket}",
-                    f"arn:aws:s3:::{bucket}/*",
+                    f"arn:aws:s3:::{bucket}/derivatives/previews/*",
                 ],
                 "Condition": {"StringEquals": {"yc:access-key-id": application_access_key_id}},
             }
@@ -1012,7 +1013,7 @@ def plan(
         "application_get_probe": {
             "execution": "immediately-after-policy-update",
             "credential_source": "canonical-application-runtime",
-            "object_key_sha256": hashlib.sha256(cfg["original"].encode()).hexdigest(),
+            "object_key_sha256": hashlib.sha256(cfg["preview"].encode()).hexdigest(),
             "failure": "restore-exact-previous-policy-and-stop",
         },
         "proposed_commands": commands,
@@ -1044,7 +1045,8 @@ def application_get_probe(found: dict[str, Any], cfg: dict[str, str]) -> bool:
         "docker compose --project-name photo-prjct --env-file .env "
         "-f docker-compose.deployment.yml -f docker-compose.https.yml "
         "exec -T "
-        f"-e IMAGE_ORIGIN_APPLICATION_PROBE_KEY={cfg['original']} "
+        f"-e IMAGE_ORIGIN_APPLICATION_PROBE_BUCKET={cfg['bucket']} "
+        f"-e IMAGE_ORIGIN_APPLICATION_PROBE_KEY={cfg['preview']} "
         "web python manage.py shell -c "
         f'"{APPLICATION_GET_PROBE_CODE}"'
     )
@@ -1326,18 +1328,18 @@ def probe(cfg: dict[str, str]) -> int:
         {"VM_SSH_KEY_FILE"},
     )
     operations = [
-        ("GET", cfg["preview"], "", "200"),
-        ("GET", "", "list-type=2", "403"),
-        ("GET", cfg["original"], "", "403"),
-        ("GET", cfg["staging"], "", "403"),
-        ("PUT", cfg["write"], "", "403"),
-        ("POST", cfg["write"], "uploads", "403"),
-        ("PUT", cfg["write"], "acl", "403"),
-        ("DELETE", cfg["write"], "", "403"),
+        ("GET", cfg["bucket"], cfg["preview"], "", "200"),
+        ("GET", cfg["bucket"], "", "list-type=2", "403"),
+        ("GET", cfg["originals_bucket"], cfg["original"], "", "403"),
+        ("GET", cfg["operational_bucket"], cfg["staging"], "", "403"),
+        ("PUT", cfg["bucket"], cfg["write"], "", "403"),
+        ("POST", cfg["bucket"], cfg["write"], "uploads", "403"),
+        ("PUT", cfg["bucket"], cfg["write"], "acl", "403"),
+        ("DELETE", cfg["bucket"], cfg["write"], "", "403"),
     ]
-    for method, key, query, expected in operations:
+    for method, bucket, key, query, expected in operations:
         url = (
-            f"https://storage.yandexcloud.net/{cfg['bucket']}"
+            f"https://storage.yandexcloud.net/{bucket}"
             + ("/" + quote(key, safe="/") if key else "")
             + ("?" + query if query else "")
         )
@@ -1397,7 +1399,9 @@ def config() -> dict[str, Any]:
         "canonical_vm": env("CANONICAL_VM_ID", ID),
         "application_vm_host": os.environ.get("VM_HOST", ""),
         "application_vm_user": os.environ.get("VM_USER", ""),
-        "bucket": env("PRIVATE_MEDIA_S3_BUCKET", BUCKET),
+        "bucket": env("EVENT_MEDIA_S3_BUCKET", BUCKET),
+        "originals_bucket": env("ORIGINALS_S3_BUCKET", BUCKET),
+        "operational_bucket": env("OPERATIONAL_S3_BUCKET", BUCKET),
         "zone": env("IMAGE_ORIGIN_ZONE_ID", ID),
         "image": env("IMAGE_ORIGIN_BOOT_IMAGE_ID", ID),
         "cidr": cidr,

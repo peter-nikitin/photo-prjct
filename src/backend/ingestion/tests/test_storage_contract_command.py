@@ -59,7 +59,7 @@ def rejected_request() -> urllib.error.HTTPError:
     PHOTO_UPLOAD_MAX_FILE_BYTES=52_428_800,
     PRIVATE_MEDIA_ALLOWED_ORIGINS=["https://findme-photo.ru"],
     PRIVATE_MEDIA_S3_ENDPOINT_URL="https://storage.yandexcloud.net",
-    PRIVATE_MEDIA_S3_BUCKET="hires-staging",
+    ORIGINALS_S3_BUCKET="originals",
 )
 class VerifyPrivateStorageCommandTests(SimpleTestCase):
     def test_requires_explicit_real_storage_confirmation(self) -> None:
@@ -107,6 +107,7 @@ class VerifyPrivateStorageCommandTests(SimpleTestCase):
         self.assertEqual(post_form.call_count, 4)
         self.assertEqual(len(post_form.call_args_list[2].args[2]), 2048)
         self.assertEqual(request.call_count, 2)
+        self.assertIn("/originals/originals/", request.call_args_list[0].args[1])
         self.assertEqual(len(storage.deleted), 2)
         self.assertIn("verified", output.getvalue())
         self.assertNotIn("signed-policy", output.getvalue())

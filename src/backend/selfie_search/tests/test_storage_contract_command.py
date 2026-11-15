@@ -63,7 +63,7 @@ LIFECYCLE = {
 
 
 @override_settings(
-    PRIVATE_MEDIA_S3_BUCKET="private-selfies",
+    OPERATIONAL_S3_BUCKET="private-selfies",
     SELFIE_SEARCH_TEMPORARY_PREFIX="selfie-search/",
     SELFIE_SEARCH_LIFECYCLE_MAX_AGE_HOURS=24,
 )

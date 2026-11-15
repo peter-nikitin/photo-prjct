@@ -97,7 +97,10 @@ class ObjectMismatch(StorageError):
 
 class PrivateUploadStorage:
     def __init__(self, client: _S3Client | None = None) -> None:
-        self._bucket = settings.PRIVATE_MEDIA_S3_BUCKET
+        self._operational_bucket = settings.OPERATIONAL_S3_BUCKET
+        self._originals_bucket = settings.ORIGINALS_S3_BUCKET
+        self._event_media_bucket = settings.EVENT_MEDIA_S3_BUCKET
+        self._originals_storage_class = settings.ORIGINALS_S3_STORAGE_CLASS
         self._max_file_bytes = settings.PHOTO_UPLOAD_MAX_FILE_BYTES
         self._grant_ttl_seconds = settings.PHOTO_UPLOAD_GRANT_TTL_SECONDS
         self._download_ttl_seconds = settings.PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS
@@ -124,11 +127,11 @@ class PrivateUploadStorage:
         expires_in = self._grant_ttl_seconds
         try:
             response = self._client.generate_presigned_post(
-                Bucket=self._bucket,
+                Bucket=self._operational_bucket,
                 Key=incoming_key,
                 Fields={"Content-Type": "image/jpeg"},
                 Conditions=[
-                    {"bucket": self._bucket},
+                    {"bucket": self._operational_bucket},
                     {"key": incoming_key},
                     {"Content-Type": "image/jpeg"},
                     ["content-length-range", 1, max_bytes],
@@ -162,7 +165,7 @@ class PrivateUploadStorage:
         object_identity = self._inspect(key)
         if object_identity.content_type not in {"image/jpeg", "image/png"}:
             raise ObjectMismatch()
-        params = {"Bucket": self._bucket, "Key": key}
+        params = {"Bucket": self._bucket_for_key(key), "Key": key}
         if attachment_filename is not None:
             params["ResponseContentDisposition"] = f'attachment; filename="{attachment_filename}"'
         try:
@@ -190,7 +193,7 @@ class PrivateUploadStorage:
         try:
             url = self._client.generate_presigned_url(
                 ClientMethod="get_object",
-                Params={"Bucket": self._bucket, "Key": key},
+                Params={"Bucket": self._event_media_bucket, "Key": key},
                 ExpiresIn=expires_in,
                 HttpMethod="GET",
             )
@@ -203,7 +206,7 @@ class PrivateUploadStorage:
     def open_final(self, *, key: str) -> OpenedObject:
         _validate_public_final_key(key)
         try:
-            response = self._client.get_object(Bucket=self._bucket, Key=key)
+            response = self._client.get_object(Bucket=self._bucket_for_key(key), Key=key)
         except ClientError as error:
             raise _mapped_error(error) from None
         except BotoCoreError:
@@ -248,7 +251,7 @@ class PrivateUploadStorage:
 
         try:
             response = self._client.get_object(
-                Bucket=self._bucket,
+                Bucket=self._bucket_for_key(key),
                 Key=key,
                 Range=f"bytes={start}-{end}",
                 IfMatch=etag_wire,
@@ -277,10 +280,11 @@ class PrivateUploadStorage:
 
         try:
             response = self._client.copy_object(
-                Bucket=self._bucket,
+                Bucket=self._originals_bucket,
                 Key=final_key,
-                CopySource={"Bucket": self._bucket, "Key": incoming_key},
+                CopySource={"Bucket": self._operational_bucket, "Key": incoming_key},
                 CopySourceIfMatch=etag_wire,
+                StorageClass=self._originals_storage_class,
             )
         except ClientError as error:
             raise _mapped_error(error) from None
@@ -306,7 +310,7 @@ class PrivateUploadStorage:
     def delete(self, *, key: str) -> None:
         _validate_managed_key(key)
         try:
-            self._client.delete_object(Bucket=self._bucket, Key=key)
+            self._client.delete_object(Bucket=self._bucket_for_key(key), Key=key)
         except ClientError as error:
             if _status(error) == 404:
                 return
@@ -314,8 +318,16 @@ class PrivateUploadStorage:
         except BotoCoreError:
             raise StorageUnavailable() from None
 
+    def _bucket_for_key(self, key: str) -> str:
+        # The caller validates the entire key before selecting its bucket.
+        if key.startswith("incoming/"):
+            return self._operational_bucket
+        if key.startswith("originals/"):
+            return self._originals_bucket
+        return self._event_media_bucket
+
     def _inspect(self, key: str, if_match: str | None = None) -> ObjectIdentity:
-        kwargs = {"Bucket": self._bucket, "Key": key}
+        kwargs = {"Bucket": self._bucket_for_key(key), "Key": key}
         if if_match is not None:
             _etag_value(if_match)
             kwargs["IfMatch"] = if_match

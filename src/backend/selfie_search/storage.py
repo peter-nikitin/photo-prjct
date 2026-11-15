@@ -49,7 +49,7 @@ class TemporarySelfieStorage:
     def __init__(
         self, client: _S3Client | None = None, *, config: Config = _TEMPORARY_CLIENT_CONFIG
     ) -> None:
-        self._bucket = settings.PRIVATE_MEDIA_S3_BUCKET
+        self._bucket = settings.OPERATIONAL_S3_BUCKET
         self._max_upload_bytes = settings.SELFIE_SEARCH_MAX_UPLOAD_BYTES
         self._ttl_seconds = settings.SELFIE_SEARCH_DOWNLOAD_TTL_SECONDS
         self._client = (

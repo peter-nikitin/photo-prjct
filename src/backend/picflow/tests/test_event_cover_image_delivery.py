@@ -11,7 +11,7 @@ from feature_flags.models import FeatureFlag
 from feature_flags.registry import EVENT_COVER_CDN_IMAGES
 from feature_flags.testing import override_feature_flags
 
-from picflow.gallery_image_delivery import EventCoverImageDeliverySettings, GalleryImageUrlSigner
+from picflow.gallery_image_delivery import GalleryImageDeliverySettings, GalleryImageUrlSigner
 from picflow.models import Event
 
 COVER_KEY = "event-covers/00000000-0000-4000-8000-000000000001.jpg"
@@ -20,8 +20,7 @@ DELIVERY_SETTINGS = {
     "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
     "GALLERY_IMGPROXY_KEY": "736563726574",
     "GALLERY_IMGPROXY_SALT": "68656c6c6f",
-    "PRIVATE_MEDIA_S3_BUCKET": "private-gallery",
-    "MEDIA_S3_PUBLIC_BUCKET": "public-covers",
+    "EVENT_MEDIA_S3_BUCKET": "public-covers",
 }
 COVER_FLAG = EVENT_COVER_CDN_IMAGES
 
@@ -137,7 +136,7 @@ def test_catalog_only_first_four_covers_are_eager(client, covered_event):
 @override_settings(**DELIVERY_SETTINGS)
 def test_cover_capability_uses_only_the_public_https_managed_key() -> None:
     signer = GalleryImageUrlSigner(
-        EventCoverImageDeliverySettings.from_django_settings(), clock=lambda: 1_700_000_000.75
+        GalleryImageDeliverySettings.from_django_settings(), clock=lambda: 1_700_000_000.75
     )
     url = urlsplit(signer.sign_event_cover(key=COVER_KEY))
     signature, preset, encoded = url.path.strip("/").split("/")
@@ -164,7 +163,7 @@ def test_cover_capability_uses_only_the_public_https_managed_key() -> None:
     ],
 )
 def test_cover_capability_rejects_unmanaged_keys(key: str) -> None:
-    signer = GalleryImageUrlSigner(EventCoverImageDeliverySettings.from_django_settings())
+    signer = GalleryImageUrlSigner(GalleryImageDeliverySettings.from_django_settings())
     with pytest.raises(ValueError, match="event cover object key"):
         signer.sign_event_cover(key=key)
 
@@ -174,6 +173,6 @@ def test_cover_capability_rejects_unmanaged_keys(key: str) -> None:
 )
 @override_settings(**DELIVERY_SETTINGS)
 def test_cover_signer_rejects_bucket_source_injection(bucket):
-    with override_settings(MEDIA_S3_PUBLIC_BUCKET=bucket):
-        with pytest.raises(ImproperlyConfigured, match="MEDIA_S3_PUBLIC_BUCKET"):
-            EventCoverImageDeliverySettings.from_django_settings()
+    with override_settings(EVENT_MEDIA_S3_BUCKET=bucket):
+        with pytest.raises(ImproperlyConfigured, match="EVENT_MEDIA_S3_BUCKET"):
+            GalleryImageDeliverySettings.from_django_settings()

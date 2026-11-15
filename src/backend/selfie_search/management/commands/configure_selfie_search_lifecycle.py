@@ -62,7 +62,7 @@ class Command(BaseCommand):
 
         try:
             client.put_bucket_lifecycle_configuration(
-                Bucket=settings.PRIVATE_MEDIA_S3_BUCKET,
+                Bucket=settings.OPERATIONAL_S3_BUCKET,
                 LifecycleConfiguration=intended,
             )
         except (BotoCoreError, ClientError, TypeError):
@@ -84,12 +84,12 @@ class Command(BaseCommand):
 
 
 def _configured_bucket_digest() -> str:
-    return hashlib.sha256(settings.PRIVATE_MEDIA_S3_BUCKET.encode("utf-8")).hexdigest()
+    return hashlib.sha256(settings.OPERATIONAL_S3_BUCKET.encode("utf-8")).hexdigest()
 
 
 def _require_unversioned_bucket(client: Any) -> None:
     try:
-        response = client.get_bucket_versioning(Bucket=settings.PRIVATE_MEDIA_S3_BUCKET)
+        response = client.get_bucket_versioning(Bucket=settings.OPERATIONAL_S3_BUCKET)
     except (BotoCoreError, ClientError, TypeError):
         raise CommandError("Selfie-search lifecycle versioning check failed.") from None
     if not isinstance(response, dict) or "Status" in response:
@@ -98,9 +98,7 @@ def _require_unversioned_bucket(client: Any) -> None:
 
 def _read_lifecycle_configuration(client: Any) -> dict[str, object] | None:
     try:
-        response = client.get_bucket_lifecycle_configuration(
-            Bucket=settings.PRIVATE_MEDIA_S3_BUCKET
-        )
+        response = client.get_bucket_lifecycle_configuration(Bucket=settings.OPERATIONAL_S3_BUCKET)
     except ClientError as error:
         if error.response.get("Error", {}).get("Code") == "NoSuchLifecycleConfiguration":
             return None
@@ -123,10 +121,10 @@ def _matches_intended_lifecycle(readback: object, intended: object) -> bool:
 def _restore_lifecycle_configuration(client: Any, original: dict[str, object] | None) -> bool:
     try:
         if original is None:
-            client.delete_bucket_lifecycle(Bucket=settings.PRIVATE_MEDIA_S3_BUCKET)
+            client.delete_bucket_lifecycle(Bucket=settings.OPERATIONAL_S3_BUCKET)
         else:
             client.put_bucket_lifecycle_configuration(
-                Bucket=settings.PRIVATE_MEDIA_S3_BUCKET,
+                Bucket=settings.OPERATIONAL_S3_BUCKET,
                 LifecycleConfiguration=original,
             )
     except (BotoCoreError, ClientError, TypeError):

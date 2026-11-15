@@ -368,7 +368,7 @@ PREVIOUS_ENV = (
     b"DB_PORT=6543\n"
     b"PUBLIC_DOMAIN=old.example\n"
     b"PHOTO_UPLOAD_ENABLED=True\n"
-    b"PRIVATE_MEDIA_S3_BUCKET=old-private-bucket\n"
+    b"ORIGINALS_S3_BUCKET=old-private-bucket\n"
     b"KEEP_EXACTLY=old-only-setting\n"
 )
 
@@ -1002,7 +1002,7 @@ validate_candidate_env() {
   case " $docker_arguments " in *" pull web "*) expected_image="${APP_IMAGE:-new-image}" ;; esac
   [ "$(sed -n 's/^APP_IMAGE=//p' "$compose_env_file")" = "$expected_image" ]
   [ "$(sed -n 's/^SECRET_KEY=//p' "$compose_env_file")" = "$EXPECTED_REQUESTED_SECRET" ]
-  [ "$(sed -n 's/^PRIVATE_MEDIA_S3_BUCKET=//p' "$compose_env_file")" = "$PRIVATE_MEDIA_S3_BUCKET" ]
+  [ "$(sed -n 's/^ORIGINALS_S3_BUCKET=//p' "$compose_env_file")" = "$ORIGINALS_S3_BUCKET" ]
   [ "$candidate_access_key" = "$PRIVATE_MEDIA_S3_ACCESS_KEY_ID" ]
   [ "$candidate_secret_key" = "$PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" ]
   case "${EXPECT_CANONICAL_ENV:-present}:$APPLY_SCENARIO" in
@@ -1414,7 +1414,7 @@ esac
         "WORKER_POOL_PRIVATE_API_IPV4": "10.0.0.2",
         "WORKER_POOL_RELEASE_MANIFEST": "reviewed-manifest",
         "WORKER_POOL_RELEASE_CHECKSUM": "reviewed-checksum",
-        "PRIVATE_MEDIA_S3_BUCKET": "requested-private-bucket",
+        "ORIGINALS_S3_BUCKET": "requested-private-bucket",
         "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "requested-private-access",
         "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "requested-private-secret",
         "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",

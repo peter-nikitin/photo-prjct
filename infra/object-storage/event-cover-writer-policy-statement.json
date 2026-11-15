@@ -1,0 +1,10 @@
+{
+  "Sid": "FindMeEventCoverWriter",
+  "Effect": "Allow",
+  "Principal": {"CanonicalUser": "${EVENT_COVER_WRITER_SERVICE_ACCOUNT_ID}"},
+  "Action": ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:PutObjectAcl"],
+  "Resource": [
+    "arn:aws:s3:::${EVENT_MEDIA_S3_BUCKET}",
+    "arn:aws:s3:::${EVENT_MEDIA_S3_BUCKET}/event-covers/*"
+  ]
+}

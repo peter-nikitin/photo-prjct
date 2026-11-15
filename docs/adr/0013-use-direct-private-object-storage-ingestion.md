@@ -6,6 +6,7 @@
 - Supersedes: none
 - Superseded by: [ADR 0035](0035-use-django-polled-yandex-disk-import.md) only for the source-byte
   transport of public Yandex Disk imports; local browser uploads retain this decision.
+  [ADR 0068](0068-separate-originals-event-media-and-operational-storage.md) separates the incoming and final buckets.
 
 ## Context
 

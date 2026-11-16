@@ -3,7 +3,7 @@
     {
       "ID": "expire-preview-staging-after-7-days",
       "Status": "Enabled",
-      "Filter": {"Prefix": "processing-pending/previews/"},
+      "Filter": {"Prefix": "preview-jobs/"},
       "Expiration": {"Days": 7}
     },
     {

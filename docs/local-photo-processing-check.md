@@ -17,7 +17,7 @@ DB_HOST=127.0.0.1 DB_PORT=5432 ../../.venv/bin/pytest -q tests/processing/test_p
 ## Блокер активации: lifecycle для temporary preview objects
 
 Для схемы по [ADR 0068](adr/0068-separate-originals-event-media-and-operational-storage.md)
-используйте [правила временного бакета](../infra/object-storage/operational-lifecycle.json).
+используйте [правила временного бакета в Terraform](../infra/terraform/media_storage.tf).
 Описанная ниже процедура относится к прежнему общему бакету и фиксирует его исходную настройку.
 
 До включения `PHOTO_PROCESSING_PREVIEW_ENABLED` на canonical deployment оператор обязан настроить правило

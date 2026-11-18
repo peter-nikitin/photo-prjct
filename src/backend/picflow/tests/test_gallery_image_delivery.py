@@ -19,10 +19,10 @@ VALID_SETTINGS = {
 }
 # Independently calculated with OpenSSL using the published imgproxy and Yandex algorithms.
 ENCODED_SOURCE = (
-    "czM6Ly9nYWxsZXJ5LW1lZGlhL2Rlcml2YXRpdmVzL3ByZXZpZXdzL3Bob3RvLTQyL3By"
-    "ZXZpZXctc21hbGwtdjEvMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAx"
-    "LWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh"
-    "YWFhYWFhYWFhYWFhYWFhYWEuanBn"
+    "czM6Ly9nYWxsZXJ5LW1lZGlhL3ByZXZpZXdzL3Bob3RvLTQyL3ByZXZpZXctc21hbGwtdj"
+    "EvMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxLWFhYWFhYWFhYWFhYWFh"
+    "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEuan"
+    "Bn"
 )
 
 
@@ -33,8 +33,8 @@ def test_accepted_preview_gets_the_golden_six_hour_cdn_capability() -> None:
     )
 
     assert signer.sign_accepted_preview(key=PREVIEW_KEY, expires_in=21_600) == (
-        "https://img.findme-photo.ru/yL0SS1lZCc3esLqjZGKScs95SoWIsdIA0MCocDzgNV4"
-        f"/gallery-v1/{ENCODED_SOURCE}.jpg?md5=D9YvW3ht33mGUxymPxRgew&expires=1700021600"
+        "https://img.findme-photo.ru/fq_IXjGELEcO-6X63Msoe7Bi-ahOIXPN5ztc8O-vbYo"
+        f"/gallery-v1/{ENCODED_SOURCE}.jpg?md5=l_LokBGWPfQtb96Xzk682Q&expires=1700021600"
     )
 
 
@@ -116,6 +116,6 @@ def test_page_refresh_changes_authentication_but_preserves_image_identity() -> N
 
     assert first.path == refreshed.path
     assert watermarked.path != first.path
-    assert parse_qs(first.query) == {"md5": ["D9YvW3ht33mGUxymPxRgew"], "expires": ["1700021600"]}
+    assert parse_qs(first.query) == {"md5": ["l_LokBGWPfQtb96Xzk682Q"], "expires": ["1700021600"]}
     assert parse_qs(refreshed.query)["expires"] == ["1700021660"]
     assert parse_qs(refreshed.query)["md5"] != parse_qs(first.query)["md5"]

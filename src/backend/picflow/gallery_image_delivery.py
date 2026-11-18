@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.validators import URLValidator
-from ingestion.storage import validate_accepted_preview_key
+from ingestion.storage import s3_object_key, validate_accepted_preview_key
 
 from picflow.event_media_storage import is_event_cover_key
 from picflow.gallery_preview_grants import GALLERY_PREVIEW_URL_TTL_SECONDS
@@ -85,7 +85,9 @@ class GalleryImageUrlSigner:
         ):
             raise ValueError("expires_in is outside the accepted preview limit")
         return self._sign_source(
-            source=f"s3://{self._config.bucket}/{key}", preset="gallery-v1", expires_in=expires_in
+            source=f"s3://{self._config.bucket}/{s3_object_key(key)}",
+            preset="gallery-v1",
+            expires_in=expires_in,
         )
 
     def sign_event_cover(self, *, key: str) -> str:

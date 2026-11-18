@@ -161,7 +161,7 @@ def policy(
                 "Effect": "Allow",
                 "Principal": {"CanonicalUser": principal},
                 "Action": "s3:GetObject",
-                "Resource": f"arn:aws:s3:::{bucket}/derivatives/previews/*",
+                "Resource": f"arn:aws:s3:::{bucket}/previews/*",
             }
         )
     if application_access_key_id:
@@ -173,7 +173,7 @@ def policy(
                 "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
                 "Resource": [
                     f"arn:aws:s3:::{bucket}",
-                    f"arn:aws:s3:::{bucket}/derivatives/previews/*",
+                    f"arn:aws:s3:::{bucket}/previews/*",
                 ],
                 "Condition": {"StringEquals": {"yc:access-key-id": application_access_key_id}},
             }

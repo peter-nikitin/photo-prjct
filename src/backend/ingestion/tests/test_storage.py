@@ -35,6 +35,9 @@ WATERMARKED_PREVIEW_FINAL_KEY = (
     "123e4567-e89b-12d3-a456-426614174000-"
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.jpg"
 )
+UPLOAD_OBJECT_KEY = INCOMING_KEY.replace("incoming/", "uploads/", 1)
+PREVIEW_OBJECT_KEY = PREVIEW_FINAL_KEY.removeprefix("derivatives/")
+WATERMARKED_PREVIEW_OBJECT_KEY = WATERMARKED_PREVIEW_FINAL_KEY.removeprefix("derivatives/")
 
 
 @pytest.fixture
@@ -93,11 +96,11 @@ def test_presigned_post_has_exact_private_upload_policy(
     assert calls(client, "generate_presigned_post") == [
         {
             "Bucket": OPERATIONAL_BUCKET,
-            "Key": INCOMING_KEY,
+            "Key": UPLOAD_OBJECT_KEY,
             "Fields": {"Content-Type": "image/jpeg"},
             "Conditions": [
                 {"bucket": OPERATIONAL_BUCKET},
-                {"key": INCOMING_KEY},
+                {"key": UPLOAD_OBJECT_KEY},
                 {"Content-Type": "image/jpeg"},
                 ["content-length-range", 1, 37],
             ],
@@ -140,13 +143,15 @@ def test_inspect_returns_wire_and_comparison_etags(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
     client.put_object(
-        OPERATIONAL_BUCKET, INCOMING_KEY, b"jpeg", '"abc-2"', "IMAGE/JPEG; Charset=Binary"
+        OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"jpeg", '"abc-2"', "IMAGE/JPEG; Charset=Binary"
     )
 
     identity = storage.inspect(key=INCOMING_KEY)
 
     assert identity == ObjectIdentity('"abc-2"', "abc-2", 4, "image/jpeg; charset=binary")
-    assert calls(client, "head_object") == [{"Bucket": OPERATIONAL_BUCKET, "Key": INCOMING_KEY}]
+    assert calls(client, "head_object") == [
+        {"Bucket": OPERATIONAL_BUCKET, "Key": UPLOAD_OBJECT_KEY}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -173,7 +178,7 @@ def test_inspect_rejects_unusable_metadata(response: dict[str, Any]) -> None:
 def test_read_range_passes_exact_etag_and_closes_body(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(OPERATIONAL_BUCKET, INCOMING_KEY, b"abcdef", '"wire-etag"')
+    client.put_object(OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"abcdef", '"wire-etag"')
 
     assert storage.read_range(key=INCOMING_KEY, etag_wire='"wire-etag"', start=0, end=0) == b"a"
     assert storage.read_range(key=INCOMING_KEY, etag_wire='"wire-etag"', start=5, end=5) == b"f"
@@ -181,13 +186,13 @@ def test_read_range_passes_exact_etag_and_closes_body(
     assert calls(client, "get_object") == [
         {
             "Bucket": OPERATIONAL_BUCKET,
-            "Key": INCOMING_KEY,
+            "Key": UPLOAD_OBJECT_KEY,
             "Range": "bytes=0-0",
             "IfMatch": '"wire-etag"',
         },
         {
             "Bucket": OPERATIONAL_BUCKET,
-            "Key": INCOMING_KEY,
+            "Key": UPLOAD_OBJECT_KEY,
             "Range": "bytes=5-5",
             "IfMatch": '"wire-etag"',
         },
@@ -234,14 +239,14 @@ def test_sign_final_allows_a_content_addressed_watermarked_preview(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
     client.put_object(
-        EVENT_MEDIA_BUCKET, WATERMARKED_PREVIEW_FINAL_KEY, b"watermarked", '"watermark-etag"'
+        EVENT_MEDIA_BUCKET, WATERMARKED_PREVIEW_OBJECT_KEY, b"watermarked", '"watermark-etag"'
     )
 
     url = storage.sign_final(key=WATERMARKED_PREVIEW_FINAL_KEY)
 
     assert url == client.presigned_get_url
     assert calls(client, "head_object") == [
-        {"Bucket": EVENT_MEDIA_BUCKET, "Key": WATERMARKED_PREVIEW_FINAL_KEY}
+        {"Bucket": EVENT_MEDIA_BUCKET, "Key": WATERMARKED_PREVIEW_OBJECT_KEY}
     ]
 
 
@@ -255,7 +260,7 @@ def test_sign_accepted_preview_locally_signs_one_managed_preview_for_six_hours(
     assert calls(client, "generate_presigned_url") == [
         {
             "ClientMethod": "get_object",
-            "Params": {"Bucket": EVENT_MEDIA_BUCKET, "Key": PREVIEW_FINAL_KEY},
+            "Params": {"Bucket": EVENT_MEDIA_BUCKET, "Key": PREVIEW_OBJECT_KEY},
             "ExpiresIn": 21_600,
             "HttpMethod": "GET",
         }
@@ -328,14 +333,16 @@ def test_open_final_allows_only_the_content_addressed_published_preview_namespac
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
     client.put_object(
-        EVENT_MEDIA_BUCKET, PREVIEW_FINAL_KEY, b"preview", '"preview-etag"', "image/jpeg"
+        EVENT_MEDIA_BUCKET, PREVIEW_OBJECT_KEY, b"preview", '"preview-etag"', "image/jpeg"
     )
 
     opened = storage.open_final(key=PREVIEW_FINAL_KEY)
 
     assert opened.size == 7
     assert opened.content_type == "image/jpeg"
-    assert calls(client, "get_object") == [{"Bucket": EVENT_MEDIA_BUCKET, "Key": PREVIEW_FINAL_KEY}]
+    assert calls(client, "get_object") == [
+        {"Bucket": EVENT_MEDIA_BUCKET, "Key": PREVIEW_OBJECT_KEY}
+    ]
 
 
 def test_open_final_rejects_invalid_key_before_client_call(
@@ -423,7 +430,7 @@ def test_client_failures_map_to_sanitized_stable_errors(
     status: int,
     exception: type[StorageError],
 ) -> None:
-    client.put_object(OPERATIONAL_BUCKET, INCOMING_KEY, b"jpeg", '"secret-etag"')
+    client.put_object(OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"jpeg", '"secret-etag"')
     client.failures[operation] = client_error(status, message="raw secret body")
 
     with pytest.raises(exception) as caught:
@@ -443,12 +450,15 @@ def test_client_failures_map_to_sanitized_stable_errors(
     assert "secret" not in rendered
     assert "raw" not in rendered
     assert INCOMING_KEY not in rendered
+    assert UPLOAD_OBJECT_KEY not in rendered
 
 
 def test_promote_conditionally_copies_and_verifies_final_identity(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(OPERATIONAL_BUCKET, INCOMING_KEY, b"jpeg-data", '"source-etag"', "IMAGE/JPEG")
+    client.put_object(
+        OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"jpeg-data", '"source-etag"', "IMAGE/JPEG"
+    )
 
     result = storage.promote(
         incoming_key=INCOMING_KEY, final_key=FINAL_KEY, etag_wire='"source-etag"'
@@ -456,7 +466,7 @@ def test_promote_conditionally_copies_and_verifies_final_identity(
 
     assert result == ObjectIdentity('"source-etag"', "source-etag", 9, "image/jpeg")
     assert calls(client, "head_object") == [
-        {"Bucket": OPERATIONAL_BUCKET, "Key": INCOMING_KEY, "IfMatch": '"source-etag"'},
+        {"Bucket": OPERATIONAL_BUCKET, "Key": UPLOAD_OBJECT_KEY, "IfMatch": '"source-etag"'},
         {"Bucket": ORIGINALS_BUCKET, "Key": FINAL_KEY},
     ]
     assert calls(client, "copy_object") == [
@@ -464,11 +474,11 @@ def test_promote_conditionally_copies_and_verifies_final_identity(
             "Bucket": ORIGINALS_BUCKET,
             "Key": FINAL_KEY,
             "StorageClass": "COLD",
-            "CopySource": {"Bucket": OPERATIONAL_BUCKET, "Key": INCOMING_KEY},
+            "CopySource": {"Bucket": OPERATIONAL_BUCKET, "Key": UPLOAD_OBJECT_KEY},
             "CopySourceIfMatch": '"source-etag"',
         }
     ]
-    assert (OPERATIONAL_BUCKET, INCOMING_KEY) in client.objects
+    assert (OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY) in client.objects
 
 
 @pytest.mark.parametrize(
@@ -485,9 +495,9 @@ def test_promote_rejects_malformed_keys_before_client_call(
 def test_promote_detects_overwrite_between_source_head_and_copy(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(OPERATIONAL_BUCKET, INCOMING_KEY, b"first", '"first"')
+    client.put_object(OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"first", '"first"')
     client.mutate_on(
-        "copy_object", OPERATIONAL_BUCKET, INCOMING_KEY, FakeObject(b"second", '"second"')
+        "copy_object", OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, FakeObject(b"second", '"second"')
     )
 
     with pytest.raises(ObjectChanged):
@@ -499,7 +509,7 @@ def test_promote_detects_overwrite_between_source_head_and_copy(
 def test_promote_rejects_final_head_mismatch(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(OPERATIONAL_BUCKET, INCOMING_KEY, b"first", '"first"')
+    client.put_object(OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"first", '"first"')
     client.mutate_on(
         "head_object", ORIGINALS_BUCKET, FINAL_KEY, FakeObject(b"different", '"different"')
     )
@@ -511,7 +521,7 @@ def test_promote_rejects_final_head_mismatch(
 def test_promote_rejects_unusable_copy_result_etag(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(OPERATIONAL_BUCKET, INCOMING_KEY, b"first", '"first"')
+    client.put_object(OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"first", '"first"')
     client.copy_result_etag = "unquoted"
 
     with pytest.raises(ObjectMismatch):
@@ -521,10 +531,10 @@ def test_promote_rejects_unusable_copy_result_etag(
 def test_overwriting_incoming_after_promotion_cannot_change_final(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(OPERATIONAL_BUCKET, INCOMING_KEY, b"first", '"first"')
+    client.put_object(OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"first", '"first"')
     storage.promote(incoming_key=INCOMING_KEY, final_key=FINAL_KEY, etag_wire='"first"')
 
-    client.put_object(OPERATIONAL_BUCKET, INCOMING_KEY, b"second", '"second"')
+    client.put_object(OPERATIONAL_BUCKET, UPLOAD_OBJECT_KEY, b"second", '"second"')
 
     assert client.objects[ORIGINALS_BUCKET, FINAL_KEY].content == b"first"
     assert client.objects[ORIGINALS_BUCKET, FINAL_KEY].etag == '"first"'

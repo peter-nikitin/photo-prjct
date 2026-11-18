@@ -18,6 +18,7 @@ from ingestion.storage import (
     ObjectMissing,
     StorageError,
     StorageUnavailable,
+    s3_object_key,
 )
 
 _FINAL_KEY = re.compile(r"originals/[0-9a-f]{32}")
@@ -116,7 +117,7 @@ class ExactObjectDownloadStorage:
                 ClientMethod="get_object",
                 Params={
                     "Bucket": self._bucket,
-                    "Key": final_key,
+                    "Key": s3_object_key(final_key),
                     "ResponseContentType": "image/jpeg",
                     "ResponseContentDisposition": 'attachment; filename="photo.jpg"',
                 },
@@ -165,7 +166,7 @@ class ExactPreviewStorage:
                 ClientMethod="get_object",
                 Params={
                     "Bucket": self._event_media_bucket,
-                    "Key": final_key,
+                    "Key": s3_object_key(final_key),
                     "ResponseContentType": "image/jpeg",
                     "ResponseContentDisposition": 'attachment; filename="preview.jpg"',
                 },
@@ -192,7 +193,7 @@ class ExactPreviewStorage:
                 ClientMethod="put_object",
                 Params={
                     "Bucket": self._operational_bucket,
-                    "Key": staging_key,
+                    "Key": s3_object_key(staging_key),
                     "ContentType": "image/jpeg",
                 },
                 ExpiresIn=expires_in,
@@ -217,7 +218,7 @@ class ExactPreviewStorage:
         try:
             response = self._client.get_object(
                 Bucket=self._bucket_for_key(key),
-                Key=key,
+                Key=s3_object_key(key),
                 IfMatch=identity.etag_wire,
             )
             body = response["Body"]
@@ -300,8 +301,8 @@ class ExactPreviewStorage:
         try:
             response = self._client.copy_object(
                 Bucket=self._event_media_bucket,
-                Key=final_key,
-                CopySource={"Bucket": self._operational_bucket, "Key": staging_key},
+                Key=s3_object_key(final_key),
+                CopySource={"Bucket": self._operational_bucket, "Key": s3_object_key(staging_key)},
                 CopySourceIfMatch=source_etag,
             )
             copied_etag = _etag_value(response["CopyObjectResult"]["ETag"])
@@ -338,7 +339,7 @@ class ExactPreviewStorage:
         return self._event_media_bucket
 
     def _inspect(self, key: str, *, if_match: str | None = None) -> PreviewObject:
-        kwargs: dict[str, Any] = {"Bucket": self._bucket_for_key(key), "Key": key}
+        kwargs: dict[str, Any] = {"Bucket": self._bucket_for_key(key), "Key": s3_object_key(key)}
         if if_match is not None:
             _etag_value(if_match)
             kwargs["IfMatch"] = if_match

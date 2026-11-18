@@ -103,7 +103,8 @@ class EventManagementMediaTests(TestCase):
             response = self.client.get(self.url(variant="thumbnail"))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
-            response.url, f"https://storage.example/{derivative.final_key}?signature=private"
+            response.url,
+            f"https://storage.example/{derivative.final_key.removeprefix('derivatives/')}?signature=private",
         )
         PhotoProcessingState.objects.filter(photo=self.photo).update(
             status=PhotoProcessingState.Status.FAILED

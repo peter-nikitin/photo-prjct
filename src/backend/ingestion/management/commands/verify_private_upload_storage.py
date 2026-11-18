@@ -52,10 +52,11 @@ class Command(BaseCommand):
 
         try:
             grant = storage.create_presigned_post(incoming_key=incoming_key, max_bytes=contract_max)
+            upload_prefix = grant.fields["key"].rsplit("/", 1)[0]
             self._expect_rejected(
                 grant,
                 _JPEG,
-                fields={**grant.fields, "key": f"incoming/{batch_id}/{uuid4()}"},
+                fields={**grant.fields, "key": f"{upload_prefix}/{uuid4()}"},
             )
             self._expect_rejected(
                 grant,

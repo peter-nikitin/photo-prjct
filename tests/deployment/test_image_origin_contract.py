@@ -61,7 +61,7 @@ def test_effective_compose_keeps_image_compute_isolated_and_bounded():
     assert not services["imgproxy"].get("volumes")
     environment = services["imgproxy"]["environment"]
     assert environment["IMGPROXY_ALLOWED_SOURCES"].split(",") == [
-        "s3://image-origin-contract/derivatives/previews/",
+        "s3://image-origin-contract/previews/",
         "https://storage.yandexcloud.net/image-origin-contract/event-covers/",
     ]
     assert environment["IMGPROXY_S3_ALLOWED_BUCKETS"] == "image-origin-contract"

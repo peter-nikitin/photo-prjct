@@ -125,14 +125,15 @@ class PrivateUploadStorage:
             raise ValueError("max_bytes is outside the configured upload limit")
 
         expires_in = self._grant_ttl_seconds
+        object_key = s3_object_key(incoming_key)
         try:
             response = self._client.generate_presigned_post(
                 Bucket=self._operational_bucket,
-                Key=incoming_key,
+                Key=object_key,
                 Fields={"Content-Type": "image/jpeg"},
                 Conditions=[
                     {"bucket": self._operational_bucket},
-                    {"key": incoming_key},
+                    {"key": object_key},
                     {"Content-Type": "image/jpeg"},
                     ["content-length-range", 1, max_bytes],
                 ],
@@ -165,7 +166,7 @@ class PrivateUploadStorage:
         object_identity = self._inspect(key)
         if object_identity.content_type not in {"image/jpeg", "image/png"}:
             raise ObjectMismatch()
-        params = {"Bucket": self._bucket_for_key(key), "Key": key}
+        params = {"Bucket": self._bucket_for_key(key), "Key": s3_object_key(key)}
         if attachment_filename is not None:
             params["ResponseContentDisposition"] = f'attachment; filename="{attachment_filename}"'
         try:
@@ -193,7 +194,7 @@ class PrivateUploadStorage:
         try:
             url = self._client.generate_presigned_url(
                 ClientMethod="get_object",
-                Params={"Bucket": self._event_media_bucket, "Key": key},
+                Params={"Bucket": self._event_media_bucket, "Key": s3_object_key(key)},
                 ExpiresIn=expires_in,
                 HttpMethod="GET",
             )
@@ -206,7 +207,9 @@ class PrivateUploadStorage:
     def open_final(self, *, key: str) -> OpenedObject:
         _validate_public_final_key(key)
         try:
-            response = self._client.get_object(Bucket=self._bucket_for_key(key), Key=key)
+            response = self._client.get_object(
+                Bucket=self._bucket_for_key(key), Key=s3_object_key(key)
+            )
         except ClientError as error:
             raise _mapped_error(error) from None
         except BotoCoreError:
@@ -252,7 +255,7 @@ class PrivateUploadStorage:
         try:
             response = self._client.get_object(
                 Bucket=self._bucket_for_key(key),
-                Key=key,
+                Key=s3_object_key(key),
                 Range=f"bytes={start}-{end}",
                 IfMatch=etag_wire,
             )
@@ -282,7 +285,7 @@ class PrivateUploadStorage:
             response = self._client.copy_object(
                 Bucket=self._originals_bucket,
                 Key=final_key,
-                CopySource={"Bucket": self._operational_bucket, "Key": incoming_key},
+                CopySource={"Bucket": self._operational_bucket, "Key": s3_object_key(incoming_key)},
                 CopySourceIfMatch=etag_wire,
                 StorageClass=self._originals_storage_class,
             )
@@ -310,7 +313,7 @@ class PrivateUploadStorage:
     def delete(self, *, key: str) -> None:
         _validate_managed_key(key)
         try:
-            self._client.delete_object(Bucket=self._bucket_for_key(key), Key=key)
+            self._client.delete_object(Bucket=self._bucket_for_key(key), Key=s3_object_key(key))
         except ClientError as error:
             if _status(error) == 404:
                 return
@@ -327,7 +330,7 @@ class PrivateUploadStorage:
         return self._event_media_bucket
 
     def _inspect(self, key: str, if_match: str | None = None) -> ObjectIdentity:
-        kwargs = {"Bucket": self._bucket_for_key(key), "Key": key}
+        kwargs = {"Bucket": self._bucket_for_key(key), "Key": s3_object_key(key)}
         if if_match is not None:
             _etag_value(if_match)
             kwargs["IfMatch"] = if_match
@@ -351,6 +354,18 @@ class PrivateUploadStorage:
             raise ObjectMismatch() from None
 
         return ObjectIdentity(etag_wire, etag_value, size, content_type.strip().lower())
+
+
+def s3_object_key(key: str) -> str:
+    """Map an already validated stored identifier to its S3 object key."""
+    for reference_prefix, object_prefix in (
+        ("incoming/", "uploads/"),
+        ("processing-pending/previews/", "preview-jobs/"),
+        ("derivatives/previews/", "previews/"),
+    ):
+        if key.startswith(reference_prefix):
+            return object_prefix + key[len(reference_prefix) :]
+    return key
 
 
 def _validate_incoming_key(key: str) -> None:

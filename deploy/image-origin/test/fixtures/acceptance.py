@@ -29,7 +29,7 @@ SENTINEL = "private-query-value-must-never-be-logged"
 
 def key(index):
     return (
-        "derivatives/previews/contract-event/preview-small-v1/"
+        "previews/contract-event/preview-small-v1/"
         f"00000000-0000-4000-8000-{index:012x}-{'a' * 64}.jpg"
     )
 
@@ -265,7 +265,7 @@ def check():
         "signature": ("/" + "A" * 43 + signed()[44:], AUTH),
         "preset": (signed(preset="width:4000"), AUTH),
         "prefix": (signed(f"s3://{BUCKET}/originals/private-photo"), AUTH),
-        "bucket": (signed("s3://other-bucket/derivatives/previews/private-photo"), AUTH),
+        "bucket": (signed("s3://other-bucket/previews/private-photo"), AUTH),
         "scheme": (signed("file:///etc/passwd"), AUTH),
         "http_redirect_source": (signed("http://seed:9001/redirect"), AUTH),
         "extension": (signed(extension="png"), AUTH),

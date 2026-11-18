@@ -71,6 +71,7 @@ def main() -> int:
                     }
                     for i, chart in enumerate(charts)
                     for j, target in enumerate(chart["targets"])
+                    if "prometheusTarget" in target
                 ]
                 with tempfile.TemporaryDirectory(
                     prefix=".monitoring-queries-", dir=Path.cwd()

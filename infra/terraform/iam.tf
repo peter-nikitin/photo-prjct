@@ -23,3 +23,10 @@ resource "yandex_resourcemanager_folder_iam_member" "monitoring_writer" {
   role      = "monitoring.editor"
   member    = "serviceAccount:${yandex_iam_service_account.backup_agent.id}"
 }
+
+# The infrastructure workflow manages bucket ACL flags, CORS, lifecycle and policies.
+resource "yandex_resourcemanager_folder_iam_member" "infrastructure_storage" {
+  folder_id = var.folder_id
+  role      = "storage.admin"
+  member    = "serviceAccount:ajema849qjho2lgjaqvo"
+}

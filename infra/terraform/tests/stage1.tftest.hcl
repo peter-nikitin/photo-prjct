@@ -1,5 +1,14 @@
 mock_provider "yandex" {}
 
+variables {
+  media_storage_principals = {
+    private_media = "aje00000000000000001"
+    cover_writer  = "aje00000000000000002"
+    image_origin  = "aje00000000000000003"
+  }
+  media_upload_origins = ["https://findme-photo.ru"]
+}
+
 override_resource {
   target = yandex_vpc_address.edge
   values = { external_ipv4_address = { address = "111.88.151.64" } }

@@ -14,3 +14,10 @@ ssh_cidrs        = ["0.0.0.0/0"]
 # explicit IPv4 range permits changing GitHub-hosted runner source addresses;
 # narrow it through another reviewed PR when a stable CI egress exists.
 # Both SSH public keys are supplied through the protected infrastructure environment.
+
+media_storage_principals = {
+  private_media = "ajeg9msqqkanrlgqqr1f"
+  cover_writer  = "ajejo91its6ckh9ch3gq"
+  image_origin  = "ajef0cammpfg75gn7ntd"
+}
+media_upload_origins = ["https://findme-photo.ru"]

@@ -26,6 +26,7 @@ def test_origin_streams_original_range_with_attachment(client):
             "ContentLength": 3,
             "ContentType": "image/jpeg",
             "ContentRange": "bytes 2-4/9",
+            "ETag": '"object-etag"',
         }
         response = client.get(
             PATH + "findme-photo-id.jpg",
@@ -33,6 +34,7 @@ def test_origin_streams_original_range_with_attachment(client):
         )
     assert response.status_code == 206
     assert response["Content-Range"] == "bytes 2-4/9"
+    assert response["ETag"] == '"object-etag"'
     assert response["Content-Disposition"] == 'attachment; filename="findme-photo-id.jpg"'
     assert b"".join(response.streaming_content) == b"abc"
     get_object.assert_called_once_with(

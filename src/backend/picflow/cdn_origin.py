@@ -35,6 +35,8 @@ def original_origin(
     response["Content-Length"] = str(opened.size)
     response["X-Accel-Buffering"] = "no"
     response["Accept-Ranges"] = "bytes"
+    if opened.etag_wire:
+        response["ETag"] = opened.etag_wire
     if opened.content_range:
         response["Content-Range"] = opened.content_range
     response["Content-Disposition"] = (

@@ -43,6 +43,7 @@ def test_media_cdn_routes_keep_distinct_security_and_cache_contracts(cdn: Module
         9999,
     ]
     assert cover["options"]["secureKey"] == {"enabled": False}
+    assert cover["options"]["browserCacheSettings"] == {"enabled": True, "value": "31536000"}
     for rule in (cover, preview):
         assert "X-FindMe-Origin-Auth" not in str(rule)
         assert rule["options"]["hostOptions"]["host"]["value"] == "storage.yandexcloud.net"
@@ -50,7 +51,7 @@ def test_media_cdn_routes_keep_distinct_security_and_cache_contracts(cdn: Module
     for rule in (preview, original):
         assert rule["options"]["secureKey"]["type"] == "DISABLE_IP_SIGNING"
         assert rule["options"]["queryParamsOptions"]["ignoreQueryString"]["value"] is True
-        assert rule["options"]["staticHeaders"]["value"]["Cache-Control"] == "private, no-store"
+        assert rule["options"]["staticHeaders"]["value"]["Cache-Control"] == "private, no-cache"
         assert rule["originProtocol"] == "HTTPS"
     assert original["originsGroupId"] == "456"
     assert original["options"]["staticRequestHeaders"]["value"] == {

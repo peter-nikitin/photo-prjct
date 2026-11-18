@@ -9,7 +9,7 @@ from django.db import DatabaseError, connection, transaction
 from django.db.models import Q, Subquery
 from django.utils import timezone
 from feature_flags.registry import FACE_SEARCH_ANCHOR_EXPANSION
-from feature_flags.services import is_enabled_for_staff_eligibility
+from feature_flags.services import is_enabled_for_background_task
 
 from selfie_search.models import (
     ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY,
@@ -129,7 +129,7 @@ def process_face_search(task: FaceSearchTask) -> None:
             timeout_ms = min(timeout_ms, remaining_ms)
         _set_statement_timeout(timeout_ms)
         ranking = rank_selected_direct(search, query)
-        expand_from_anchors = is_enabled_for_staff_eligibility(
+        expand_from_anchors = is_enabled_for_background_task(
             FACE_SEARCH_ANCHOR_EXPANSION,
             staff_eligible=search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True,
         )

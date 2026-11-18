@@ -52,9 +52,7 @@ def is_server_enabled(definition: FeatureDefinition) -> bool:
     return _state_for(_require_definition(definition)) in {FEATURE_FLAG_STAFF, FEATURE_FLAG_ON}
 
 
-def is_enabled_for_staff_eligibility(
-    definition: FeatureDefinition, *, staff_eligible: bool
-) -> bool:
-    """Evaluate a current gate for trusted server-recorded visitor eligibility."""
+def is_enabled_for_background_task(definition: FeatureDefinition, *, staff_eligible: bool) -> bool:
+    """Evaluate the current gate for a task with server-recorded staff eligibility."""
     state = _state_for(_require_definition(definition))
     return state == FEATURE_FLAG_ON or (state == FEATURE_FLAG_STAFF and staff_eligible is True)

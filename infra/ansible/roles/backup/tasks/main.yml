@@ -1,0 +1,34 @@
+---
+- name: Check whether the Cloud Backup agent is registered
+  ansible.builtin.shell: |
+    command -v acropsh >/dev/null &&
+    acropsh -m dmldump -s mms -vs 'Msp::Agent::Dto::Configuration' | grep -q AgentID
+  register: findme_backup_agent_registration
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Install Cloud Backup on an unregistered host
+  when: findme_backup_agent_registration.rc != 0
+  block:
+    - name: Download the Yandex Cloud Backup installer
+      ansible.builtin.get_url:
+        url: https://storage.yandexcloud.net/backup-distributions/agent_installer.sh
+        dest: /root/findme-backup-agent-installer.sh
+        mode: '0700'
+
+    - name: Install and register the Cloud Backup agent
+      ansible.builtin.command: bash /root/findme-backup-agent-installer.sh
+      no_log: true
+
+- name: Enable and start Cloud Backup services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - aakore.service
+    - acronis_schedule.service
+    - acronis_mms.service
+  when: not ansible_check_mode or findme_backup_agent_registration.rc == 0

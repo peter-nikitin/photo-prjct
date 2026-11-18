@@ -13,4 +13,5 @@
       ansible.builtin.setup: {}
   roles:
     - host
+    - backup
     - monitoring

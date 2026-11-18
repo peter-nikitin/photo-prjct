@@ -77,7 +77,6 @@ jobs:
           python -m pip install ansible-core==2.19.3
           printf '[recovery]\nrecovery-vm ansible_connection=local\n' > /tmp/findme-inventory
           ansible-playbook -i /tmp/findme-inventory infra/ansible/site.yml --syntax-check
-          ansible-playbook -i /tmp/findme-inventory infra/ansible/install-backup-agent.yml --syntax-check
 
   plan:
     if: github.event_name == 'pull_request' && needs.classify.outputs.terraform_changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository

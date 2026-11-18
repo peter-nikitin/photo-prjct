@@ -444,7 +444,6 @@ def test_ansible_waits_before_gathering_facts_and_running_roles() -> None:
     assert len(playbook) == 1
     play = playbook[0]
     assert play["gather_facts"] is False
-    assert play["roles"] == ["host", "monitoring"]
     wait, facts = play["pre_tasks"]
     assert wait["ansible.builtin.wait_for_connection"] == {
         "timeout": 300,

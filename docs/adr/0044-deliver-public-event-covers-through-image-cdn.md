@@ -4,7 +4,7 @@
 - Date: 2026-09-29
 - Deciders: project maintainer (explicit public-cover source exception approved in chat)
 - Supersedes: [ADR 0038](0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) only for its exclusion of public event covers from the image origin
-- Superseded by: none
+- Superseded by: [ADR 0069](0069-serve-media-through-cdn-without-imgproxy.md) для маршрутизации и преобразования при выдаче обложек.
 
 ## Context
 

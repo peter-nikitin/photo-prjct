@@ -4,7 +4,7 @@
 - Date: 2026-10-25
 - Deciders: владелец проекта; явно принял ADR 0056, 0057, 0058 и 0063 в обсуждении 2026-10-25
 - Supersedes: частично [0038](0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) для отдельного origin-хоста; [0042](0042-isolate-autoscaled-photo-worker-pools.md), [0046](0046-isolate-worker-pool-management-in-a-separate-folder.md), [0049](0049-retire-local-photo-worker-recovery-after-remote-acceptance.md) для размещения и управления флотом; [0051](0051-release-photo-worker-images-independently.md) для одновременного размещения двух прогретых экземпляров
-- Superseded by: none
+- Superseded by: [ADR 0069](0069-serve-media-through-cdn-without-imgproxy.md) для размещения image origin.
 
 ## Контекст
 

@@ -42,6 +42,7 @@ from picflow.gallery import (
     public_gallery_photo,
 )
 from picflow.gallery_image_delivery import (
+    CdnFinalObjectStorage,
     GalleryImageDeliverySettings,
     GalleryImageUrlSigner,
 )
@@ -273,9 +274,13 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     return response
 
 
-def _public_media_resolver() -> PublicMediaResolver:
+def _public_media_resolver(request) -> PublicMediaResolver:
     try:
-        storage = PrivateUploadStorage()
+        storage = (
+            CdnFinalObjectStorage()
+            if feature_flag_services.is_enabled(GALLERY_CDN_IMAGES, request.user)
+            else PrivateUploadStorage()
+        )
     except ValueError:
         raise StorageUnavailable() from None
     return PublicMediaResolver(storage=storage)
@@ -303,7 +308,7 @@ def photo_media(request, slug: str, photo_id: str, variant: str) -> HttpResponse
     except Photo.DoesNotExist:
         return HttpResponse(status=404)
     try:
-        signed_url = _public_media_resolver().resolve_signed(photo=photo, variant=variant)
+        signed_url = _public_media_resolver(request).resolve_signed(photo=photo, variant=variant)
     except ObjectMissing:
         return HttpResponse(status=404)
     except StorageError:
@@ -327,7 +332,7 @@ def photo_download(request, slug: str, photo_id: str) -> HttpResponse:
     except Photo.DoesNotExist:
         return HttpResponse(status=404)
     try:
-        signed_url = _public_media_resolver().resolve_download(photo=photo)
+        signed_url = _public_media_resolver(request).resolve_download(photo=photo)
     except ObjectMissing:
         return HttpResponse(status=404)
     except StorageError:

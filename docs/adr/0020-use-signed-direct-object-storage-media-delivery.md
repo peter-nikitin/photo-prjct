@@ -11,6 +11,7 @@
   original selection by the new paid-photo generation only; and
   [ADR 0034](0034-stream-page-scoped-photo-archives-through-django.md) only for an authorized
   page-scoped aggregate archive body
+- Superseded by: [ADR 0069](0069-serve-media-through-cdn-without-imgproxy.md) для транспорта пользовательских изображений через CDN.
 
 ## Context
 

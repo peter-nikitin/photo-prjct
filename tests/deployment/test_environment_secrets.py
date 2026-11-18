@@ -89,7 +89,8 @@ DEPLOY_KEYS = EXPECTED_SECRET_KEYS - {
     "POSTGRES_EXPORTER_PASSWORD",
     "PHOTO_PROCESSING_FLEET_TOKEN",
     "YANDEX_MONITORING_API_KEY",
-    "IMAGE_ORIGIN_HEADER_SECRET",
+    "GALLERY_IMGPROXY_KEY",
+    "GALLERY_IMGPROXY_SALT",
     "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
     "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
 }
@@ -105,6 +106,7 @@ IMAGE_DELIVERY_PROVISION_KEYS = {
     "IMAGE_ORIGIN_HEADER_SECRET",
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
 }
+MEDIA_CDN_KEYS = {"GALLERY_CDN_TOKEN_SECRET", "IMAGE_ORIGIN_HEADER_SECRET"}
 IMAGE_ORIGIN_PROJECTED_KEYS = IMAGE_ORIGIN_KEYS | {"VM_SSH_KEY_FILE"}
 
 
@@ -348,6 +350,7 @@ def test_manifest_declares_complete_schema_and_closed_projections(
         "public-monitor": {"YANDEX_MONITORING_API_KEY"},
         "image-origin": IMAGE_ORIGIN_KEYS,
         "image-delivery-provision": IMAGE_DELIVERY_PROVISION_KEYS,
+        "media-cdn": MEDIA_CDN_KEYS,
     }
 
 
@@ -872,6 +875,7 @@ def test_child_environment_cannot_bypass_projection_or_environment_files(
         ("public-monitor", {"YANDEX_MONITORING_API_KEY"}),
         ("image-origin", IMAGE_ORIGIN_PROJECTED_KEYS),
         ("image-delivery-provision", IMAGE_DELIVERY_PROVISION_KEYS),
+        ("media-cdn", MEDIA_CDN_KEYS),
     ],
 )
 def test_each_consumer_receives_exactly_its_projection(

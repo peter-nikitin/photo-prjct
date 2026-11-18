@@ -11,8 +11,7 @@ from tests.deployment.test_deployment_scripts import ROOT
 GALLERY_DELIVERY_ENVIRONMENT = {
     "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
     "GALLERY_CDN_TOKEN_SECRET": "cdn-token-secret",
-    "GALLERY_IMGPROXY_KEY": "11" * 32,
-    "GALLERY_IMGPROXY_SALT": "22" * 32,
+    "IMAGE_ORIGIN_HEADER_SECRET": "origin-header-secret",
 }
 
 
@@ -64,8 +63,7 @@ def test_gallery_delivery_configuration_changes_only_the_web_environment() -> No
         {
             "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
             "GALLERY_CDN_TOKEN_SECRET": "",
-            "GALLERY_IMGPROXY_KEY": "",
-            "GALLERY_IMGPROXY_SALT": "",
+            "IMAGE_ORIGIN_HEADER_SECRET": "",
         }
     )
 
@@ -82,8 +80,7 @@ def test_gallery_delivery_configuration_changes_only_the_web_environment() -> No
         } == {
             "GALLERY_CDN_ORIGIN": "https://img.findme-photo.ru",
             "GALLERY_CDN_TOKEN_SECRET": "",
-            "GALLERY_IMGPROXY_KEY": "",
-            "GALLERY_IMGPROXY_SALT": "",
+            "IMAGE_ORIGIN_HEADER_SECRET": "",
         }
         for name in GALLERY_DELIVERY_ENVIRONMENT:
             configured_without_gallery["services"][slot]["environment"].pop(name)

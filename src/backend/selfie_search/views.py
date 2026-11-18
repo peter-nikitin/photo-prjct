@@ -389,7 +389,7 @@ def result_media(
     if photo is None:
         return _not_found_response()
     try:
-        signed_url = _public_media_resolver().resolve_signed(photo=photo, variant=variant)
+        signed_url = _public_media_resolver(request).resolve_signed(photo=photo, variant=variant)
     except ObjectMissing:
         return _not_found_response()
     except StorageError:
@@ -412,7 +412,7 @@ def result_download(request, event_slug: str, public_token: str, photo_id: str) 
     if photo.gallery_media_policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED:
         return _not_found_response()
     try:
-        signed_url = _public_media_resolver().resolve_download(photo=photo)
+        signed_url = _public_media_resolver(request).resolve_download(photo=photo)
     except ObjectMissing:
         return _not_found_response()
     except StorageError:

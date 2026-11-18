@@ -148,6 +148,8 @@ exercise_bearer_error_logging() {
     commerce_http_path="/orders/runtime/access/$commerce_http_grant/$commerce_http_signature/?commerce-http-marker=$sentinel_tracking"
     order_archive_public_number="order-archive-public-number-$name-$$"
     order_archive_path="/orders/$order_archive_public_number/download/?order-archive-query=$sentinel_tracking"
+    original_path="/delivery/originals/0123456789abcdef0123456789abcdef/inline"
+    original_token="original-token-$name-$$"
     ordinary_path="/runtime-proxy-check-$name?ordinary=ordinary-query-$name"
     internal_path="/internal/photo-processing/"
 
@@ -375,7 +377,16 @@ exercise_bearer_error_logging() {
         assert_private_commerce_headers "$alias_commerce_http_headers"
     fi
 
+    original_status="$(request_status "$runtime_log_dir/original.headers" findme-photo.ru "$runtime_port" "$original_path?md5=$original_token&expires=2000000000")"
+    [ "$original_status" = 502 ] || { echo "$name unexpected original upstream status $original_status" >&2; exit 1; }
+
     docker logs "$runtime_container" > "$container_log" 2>&1 || true
+
+    if ! grep -Fq '"GET <media-original>" 502' "$access_log" || \
+       grep -Fq -e "$original_path" -e "$original_token" "$access_log" "$error_log" "$container_log"; then
+        echo "$name did not redact the original path and token from Nginx logs" >&2
+        exit 1
+    fi
 
     if ! grep -Fq "$ordinary_path" "$access_log"; then
         echo "$name non-bearer request did not use the normal access log" >&2
@@ -623,11 +634,11 @@ validate_variant() {
     grep -Fq 'add_header Vary "Cookie" always;' "$rendered"
     grep -Fq 'error_log /dev/null emerg;' "$rendered"
     expected_access_logs=5
-    expected_bearer_error_logs=9
+    expected_bearer_error_logs=10
     if [ -n "$alias" ]; then
         grep -Fq "server_name $alias;" "$rendered"
         expected_access_logs=6
-        expected_bearer_error_logs=12
+        expected_bearer_error_logs=13
     elif grep -Fq 'server_name www.findme-photo.ru;' "$rendered"; then
         echo "$name retained the optional alias server" >&2
         exit 1
@@ -667,7 +678,7 @@ exercise_slot_switch() {
     printf '%s\n' old > "$directory/static/site.abcdef123456.css"
     printf '%s\n' new > "$directory/static/site.123456abcdef.css"
     printf '%s\n' \
-        'server { listen 127.0.0.1:8000; location /static/ { alias /assets/; } location / { return 200 "web"; } }' \
+        'server { listen 127.0.0.1:8000; location /static/ { alias /assets/; } location /delivery/originals/ { return 200 "$request_uri|$http_x_findme_origin_auth|$http_range"; } location / { return 200 "web"; } }' \
         'server { listen 127.0.0.2:8000; location /static/ { alias /assets/; } location / { return 200 "web-next"; } }' \
         > "$directory/conf/fixtures.conf"
     docker run --rm --entrypoint /bin/sh \
@@ -736,6 +747,15 @@ exercise_slot_switch() {
             exit 1
         fi
     done
+    original_path="/delivery/originals/0123456789abcdef0123456789abcdef/inline"
+    original_body="$(curl --silent --insecure --max-time 3 --noproxy '*' \
+        --resolve "findme-photo.ru:$public_port:127.0.0.1" \
+        --header 'X-FindMe-Origin-Auth: origin-auth-fixture' --header 'Range: bytes=8-12' \
+        "https://findme-photo.ru:$public_port$original_path?md5=forwarding-fixture&expires=2000000000")"
+    [ "$original_body" = "$original_path|origin-auth-fixture|bytes=8-12" ] || {
+        echo "original upstream received unexpected URI or headers" >&2
+        exit 1
+    }
     cp "$directory/conf/default.conf" "$directory/inspected.conf"
     printf '%s\n' 'invalid installed directive;' >> "$directory/conf/default.conf"
     cp "$directory/conf/default.conf" "$directory/unreadable.conf"

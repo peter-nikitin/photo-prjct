@@ -1,7 +1,8 @@
 from unittest.mock import Mock, patch
 
-from django.test import Client
+from django.test import Client, override_settings
 from django.urls import reverse
+from feature_flags.registry import GALLERY_CDN_IMAGES
 from feature_flags.states import FEATURE_FLAG_ON
 
 from commerce.models import DownloadGrantAudit, EmailDelivery
@@ -38,6 +39,36 @@ class PurchasedDownloadViewTests(OrderViewFixture):
         self.assertEqual(DownloadGrantAudit.objects.count(), 1)
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
+
+    @override_settings(
+        GALLERY_CDN_ORIGIN="https://img.example.test",
+        GALLERY_CDN_TOKEN_SECRET="test-secret",
+        EVENT_MEDIA_S3_BUCKET="gallery-media",
+        ORIGINALS_S3_BUCKET="originals-bucket",
+    )
+    def test_paid_cdn_grant_checks_entitlement_and_records_exact_original(self):
+        self.enable(purchase=FEATURE_FLAG_ON)
+        self.feature_flag_states[GALLERY_CDN_IMAGES] = FEATURE_FLAG_ON
+        self.photo.original_key = "originals/" + "a" * 32
+        self.photo.save(update_fields=["original_key"])
+        order = self.make_order()
+        url = self.download_url(order, self.photo.pk)
+        with patch("ingestion.storage.boto3.client") as client:
+            inspect = client.return_value.head_object
+            inspect.return_value = {
+                "ETag": '"etag"',
+                "ContentLength": 10,
+                "ContentType": "image/jpeg",
+            }
+            assert Client().get(url).status_code == 404
+            inspect.assert_not_called()
+            response = self.client.get(url)
+        inspect.assert_called_once_with(Bucket="originals-bucket", Key=self.photo.original_key)
+        assert response.status_code == 302
+        assert response["Location"].startswith(
+            f"https://img.example.test/delivery/{self.photo.original_key}/findme-photo-{self.photo.pk}.jpg?md5="
+        )
+        assert DownloadGrantAudit.objects.filter(order_item__order=order).count() == 1
 
     def test_cross_order_photo_is_sanitized_without_storage_signing_or_audit(self) -> None:
         self.enable(purchase=FEATURE_FLAG_ON)

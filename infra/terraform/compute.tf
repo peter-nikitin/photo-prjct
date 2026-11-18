@@ -8,9 +8,9 @@ resource "yandex_compute_instance" "app" {
   allow_stopping_for_update = true
 
   resources {
-    cores         = 2
-    core_fraction = 20
-    memory        = 4
+    cores         = 8
+    core_fraction = 100
+    memory        = 16
   }
 
   boot_disk {

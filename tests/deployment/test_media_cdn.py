@@ -84,7 +84,6 @@ class FakeCloud:
             assert mask == {
                 "originGroupId",
                 "originProtocol",
-                "options.disableCache",
                 "options.secureKey",
                 "options.staticRequestHeaders",
                 "options.hostOptions",

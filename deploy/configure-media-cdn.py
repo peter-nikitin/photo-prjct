@@ -251,7 +251,6 @@ def configure(
     cover, preview, original, denied = rules(bucket, storage_id, web_id, *credentials)
     put_rule(cloud, current, denied)
     root_options = {
-        "disableCache": {"enabled": True, "value": True},
         "secureKey": {"enabled": False},
         "staticRequestHeaders": {"enabled": False},
         "hostOptions": {"host": {"enabled": True, "value": WEB}},

@@ -428,3 +428,93 @@ class FaceAnchorExpansionUpgradeTests(TransactionTestCase):
                 list(migrated.results.order_by("rank").values_list("primary_source", flat=True)),
                 ["direct", "face_cluster_expansion"],
             )
+
+
+class IndependentSearchFeedbackMigrationTests(TransactionTestCase):
+    migrate_from = [("selfie_search", "0013_face_anchor_expansion")]
+    migrate_to = [("selfie_search", "0014_independent_search_feedback")]
+
+    def test_migrates_legacy_answers_and_preserves_sensitive_records_and_audit(self) -> None:
+        executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(leaves))
+        executor.migrate(self.migrate_from)
+        old_apps = executor.loader.project_state(self.migrate_from).apps
+
+        event = old_apps.get_model("picflow", "Event").objects.create(
+            name="Event with historic feedback",
+            slug="historic-feedback",
+            start_date="2026-08-04",
+            end_date="2026-08-04",
+            city="Moscow",
+            publication_status="published",
+        )
+        staff = old_apps.get_model("auth", "User").objects.create(
+            username="historic-feedback-staff", is_staff=True
+        )
+        search = old_apps.get_model("selfie_search", "SelfieSearch").objects.create(
+            event=event,
+            public_token_digest="9" * 64,
+            status="ready",
+            matched_photo_count=2,
+            configuration={"processor": "selfie", "contract": 2},
+        )
+        submitted = timezone.now()
+        old_feedback_model = old_apps.get_model("selfie_search", "SelfieSearchFeedback")
+        selfie = old_feedback_model.objects.create(
+            search=search,
+            variant="result_labels",
+            contact="guest@example.test",
+            personal_data_consent=True,
+            consent_text_version="2026-08-05",
+            consented_at=submitted,
+            source_status="ready",
+            source_matched_photo_count=2,
+            source_visible_result_count=2,
+            source_configuration=search.configuration,
+            object_key="feedback/historical.jpg",
+            object_content_type="image/jpeg",
+            object_size=850,
+            object_uploaded_at=submitted,
+        )
+        old_results = old_apps.get_model("selfie_search", "SelfieSearchResult")
+        old_labels = old_apps.get_model("selfie_search", "SelfieSearchFeedbackLabel")
+        historical_labels = {}
+        for rank, value in enumerate(("present", "absent"), 1):
+            photo = old_apps.get_model("picflow", "Photo").objects.create(
+                id=f"historic-feedback-{rank}", event=event, src=f"sample-{rank}.jpg"
+            )
+            result = old_results.objects.create(search=search, rank=rank, photo=photo)
+            label = old_labels.objects.create(feedback=selfie, result=result, value=value)
+            historical_labels[label.pk] = (result.pk, value, selfie.pk, selfie.created_at)
+        audit = old_apps.get_model(
+            "selfie_search", "SelfieSearchFeedbackAccessAudit"
+        ).objects.create(feedback=selfie, staff=staff, action="contact_view")
+
+        forward = MigrationExecutor(connection)
+        forward.migrate(self.migrate_to)
+        current = forward.loader.project_state(self.migrate_to).apps
+        feedback = current.get_model("selfie_search", "SelfieSearchFeedback")
+        labels = current.get_model("selfie_search", "SearchResultFeedback")
+        audits = current.get_model("selfie_search", "SelfieSearchFeedbackAccessAudit")
+        self.assertEqual(
+            feedback.objects.values().get(pk=selfie.pk),
+            old_feedback_model_to_dict(selfie) | {"variant": "selfie"},
+        )
+        self.assertEqual(
+            {
+                pk: (result_id, value, feedback_id, created_at)
+                for pk, result_id, value, feedback_id, created_at in labels.objects.values_list(
+                    "pk", "result_id", "value", "feedback_id", "created_at"
+                )
+            },
+            historical_labels,
+        )
+        self.assertEqual(
+            audits.objects.values().get(pk=audit.pk),
+            old_feedback_model_to_dict(audit),
+        )
+
+
+def old_feedback_model_to_dict(row):
+    return {field.attname: getattr(row, field.attname) for field in row._meta.concrete_fields}

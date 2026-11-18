@@ -5,13 +5,14 @@ from django.urls import path, reverse
 from ingestion.storage import ObjectMissing, StorageUnavailable
 
 from selfie_search.models import (
+    BibResultFeedback,
+    SearchResultFeedback,
     SelfieSearch,
     SelfieSearchAnchorEvidence,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
     SelfieSearchFeedbackAccessAudit,
-    SelfieSearchFeedbackLabel,
     SelfieSearchResult,
 )
 from selfie_search.storage import FeedbackSelfieStorage
@@ -31,8 +32,8 @@ class ReadOnlyInline(admin.TabularInline):
         return False
 
 
-class FeedbackLabelInline(ReadOnlyInline):
-    model = SelfieSearchFeedbackLabel
+class HistoricalResultFeedbackInline(ReadOnlyInline):
+    model = SearchResultFeedback
     fields = ("result", "value")
     readonly_fields = fields
 
@@ -137,7 +138,7 @@ class SelfieSearchFeedbackAdmin(admin.ModelAdmin):
         "created_at",
     )
     readonly_fields = fields
-    inlines = (FeedbackLabelInline, FeedbackAccessAuditInline)
+    inlines = (HistoricalResultFeedbackInline, FeedbackAccessAuditInline)
 
     def has_add_permission(self, request) -> bool:  # noqa: ARG002
         return False
@@ -222,3 +223,16 @@ class SelfieSearchFeedbackAdmin(admin.ModelAdmin):
         if feedback is None:
             raise PermissionDenied
         return feedback
+
+
+@admin.register(SearchResultFeedback)
+class SearchResultFeedbackAdmin(ProvenanceReadOnlyAdmin):
+    list_display = ("id", "result", "value", "created_at")
+    list_filter = ("value",)
+    readonly_fields = ("result", "value", "created_at")
+
+
+@admin.register(BibResultFeedback)
+class BibResultFeedbackAdmin(ProvenanceReadOnlyAdmin):
+    list_display = ("event", "bib_number", "photo", "created_at")
+    readonly_fields = list_display

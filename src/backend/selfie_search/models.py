@@ -18,7 +18,7 @@ from processing.models import (
 JSON_MAX_BYTES = 16_384
 ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY = "anchor_expansion_staff_eligible"
 FEEDBACK_OBJECT_MAX_BYTES = 20 * 1024 * 1024
-FEEDBACK_CONSENT_TEXT_VERSION = "2026-08-05"
+FEEDBACK_CONSENT_TEXT_VERSION = "2026-11-18"
 _TERMINAL_SEARCH_STATUSES = (
     "ready",
     "no_face",
@@ -642,7 +642,7 @@ class SelfieSearchClusterEvidence(models.Model):  # noqa: DJ008
 class SelfieSearchFeedback(models.Model):  # noqa: DJ008
     class Variant(models.TextChoices):
         PROBLEM = "problem", "Problem"
-        RESULT_LABELS = "result_labels", "Result labels"
+        SELFIE = "selfie", "Selfie after results"
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     search = models.OneToOneField(
@@ -674,7 +674,7 @@ class SelfieSearchFeedback(models.Model):  # noqa: DJ008
         ]
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(variant__in=("problem", "result_labels")),
+                condition=models.Q(variant__in=("problem", "selfie")),
                 name="selfie_feedback_variant_chk",
             ),
             models.CheckConstraint(
@@ -703,7 +703,7 @@ class SelfieSearchFeedback(models.Model):  # noqa: DJ008
                         source_visible_result_count=0,
                     )
                     | models.Q(
-                        variant="result_labels",
+                        variant="selfie",
                         source_status="ready",
                         source_visible_result_count__gt=0,
                     )
@@ -751,10 +751,10 @@ class SelfieSearchFeedback(models.Model):  # noqa: DJ008
             errors["consented_at"] = "Consent timestamp is required."
         if self.source_status not in _TERMINAL_SEARCH_STATUSES:
             errors["source_status"] = "Feedback source must be terminal."
-        if self.variant == self.Variant.RESULT_LABELS and (
+        if self.variant == self.Variant.SELFIE and (
             self.source_status != SelfieSearch.Status.READY or self.source_visible_result_count <= 0
         ):
-            errors["variant"] = "Result labels require a non-empty ready result."
+            errors["variant"] = "A result selfie requires a non-empty ready result."
         if self.variant == self.Variant.PROBLEM and self.source_status == SelfieSearch.Status.READY:
             if self.source_visible_result_count > 0:
                 errors["variant"] = "Problem feedback cannot describe visible results."
@@ -762,7 +762,7 @@ class SelfieSearchFeedback(models.Model):  # noqa: DJ008
             raise ValidationError(errors)
 
 
-class SelfieSearchFeedbackLabel(models.Model):  # noqa: DJ008
+class SearchResultFeedback(models.Model):  # noqa: DJ008
     class Value(models.TextChoices):
         PRESENT = "present", "Present"
         ABSENT = "absent", "Absent"
@@ -771,49 +771,71 @@ class SelfieSearchFeedbackLabel(models.Model):  # noqa: DJ008
     feedback = models.ForeignKey(
         SelfieSearchFeedback,
         on_delete=models.PROTECT,
-        related_name="labels",
+        related_name="result_feedback",
+        null=True,
+        blank=True,
     )
     result = models.ForeignKey(
         SelfieSearchResult,
         on_delete=models.PROTECT,
-        related_name="feedback_labels",
+        related_name="result_feedback",
     )
     value = models.CharField(max_length=7, choices=Value)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("feedback", "result"),
-                name="selfie_feedback_label_membership_uniq",
+                fields=("result", "value"),
+                name="search_result_feedback_value_uniq",
             ),
             models.CheckConstraint(
                 condition=models.Q(value__in=("present", "absent")),
-                name="selfie_feedback_label_value_chk",
+                name="search_result_feedback_value_chk",
             ),
         ]
 
     def __str__(self) -> str:
-        return f"Feedback label {self.pk}"
+        return f"Search result feedback {self.pk}"
 
     def save(self, *args, **kwargs) -> None:
         if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
-            raise ValidationError("Selfie search feedback labels are immutable.")
+            raise ValidationError("Search result feedback is immutable.")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs) -> None:
         if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
-            raise ValidationError("Selfie search feedback labels are immutable.")
+            raise ValidationError("Search result feedback is immutable.")
         super().delete(*args, **kwargs)
 
     def clean(self) -> None:
         super().clean()
         errors = {}
-        if self.feedback_id and self.feedback.variant != SelfieSearchFeedback.Variant.RESULT_LABELS:
-            errors["feedback"] = "Only result-label feedback accepts result labels."
+        if self.feedback_id and self.feedback.variant != SelfieSearchFeedback.Variant.SELFIE:
+            errors["feedback"] = "Historical labels require a result selfie."
         if self.feedback_id and self.result_id and self.feedback.search_id != self.result.search_id:
             errors["result"] = "The labelled result must belong to the feedback search."
         if errors:
             raise ValidationError(errors)
+
+
+class BibResultFeedback(models.Model):  # noqa: DJ008
+    event = models.ForeignKey(Event, on_delete=models.PROTECT)
+    photo = models.ForeignKey(Photo, on_delete=models.PROTECT)
+    bib_number = models.CharField(max_length=16)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("event", "bib_number", "photo"),
+                name="bib_result_feedback_membership_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(bib_number__regex=r"^[0-9]{1,16}$"),
+                name="bib_result_feedback_number_chk",
+            ),
+        ]
 
 
 class SelfieSearchFeedbackAccessAudit(models.Model):  # noqa: DJ008

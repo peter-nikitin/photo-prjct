@@ -21,7 +21,7 @@ from django.http import (
 )
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-from django.views.decorators.debug import sensitive_variables
+from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from django.views.decorators.http import require_GET, require_POST
 from feature_flags import services as feature_flag_services
 from feature_flags.registry import BULK_PHOTO_DOWNLOAD
@@ -43,22 +43,17 @@ from picflow.gallery import (
 )
 from picflow.models import Event, Photo
 
-from selfie_search.forms import FeedbackSubmissionForm, SelfieSearchUploadForm
-from selfie_search.models import SelfieSearch, SelfieSearchFeedback
+from selfie_search.forms import FeedbackSelfieForm, SelfieSearchUploadForm
+from selfie_search.models import SearchResultFeedback, SelfieSearch, SelfieSearchFeedback
 from selfie_search.observability import SelfieEventName, emit_selfie_event
-from selfie_search.services.feedback import (
-    FeedbackInvalid,
-    FeedbackNonTerminal,
-    FeedbackResultChanged,
-    feedback_presentation,
-    submit_search_feedback,
-)
+from selfie_search.services.feedback import save_feedback_selfie
 from selfie_search.services.results import (
     PublicSearchNotFound,
     public_status_payload,
     resolve_public_result,
     saved_ready_result_page,
     saved_ready_result_photo,
+    saved_ready_result_row,
 )
 from selfie_search.services.submission import (
     GallerySearchFailed,
@@ -276,22 +271,23 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     ):
         feedback_submitted = SelfieSearchFeedback.objects.filter(search=search).exists()
         if not feedback_submitted:
-            try:
-                presentation = feedback_presentation(
-                    search,
-                    paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-                )
-            except FeedbackNonTerminal:
-                presentation = None
-            if presentation is not None:
-                feedback_context = {
-                    "variant": presentation.variant,
-                    "visible_result_count": presentation.visible_result_count,
-                    "url": reverse(
-                        "selfie_search:feedback",
-                        kwargs={"event_slug": search.event.slug, "public_token": public_token},
-                    ),
-                }
+            feedback_context = {
+                "is_problem": selfie_search_page is None or not selfie_search_page.paginator.count,
+                "url": reverse(
+                    "selfie_search:feedback_selfie",
+                    kwargs={"event_slug": search.event.slug, "public_token": public_token},
+                ),
+            }
+    reported_photo_ids = (
+        set(
+            SearchResultFeedback.objects.filter(
+                result_id__in=[row.pk for row, _photo in gallery_result_items],
+                value=SearchResultFeedback.Value.ABSENT,
+            ).values_list("result__photo_id", flat=True)
+        )
+        if gallery_result_items
+        else set()
+    )
     archive_action = _result_archive_action(request=request, search=search, page=selfie_search_page)
     response = render(
         request,
@@ -312,6 +308,11 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "gallery_photos": gallery_photos,
             "gallery_result_items": gallery_result_items,
             "feedback": feedback_context,
+            "result_feedback_url": reverse(
+                "selfie_search:result_feedback",
+                kwargs={"event_slug": search.event.slug, "public_token": public_token},
+            ),
+            "reported_photo_ids": reported_photo_ids,
             "feedback_submitted": feedback_submitted,
             "selfie_feedback_enabled": bool(
                 settings.SELFIE_FEEDBACK_ENABLED and not is_gallery_origin
@@ -342,35 +343,54 @@ def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # 
 
 
 @require_POST
-def feedback(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
+@_sanitize_result_exception_path
+@sensitive_variables()
+def result_feedback(request, event_slug: str, public_token: str) -> HttpResponseBase:
+    search = _public_search(request, event_slug=event_slug, public_token=public_token)
+    if search is None:
+        return _not_found_response()
+    row = saved_ready_result_row(
+        search=search,
+        photo_id=request.POST.get("photo_id", ""),
+        paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
+    )
+    if row is None:
+        return _not_found_response()
+    _, created = SearchResultFeedback.objects.get_or_create(
+        result=row, value=SearchResultFeedback.Value.ABSENT
+    )
+    return JsonResponse({"status": "saved"}, status=201 if created else 200)
+
+
+@require_POST
+@sensitive_post_parameters()
+@_sanitize_result_exception_path
+@sensitive_variables()
+def feedback_selfie(request, event_slug: str, public_token: str) -> HttpResponseBase:
     if not settings.SELFIE_FEEDBACK_ENABLED:
         return _not_found_response()
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None or search.configuration.get("processor") == "gallery_photo_query":
         return _not_found_response()
-    form = FeedbackSubmissionForm(data=request.POST, files=request.FILES)
+    if search.status not in _TERMINAL_SEARCH_STATUSES:
+        return JsonResponse({"status": "non_terminal"}, status=409)
+    form = FeedbackSelfieForm(data=request.POST, files=request.FILES)
     if not form.is_valid():
         return JsonResponse({"status": "invalid"}, status=422)
     try:
-        submission = submit_search_feedback(
+        created = save_feedback_selfie(
             search_id=search.pk,
             upload=form.cleaned_data["selfie"],
             contact=form.cleaned_data["contact"],
-            labels=form.cleaned_data["labels"],
             storage=FeedbackSelfieStorage(),
             paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
         )
-    except FeedbackInvalid:
-        return JsonResponse({"status": "invalid"}, status=422)
-    except FeedbackNonTerminal:
-        return JsonResponse({"status": "non_terminal"}, status=409)
-    except FeedbackResultChanged:
-        return JsonResponse({"status": "result_changed"}, status=409)
     except StorageUnavailable:
         return JsonResponse({"status": "storage_unavailable"}, status=503)
-    status = 201 if submission.created else 200
-    outcome = "submitted" if submission.created else "already_submitted"
-    return JsonResponse({"status": outcome}, status=status)
+    return JsonResponse(
+        {"status": "submitted" if created else "already_submitted"},
+        status=201 if created else 200,
+    )
 
 
 def result_media(

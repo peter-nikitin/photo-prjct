@@ -43,6 +43,11 @@ urlpatterns = [
         views.photo_download,
         name="photo_download",
     ),
+    path(
+        "events/<str:slug>/bib-result-feedback/",
+        views.bib_result_feedback,
+        name="bib_result_feedback",
+    ),
     path("events/<str:slug>/", gzip_page(views.event_detail), name="event_detail"),
     path("legal/", views.legal, name="legal"),
     path("photographer/", include("ingestion.urls")),

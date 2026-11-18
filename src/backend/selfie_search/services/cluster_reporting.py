@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from django.db.models import Count, Q
 from picflow.models import Event
 
-from selfie_search.models import SelfieSearch, SelfieSearchFeedbackLabel, SelfieSearchResult
+from selfie_search.models import SearchResultFeedback, SelfieSearch, SelfieSearchResult
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 NOT_AVAILABLE = "not_available"
@@ -145,8 +145,8 @@ def _result_volume(results) -> dict[str, int]:  # noqa: ANN001
 
 
 def _feedback_aggregates(*, results, available_searches) -> dict[str, dict[str, Any]]:  # noqa: ANN001
-    labels = SelfieSearchFeedbackLabel.objects.filter(
-        feedback__search__in=available_searches,
+    labels = SearchResultFeedback.objects.filter(
+        result__search__in=available_searches,
         result__in=results,
     )
     direct = results.filter(primary_source=_RESULT_SOURCES["direct"])
@@ -164,17 +164,24 @@ def _feedback_aggregates(*, results, available_searches) -> dict[str, dict[str, 
 
 
 def _source_feedback(labels, *, results_volume: int) -> dict[str, Any]:  # noqa: ANN001
-    present = labels.filter(value=SelfieSearchFeedbackLabel.Value.PRESENT).count()
-    absent = labels.filter(value=SelfieSearchFeedbackLabel.Value.ABSENT).count()
-    labelled = present + absent
+    absent = Q(value=SearchResultFeedback.Value.ABSENT)
+    counts = labels.aggregate(
+        present=Count("pk", filter=Q(value=SearchResultFeedback.Value.PRESENT)),
+        absent=Count("pk", filter=absent),
+        historical_absent=Count("pk", filter=absent & Q(feedback__isnull=False)),
+        labelled=Count("result_id", distinct=True),
+    )
+    labelled = counts["labelled"]
     return {
         "volume": results_volume,
-        "present": present,
-        "absent": absent,
+        "present": counts["present"],
+        "absent": counts["absent"],
         "labelled": labelled,
         "unmarked": max(results_volume - labelled, 0),
         "coverage": _ratio(labelled, results_volume),
-        "labelled_sample_precision": _ratio(present, labelled),
+        "labelled_sample_precision": _ratio(
+            counts["present"], counts["present"] + counts["historical_absent"]
+        ),
     }
 
 
@@ -188,7 +195,7 @@ def _ratio(numerator: int, denominator: int) -> dict[str, int | float | None]:
 
 def _zero_report_metrics() -> dict[str, Mapping[str, Any]]:
     feedback = {
-        source: _source_feedback(SelfieSearchFeedbackLabel.objects.none(), results_volume=0)
+        source: _source_feedback(SearchResultFeedback.objects.none(), results_volume=0)
         for source in ("direct", "expanded", "dual_evidence")
     }
     return {

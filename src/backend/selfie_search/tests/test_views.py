@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 from dataclasses import replace
 from datetime import date
 from io import BytesIO
@@ -574,7 +575,7 @@ class GalleryPhotoSearchViewTests(TestCase):
         self.assertNotContains(selfie, "data-gallery-search-process")
 
     @override_settings(SELFIE_FEEDBACK_ENABLED=True)
-    def test_ready_gallery_result_has_no_selfie_copy_feedback_or_feedback_post(self) -> None:
+    def test_ready_gallery_result_does_not_accept_selfie_upload(self) -> None:
         token = "ready-gallery-feedback"
         search = self.make_queued_gallery_search(
             token=token,
@@ -592,7 +593,7 @@ class GalleryPhotoSearchViewTests(TestCase):
             kwargs={"event_slug": self.event.slug, "public_token": token},
         )
         feedback_url = reverse(
-            "selfie_search:feedback",
+            "selfie_search:feedback_selfie",
             kwargs={"event_slug": self.event.slug, "public_token": token},
         )
 
@@ -1721,7 +1722,7 @@ class PublicSelfieResultViewTests(TestCase):
             response, 'data-cart-price data-photo-id="cart-result-watermarked"', count=2
         )
         self.assertContains(response, 'aria-label="Удалить из корзины"', count=2)
-        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=2)
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=4)
         self.assertContains(
             response,
             'name="return_to" value="/events/%3Cevent%3E/selfie-search/%3Cbearer%3E/"',
@@ -1809,7 +1810,7 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertIn("private-report-event", report)
         self.assertIn("forced paid result", report)
 
-    def test_legacy_only_paid_result_is_byte_identical_and_has_no_cart_context_when_gate_opens(
+    def test_legacy_only_paid_result_has_same_markup_and_no_cart_when_gate_opens(
         self,
     ) -> None:
         states = {
@@ -1836,7 +1837,11 @@ class PublicSelfieResultViewTests(TestCase):
             states[PAID_PHOTO_CART] = FEATURE_FLAG_ON
             gate_on = self.client.get(self.result_url(event=paid_event, token=token))
 
-        self.assertEqual(gate_off.content, gate_on.content)
+        csrf_input = rb'name="csrfmiddlewaretoken" value="[^"]+"'
+        self.assertEqual(
+            re.sub(csrf_input, b"csrf-token", gate_off.content),
+            re.sub(csrf_input, b"csrf-token", gate_on.content),
+        )
         self.assertIsNone(gate_off.context["cart_presentation"])
         self.assertIsNone(gate_on.context["cart_presentation"])
         self.assertNotContains(gate_on, f"/events/{paid_event.slug}/cart/")
@@ -1874,15 +1879,16 @@ class PublicSelfieResultViewTests(TestCase):
             gate_on = self.client.get(self.result_url(event=paid_event, token=token))
 
         self.assertEqual(gate_off.context["gallery_photos"], ())
-        self.assertContains(gate_off, 'data-feedback-variant="problem"')
-        self.assertContains(gate_off, 'data-feedback-total="0"')
+        self.assertContains(gate_off, "Сообщить о проблеме с поиском")
+        self.assertNotContains(gate_off, "data-result-feedback")
         self.assertEqual(
             [item.photo_id for item in gate_on.context["gallery_photos"]],
             [photo.pk],
         )
-        self.assertContains(gate_on, 'data-feedback-variant="result_labels"')
-        self.assertContains(gate_on, f'data-feedback-result-id="{result.pk}"')
-        self.assertContains(gate_on, 'data-feedback-total="1"')
+        self.assertContains(gate_on, "Поделиться селфи для улучшения поиска")
+        self.assertContains(
+            gate_on, f'<input name="photo_id" type="hidden" value="{result.photo_id}">'
+        )
 
     def test_ready_page_renders_available_capture_time_on_result_card(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -1934,59 +1940,19 @@ class PublicSelfieResultViewTests(TestCase):
         response = self.client.get(self.result_url(event=search.event, token=token))
 
         self.assertContains(response, "data-selfie-feedback")
-        self.assertContains(response, 'data-feedback-variant="result_labels"')
-        self.assertContains(response, f'data-feedback-result-id="{result.pk}"')
-        self.assertContains(response, 'data-feedback-total="1"')
-        self.assertContains(response, "data-feedback-unavailable")
         self.assertContains(
-            response,
-            "Отзыв об этом поиске можно отправить только из браузера, где он был начат, "
-            "пока локальная копия селфи ещё доступна.",
+            response, f'<input name="photo_id" type="hidden" value="{result.photo_id}">'
         )
-        self.assertContains(response, 'class="selfie-search-terminal-actions"', count=1)
-        self.assertContains(response, "data-feedback-form")
-        body = response.content.decode()
-        self.assertLess(
-            body.index("Искать по другому селфи"),
-            body.index("Помогите улучшить поиск"),
-        )
-        self.assertNotContains(response, "Оценить качество поиска")
-        self.assertNotContains(response, "Закрыть")
-        self.assertNotContains(response, "Не спрашивать больше на этом устройстве")
-        self.assertNotContains(response, "data-feedback-open")
-        self.assertNotContains(response, "data-feedback-close")
-        self.assertNotContains(response, "data-feedback-opt-out")
-        self.assertNotContains(response, "data-feedback-open-initial")
-        self.assertNotContains(response, "data-feedback-form hidden")
-        self.assertContains(response, "Размечено 0 из 1 фотографий")
-        self.assertContains(response, "Я есть")
-        self.assertContains(response, "Меня нет")
-        self.assertContains(
-            response,
-            '<details class="selfie-search-feedback-contact">',
-        )
-        self.assertNotContains(
-            response,
-            '<details class="selfie-search-feedback-contact" open>',
-        )
+        self.assertContains(response, "Это не я")
+        self.assertContains(response, "Поделиться селфи для улучшения поиска")
+        self.assertContains(response, 'aria-labelledby="selfie-search-feedback-title" hidden')
         self.assertContains(response, "Оставить контакт для связи — необязательно")
-        self.assertContains(response, '<label for="feedback-contact">Контакт для связи</label>')
-        self.assertNotContains(
-            response,
-            '<input id="feedback-contact" name="contact" type="text" maxlength="254" required',
-        )
-        self.assertContains(response, "Телефон, Telegram или email")
+        self.assertContains(response, "Повторно выбирать файл не нужно.")
         self.assertContains(
-            response,
-            "К отзыву приложим ваше селфи — то самое, которое вы использовали для этого поиска. "
-            "Повторно выбирать файл не нужно.",
+            response, "Я согласен на обработку моего селфи для анализа качества поиска"
         )
-        self.assertContains(
-            response,
-            "Я согласен на обработку моего селфи и оценки результатов поиска для анализа качества "
-            "поиска, а если оставлю контакт — также контактных данных для связи со мной "
-            "в соответствии с ",
-        )
+        self.assertContains(response, 'name="personal_data_consent" type="checkbox" required')
+        self.assertNotContains(response, "checked")
         self.assertContains(response, "ui/legal/personal-data-policy.pdf")
         self.assertNotContains(response, 'type="file"')
 
@@ -1996,23 +1962,9 @@ class PublicSelfieResultViewTests(TestCase):
 
         response = self.client.get(self.result_url(event=search.event, token=token))
 
-        self.assertContains(response, 'class="selfie-search-terminal-actions"', count=1)
-        body = response.content.decode()
-        self.assertLess(
-            body.index("Искать по другому селфи"),
-            body.index("Помогите улучшить поиск"),
-        )
-        self.assertNotContains(response, "data-feedback-form hidden")
-        self.assertContains(response, 'data-feedback-variant="problem"')
-        self.assertContains(response, "Помогите улучшить поиск")
-        self.assertNotContains(response, "Оценить качество поиска")
-        self.assertNotContains(response, "Закрыть")
-        self.assertNotContains(response, "Не спрашивать больше на этом устройстве")
-        self.assertNotContains(response, "data-feedback-open")
-        self.assertNotContains(response, "data-feedback-close")
-        self.assertNotContains(response, "data-feedback-opt-out")
-        self.assertNotContains(response, "Я есть")
-        self.assertNotContains(response, "Меня нет")
+        self.assertContains(response, "Сообщить о проблеме с поиском")
+        self.assertContains(response, "data-feedback-form")
+        self.assertNotContains(response, "data-result-feedback")
 
     @override_settings(SELFIE_FEEDBACK_ENABLED=True)
     def test_terminal_result_confirms_already_submitted_feedback_without_new_form(self) -> None:
@@ -2037,7 +1989,7 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertContains(response, 'class="selfie-search-terminal-actions"', count=1)
         body = response.content.decode()
         self.assertLess(body.index("Искать по другому селфи"), body.index("data-feedback-cleanup"))
-        self.assertNotContains(response, "Спасибо, отзыв отправлен.")
+        self.assertNotContains(response, "Спасибо, селфи отправлено.")
         self.assertContains(response, "data-feedback-cleanup")
         self.assertNotContains(response, "data-feedback-cleanup-retry")
         self.assertNotContains(response, "Повторить очистку")

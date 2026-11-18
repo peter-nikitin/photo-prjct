@@ -176,6 +176,9 @@
                     {% endif %}
                   </div>
                 {% endif %}
+                {% if bib_result_feedback_url %}
+                  {% include "ui/search_result_feedback.html" with feedback_url=bib_result_feedback_url photo_id=photo.photo_id %}
+                {% endif %}
                 <div class="gallery-card-download">
                   {% if photo.capture_time_display %}<time class="gallery-card-time">{{ photo.capture_time_display }}</time>{% endif %}
                   {% if photo.download_url %}
@@ -205,6 +208,7 @@
 {% block extra_js %}
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
+  {% if bib_result_feedback_url and gallery_photos %}<script src="{% static 'ui/search-result-feedback.js' %}"></script>{% endif %}
   {% if cart_presentation %}<script src="{% static 'ui/commerce-cart.js' %}"></script>{% endif %}
   {% if selfie_search_form %}<script src="{% static 'ui/selfie-search.js' %}"></script>{% endif %}
   {% if selfie_search_form %}<script src="{% static 'ui/selfie-search-history.js' %}"></script>{% endif %}

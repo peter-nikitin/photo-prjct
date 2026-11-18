@@ -1,0 +1,8 @@
+<form class="gallery-result-feedback" data-result-feedback action="{{ feedback_url }}" method="post">
+  {% csrf_token %}
+  <input name="photo_id" type="hidden" value="{{ photo_id }}">
+  {% if bib_number %}<input name="bib" type="hidden" value="{{ bib_number }}">{% endif %}
+  <button class="gallery-feedback-button" type="submit"{% if photo_id in reported_photo_ids %} hidden{% endif %}>Это не я</button>
+  <span data-feedback-saved role="status"{% if photo_id in reported_photo_ids %}{% else %} hidden{% endif %}>Отметка сохранена</span>
+  <span data-feedback-error role="alert" hidden>Не удалось сохранить. Попробуйте ещё раз.</span>
+</form>

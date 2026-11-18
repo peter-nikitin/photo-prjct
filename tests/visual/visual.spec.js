@@ -71,6 +71,7 @@ const desktopPages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
+  ['event-gallery-bib-feedback', '/__visual__/event/gallery-bib-feedback/'],
   ['event-cart', '/__visual__/event/cart/'],
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
   ['event-cart-legacy-locked', '/__visual__/event/cart/legacy-locked/'],
@@ -125,6 +126,7 @@ const mobilePages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
+  ['event-gallery-bib-feedback', '/__visual__/event/gallery-bib-feedback/'],
   ['event-cart', '/__visual__/event/cart/'],
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
   ['event-cart-legacy-locked', '/__visual__/event/cart/legacy-locked/'],
@@ -1210,7 +1212,7 @@ test('saved selfie-search history sits beside the form on desktop and below it o
   }
 });
 
-test('desktop feedback marking keeps gallery full width and terminal actions equal', async ({ page }) => {
+test('desktop feedback keeps gallery full width and terminal actions equal', async ({ page }) => {
   await page.setViewportSize(DESKTOP_VIEWPORT);
   await preloadCookieAcknowledgement(page);
   const response = await page.goto('/__visual__/event/selfie-search/feedback-marking/');
@@ -1238,15 +1240,8 @@ test('desktop feedback marking keeps gallery full width and terminal actions equ
         actionsWidth: actionsRect?.width ?? 0,
       };
     })(),
-    form: (() => {
-      const form = document.querySelector('[data-feedback-form]');
-      return {
-        visible: Boolean(form && !form.hidden),
-        hasDisclosureAttributes: Boolean(form?.hasAttribute('data-feedback-open') || form?.hasAttribute('data-feedback-close') || form?.hasAttribute('data-feedback-opt-out')),
-      };
-    })(),
     cards: Array.from(document.querySelectorAll('.gallery-card-actions')).map((actions) => {
-      const controls = actions.querySelector('[data-feedback-card-controls]');
+      const controls = actions.querySelector('[data-result-feedback]');
       const download = actions.querySelector('.gallery-download');
       const controlRect = controls?.getBoundingClientRect();
       const downloadRect = download?.getBoundingClientRect();
@@ -1264,8 +1259,8 @@ test('desktop feedback marking keeps gallery full width and terminal actions equ
   expect(layout.terminal.newSearchBeforeFeedback).toBe(true);
   expect(layout.terminal.equalColumns).toBe(true);
   expect(layout.terminal.actionsWidth).toBe(layout.terminal.galleryWidth);
-  expect(layout.form.visible).toBe(true);
-  expect(layout.form.hasDisclosureAttributes).toBe(false);
+  await expect(page.getByRole('button', { name: 'Отправить селфи' })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: /Я согласен/ })).not.toBeChecked();
   expect(layout.cards).toHaveLength(3);
   expect(layout.cards.every(({ controlsVisible }) => controlsVisible)).toBe(true);
   expect(layout.cards.every(({ controlsBeforeDownload }) => controlsBeforeDownload)).toBe(true);
@@ -1298,7 +1293,7 @@ test('desktop selfie result uses the ordinary gallery content width', async ({ p
   expect(resultWidth).toBe(galleryWidth);
 });
 
-test('mobile feedback marking stacks the new-search action before the form', async ({ page }) => {
+test('mobile feedback stacks the new-search action before the form', async ({ page }) => {
   await page.setViewportSize(MOBILE_VIEWPORT);
   await preloadCookieAcknowledgement(page);
   const response = await page.goto('/__visual__/event/selfie-search/feedback-marking/');
@@ -1325,19 +1320,28 @@ test('mobile feedback marking stacks the new-search action before the form', asy
   expect(layout.fullWidth).toBe(true);
 });
 
-test('marking mode keeps the original cards operable and updates optional progress', async ({ page }) => {
-  await page.goto('/__visual__/event/selfie-search/feedback-marking/');
-
-  const firstPresent = page.getByRole('button', { name: 'На фотографии 1: я есть' });
-  await expect(firstPresent).toBeVisible();
-  await expect(page.locator('.gallery-download')).toHaveCount(3);
-  await firstPresent.click();
-  await expect(firstPresent).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('[data-feedback-progress]')).toHaveText('Размечено 1 из 3 фотографий');
-  await firstPresent.click();
-  await expect(firstPresent).toHaveAttribute('aria-pressed', 'false');
-  await expect(page.locator('[data-feedback-progress]')).toHaveText('Размечено 0 из 3 фотографий');
-  await expect(page.locator('.glightbox-container')).toHaveCount(0);
+test('result feedback retries a failed request and leaves other photos usable without a selfie', async ({ page }) => {
+  let calls = 0;
+  await page.route('**/result-feedback/', async (route) => {
+    calls += 1;
+    await route.fulfill({
+      status: calls === 1 ? 503 : 201,
+      json: { status: calls === 1 ? 'unavailable' : 'saved' },
+    });
+  });
+  await page.goto('/__visual__/event/selfie-search/ready/');
+  const first = page.locator('.gallery-card').first();
+  const button = first.getByRole('button', { name: 'Это не я' });
+  await expect(page.locator('[data-feedback-form]')).toHaveCount(0);
+  await expect(first.locator('[data-feedback-saved]')).toBeHidden();
+  await button.click();
+  await expect(first.getByRole('alert')).toBeVisible();
+  await expect(first.locator('[data-feedback-saved]')).toBeHidden();
+  await button.click();
+  await expect(first.getByRole('status')).toHaveText('Отметка сохранена');
+  await expect(button).toBeHidden();
+  await expect(first.locator('.gallery-card-link')).toBeVisible();
+  await expect(page.locator('.gallery-card').nth(1).getByRole('button', { name: 'Это не я' })).toBeVisible();
 });
 
 test('cookie notice is visible and usable on a fresh desktop profile', async ({ page }) => {

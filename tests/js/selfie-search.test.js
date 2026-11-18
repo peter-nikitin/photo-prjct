@@ -6,14 +6,13 @@ const test = require('node:test');
 const {
   BrowserStorageAdapter,
   FEEDBACK_PENDING_KEY,
-  FeedbackUiController,
-  FeedbackMarkStore,
+  FeedbackSelfieController,
   SELFIE_RETENTION_MS,
   SelfieSearchPoller,
   bindSelfieSearchForm,
   initializeBrowserStorage,
   initializeFeedbackCleanupUi,
-  initializeFeedbackUi,
+  initializeFeedbackSelfieUi,
   startBrowserUi,
 } = require('../../src/backend/static/ui/selfie-search.js');
 
@@ -156,15 +155,11 @@ class FakeElement {
 
 function makeFeedbackFixture({
   resultDigest = 'a'.repeat(64),
-  variant = 'result_labels',
-  total = 2,
   hidden = false,
 } = {}) {
   const root = new FakeElement({
     dataset: {
-      feedbackVariant: variant,
-      feedbackTotal: String(total),
-      feedbackUrl: '/selfie-search/feedback/',
+      feedbackUrl: '/selfie-search/feedback-selfie/',
     },
     hidden,
   });
@@ -176,12 +171,6 @@ function makeFeedbackFixture({
   const submitError = new FakeElement({ hidden: true });
   const submitButton = new FakeElement();
   const csrf = new FakeElement({ value: 'csrf-token' });
-  const controls = [new FakeElement({ hidden }), new FakeElement({ hidden })];
-  const labelButtons = [
-    new FakeElement({ dataset: { feedbackLabel: 'present', feedbackResultId: 'photo-a' } }),
-    new FakeElement({ dataset: { feedbackLabel: 'absent', feedbackResultId: 'photo-b' } }),
-  ];
-
   root.queries.set('[data-feedback-form]', form);
   root.queries.set('[data-feedback-contact]', contact);
   root.queries.set('[name="contact"]', contact);
@@ -201,11 +190,6 @@ function makeFeedbackFixture({
       if (selector === '[data-selfie-feedback]') return root;
       return this.queries.get(selector) || null;
     },
-    querySelectorAll(selector) {
-      if (selector === '[data-feedback-card-controls]') return controls;
-      if (selector === '[data-feedback-label]') return labelButtons;
-      return [];
-    },
   };
   root.ownerDocument = document;
 
@@ -218,8 +202,6 @@ function makeFeedbackFixture({
     consentError,
     submitError,
     submitButton,
-    controls,
-    labelButtons,
     document,
     resultDigest,
   };
@@ -446,6 +428,21 @@ test('disabled feedback clears stale local records and submits search without pr
   assert.equal(cleared, 1);
   assert.equal(preserved, 0);
   assert.equal(nativeSubmitCount, 1);
+});
+
+test('turning off attachment storage clears retained selfies and leaves other session data', async () => {
+  const db = new MemoryDatabase();
+  const sessionStorage = new MemoryStorage({ [FEEDBACK_PENDING_KEY]: 'old-selfie', other: 'keep' });
+  await db.put({ handle: 'old-selfie', bytes: new Uint8Array([1, 2, 3]) });
+  const storage = makeAdapter({ db, sessionStorage });
+
+  const document = { querySelector() { return null; } };
+  startBrowserUi(document, {}, { storage });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(await db.get('old-selfie'), undefined);
+  assert.equal(sessionStorage.getItem(FEEDBACK_PENDING_KEY), null);
+  assert.equal(sessionStorage.getItem('other'), 'keep');
 });
 
 test('gallery-origin result keeps unrelated retained selfie feedback storage intact', async () => {
@@ -763,91 +760,11 @@ test('a repeated submit is prevented while preservation is pending and produces 
   assert.equal(nativeSubmitCount, 1);
 });
 
-test('keeps optional result marks keyed by digest across numbered result pages and clears an active choice', () => {
-  const sessionStorage = new MemoryStorage();
-  const digest = 'f'.repeat(64);
-  const firstPage = new FeedbackMarkStore({ sessionStorage, resultDigest: digest });
-
-  assert.deepEqual(firstPage.getMarks(), {});
-  assert.equal(firstPage.toggle('11111111-1111-4111-8111-111111111111', 'present'), 'present');
-  assert.equal(firstPage.toggle('22222222-2222-4222-8222-222222222222', 'absent'), 'absent');
-  assert.equal(firstPage.count(), 2);
-
-  const secondPage = new FeedbackMarkStore({ sessionStorage, resultDigest: digest });
-  assert.deepEqual(secondPage.getMarks(), {
-    '11111111-1111-4111-8111-111111111111': 'present',
-    '22222222-2222-4222-8222-222222222222': 'absent',
-  });
-  assert.equal(secondPage.toggle('11111111-1111-4111-8111-111111111111', 'present'), null);
-  assert.equal(secondPage.count(), 1);
-});
-
-test('clears stale result marks before reload so the refreshed result can submit', async () => {
-  const sessionStorage = new MemoryStorage();
-  const digest = 'e'.repeat(64);
-  const selfie = { bytes: new Uint8Array([1, 2, 3]), mediaType: 'image/jpeg' };
-  const first = makeFeedbackFixture({ resultDigest: digest });
-  let reloads = 0;
-  const firstWindow = {
-    sessionStorage,
-    location: { reload() { reloads += 1; } },
-    async fetch() {
-      return { json: async () => ({ status: 'result_changed' }) };
-    },
-  };
-  const storage = {
-    async getAssociatedSelfie() { return selfie; },
-    async clearAssociatedSelfie() { return true; },
-  };
-  const firstController = new FeedbackUiController({
-    root: first.root,
-    storage,
-    resultDigest: digest,
-    window: firstWindow,
-    document: first.document,
-  });
-  firstController.marks.toggle('photo-a', 'present');
-  assert.equal(sessionStorage.getItem(`findme_selfie_feedback_marks:${digest}`), '{"photo-a":"present"}');
-  first.contact.value = 'contact';
-  first.consent.checked = true;
-
-  await firstController.submit({ preventDefault() {} });
-
-  assert.equal(sessionStorage.getItem(`findme_selfie_feedback_marks:${digest}`), null);
-  assert.equal(reloads, 1);
-
-  const refreshed = makeFeedbackFixture({ resultDigest: digest });
-  let submittedLabels;
-  const refreshedController = new FeedbackUiController({
-    root: refreshed.root,
-    storage,
-    resultDigest: digest,
-    document: refreshed.document,
-    window: {
-      sessionStorage,
-      location: { reload() {} },
-      async fetch(_url, options) {
-        submittedLabels = options.body.get('labels');
-        return { json: async () => ({ status: 'submitted' }) };
-      },
-    },
-  });
-  refreshed.contact.value = 'contact';
-  refreshed.consent.checked = true;
-
-  await refreshedController.submit({ preventDefault() {} });
-
-  assert.equal(submittedLabels, '{}');
-  assert.match(refreshed.root.innerHTML, /Спасибо, отзыв отправлен/);
-});
-
 test('does not expose a feedback form when the associated local selfie is missing, expired, or inaccessible', async () => {
   for (const condition of ['missing', 'expired', 'inaccessible']) {
     const fixture = makeFeedbackFixture({ hidden: true });
-    const unavailable = new FakeElement({ hidden: true });
-    fixture.document.queries.set('[data-feedback-unavailable]', unavailable);
 
-    const controller = await initializeFeedbackUi({
+    const controller = await initializeFeedbackSelfieUi({
       document: fixture.document,
       window: {},
       storage: { async getAssociatedSelfie() { return null; } },
@@ -856,18 +773,17 @@ test('does not expose a feedback form when the associated local selfie is missin
 
     assert.equal(controller, null, condition);
     assert.equal(fixture.root.hidden, true, condition);
-    assert.equal(unavailable.hidden, false, condition);
   }
 });
 
-test('submits multipart feedback with CSRF, optional contact, multiple marks, and cleanup', async () => {
+test('submits multipart feedback with CSRF, optional contact, and cleanup', async () => {
   const fixture = makeFeedbackFixture();
   fixture.contact.value = '   ';
   fixture.consent.checked = true;
   const selfie = { bytes: new Uint8Array([7, 8, 9]), mediaType: 'image/jpeg' };
   let request;
   let cleared = 0;
-  const controller = new FeedbackUiController({
+  const controller = new FeedbackSelfieController({
     root: fixture.root,
     resultDigest: fixture.resultDigest,
     document: fixture.document,
@@ -879,26 +795,24 @@ test('submits multipart feedback with CSRF, optional contact, multiple marks, an
       sessionStorage: new MemoryStorage(),
       async fetch(url, options) {
         request = { url, options };
-        return { json: async () => ({ status: 'submitted' }) };
+        return { ok: true, json: async () => ({ status: 'submitted' }) };
       },
     },
   });
-  controller.marks.toggle('photo-a', 'present');
-  controller.marks.toggle('photo-b', 'absent');
 
   await controller.submit({ preventDefault() {} });
 
-  assert.equal(request.url, '/selfie-search/feedback/');
+  assert.equal(request.url, '/selfie-search/feedback-selfie/');
   assert.equal(request.options.method, 'POST');
   assert.equal(request.options.credentials, 'same-origin');
   assert.equal(request.options.headers['X-CSRFToken'], 'csrf-token');
   assert.equal(request.options.body.get('contact'), '');
+  assert.equal(request.options.body.has('labels'), false);
   assert.equal(request.options.body.get('personal_data_consent'), 'true');
-  assert.equal(request.options.body.get('labels'), '{"photo-a":"present","photo-b":"absent"}');
   assert.equal(request.options.body.get('csrfmiddlewaretoken'), 'csrf-token');
   assert.equal((await request.options.body.get('selfie').arrayBuffer()).byteLength, 3);
   assert.equal(cleared, 1);
-  assert.equal(fixture.root.innerHTML, '<p role="status">Спасибо, отзыв отправлен.</p>');
+  assert.equal(fixture.root.innerHTML, '<p role="status">Спасибо, селфи отправлено.</p>');
 });
 
 test('does not claim completion until local selfie cleanup succeeds and permits an idempotent retry', async () => {
@@ -907,7 +821,7 @@ test('does not claim completion until local selfie cleanup succeeds and permits 
   fixture.consent.checked = true;
   let cleanupAttempts = 0;
   let submissions = 0;
-  const controller = new FeedbackUiController({
+  const controller = new FeedbackSelfieController({
     root: fixture.root,
     resultDigest: fixture.resultDigest,
     document: fixture.document,
@@ -924,14 +838,14 @@ test('does not claim completion until local selfie cleanup succeeds and permits 
       sessionStorage: new MemoryStorage(),
       async fetch() {
         submissions += 1;
-        return { json: async () => ({ status: submissions === 1 ? 'submitted' : 'already_submitted' }) };
+        return { ok: true, json: async () => ({ status: submissions === 1 ? 'submitted' : 'already_submitted' }) };
       },
     },
   });
 
   await controller.submit({ preventDefault() {} });
 
-  assert.doesNotMatch(fixture.root.innerHTML, /Спасибо, отзыв отправлен/);
+  assert.doesNotMatch(fixture.root.innerHTML, /Спасибо, селфи отправлено/);
   assert.equal(fixture.submitError.hidden, false);
   assert.match(fixture.submitError.textContent, /повторите отправку/i);
   assert.equal(fixture.submitButton.disabled, false);
@@ -940,7 +854,7 @@ test('does not claim completion until local selfie cleanup succeeds and permits 
 
   assert.equal(submissions, 2);
   assert.equal(cleanupAttempts, 2);
-  assert.match(fixture.root.innerHTML, /Спасибо, отзыв отправлен/);
+  assert.match(fixture.root.innerHTML, /Спасибо, селфи отправлено/);
 });
 
 test('reload after delete failure reports cleanup error without exposing a retry action', async () => {
@@ -959,19 +873,19 @@ test('reload after delete failure reports cleanup error without exposing a retry
     },
   };
   const sessionStorage = new MemoryStorage();
-  const controller = new FeedbackUiController({
+  const controller = new FeedbackSelfieController({
     root: initial.root,
     resultDigest: initial.resultDigest,
     document: initial.document,
     storage,
     window: {
       sessionStorage,
-      async fetch() { return { json: async () => ({ status: 'submitted' }) }; },
+      async fetch() { return { ok: true, json: async () => ({ status: 'submitted' }) }; },
     },
   });
 
   await controller.submit({ preventDefault() {} });
-  assert.doesNotMatch(initial.root.innerHTML, /Спасибо, отзыв отправлен/);
+  assert.doesNotMatch(initial.root.innerHTML, /Спасибо, селфи отправлено/);
 
   const cleanupRoot = new FakeElement();
   const cleanupError = new FakeElement({ hidden: true });
@@ -996,7 +910,7 @@ test('reload after delete failure reports cleanup error without exposing a retry
   assert.equal(cleanupAttempts, 2);
   assert.equal(cleanupSuccess.hidden, true);
   assert.equal(cleanupError.hidden, false);
-  assert.match(cleanupError.textContent, /Повторите очистку/);
+  assert.match(cleanupError.textContent, /Обновите страницу/);
   assert.equal(cleanupController.retry, undefined);
   assert.equal(cleanupRoot.queriedSelectors.includes('[data-feedback-cleanup-retry]'), false);
 });
@@ -1055,18 +969,24 @@ test('real associated selfie delete failure reports a cleanup failure', async ()
   assert.equal(cleaned, false);
 });
 
-test('keeps selected labels available after consent, server, and network failures', async () => {
+test('keeps local selfie and contact available after consent, server, and network failures', async () => {
   const fixture = makeFeedbackFixture();
   fixture.contact.value = 'contact';
   const failures = [
     { json: async () => ({ status: 'invalid' }) },
     new Error('offline'),
   ];
-  const controller = new FeedbackUiController({
+  let selfieReads = 0;
+  const controller = new FeedbackSelfieController({
     root: fixture.root,
     resultDigest: fixture.resultDigest,
-    document: fixture.document,
-    storage: { async getAssociatedSelfie() { return { bytes: new Uint8Array([1]), mediaType: 'image/jpeg' }; } },
+    storage: {
+      async getAssociatedSelfie() {
+        selfieReads += 1;
+        return { bytes: new Uint8Array([1]), mediaType: 'image/jpeg' };
+      },
+      async clearAssociatedSelfie() { assert.fail('Failed uploads must retain the selfie'); },
+    },
     window: {
       sessionStorage: new MemoryStorage(),
       async fetch() {
@@ -1076,40 +996,38 @@ test('keeps selected labels available after consent, server, and network failure
       },
     },
   });
-  controller.marks.toggle('photo-a', 'present');
 
   await controller.submit({ preventDefault() {} });
   assert.equal(fixture.consentError.hidden, false);
+  assert.equal(selfieReads, 0);
 
   fixture.consent.checked = true;
   await controller.submit({ preventDefault() {} });
   assert.equal(fixture.submitError.hidden, false);
   assert.equal(fixture.contact.value, 'contact');
-  assert.deepEqual(controller.marks.getMarks(), { 'photo-a': 'present' });
   assert.equal(fixture.submitButton.disabled, false);
 
   await controller.submit({ preventDefault() {} });
   assert.equal(fixture.submitError.hidden, false);
   assert.equal(fixture.contact.value, 'contact');
-  assert.deepEqual(controller.marks.getMarks(), { 'photo-a': 'present' });
 });
 
-test('feedback marking is initialized expanded without disclosure controls', () => {
-  const fixture = makeFeedbackFixture();
-  const controller = new FeedbackUiController({
-    root: fixture.root,
-    resultDigest: fixture.resultDigest,
+test('reveals the optional form when the associated local selfie is available', async () => {
+  const fixture = makeFeedbackFixture({ hidden: true });
+  const controller = await initializeFeedbackSelfieUi({
     document: fixture.document,
-    storage: {},
-    window: { sessionStorage: new MemoryStorage() },
+    window: {},
+    storage: {
+      async getAssociatedSelfie(digest) {
+        assert.equal(digest, fixture.resultDigest);
+        return { bytes: new Uint8Array([1]), mediaType: 'image/jpeg' };
+      },
+    },
+    result: { dataset: { resultDigest: fixture.resultDigest } },
   });
-  controller.bind();
-
-  assert.equal(fixture.form.hidden, false);
-  assert.equal(fixture.controls.every((control) => !control.hidden), true);
-  assert.equal(controller.open, undefined);
-  assert.equal(controller.close, undefined);
-  assert.equal(controller.optOut, undefined);
+  assert.ok(controller);
+  assert.equal(fixture.root.hidden, false);
+  assert.equal(Boolean(fixture.consent.checked), false);
 });
 
 test('feedback storage initialization uses no browser preference', async () => {

@@ -21,11 +21,11 @@ from processing.models import (
 )
 from selfie_search.models import (
     FEEDBACK_CONSENT_TEXT_VERSION,
+    SearchResultFeedback,
     SelfieSearch,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
-    SelfieSearchFeedbackLabel,
     SelfieSearchResult,
 )
 from selfie_search.services.cluster_reporting import build_cluster_expansion_report
@@ -230,7 +230,7 @@ class ClusterExpansionReportTests(TestCase):
     def make_feedback(self, *, search: SelfieSearch) -> SelfieSearchFeedback:
         return SelfieSearchFeedback.objects.create(
             search=search,
-            variant=SelfieSearchFeedback.Variant.RESULT_LABELS,
+            variant=SelfieSearchFeedback.Variant.SELFIE,
             contact=self.contact_sentinel,
             personal_data_consent=True,
             consent_text_version=FEEDBACK_CONSENT_TEXT_VERSION,
@@ -264,21 +264,23 @@ class ClusterExpansionReportTests(TestCase):
             rank=3,
         )
         feedback = self.make_feedback(search=search)
-        SelfieSearchFeedbackLabel.objects.create(
-            feedback=feedback, result=dual, value=SelfieSearchFeedbackLabel.Value.PRESENT
+        SearchResultFeedback.objects.create(
+            feedback=feedback, result=dual, value=SearchResultFeedback.Value.PRESENT
         )
-        SelfieSearchFeedbackLabel.objects.create(
-            feedback=feedback, result=direct, value=SelfieSearchFeedbackLabel.Value.ABSENT
+        SearchResultFeedback.objects.create(
+            feedback=feedback, result=direct, value=SearchResultFeedback.Value.ABSENT
         )
-        SelfieSearchFeedbackLabel.objects.create(
-            feedback=feedback, result=expanded, value=SelfieSearchFeedbackLabel.Value.PRESENT
+        SearchResultFeedback.objects.create(
+            feedback=feedback, result=expanded, value=SearchResultFeedback.Value.PRESENT
         )
+
+        SearchResultFeedback.objects.create(result=dual, value=SearchResultFeedback.Value.ABSENT)
 
         report = build_cluster_expansion_report(start=date(2026, 8, 5), end=date(2026, 8, 6))
 
         self.assertEqual(report["results"], {"direct": 2, "expanded": 1, "dual_evidence": 1})
         self.assertEqual(report["feedback"]["direct"]["present"], 1)
-        self.assertEqual(report["feedback"]["direct"]["absent"], 1)
+        self.assertEqual(report["feedback"]["direct"]["absent"], 2)
         self.assertEqual(
             report["feedback"]["direct"]["coverage"],
             {"numerator": 2, "denominator": 2, "rate": 1.0},

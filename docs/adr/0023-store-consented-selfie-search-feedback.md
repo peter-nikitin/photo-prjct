@@ -4,7 +4,7 @@
 - Date: 2026-08-04
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0071](0071-separate-search-feedback-from-selfie-consent.md) for independent result labels and optional selfie attachment.
 
 ## Context
 

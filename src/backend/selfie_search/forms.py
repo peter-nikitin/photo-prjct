@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from uuid import UUID
 
 from django import forms
 
 from selfie_search.images import PreparedSelfie, SelfieImageRejected, prepare_selfie_image
-from selfie_search.models import FEEDBACK_CONSENT_TEXT_VERSION, JSON_MAX_BYTES
 from selfie_search.observability import actual_format_label, declared_type_label, source_size_bucket
 
 _REJECTION_MESSAGES = {
@@ -28,30 +25,6 @@ class SelfieUploadObservation:
     actual_format: str
     declared_type: str
     source_size_bucket: str
-
-
-@dataclass(frozen=True)
-class ValidatedSelfieUpload(PreparedSelfie):
-    """Canonical bytes which also satisfy the legacy feedback-storage file interface."""
-
-    def read(self) -> bytes:
-        return self.content
-
-    def seek(self, _position: int) -> int:
-        return 0
-
-
-def validate_selfie_upload(upload) -> ValidatedSelfieUpload:
-    """Decode one allowed source once and expose canonical bytes to both submission paths."""
-    if isinstance(upload, ValidatedSelfieUpload):
-        return upload
-    prepared = prepare_selfie_image(upload)
-    return ValidatedSelfieUpload(
-        content=prepared.content,
-        content_type=prepared.content_type,
-        source_size=prepared.source_size,
-        source_format=prepared.source_format,
-    )
 
 
 class SelfieSearchUploadForm(forms.Form):
@@ -86,7 +59,7 @@ class SelfieSearchUploadForm(forms.Form):
                 _REJECTION_MESSAGES[rejection.reason], code=rejection.reason
             )
         try:
-            prepared = validate_selfie_upload(upload)
+            prepared = prepare_selfie_image(upload)
         except SelfieImageRejected as rejected:
             self.image_rejection = rejected
             self._observation = SelfieUploadObservation(
@@ -105,7 +78,7 @@ class SelfieSearchUploadForm(forms.Form):
         return prepared
 
 
-class FeedbackSubmissionForm(forms.Form):
+class FeedbackSelfieForm(forms.Form):
     selfie = forms.FileField(
         widget=forms.ClearableFileInput(
             attrs={"accept": "image/jpeg,image/png,image/heic,image/heif,.heic,.heif"}
@@ -113,13 +86,10 @@ class FeedbackSubmissionForm(forms.Form):
     )
     contact = forms.CharField(max_length=254, required=False)
     personal_data_consent = forms.BooleanField(required=True)
-    labels = forms.CharField(required=False)
 
-    consent_text_version = FEEDBACK_CONSENT_TEXT_VERSION
-
-    def clean_selfie(self) -> ValidatedSelfieUpload:
+    def clean_selfie(self) -> PreparedSelfie:
         try:
-            return validate_selfie_upload(self.cleaned_data["selfie"])
+            return prepare_selfie_image(self.cleaned_data["selfie"])
         except SelfieImageRejected as rejected:
             raise forms.ValidationError(
                 _REJECTION_MESSAGES[rejected.reason], code=rejected.reason
@@ -130,35 +100,3 @@ class FeedbackSubmissionForm(forms.Form):
         if any(ord(character) < 32 or ord(character) == 127 for character in contact):
             raise forms.ValidationError("Контакт не должен содержать управляющие символы.")
         return contact
-
-    def clean_labels(self) -> dict[str, str]:
-        raw_labels = self.cleaned_data["labels"]
-        if len(raw_labels.encode()) > JSON_MAX_BYTES:
-            raise forms.ValidationError("Слишком много отметок.")
-        try:
-            labels = json.loads(raw_labels or "{}", object_pairs_hook=_unique_object)
-        except (TypeError, ValueError, _DuplicateJsonKey):
-            raise forms.ValidationError("Отметки должны быть корректным JSON-объектом.") from None
-        if not isinstance(labels, dict):
-            raise forms.ValidationError("Отметки должны быть JSON-объектом.")
-        for result_id, value in labels.items():
-            if not isinstance(result_id, str):
-                raise forms.ValidationError("Идентификатор результата недопустим.")
-            try:
-                UUID(result_id)
-            except ValueError:
-                raise forms.ValidationError("Идентификатор результата недопустим.") from None
-            if not isinstance(value, str) or value not in {"present", "absent"}:
-                raise forms.ValidationError("Значение отметки недопустимо.")
-        return labels
-
-
-class _DuplicateJsonKey(ValueError):
-    pass
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value = dict(pairs)
-    if len(value) != len(pairs):
-        raise _DuplicateJsonKey
-    return value

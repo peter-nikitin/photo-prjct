@@ -413,11 +413,6 @@
   margin-top: 2px;
 }
 
-.selfie-search-feedback-progress {
-  color: var(--color-text);
-  font-weight: var(--weight-800);
-}
-
 .selfie-search-feedback-disclosure,
 .selfie-search-feedback-lifecycle,
 .selfie-search-feedback-form small {
@@ -430,8 +425,7 @@
   font-weight: var(--weight-700);
 }
 
-.selfie-search-feedback-confirmation,
-.selfie-search-feedback-unavailable {
+.selfie-search-feedback-confirmation {
   max-width: none;
   margin: 0;
   padding: 18px 22px;

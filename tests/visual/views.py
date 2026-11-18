@@ -773,6 +773,22 @@ def event_gallery_populated(request: HttpRequest) -> HttpResponse:
     )
 
 
+def event_gallery_bib_feedback(request: HttpRequest) -> HttpResponse:
+    photos = SELFIE_RESULT_PHOTOS[:2]
+    return _render(
+        request,
+        "catalog/event_detail.html",
+        _gallery_context(photos=photos)
+        | {
+            "bib_search_form": BibSearchForm({"bib": "007"}),
+            "bib_number": "007",
+            "gallery_filters_active": True,
+            "bib_result_feedback_url": reverse("bib_result_feedback", args=(EVENTS[0].slug,)),
+            "reported_photo_ids": {photos[0].photo_id},
+        },
+    )
+
+
 def event_gallery_paid(request: HttpRequest) -> HttpResponse:
     context = _gallery_context(photos=PAID_GALLERY_PHOTOS)
     context["cart_presentation"] = _cart_presentation(PAID_GALLERY_PHOTOS, selected_ids=("1190",))
@@ -934,6 +950,9 @@ def _selfie_search_ready(
             ),
             "gallery_photos": visible_photos,
             "gallery_result_items": tuple(zip(results, visible_photos, strict=True)),
+            "result_feedback_url": reverse(
+                "selfie_search:result_feedback", args=(event.slug, "visual-ready-result")
+            ),
             "selfie_search_page": selfie_search_page,
             "is_terminal": True,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
@@ -1162,9 +1181,10 @@ def selfie_search_feedback_problem(request: HttpRequest) -> HttpResponse:
             "search": FixtureSelfieSearch("no_face"),
             "status_url": "",
             "feedback": {
-                "variant": "problem",
-                "visible_result_count": 0,
-                "url": "/__visual__/feedback/",
+                "is_problem": True,
+                "url": reverse(
+                    "selfie_search:feedback_selfie", args=(EVENTS[0].slug, "visual-problem")
+                ),
                 "preview": True,
             },
             "selfie_feedback_enabled": True,
@@ -1185,15 +1205,18 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
             "event": EVENTS[0],
             "gallery_photos": photos,
             "gallery_result_items": tuple(zip(results, photos, strict=True)),
+            "result_feedback_url": reverse(
+                "selfie_search:result_feedback", args=(EVENTS[0].slug, "visual-feedback")
+            ),
             "selfie_search_page": Paginator(photos, 2).page(1),
             "is_terminal": True,
             "public_token_digest": "b" * 64,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
             "status_url": "",
             "feedback": {
-                "variant": "result_labels",
-                "visible_result_count": 3,
-                "url": "/__visual__/feedback/",
+                "url": reverse(
+                    "selfie_search:feedback_selfie", args=(EVENTS[0].slug, "visual-feedback")
+                ),
                 "preview": True,
             },
             "selfie_feedback_enabled": True,

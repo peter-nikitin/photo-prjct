@@ -50,7 +50,7 @@ CDN_SETTINGS = {
     "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
     "GALLERY_IMGPROXY_KEY": "736563726574",
     "GALLERY_IMGPROXY_SALT": "68656c6c6f",
-    "PRIVATE_MEDIA_S3_BUCKET": "gallery-media",
+    "EVENT_MEDIA_S3_BUCKET": "gallery-media",
 }
 
 
@@ -775,7 +775,7 @@ class CartViewTests(TestCase):
         self.assertContains(response, "https://img.example.test/")
         self.assertEqual(
             cdn_source(small_url),
-            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key}",
+            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
         )
         self.assertNotIn(other.pk, response.content.decode())
         self.assertEqual(
@@ -818,7 +818,7 @@ class CartViewTests(TestCase):
             cdn_source(
                 staff_response.context["cart_presentation"].photos[0].photo.preview_media_small.url
             ),
-            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key}",
+            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
         )
 
     @override_settings(**CDN_SETTINGS)
@@ -839,7 +839,7 @@ class CartViewTests(TestCase):
             cdn_source(
                 response.context["cart_presentation"].photos[0].photo.preview_media_small.url
             ),
-            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key}",
+            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
         )
 
     @override_settings(
@@ -887,7 +887,7 @@ class CartViewTests(TestCase):
             (shown,) = response.context["order_presentation"].photos
             self.assertEqual(
                 cdn_source(shown.photo.preview_media_small.url),
-                f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key}",
+                f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
             )
             self.assertNotIn(other.pk, response.content.decode())
             self.assertContains(response, "Скачать оригинал")

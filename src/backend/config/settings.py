@@ -106,7 +106,12 @@ STORAGES: dict[str, dict[str, Any]] = {
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-PRIVATE_MEDIA_S3_BUCKET = env("PRIVATE_MEDIA_S3_BUCKET", default="")
+ORIGINALS_S3_BUCKET = env("ORIGINALS_S3_BUCKET", default="")
+EVENT_MEDIA_S3_BUCKET = env("EVENT_MEDIA_S3_BUCKET", default="")
+OPERATIONAL_S3_BUCKET = env("OPERATIONAL_S3_BUCKET", default="")
+ORIGINALS_S3_STORAGE_CLASS = env("ORIGINALS_S3_STORAGE_CLASS", default="COLD")
+if ORIGINALS_S3_STORAGE_CLASS not in {"COLD", "STANDARD"}:
+    raise ImproperlyConfigured("ORIGINALS_S3_STORAGE_CLASS must be COLD or STANDARD")
 GALLERY_CDN_ORIGIN = env("GALLERY_CDN_ORIGIN", default="")
 GALLERY_CDN_TOKEN_SECRET = env("GALLERY_CDN_TOKEN_SECRET", default="")
 GALLERY_IMGPROXY_KEY = env("GALLERY_IMGPROXY_KEY", default="")
@@ -236,8 +241,14 @@ if SELFIE_FEEDBACK_ENABLED:
         raise ImproperlyConfigured(
             "Selfie-feedback requires dedicated bucket credentials and KMS key"
         )
-    if SELFIE_FEEDBACK_S3_BUCKET == PRIVATE_MEDIA_S3_BUCKET:
-        raise ImproperlyConfigured("Selfie-feedback bucket must be separate from private media")
+    if SELFIE_FEEDBACK_S3_BUCKET in {
+        ORIGINALS_S3_BUCKET,
+        EVENT_MEDIA_S3_BUCKET,
+        OPERATIONAL_S3_BUCKET,
+    }:
+        raise ImproperlyConfigured(
+            "Selfie-feedback bucket must be separate from application storage"
+        )
     if (
         SELFIE_FEEDBACK_MAX_UPLOAD_BYTES != 20 * 1024 * 1024
         or SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS != 60
@@ -275,19 +286,22 @@ LOGGING = {
     },
 }
 
-MEDIA_S3_PUBLIC_BUCKET = env("MEDIA_S3_PUBLIC_BUCKET", default="")
-
 if env("MEDIA_STORAGE_BACKEND", default="filesystem") == "s3":
-    MEDIA_S3_PUBLIC_BUCKET = env("MEDIA_S3_PUBLIC_BUCKET")
+    buckets = {ORIGINALS_S3_BUCKET, EVENT_MEDIA_S3_BUCKET, OPERATIONAL_S3_BUCKET}
+    if len(buckets) != 3 or not all(bucket.strip() for bucket in buckets):
+        raise ImproperlyConfigured(
+            "ORIGINALS_S3_BUCKET, EVENT_MEDIA_S3_BUCKET and OPERATIONAL_S3_BUCKET "
+            "must be distinct and non-empty"
+        )
     STORAGES["default"] = {
-        "BACKEND": "storages.backends.s3.S3Storage",
+        "BACKEND": "picflow.event_media_storage.EventMediaStorage",
         "OPTIONS": {
             "access_key": env("MEDIA_S3_ACCESS_KEY_ID"),
             "secret_key": env("MEDIA_S3_SECRET_ACCESS_KEY"),
-            "bucket_name": MEDIA_S3_PUBLIC_BUCKET,
+            "bucket_name": EVENT_MEDIA_S3_BUCKET,
             "endpoint_url": env("MEDIA_S3_ENDPOINT_URL", default="https://storage.yandexcloud.net"),
             "region_name": env("MEDIA_S3_REGION", default="ru-central1"),
-            "default_acl": "public-read",
+            "default_acl": None,
             "querystring_auth": False,
             "file_overwrite": False,
         },

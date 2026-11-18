@@ -21,7 +21,7 @@ class ContractStorage:
         return UploadGrant(
             url="https://storage.invalid/bucket",
             fields={
-                "key": incoming_key,
+                "key": incoming_key.replace("incoming/", "uploads/", 1),
                 "Content-Type": "image/jpeg",
                 "policy": "signed-policy",
             },
@@ -59,7 +59,7 @@ def rejected_request() -> urllib.error.HTTPError:
     PHOTO_UPLOAD_MAX_FILE_BYTES=52_428_800,
     PRIVATE_MEDIA_ALLOWED_ORIGINS=["https://findme-photo.ru"],
     PRIVATE_MEDIA_S3_ENDPOINT_URL="https://storage.yandexcloud.net",
-    PRIVATE_MEDIA_S3_BUCKET="hires-staging",
+    ORIGINALS_S3_BUCKET="originals",
 )
 class VerifyPrivateStorageCommandTests(SimpleTestCase):
     def test_requires_explicit_real_storage_confirmation(self) -> None:
@@ -105,12 +105,18 @@ class VerifyPrivateStorageCommandTests(SimpleTestCase):
             )
 
         self.assertEqual(post_form.call_count, 4)
+        rejected_key = post_form.call_args_list[0].args[1]["key"]
+        accepted_key = post_form.call_args_list[3].args[1]["key"]
+        self.assertTrue(rejected_key.startswith("uploads/"))
+        self.assertEqual(rejected_key.rsplit("/", 1)[0], accepted_key.rsplit("/", 1)[0])
+        self.assertNotEqual(rejected_key, accepted_key)
         self.assertEqual(len(post_form.call_args_list[2].args[2]), 2048)
         self.assertEqual(request.call_count, 2)
+        self.assertIn("/originals/originals/", request.call_args_list[0].args[1])
         self.assertEqual(len(storage.deleted), 2)
         self.assertIn("verified", output.getvalue())
         self.assertNotIn("signed-policy", output.getvalue())
-        self.assertNotIn("incoming/", output.getvalue())
+        self.assertNotIn("uploads/", output.getvalue())
 
 
 @override_settings(PHOTO_UPLOAD_ENABLED=False)

@@ -22,7 +22,7 @@ def prepare():
         text=True,
     )
     assert result.returncode == 2, result.stderr
-    assert "Invalid required configuration: PRIVATE_MEDIA_S3_BUCKET" in result.stderr
+    assert "Invalid required configuration: EVENT_MEDIA_S3_BUCKET" in result.stderr
     assert WEBROOT.stat().st_uid == 0
     assert WEBROOT.stat().st_gid == 0
     assert WEBROOT.stat().st_mode & 0o777 == 0o700

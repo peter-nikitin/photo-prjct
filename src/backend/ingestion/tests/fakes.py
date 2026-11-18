@@ -41,10 +41,10 @@ class FakeObject:
 
 class FakeS3Client:
     def __init__(self) -> None:
-        self.objects: dict[str, FakeObject] = {}
+        self.objects: dict[tuple[str, str], FakeObject] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.failures: dict[str, Exception] = {}
-        self.mutate_before: dict[str, tuple[str, FakeObject]] = {}
+        self.mutate_before: dict[str, tuple[tuple[str, str], FakeObject]] = {}
         self.last_body: FakeBody | None = None
         self.copy_result_etag: object | None = None
         self.presigned_response: dict[str, Any] = {
@@ -55,15 +55,16 @@ class FakeS3Client:
 
     def put_object(
         self,
+        bucket: str,
         key: str,
         content: bytes,
         etag: str,
         content_type: str = "image/jpeg",
     ) -> None:
-        self.objects[key] = FakeObject(content, etag, content_type)
+        self.objects[bucket, key] = FakeObject(content, etag, content_type)
 
-    def mutate_on(self, operation: str, key: str, replacement: FakeObject) -> None:
-        self.mutate_before[operation] = (key, replacement)
+    def mutate_on(self, operation: str, bucket: str, key: str, replacement: FakeObject) -> None:
+        self.mutate_before[operation] = ((bucket, key), replacement)
 
     def generate_presigned_post(self, **kwargs: Any) -> dict[str, Any]:
         self._before("generate_presigned_post")
@@ -78,10 +79,10 @@ class FakeS3Client:
         return self.presigned_get_url
 
     def head_object(self, **kwargs: Any) -> dict[str, Any]:
-        self._before("head_object", kwargs["Key"])
+        self._before("head_object", (kwargs["Bucket"], kwargs["Key"]))
         self.calls.append(("head_object", kwargs))
         self._raise("head_object")
-        obj = self._find(kwargs["Key"])
+        obj = self._find(kwargs["Bucket"], kwargs["Key"])
         if_match = kwargs.get("IfMatch")
         if if_match is not None and if_match != obj.etag:
             raise client_error(412, "PreconditionFailed")
@@ -95,7 +96,7 @@ class FakeS3Client:
         self._before("get_object")
         self.calls.append(("get_object", kwargs))
         self._raise("get_object")
-        obj = self._find(kwargs["Key"])
+        obj = self._find(kwargs["Bucket"], kwargs["Key"])
         if "Range" in kwargs:
             if kwargs.get("IfMatch") != obj.etag:
                 raise client_error(412, "PreconditionFailed")
@@ -114,10 +115,10 @@ class FakeS3Client:
         self._before("copy_object")
         self.calls.append(("copy_object", kwargs))
         self._raise("copy_object")
-        source = self._find(kwargs["CopySource"]["Key"])
+        source = self._find(kwargs["CopySource"]["Bucket"], kwargs["CopySource"]["Key"])
         if kwargs.get("CopySourceIfMatch") != source.etag:
             raise client_error(412, "PreconditionFailed")
-        self.objects[kwargs["Key"]] = FakeObject(
+        self.objects[kwargs["Bucket"], kwargs["Key"]] = FakeObject(
             bytes(source.content), source.etag, source.content_type
         )
         result_etag = source.etag if self.copy_result_etag is None else self.copy_result_etag
@@ -127,10 +128,10 @@ class FakeS3Client:
         self._before("delete_object")
         self.calls.append(("delete_object", kwargs))
         self._raise("delete_object")
-        self.objects.pop(kwargs["Key"], None)
+        self.objects.pop((kwargs["Bucket"], kwargs["Key"]), None)
         return {}
 
-    def _before(self, operation: str, requested_key: str | None = None) -> None:
+    def _before(self, operation: str, requested_key: tuple[str, str] | None = None) -> None:
         mutation = self.mutate_before.pop(operation, None)
         if mutation is not None:
             key, replacement = mutation
@@ -144,8 +145,8 @@ class FakeS3Client:
         if failure is not None:
             raise failure
 
-    def _find(self, key: str) -> FakeObject:
+    def _find(self, bucket: str, key: str) -> FakeObject:
         try:
-            return self.objects[key]
+            return self.objects[bucket, key]
         except KeyError:
             raise client_error(404, "NoSuchKey") from None

@@ -71,7 +71,7 @@ class LifecycleClient:
 _UNSET = object()
 
 
-@override_settings(PRIVATE_MEDIA_S3_BUCKET="private-selfies")
+@override_settings(OPERATIONAL_S3_BUCKET="private-selfies")
 class ConfigureSelfieSearchLifecycleCommandTests(SimpleTestCase):
     def command_args(self) -> tuple[str, str, str]:
         return (

@@ -16,6 +16,10 @@ DB_HOST=127.0.0.1 DB_PORT=5432 ../../.venv/bin/pytest -q tests/processing/test_p
 
 ## Блокер активации: lifecycle для temporary preview objects
 
+Для схемы по [ADR 0068](adr/0068-separate-originals-event-media-and-operational-storage.md)
+используйте [правила временного бакета в Terraform](../infra/terraform/media_storage.tf).
+Описанная ниже процедура относится к прежнему общему бакету и фиксирует его исходную настройку.
+
 До включения `PHOTO_PROCESSING_PREVIEW_ENABLED` на canonical deployment оператор обязан настроить правило
 удаления только для временных preview-объектов. Целевое правило имеет ID
 `expire-preview-staging-after-7-days`, prefix `processing-pending/previews/` и expiration
@@ -206,7 +210,10 @@ docker compose exec web python -c 'from PIL import Image; from pathlib import Pa
 
 Первая команда должна напечатать `JPEG` и значение времени; вторая — `JPEG None`. Если у первого файла нет `DateTimeOriginal`, выберите другой снимок: v1 намеренно не пытается угадать время из имени файла или файловой системы.
 
-Для этой проверки нужен настоящий private bucket и service-account, которому Django может подписывать GET/POST, проверять объекты и продвигать их в final key. В bucket CORS должен разрешать точный origin `http://localhost:8000` для browser upload. Worker не получает эти S3 credentials.
+Для этой проверки нужны три бакета и учётная запись, с которой Django может подписывать
+GET/POST, проверять объекты и копировать их в целевой бакет. CORS временного бакета должен
+разрешать origin `http://localhost:8000` для браузерной загрузки. Worker не получает эти
+S3 credentials. См. [настройку бакетов](../infra/object-storage/README.md).
 
 Создайте checkout-local `.env`, не перезаписывая существующий, и задайте минимум:
 
@@ -214,7 +221,9 @@ docker compose exec web python -c 'from PIL import Image; from pathlib import Pa
 DEBUG=True
 ALLOWED_HOSTS=localhost,127.0.0.1,web
 PHOTO_UPLOAD_ENABLED=True
-PRIVATE_MEDIA_S3_BUCKET=<real-private-bucket>
+ORIGINALS_S3_BUCKET=<originals-bucket>
+EVENT_MEDIA_S3_BUCKET=<event-media-bucket>
+OPERATIONAL_S3_BUCKET=<operational-bucket>
 PRIVATE_MEDIA_S3_ACCESS_KEY_ID=<real-access-key>
 PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY=<real-secret>
 PRIVATE_MEDIA_ALLOWED_ORIGINS=http://localhost:8000

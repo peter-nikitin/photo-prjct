@@ -40,7 +40,8 @@ def seed():
     )
     for retry in range(30):
         try:
-            client.create_bucket(Bucket="local-private")
+            for bucket in ("local-originals", "local-event-media", "local-operational"):
+                client.create_bucket(Bucket=bucket)
             break
         except Exception:
             if retry == 29:

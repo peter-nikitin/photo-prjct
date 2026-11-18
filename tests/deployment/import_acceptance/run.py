@@ -28,7 +28,7 @@ class FixtureTransport(Transport):
             url = "http://source:8081/fixture.jpg"
             kwargs["audience"] = "api"
         if kwargs["audience"] == "storage":
-            assert url == "http://minio:9000/local-private"
+            assert url == "http://minio:9000/local-operational"
             kwargs["audience"] = "api"
         if url.endswith("manifest/pages"):
             raw = kwargs["body"]

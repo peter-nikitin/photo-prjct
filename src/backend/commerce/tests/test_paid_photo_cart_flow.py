@@ -32,7 +32,7 @@ from commerce.models import Cart
 
 @override_settings(
     STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
-    PRIVATE_MEDIA_S3_BUCKET="test-private-media",
+    EVENT_MEDIA_S3_BUCKET="test-event-media",
     PRIVATE_MEDIA_S3_ACCESS_KEY_ID="test-access-key",
     PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY="test-secret-key",
     PRIVATE_MEDIA_S3_ENDPOINT_URL="https://storage.example.test",

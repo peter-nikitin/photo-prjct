@@ -3,17 +3,22 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from django.core.checks import run_checks
+from django.core.files.base import ContentFile
 from django.test import override_settings
+from django.utils.module_loading import import_string
 
 PHOTO_UPLOAD_CHECK_TAG = "photo_upload"
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 VALID_PRIVATE_SETTINGS = {
     "PHOTO_UPLOAD_ENABLED": True,
-    "PRIVATE_MEDIA_S3_BUCKET": "private-originals",
+    "ORIGINALS_S3_BUCKET": "private-originals",
+    "EVENT_MEDIA_S3_BUCKET": "event-media",
+    "OPERATIONAL_S3_BUCKET": "operational",
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "test-access-key",
     "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "test-secret-key",
     "PRIVATE_MEDIA_S3_ENDPOINT_URL": "https://storage.example.test",
@@ -22,6 +27,7 @@ VALID_PRIVATE_SETTINGS = {
 }
 
 INGESTION_SETTING_NAMES = (
+    "STORAGES",
     "PRIVATE_MEDIA_ALLOWED_ORIGINS",
     "PHOTO_UPLOAD_ENABLED",
     "PHOTO_UPLOAD_MAX_FILES",
@@ -36,7 +42,9 @@ INGESTION_SETTING_NAMES = (
 )
 
 INGESTION_ENVIRONMENT_NAMES = (
-    "PRIVATE_MEDIA_S3_BUCKET",
+    "ORIGINALS_S3_BUCKET",
+    "EVENT_MEDIA_S3_BUCKET",
+    "OPERATIONAL_S3_BUCKET",
     "PRIVATE_MEDIA_S3_ACCESS_KEY_ID",
     "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY",
     "PRIVATE_MEDIA_ALLOWED_ORIGINS",
@@ -157,7 +165,9 @@ def test_enabled_uploads_reject_blank_origin_members() -> None:
 @pytest.mark.parametrize(
     ("setting_name", "missing_value", "expected_id"),
     [
-        ("PRIVATE_MEDIA_S3_BUCKET", "", "ingestion.E001"),
+        ("ORIGINALS_S3_BUCKET", "", "ingestion.E001"),
+        ("EVENT_MEDIA_S3_BUCKET", "", "ingestion.E007"),
+        ("OPERATIONAL_S3_BUCKET", "", "ingestion.E008"),
         ("PRIVATE_MEDIA_S3_ACCESS_KEY_ID", "", "ingestion.E002"),
         ("PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY", "", "ingestion.E003"),
         ("PRIVATE_MEDIA_S3_ENDPOINT_URL", "", "ingestion.E004"),
@@ -231,7 +241,9 @@ def test_enabled_uploads_accept_values_within_approved_bounds(limits: dict[str, 
 def test_disabled_uploads_do_not_require_private_storage_configuration() -> None:
     with override_settings(
         PHOTO_UPLOAD_ENABLED=False,
-        PRIVATE_MEDIA_S3_BUCKET="",
+        ORIGINALS_S3_BUCKET="",
+        EVENT_MEDIA_S3_BUCKET="",
+        OPERATIONAL_S3_BUCKET="",
         PRIVATE_MEDIA_S3_ACCESS_KEY_ID="",
         PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY="",
         PRIVATE_MEDIA_S3_ENDPOINT_URL="",
@@ -247,3 +259,44 @@ def test_security_caps_are_validated_while_uploads_are_disabled() -> None:
 
     assert [error.id for error in errors] == ["ingestion.E104"]
     assert "PHOTO_UPLOAD_CONCURRENCY" in errors[0].msg
+
+
+@pytest.mark.parametrize(
+    ("key", "acl"),
+    [
+        ("event-covers/00000000-0000-4000-8000-000000000001.jpg", "public-read"),
+        ("event-covers/test.jpg", None),
+        ("photos/legacy.jpg", None),
+        ("derivatives/previews/gallery.jpg", None),
+    ],
+)
+def test_s3_upload_grants_public_acl_only_for_managed_cover_keys(key: str, acl: str | None) -> None:
+    settings = load_isolated_ingestion_settings(
+        MEDIA_STORAGE_BACKEND="s3",
+        MEDIA_S3_ACCESS_KEY_ID="cover-access",
+        MEDIA_S3_SECRET_ACCESS_KEY="cover-secret",
+        ORIGINALS_S3_BUCKET="originals",
+        EVENT_MEDIA_S3_BUCKET="event-media",
+        OPERATIONAL_S3_BUCKET="operational",
+    )
+    config = settings["STORAGES"]["default"]
+    storage = import_string(config["BACKEND"])(**config["OPTIONS"])
+    client_bucket = MagicMock()
+    storage._bucket = client_bucket
+    storage.exists = MagicMock(return_value=False)
+
+    assert storage.save(key, ContentFile(b"jpeg")) == key
+
+    assert storage.bucket_name == "event-media"
+    client_bucket.Object.assert_called_once_with(key)
+    upload = client_bucket.Object.return_value.upload_fileobj
+    upload.assert_called_once()
+    assert upload.call_args.kwargs["ExtraArgs"].get("ACL") == acl
+
+
+def test_enabled_uploads_reject_shared_buckets() -> None:
+    errors = photo_upload_errors(
+        OPERATIONAL_S3_BUCKET=VALID_PRIVATE_SETTINGS["ORIGINALS_S3_BUCKET"]
+    )
+
+    assert [error.id for error in errors] == ["ingestion.E009"]

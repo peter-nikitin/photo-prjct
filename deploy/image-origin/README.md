@@ -44,7 +44,7 @@ redirect handling for an allowed source; `IMGPROXY_MAX_REDIRECTS=0` remains conf
 Task 6 supplies reviewed files and a protected process environment containing:
 
 - `IMAGE_ORIGIN_RELEASE`: the 40-character repository SHA.
-- `PRIVATE_MEDIA_S3_BUCKET`, `GALLERY_IMGPROXY_KEY`, `GALLERY_IMGPROXY_SALT`.
+- `EVENT_MEDIA_S3_BUCKET`, `GALLERY_IMGPROXY_KEY`, `GALLERY_IMGPROXY_SALT`.
 - `IMAGE_ORIGIN_HEADER_SECRET`, `IMAGE_ORIGIN_S3_ACCESS_KEY_ID`,
   `IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY`.
 - `IMAGE_ORIGIN_PROBE_PATH`: a signed `gallery-v1` path for an existing accepted preview. It has no

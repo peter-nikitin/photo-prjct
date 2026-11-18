@@ -26,7 +26,12 @@ def check_selfie_search_settings(**kwargs):  # noqa: ARG001
             or settings.SELFIE_FEEDBACK_DOWNLOAD_TTL_SECONDS != 60
             or settings.SELFIE_FEEDBACK_S3_ENDPOINT_URL != "https://storage.yandexcloud.net"
             or settings.SELFIE_FEEDBACK_S3_REGION != "ru-central1"
-            or settings.SELFIE_FEEDBACK_S3_BUCKET == settings.PRIVATE_MEDIA_S3_BUCKET
+            or settings.SELFIE_FEEDBACK_S3_BUCKET
+            in {
+                settings.ORIGINALS_S3_BUCKET,
+                settings.EVENT_MEDIA_S3_BUCKET,
+                settings.OPERATIONAL_S3_BUCKET,
+            }
         ):
             errors.append(
                 Error(

@@ -22,7 +22,6 @@ import boto3
 from PIL import Image
 
 BUCKET = "image-origin-contract"
-PUBLIC_BUCKET = "image-origin-public-contract"
 COVER_KEY = "event-covers/00000000-0000-4000-8000-000000000001.jpg"
 AUTH = "contract-origin-secret-0123456789"
 SENTINEL = "private-query-value-must-never-be-logged"
@@ -30,7 +29,7 @@ SENTINEL = "private-query-value-must-never-be-logged"
 
 def key(index):
     return (
-        "derivatives/previews/contract-event/preview-small-v1/"
+        "previews/contract-event/preview-small-v1/"
         f"00000000-0000-4000-8000-{index:012x}-{'a' * 64}.jpg"
     )
 
@@ -172,9 +171,9 @@ def seed():
 
     class CoverFixture(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == f"/{PUBLIC_BUCKET}/{COVER_KEY}":
+            if self.path == f"/{BUCKET}/{COVER_KEY}":
                 body = payload
-            elif self.path == f"/{PUBLIC_BUCKET}/event-covers/small.jpg":
+            elif self.path == f"/{BUCKET}/event-covers/small.jpg":
                 body = small.getvalue()
             else:
                 # Real JPEG exists at denied prefixes too: rejection cannot rely on a 404.
@@ -266,7 +265,7 @@ def check():
         "signature": ("/" + "A" * 43 + signed()[44:], AUTH),
         "preset": (signed(preset="width:4000"), AUTH),
         "prefix": (signed(f"s3://{BUCKET}/originals/private-photo"), AUTH),
-        "bucket": (signed("s3://other-bucket/derivatives/previews/private-photo"), AUTH),
+        "bucket": (signed("s3://other-bucket/previews/private-photo"), AUTH),
         "scheme": (signed("file:///etc/passwd"), AUTH),
         "http_redirect_source": (signed("http://seed:9001/redirect"), AUTH),
         "extension": (signed(extension="png"), AUTH),
@@ -349,7 +348,7 @@ def check():
 
 
 def check_covers():
-    source = f"https://storage.yandexcloud.net/{PUBLIC_BUCKET}/{COVER_KEY}"
+    source = f"https://storage.yandexcloud.net/{BUCKET}/{COVER_KEY}"
     path = signed(source, preset="cover-v1")
     status, headers, body, _ = request(path)
     assert status == 200, f"HTTPS cover transform failed: status={status}"
@@ -363,7 +362,7 @@ def check_covers():
     assert b"contract-private-photo-description" not in body
     status, _, body, _ = request(
         signed(
-            f"https://storage.yandexcloud.net/{PUBLIC_BUCKET}/event-covers/small.jpg",
+            f"https://storage.yandexcloud.net/{BUCKET}/event-covers/small.jpg",
             preset="cover-v1",
         )
     )
@@ -379,7 +378,7 @@ def check_covers():
     )
     failures = {
         "public_other_prefix": signed(
-            f"https://storage.yandexcloud.net/{PUBLIC_BUCKET}/originals/private.jpg",
+            f"https://storage.yandexcloud.net/{BUCKET}/originals/private.jpg",
             preset="cover-v1",
         ),
         "public_other_bucket": signed(

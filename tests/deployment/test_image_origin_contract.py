@@ -14,8 +14,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "deploy/image-origin"
 TEST_ENV = {
-    "PRIVATE_MEDIA_S3_BUCKET": "image-origin-contract",
-    "MEDIA_S3_PUBLIC_BUCKET": "image-origin-public-contract",
+    "EVENT_MEDIA_S3_BUCKET": "image-origin-contract",
     "GALLERY_IMGPROXY_KEY": "11" * 32,
     "GALLERY_IMGPROXY_SALT": "22" * 32,
     "IMAGE_ORIGIN_HEADER_SECRET": "contract-origin-secret-0123456789",
@@ -62,8 +61,8 @@ def test_effective_compose_keeps_image_compute_isolated_and_bounded():
     assert not services["imgproxy"].get("volumes")
     environment = services["imgproxy"]["environment"]
     assert environment["IMGPROXY_ALLOWED_SOURCES"].split(",") == [
-        "s3://image-origin-contract/derivatives/previews/",
-        "https://storage.yandexcloud.net/image-origin-public-contract/event-covers/",
+        "s3://image-origin-contract/previews/",
+        "https://storage.yandexcloud.net/image-origin-contract/event-covers/",
     ]
     assert environment["IMGPROXY_S3_ALLOWED_BUCKETS"] == "image-origin-contract"
     assert set(services["imgproxy"]["environment"]).isdisjoint(
@@ -123,10 +122,10 @@ if pathlib.Path(sys.argv[0]).name == "curl":
         "Cache-Control: public, max-age=21600, s-maxage=2592000\\n"
     )
 elif args and args[0] == "compose":
-    if os.environ.get("MEDIA_S3_PUBLIC_BUCKET") is not None:
+    if os.environ.get("EVENT_MEDIA_S3_BUCKET") is not None:
         raise SystemExit(91)
     stored = pathlib.Path(args[args.index("--env-file") + 1]).read_text()
-    assert "MEDIA_S3_PUBLIC_BUCKET=image-origin-public-contract\\n" in stored
+    assert "EVENT_MEDIA_S3_BUCKET=image-origin-contract\\n" in stored
 """
     )
     for name in ["docker", "curl"]:
@@ -153,7 +152,7 @@ elif args and args[0] == "compose":
     assert result.returncode == 0, result.stderr
 
     release = root / "current"
-    assert "MEDIA_S3_PUBLIC_BUCKET=image-origin-public-contract\n" in (release / ".env").read_text()
+    assert "EVENT_MEDIA_S3_BUCKET=image-origin-contract\n" in (release / ".env").read_text()
     for service, relative_path in (
         ("imgproxy", "imgproxy-start.sh"),
         ("imgproxy", "presets.txt"),
@@ -173,7 +172,7 @@ elif args and args[0] == "compose":
     (root / "previous").symlink_to(release.resolve())
     rollback = subprocess.run(
         ["sh", str(PACKAGE / "apply.sh"), "rollback"],
-        env={**env, "MEDIA_S3_PUBLIC_BUCKET": "caller-public-bucket"},
+        env={**env, "EVENT_MEDIA_S3_BUCKET": "caller-public-bucket"},
         capture_output=True,
         text=True,
     )

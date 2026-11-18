@@ -42,7 +42,6 @@ from picflow.gallery import (
     public_gallery_photo,
 )
 from picflow.gallery_image_delivery import (
-    EventCoverImageDeliverySettings,
     GalleryImageDeliverySettings,
     GalleryImageUrlSigner,
 )
@@ -82,7 +81,7 @@ def event_catalog(request):
     ):
         try:
             cover_signer = GalleryImageUrlSigner(
-                EventCoverImageDeliverySettings.from_django_settings()
+                GalleryImageDeliverySettings.from_django_settings()
             )
         except ImproperlyConfigured:
             pass

@@ -107,8 +107,8 @@ scoped resolver projections.
 
 When the policy changes, the provisioner writes both managed rules together and immediately uses
 the configured canonical `VM_HOST`/`VM_USER` SSH path to run a real `GetObject` inside the
-canonical application web container against
-the configured existing-original probe key. That runtime uses the application credential already
+canonical application web container for a reviewed preview key in `EVENT_MEDIA_S3_BUCKET`.
+That runtime uses the application credential already
 present in its environment; neither credential value is transported to or printed by the
 provisioner. A failed read restores the normalized pre-change policy. If the bucket previously had
 no policy, rollback clears the new policy through the Object Storage control-plane API. The
@@ -201,7 +201,7 @@ environment, and Compose/apply never receive it. Configure `VM_HOST`, `VM_USER`,
 `VM_SSH_KNOWN_HOSTS` from the canonical deployment as the bastion contract. Configure
 `IMAGE_ORIGIN_VM_HOST` as the origin's private IPv4, plus `IMAGE_ORIGIN_VM_USER` and
 `IMAGE_ORIGIN_SSH_KNOWN_HOSTS`, from the reviewed origin record. Also configure
-`PRIVATE_MEDIA_S3_BUCKET`, `IMAGE_ORIGIN_PROBE_PATH`, and `YANDEX_CLOUD_FOLDER_ID`.
+`EVENT_MEDIA_S3_BUCKET`, `IMAGE_ORIGIN_PROBE_PATH`, и `YANDEX_CLOUD_FOLDER_ID`.
 
 The workflow uses the one projected `VM_SSH_KEY_FILE` for both SSH hops. It requires `BatchMode`,
 `IdentitiesOnly`, strict host-key checking, and the reviewed known-host line independently for the
@@ -272,10 +272,9 @@ resource deletion is a separate exact-target operation requiring a fresh invento
 ## Public catalog covers (ADR 0044)
 
 The separate `event-cover-cdn-images` definition reconciles in `off`. It does not alter
-`gallery-cdn-images`, event publication, draft visibility, or private-media authorization. Only
-public immutable `event-covers/` objects use the `cover-v1` transform over HTTPS. The existing
-`MEDIA_S3_PUBLIC_BUCKET` repository variable is projected to image-origin alongside the private
-bucket name; no public-storage credential or additional IAM grant is required.
+`gallery-cdn-images`, event publication, draft visibility, or private-media authorization. Преобразование `cover-v1` по HTTPS доступно для неизменяемых публичных объектов `event-covers/`.
+Обложки и приватные превью используют один `EVENT_MEDIA_S3_BUCKET` по ADR 0068. Image origin читает
+обложки по HTTPS, а его S3-права ограничены префиксом превью. См. [настройку бакетов](../../infra/object-storage/README.md).
 New Admin uploads save only a normalized progressive JPEG within 960 pixels, without upscaling;
 the full uploaded source is not stored. Existing cover objects are not automatically rewritten.
 

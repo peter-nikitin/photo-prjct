@@ -8,7 +8,9 @@ from django.core.checks import Error, register
 PHOTO_UPLOAD_CHECK_TAG = "photo_upload"
 
 _REQUIRED_PRIVATE_SETTINGS = (
-    ("PRIVATE_MEDIA_S3_BUCKET", "ingestion.E001"),
+    ("ORIGINALS_S3_BUCKET", "ingestion.E001"),
+    ("EVENT_MEDIA_S3_BUCKET", "ingestion.E007"),
+    ("OPERATIONAL_S3_BUCKET", "ingestion.E008"),
     ("PRIVATE_MEDIA_S3_ACCESS_KEY_ID", "ingestion.E002"),
     ("PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY", "ingestion.E003"),
     ("PRIVATE_MEDIA_S3_ENDPOINT_URL", "ingestion.E004"),
@@ -56,6 +58,19 @@ def check_photo_upload_settings(
                         id=error_id,
                     )
                 )
+
+        buckets = (
+            settings.ORIGINALS_S3_BUCKET,
+            settings.EVENT_MEDIA_S3_BUCKET,
+            settings.OPERATIONAL_S3_BUCKET,
+        )
+        if all(not _is_empty(bucket) for bucket in buckets) and len(set(buckets)) != 3:
+            errors.append(
+                Error(
+                    "Originals, event media and operational storage must use distinct buckets.",
+                    id="ingestion.E009",
+                )
+            )
 
     for setting_name, minimum, maximum, error_id in _BOUNDED_UPLOAD_SETTINGS:
         value = getattr(settings, setting_name)

@@ -75,7 +75,7 @@ GALLERY_CDN_TEST_SETTINGS = {
     "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
     "GALLERY_IMGPROXY_KEY": "736563726574",
     "GALLERY_IMGPROXY_SALT": "68656c6c6f",
-    "PRIVATE_MEDIA_S3_BUCKET": "gallery-media",
+    "EVENT_MEDIA_S3_BUCKET": "gallery-media",
 }
 
 
@@ -1094,7 +1094,7 @@ class GalleryPageTests(TestCase):
         self.assertTrue(staff_url.startswith("https://img.example.test/"))
         self.assertEqual(
             cdn_source_uri(staff_url),
-            f"s3://gallery-media/{derivative.final_key}",
+            f"s3://gallery-media/{derivative.final_key.removeprefix('derivatives/')}",
         )
 
     @override_settings(**GALLERY_CDN_TEST_SETTINGS)
@@ -1135,7 +1135,7 @@ class GalleryPageTests(TestCase):
         self.assertTrue(all(url.startswith("https://img.example.test/") for url in card_urls))
         self.assertEqual(
             {cdn_source_uri(url) for url in card_urls},
-            {f"s3://gallery-media/{key}" for key in expected_keys},
+            {f"s3://gallery-media/{key.removeprefix('derivatives/')}" for key in expected_keys},
         )
         image_markup = ImageMarkupParser()
         image_markup.feed(response.content.decode(response.charset))
@@ -1196,7 +1196,7 @@ class GalleryPageTests(TestCase):
         )
         self.assertEqual(
             cdn_source_uri(presentation.preview_media_small.url),
-            f"s3://gallery-media/{watermarked.final_key}",
+            f"s3://gallery-media/{watermarked.final_key.removeprefix('derivatives/')}",
         )
         self.assertNotIn(clean.final_key, response.content.decode(response.charset))
         self.assertEqual(

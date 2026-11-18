@@ -57,16 +57,16 @@ def cloud_environment(tmp_path: Path) -> dict[str, str]:
         "CANONICAL_VM_ID": "canonical-vm-id",
         "VM_HOST": "198.51.100.10",
         "VM_USER": "application-operator",
-        "PRIVATE_MEDIA_S3_BUCKET": "canonical-media",
+        "EVENT_MEDIA_S3_BUCKET": "canonical-media",
+        "ORIGINALS_S3_BUCKET": "canonical-originals",
+        "OPERATIONAL_S3_BUCKET": "canonical-operational",
         "IMAGE_ORIGIN_ZONE_ID": "ru-central1-a",
         "IMAGE_ORIGIN_BOOT_IMAGE_ID": "immutable-image-id",
         "IMAGE_ORIGIN_SSH_SOURCE_CIDR": "203.0.113.8/32",
-        "IMAGE_ORIGIN_ACCEPTED_PREVIEW_KEY": (
-            "derivatives/previews/photo-1/preview-small-v1/accepted.jpg"
-        ),
+        "IMAGE_ORIGIN_ACCEPTED_PREVIEW_KEY": ("previews/photo-1/preview-small-v1/accepted.jpg"),
         "IMAGE_ORIGIN_DENIED_ORIGINAL_KEY": "originals/existing.jpg",
-        "IMAGE_ORIGIN_DENIED_STAGING_KEY": "staging/existing.jpg",
-        "IMAGE_ORIGIN_PROBE_WRITE_KEY": "derivatives/previews/probe/write.jpg",
+        "IMAGE_ORIGIN_DENIED_STAGING_KEY": "uploads/existing.jpg",
+        "IMAGE_ORIGIN_PROBE_WRITE_KEY": "previews/probe/write.jpg",
         "IMAGE_ORIGIN_CONTRACT_STATE": str(tmp_path / "contract-state.json"),
         "FINDME_ENV_FILE": str(projection),
     }
@@ -260,11 +260,11 @@ import os, pathlib, sys
 config = sys.stdin.read()
 method = next(line for line in config.splitlines() if line.startswith("request = "))
 url = next(line for line in config.splitlines() if line.startswith("url = "))
-with pathlib.Path(os.environ["FAKE_CURL_LOG"]).open("a") as target: target.write(method + "\\n")
+with pathlib.Path(os.environ["FAKE_CURL_LOG"]).open("a") as target: target.write(method + " " + url + "\\n")
 if "storage.api.cloud.yandex.net" in url:
     sys.stdout.write('{"id":"clear-policy-operation"}\\n200')
     raise SystemExit(0)
-allowed = "derivatives/previews/photo-1/preview-small-v1/accepted.jpg" in url and '"GET"' in method
+allowed = "previews/photo-1/preview-small-v1/accepted.jpg" in url and '"GET"' in method
 sys.stdout.write("200" if allowed else "403")
 """
     )
@@ -495,16 +495,16 @@ def test_origin_policy_reconciliation_preserves_unmanaged_statements_and_binds_b
             "Effect": "Allow",
             "Principal": {"CanonicalUser": "created-service-account-id"},
             "Action": "s3:GetObject",
-            "Resource": "arn:aws:s3:::canonical-media/derivatives/previews/*",
+            "Resource": "arn:aws:s3:::canonical-media/previews/*",
         },
         "AllowFindMeApplicationPrivateMediaAccess": {
             "Sid": "AllowFindMeApplicationPrivateMediaAccess",
             "Effect": "Allow",
             "Principal": "*",
-            "Action": "s3:*",
+            "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
             "Resource": [
                 "arn:aws:s3:::canonical-media",
-                "arn:aws:s3:::canonical-media/*",
+                "arn:aws:s3:::canonical-media/previews/*",
             ],
             "Condition": {
                 "StringEquals": {
@@ -1163,6 +1163,8 @@ def test_application_read_failure_restores_previous_policy_before_failing(
         "application-operator",
         "198.51.100.10",
     ]
+    assert "IMAGE_ORIGIN_APPLICATION_PROBE_BUCKET=canonical-media" in probe[6]
+    assert "IMAGE_ORIGIN_APPLICATION_PROBE_KEY=previews/" in probe[6]
     assert "client.get_object" in probe[6]
     assert "settings.PRIVATE_MEDIA_S3_ACCESS_KEY_ID" in probe[6]
     assert "settings.PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY" in probe[6]
@@ -1346,11 +1348,16 @@ def test_probe_is_separate_fail_closed_and_reports_only_aggregates(
     }
     assert "probe-access" not in result.stdout + result.stderr
     assert commands == []
-    assert (tmp_path / "curl.log").read_text().splitlines() == [
-        'request = "GET"',
-        'request = "GET"',
-        'request = "GET"',
-        'request = "GET"',
+    probes = (tmp_path / "curl.log").read_text().splitlines()
+    assert len(probes) == 8
+    assert probes[:4] == [
+        'request = "GET" url = "https://storage.yandexcloud.net/canonical-media/'
+        'previews/photo-1/preview-small-v1/accepted.jpg"',
+        'request = "GET" url = "https://storage.yandexcloud.net/canonical-media?list-type=2"',
+        'request = "GET" url = "https://storage.yandexcloud.net/canonical-originals/originals/existing.jpg"',
+        'request = "GET" url = "https://storage.yandexcloud.net/canonical-operational/uploads/existing.jpg"',
+    ]
+    assert [probe.split(" url = ", 1)[0] for probe in probes[4:]] == [
         'request = "PUT"',
         'request = "POST"',
         'request = "PUT"',

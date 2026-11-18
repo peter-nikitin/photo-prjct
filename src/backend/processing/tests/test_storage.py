@@ -20,7 +20,7 @@ JPEG_1X1 = bytes.fromhex(
 
 
 @override_settings(
-    PRIVATE_MEDIA_S3_BUCKET="private-photos",
+    ORIGINALS_S3_BUCKET="private-photos",
     PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=90,
 )
 class ExactObjectDownloadStorageTests(SimpleTestCase):
@@ -93,7 +93,8 @@ class ExactObjectDownloadStorageTests(SimpleTestCase):
 
 
 @override_settings(
-    PRIVATE_MEDIA_S3_BUCKET="private-photos",
+    OPERATIONAL_S3_BUCKET="operational",
+    EVENT_MEDIA_S3_BUCKET="event-media",
     PHOTO_PROCESSING_DOWNLOAD_TTL_SECONDS=90,
 )
 class ExactPreviewStorageTests(SimpleTestCase):
@@ -107,6 +108,8 @@ class ExactPreviewStorageTests(SimpleTestCase):
         "01234567-89ab-cdef-0123-456789abcdef-"
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg"
     )
+    staging_object_key = staging_key.replace("processing-pending/previews/", "preview-jobs/", 1)
+    final_object_key = final_key.removeprefix("derivatives/")
 
     def test_creates_a_lease_bounded_get_grant_for_one_accepted_preview(self) -> None:
         client = FakeS3Client()
@@ -125,8 +128,8 @@ class ExactPreviewStorageTests(SimpleTestCase):
                     {
                         "ClientMethod": "get_object",
                         "Params": {
-                            "Bucket": "private-photos",
-                            "Key": self.final_key,
+                            "Bucket": "event-media",
+                            "Key": self.final_object_key,
                             "ResponseContentType": "image/jpeg",
                             "ResponseContentDisposition": 'attachment; filename="preview.jpg"',
                         },
@@ -155,8 +158,8 @@ class ExactPreviewStorageTests(SimpleTestCase):
                     {
                         "ClientMethod": "put_object",
                         "Params": {
-                            "Bucket": "private-photos",
-                            "Key": self.staging_key,
+                            "Bucket": "operational",
+                            "Key": self.staging_object_key,
                             "ContentType": "image/jpeg",
                         },
                         "ExpiresIn": 7,
@@ -177,7 +180,10 @@ class ExactPreviewStorageTests(SimpleTestCase):
 
         self.assertEqual(
             [call[1]["Params"]["Key"] for call in client.calls],
-            [staging_key, final_key],
+            [
+                self.staging_object_key.replace("preview-small-v1", "preview-watermarked-v1"),
+                self.final_object_key.replace("preview-small-v1", "preview-watermarked-v1"),
+            ],
         )
         with self.assertRaises(ValueError):
             storage.create_upload_grant(
@@ -206,7 +212,7 @@ class ExactPreviewStorageTests(SimpleTestCase):
 
     def test_streams_checksum_and_dimensions_from_the_verified_staging_object(self) -> None:
         client = FakeS3Client()
-        client.put_object(self.staging_key, JPEG_1X1, '"preview-etag"')
+        client.put_object("operational", self.staging_object_key, JPEG_1X1, '"preview-etag"')
 
         verified = ExactPreviewStorage(client=client).verify(
             key=self.staging_key, max_bytes=len(JPEG_1X1)
@@ -224,7 +230,7 @@ class ExactPreviewStorageTests(SimpleTestCase):
         self,
     ) -> None:
         client = FakeS3Client()
-        client.put_object(self.staging_key, JPEG_1X1, '"source-etag"')
+        client.put_object("operational", self.staging_object_key, JPEG_1X1, '"source-etag"')
         storage = ExactPreviewStorage(client=client)
 
         promoted = storage.promote(
@@ -235,17 +241,23 @@ class ExactPreviewStorageTests(SimpleTestCase):
 
         self.assertEqual(promoted.etag_wire, '"source-etag"')
         copy = next(call for call in client.calls if call[0] == "copy_object")
+        self.assertEqual(copy[1]["Bucket"], "event-media")
+        self.assertEqual(copy[1]["Key"], self.final_object_key)
+        self.assertEqual(
+            copy[1]["CopySource"], {"Bucket": "operational", "Key": self.staging_object_key}
+        )
         self.assertEqual(copy[1]["CopySourceIfMatch"], '"source-etag"')
         self.assertNotIn("IfNoneMatch", copy[1])
+        self.assertNotIn("ACL", copy[1])
 
-        client.put_object(self.final_key, b"other", '"final-etag"')
+        client.put_object("event-media", self.final_object_key, b"other", '"final-etag"')
         with self.assertRaises(ObjectConflict):
             storage.promote(
                 staging_key=self.staging_key,
                 final_key=self.final_key,
                 source_etag='"source-etag"',
             )
-        self.assertEqual(client.objects[self.final_key].content, b"other")
+        self.assertEqual(client.objects["event-media", self.final_object_key].content, b"other")
 
     def test_maps_storage_failures_to_sanitized_errors(self) -> None:
         client = FakeS3Client()
@@ -259,7 +271,7 @@ class ExactPreviewStorageTests(SimpleTestCase):
 
     def test_maps_streaming_read_timeout_to_a_sanitized_retryable_storage_error(self) -> None:
         client = FakeS3Client()
-        client.put_object(self.staging_key, JPEG_1X1, '"preview-etag"')
+        client.put_object("operational", self.staging_object_key, JPEG_1X1, '"preview-etag"')
 
         class TimeoutBody:
             closed = False
@@ -291,7 +303,7 @@ class ExactPreviewStorageTests(SimpleTestCase):
 
     def test_maps_response_streaming_error_to_a_sanitized_retryable_storage_error(self) -> None:
         client = FakeS3Client()
-        client.put_object(self.staging_key, JPEG_1X1, '"preview-etag"')
+        client.put_object("operational", self.staging_object_key, JPEG_1X1, '"preview-etag"')
 
         class StreamingFailureBody:
             closed = False

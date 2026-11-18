@@ -167,15 +167,21 @@ class SelfieSearchSettingsTests(SimpleTestCase):
                 SELFIE_FEEDBACK_KMS_KEY_ID="kms-key",
                 SELFIE_FEEDBACK_MAX_UPLOAD_BYTES="1",
             )
-        with self.assertRaises(subprocess.CalledProcessError):
-            load_isolated_selfie_settings(
-                SELFIE_FEEDBACK_ENABLED="True",
-                PRIVATE_MEDIA_S3_BUCKET="feedback-bucket",
-                SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
-                SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",
-                SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY="secret-key",
-                SELFIE_FEEDBACK_KMS_KEY_ID="kms-key",
-            )
+        for bucket_setting in (
+            "ORIGINALS_S3_BUCKET",
+            "EVENT_MEDIA_S3_BUCKET",
+            "OPERATIONAL_S3_BUCKET",
+        ):
+            with self.subTest(bucket_setting=bucket_setting):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    load_isolated_selfie_settings(
+                        SELFIE_FEEDBACK_ENABLED="True",
+                        SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
+                        SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",
+                        SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY="secret-key",
+                        SELFIE_FEEDBACK_KMS_KEY_ID="kms-key",
+                        **{bucket_setting: "feedback-bucket"},
+                    )
         for unsafe_override in (
             {"SELFIE_FEEDBACK_S3_ENDPOINT_URL": "https://storage.attacker.example"},
             {"SELFIE_FEEDBACK_S3_REGION": "us-east-1"},
@@ -200,7 +206,7 @@ class SelfieSearchSettingsTests(SimpleTestCase):
     @override_settings(
         SELFIE_FEEDBACK_ENABLED=True,
         SELFIE_FEEDBACK_S3_BUCKET="private-selfies",
-        PRIVATE_MEDIA_S3_BUCKET="private-selfies",
+        OPERATIONAL_S3_BUCKET="private-selfies",
         SELFIE_FEEDBACK_S3_ACCESS_KEY_ID=" ",
         SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY="secret-key",
         SELFIE_FEEDBACK_KMS_KEY_ID="kms-key",
@@ -220,7 +226,7 @@ class SelfieSearchSettingsTests(SimpleTestCase):
         PHOTO_PROCESSING_FACE_ENABLED=True,
         SELFIE_FEEDBACK_ENABLED=True,
         SELFIE_FEEDBACK_S3_BUCKET="feedback-bucket",
-        PRIVATE_MEDIA_S3_BUCKET="private-media-bucket",
+        OPERATIONAL_S3_BUCKET="private-media-bucket",
         SELFIE_FEEDBACK_S3_ACCESS_KEY_ID="access-key",
         SELFIE_FEEDBACK_S3_SECRET_ACCESS_KEY="secret-key",
         SELFIE_FEEDBACK_S3_ENDPOINT_URL="https://storage.yandexcloud.net",

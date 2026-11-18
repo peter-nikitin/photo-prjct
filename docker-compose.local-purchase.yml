@@ -37,9 +37,10 @@ services:
       MINIO_ROOT_PASSWORD: local-minio-password
     entrypoint: >-
       /bin/sh -ec 'mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}";
-      mc mb --ignore-existing local/local-private;
-      mc mb --ignore-existing local/local-public;
-      mc anonymous set download local/local-public'
+      mc mb --ignore-existing local/local-originals;
+      mc mb --ignore-existing local/local-operational;
+      mc mb --ignore-existing local/local-event-media;
+      mc anonymous set download local/local-event-media/event-covers/'
 
   mailpit:
     image: axllent/mailpit:v1.30.0
@@ -77,10 +78,12 @@ services:
       MEDIA_STORAGE_BACKEND: s3
       MEDIA_S3_ENDPOINT_URL: http://minio.localhost:19000
       MEDIA_S3_REGION: us-east-1
-      MEDIA_S3_PUBLIC_BUCKET: local-public
+      EVENT_MEDIA_S3_BUCKET: local-event-media
       MEDIA_S3_ACCESS_KEY_ID: local-minio
       MEDIA_S3_SECRET_ACCESS_KEY: local-minio-password
-      PRIVATE_MEDIA_S3_BUCKET: local-private
+      ORIGINALS_S3_BUCKET: local-originals
+      OPERATIONAL_S3_BUCKET: local-operational
+      ORIGINALS_S3_STORAGE_CLASS: STANDARD
       PRIVATE_MEDIA_S3_ACCESS_KEY_ID: local-minio
       PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY: local-minio-password
       PRIVATE_MEDIA_ALLOWED_ORIGINS: http://127.0.0.1:8000,http://localhost:8000

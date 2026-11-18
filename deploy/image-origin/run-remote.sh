@@ -32,8 +32,7 @@ repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 : "${IMAGE_ORIGIN_VM_HOST:?}"
 : "${IMAGE_ORIGIN_VM_USER:?}"
 : "${IMAGE_ORIGIN_SSH_KNOWN_HOSTS:?}"
-: "${PRIVATE_MEDIA_S3_BUCKET:?}"
-: "${MEDIA_S3_PUBLIC_BUCKET:?}"
+: "${EVENT_MEDIA_S3_BUCKET:?}"
 : "${IMAGE_ORIGIN_PROBE_PATH:?}"
 : "${YANDEX_CLOUD_FOLDER_ID:?}"
 monitoring_only=${IMAGE_ORIGIN_MONITORING_ONLY:-false}
@@ -136,7 +135,7 @@ for line in Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
         seen.add(name)
 if seen != allowed:
     raise SystemExit(1)
-for name in ('PRIVATE_MEDIA_S3_BUCKET', 'MEDIA_S3_PUBLIC_BUCKET', 'IMAGE_ORIGIN_PROBE_PATH'):
+for name in ('EVENT_MEDIA_S3_BUCKET', 'IMAGE_ORIGIN_PROBE_PATH'):
     source.append(f'{name}={encode(os.environ[name])}')
 Path(sys.argv[2]).write_text('\n'.join(source) + '\n', encoding='utf-8')
 os.chmod(sys.argv[2], 0o600)

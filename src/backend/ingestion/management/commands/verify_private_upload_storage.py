@@ -52,10 +52,11 @@ class Command(BaseCommand):
 
         try:
             grant = storage.create_presigned_post(incoming_key=incoming_key, max_bytes=contract_max)
+            upload_prefix = grant.fields["key"].rsplit("/", 1)[0]
             self._expect_rejected(
                 grant,
                 _JPEG,
-                fields={**grant.fields, "key": f"incoming/{batch_id}/{uuid4()}"},
+                fields={**grant.fields, "key": f"{upload_prefix}/{uuid4()}"},
             )
             self._expect_rejected(
                 grant,
@@ -191,6 +192,6 @@ def _request(
 
 def _object_url(key: str) -> str:
     endpoint = settings.PRIVATE_MEDIA_S3_ENDPOINT_URL.rstrip("/")
-    bucket = urllib.parse.quote(settings.PRIVATE_MEDIA_S3_BUCKET, safe="")
+    bucket = urllib.parse.quote(settings.ORIGINALS_S3_BUCKET, safe="")
     object_key = urllib.parse.quote(key, safe="/")
     return f"{endpoint}/{bucket}/{object_key}"

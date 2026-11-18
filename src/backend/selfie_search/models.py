@@ -16,6 +16,7 @@ from processing.models import (
 )
 
 JSON_MAX_BYTES = 16_384
+ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY = "anchor_expansion_staff_eligible"
 FEEDBACK_OBJECT_MAX_BYTES = 20 * 1024 * 1024
 FEEDBACK_CONSENT_TEXT_VERSION = "2026-08-05"
 _TERMINAL_SEARCH_STATUSES = (
@@ -94,6 +95,9 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     )
     direct_matched_photo_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_expanded_photo_count = models.PositiveIntegerField(null=True, blank=True)
+    anchor_expanded_photo_count = models.PositiveIntegerField(
+        "anchor-expanded photo count (analytics)", default=0, db_default=0
+    )
     strong_anchor_count = models.PositiveIntegerField(null=True, blank=True)
     expanded_cluster_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_expansion_outcome = models.CharField(  # noqa: DJ001
@@ -142,6 +146,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
                     | models.Q(
                         final_matched_photo_count=models.F("direct_matched_photo_count")
                         + models.F("cluster_expanded_photo_count")
+                        + models.F("anchor_expanded_photo_count")
                     )
                 ),
                 name="selfie_search_result_count_identity_chk",
@@ -181,7 +186,9 @@ class SelfieSearch(models.Model):  # noqa: DJ008
             self.direct_matched_photo_count is not None
             and self.cluster_expanded_photo_count is not None
             and self.final_matched_photo_count
-            != self.direct_matched_photo_count + self.cluster_expanded_photo_count
+            != self.direct_matched_photo_count
+            + self.cluster_expanded_photo_count
+            + self.anchor_expanded_photo_count
         ):
             errors["final_matched_photo_count"] = "Search result counts must reconcile."
         if errors:
@@ -305,6 +312,7 @@ class SelfieSearchResult(models.Model):  # noqa: DJ008
     class PrimarySource(models.TextChoices):
         DIRECT = "direct", "Direct"
         FACE_CLUSTER_EXPANSION = "face_cluster_expansion", "Face-cluster expansion"
+        FACE_ANCHOR_EXPANSION = "face_anchor_expansion", "Face-anchor expansion"
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     search = models.ForeignKey(SelfieSearch, on_delete=models.PROTECT, related_name="results")
@@ -322,7 +330,9 @@ class SelfieSearchResult(models.Model):  # noqa: DJ008
             models.UniqueConstraint(fields=("search", "photo"), name="selfie_result_photo_uniq"),
             models.UniqueConstraint(fields=("search", "rank"), name="selfie_result_rank_uniq"),
             models.CheckConstraint(
-                condition=models.Q(primary_source__in=("direct", "face_cluster_expansion")),
+                condition=models.Q(
+                    primary_source__in=("direct", "face_cluster_expansion", "face_anchor_expansion")
+                ),
                 name="selfie_result_primary_source_chk",
             ),
         ]
@@ -412,6 +422,62 @@ class SelfieSearchDirectEvidence(models.Model):  # noqa: DJ008
                 errors["detection"] = "The direct detection must belong to the search event."
             if detection.attempt.photo_id != self.result.photo_id:
                 errors["detection"] = "The direct detection must belong to the result photo."
+        if errors:
+            raise ValidationError(errors)
+
+
+class SelfieSearchAnchorEvidence(models.Model):  # noqa: DJ008
+    """Immutable analytics evidence for the best face-to-anchor match of an added photo."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    result = models.OneToOneField(
+        SelfieSearchResult, on_delete=models.PROTECT, related_name="anchor_evidence"
+    )
+    anchor = models.ForeignKey(
+        SelfieSearchDirectEvidence, on_delete=models.PROTECT, related_name="anchor_matches"
+    )
+    detection = models.ForeignKey(
+        PhotoFaceDetection, on_delete=models.PROTECT, related_name="selfie_search_anchor_matches"
+    )
+    cosine_distance = models.FloatField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "anchor match evidence (analytics)"
+        verbose_name_plural = "anchor match evidence (analytics)"
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(cosine_distance__gte=0, cosine_distance__lte=0.42),
+                name="selfie_anchor_evidence_distance_chk",
+            ),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie anchor evidence is immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie anchor evidence is immutable.")
+        return super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.result_id:
+            if self.result.primary_source != SelfieSearchResult.PrimarySource.FACE_ANCHOR_EXPANSION:
+                errors["result"] = "Anchor evidence requires an anchor-expanded result."
+            if self.anchor_id and (
+                self.anchor.result.search_id != self.result.search_id
+                or self.anchor.result.primary_source != SelfieSearchResult.PrimarySource.DIRECT
+            ):
+                errors["anchor"] = "The anchor must be direct evidence from the same search."
+            if self.detection_id and (
+                self.detection.attempt.event_id != self.result.search.event_id
+                or self.detection.attempt.photo_id != self.result.photo_id
+            ):
+                errors["detection"] = "The detection must belong to the result photo and event."
         if errors:
             raise ValidationError(errors)
 

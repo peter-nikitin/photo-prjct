@@ -12,6 +12,8 @@ from django.db import DatabaseError, transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
+from feature_flags.services import is_enabled_for_state
+from feature_flags.states import FEATURE_FLAG_STAFF
 from picflow.gallery import (
     GalleryFaceCrop,
     gallery_face_crop,
@@ -28,6 +30,7 @@ from processing.services.face_quality import active_face_embedding_generations
 
 from selfie_search.images import PreparedSelfie
 from selfie_search.models import (
+    ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY,
     FaceSearchTask,
     SelfieSearch,
     SelfieSearchJob,
@@ -72,6 +75,9 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user)
                 ) from None
             configuration = _configuration(
                 event=event, content_type=content_type, content_size=len(content)
+            )
+            configuration[ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY] = is_enabled_for_state(
+                FEATURE_FLAG_STAFF, user
             )
             search = SelfieSearch.objects.create(
                 event=event,
@@ -168,6 +174,9 @@ def submit_gallery_photo_search(
 
             configuration = _gallery_configuration(
                 event=event, photo=photo, detection_id=detection_id
+            )
+            configuration[ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY] = is_enabled_for_state(
+                FEATURE_FLAG_STAFF, user
             )
             query = _gallery_source_vector(event=event, configuration=configuration)
 

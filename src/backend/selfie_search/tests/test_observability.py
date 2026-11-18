@@ -752,3 +752,30 @@ def test_direct_reader_event_accepts_advisory_count_below_fresh_matches() -> Non
 
     payload = json.loads(logger.calls[0][1])
     assert (payload["eligible_photo_count"], payload["matched_photo_count"]) == (1, 2)
+
+
+def test_anchor_expansion_events_include_new_source_in_reconciled_counts():
+    logger = _CaptureLogger()
+
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.RANKING_FINISHED,
+        **_ranking_fields(
+            matched_photo_count=5, final_matched_photo_count=5, anchor_expanded_photo_count=2
+        ),
+    )
+    emit_selfie_event(
+        logger,
+        event=SelfieEventName.SEARCH_TERMINAL,
+        **_terminal_fields(matched_photo_count=5, anchor_expanded_photo_count=2),
+    )
+
+    ranking, terminal = [json.loads(message) for _, message in logger.calls]
+    assert (ranking["schema_version"], terminal["schema_version"]) == (5, 3)
+    assert ranking["anchor_expanded_photo_count"] == terminal["anchor_expanded_photo_count"] == 2
+    with pytest.raises(SelfieEventContractError, match="counts do not reconcile"):
+        emit_selfie_event(
+            logger,
+            event=SelfieEventName.SEARCH_TERMINAL,
+            **_terminal_fields(anchor_expanded_photo_count=2),
+        )

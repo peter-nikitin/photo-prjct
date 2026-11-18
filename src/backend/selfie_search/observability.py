@@ -17,6 +17,9 @@ from uuid import UUID
 SCHEMA_VERSION = 1
 RANKING_SCHEMA_VERSION = 4
 TERMINAL_SCHEMA_VERSION = 2
+_ANCHOR_RANKING_SCHEMA_VERSION = 5
+_ANCHOR_TERMINAL_SCHEMA_VERSION = 3
+_ANCHOR_COUNT_FIELD = "anchor_expanded_photo_count"
 SERVICE = "web"
 MAX_BOUNDED_INTEGER = 2**31 - 1
 _UUID_PATTERN = re.compile(
@@ -270,6 +273,15 @@ def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dic
             if event is SelfieEventName.RANKING_FINISHED
             else SCHEMA_VERSION
         )
+    elif set(fields) == expected | {_ANCHOR_COUNT_FIELD} and event in {
+        SelfieEventName.RANKING_FINISHED,
+        SelfieEventName.SEARCH_TERMINAL,
+    }:
+        schema_version = (
+            _ANCHOR_RANKING_SCHEMA_VERSION
+            if event is SelfieEventName.RANKING_FINISHED
+            else _ANCHOR_TERMINAL_SCHEMA_VERSION
+        )
     else:
         raise SelfieEventContractError("event fields do not match the contract")
     normalized: dict[str, object]
@@ -301,6 +313,11 @@ def _validated_payload(event: SelfieEventName, fields: dict[str, object]) -> dic
         "occurred_at": _timestamp(),
         "service": SERVICE,
         **normalized,
+        **(
+            {_ANCHOR_COUNT_FIELD: fields[_ANCHOR_COUNT_FIELD]}
+            if _ANCHOR_COUNT_FIELD in fields
+            else {}
+        ),
     }
 
 
@@ -360,6 +377,8 @@ def _ranking_fields_v2(fields: dict[str, object]) -> dict[str, object]:
     normalized = _ranking_fields_v1(fields)
     direct = _bounded_int(fields["direct_matched_photo_count"], nullable=False)
     expanded = _bounded_int(fields["cluster_expanded_photo_count"], nullable=False)
+    anchor_expanded = _bounded_int(fields.get(_ANCHOR_COUNT_FIELD, 0), nullable=False)
+    assert anchor_expanded is not None
     final = _bounded_int(fields["final_matched_photo_count"], nullable=False)
     strong_anchors = _bounded_int(fields["strong_anchor_count"], nullable=False)
     expanded_clusters = _bounded_int(fields["expanded_cluster_count"], nullable=False)
@@ -367,10 +386,10 @@ def _ranking_fields_v2(fields: dict[str, object]) -> dict[str, object]:
     assert strong_anchors is not None and expanded_clusters is not None
     if normalized["outcome"] == "incompatible":
         if normalized["matched_photo_count"] != 0 or any(
-            (direct, expanded, final, strong_anchors, expanded_clusters)
+            (direct, expanded, anchor_expanded, final, strong_anchors, expanded_clusters)
         ):
             raise SelfieEventContractError("incompatible ranking must have zero source counts")
-    elif final != direct + expanded or normalized["matched_photo_count"] != final:
+    elif final != direct + expanded + anchor_expanded or normalized["matched_photo_count"] != final:
         raise SelfieEventContractError("ranking result counts do not reconcile")
     expansion_outcome = _enum(
         fields["cluster_expansion_outcome"],
@@ -506,11 +525,13 @@ def _terminal_fields_v2(fields: dict[str, object]) -> dict[str, object]:
     normalized = _terminal_fields_v1(fields)
     direct = _bounded_int(fields["direct_matched_photo_count"], nullable=False)
     expanded = _bounded_int(fields["cluster_expanded_photo_count"], nullable=False)
+    anchor_expanded = _bounded_int(fields.get(_ANCHOR_COUNT_FIELD, 0), nullable=False)
+    assert anchor_expanded is not None
     assert direct is not None and expanded is not None
     if normalized["status"] == "ready":
-        if normalized["matched_photo_count"] != direct + expanded:
+        if normalized["matched_photo_count"] != direct + expanded + anchor_expanded:
             raise SelfieEventContractError("terminal result counts do not reconcile")
-    elif normalized["matched_photo_count"] != 0 or direct != 0 or expanded != 0:
+    elif any((normalized["matched_photo_count"], direct, expanded, anchor_expanded)):
         raise SelfieEventContractError("non-ready terminal must have zero source counts")
     version = _positive_bounded_int(fields["cluster_corpus_version"], nullable=True)
     configuration_hash = _nullable_hash(fields["cluster_configuration_hash"])

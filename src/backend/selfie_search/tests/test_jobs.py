@@ -16,6 +16,7 @@ from django.db import DatabaseError, IntegrityError, close_old_connections, conn
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
+from feature_flags.models import FeatureFlag
 from ingestion.storage import StorageUnavailable
 from picflow.models import Event, Photo
 from processing.contracts import ClaimedJob
@@ -559,10 +560,16 @@ class SearchJobTests(TestCase):
         self.assertFalse(search.results.exists())
 
     @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
-    def test_enabled_completion_persists_direct_and_cluster_provenance_before_cleanup(self) -> None:
+    def test_cluster_and_anchor_expansions_persist_deduplicated_provenance_before_cleanup(
+        self,
+    ) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="integration-anchor", distance=0.1)
         member = self.add_candidate(search=search, photo_id="integration-member", distance=0.45)
+        self.add_candidate(search=search, photo_id="integration-anchor-only", distance=0.5)
+        FeatureFlag.objects.create(
+            key="face-search-anchor-expansion", state="on", description="Test anchor expansion"
+        )
         generations = search.configuration["gallery_face_embedding_generations"]
         corpus = FaceClusterCorpus.objects.create(
             event=self.event,
@@ -628,13 +635,15 @@ class SearchJobTests(TestCase):
         self.assertEqual(search.status, SelfieSearch.Status.READY)
         self.assertEqual(search.direct_matched_photo_count, 1)
         self.assertEqual(search.cluster_expanded_photo_count, 1)
-        self.assertEqual(search.final_matched_photo_count, 2)
+        self.assertEqual(search.anchor_expanded_photo_count, 1)
+        self.assertEqual(search.final_matched_photo_count, 3)
         self.assertEqual(search.cluster_expansion_outcome, "expanded")
         self.assertEqual(
-            list(search.results.values_list("photo_id", "primary_source")),
+            list(search.results.order_by("rank").values_list("photo_id", "primary_source")),
             [
                 ("integration-anchor", "direct"),
                 ("integration-member", "face_cluster_expansion"),
+                ("integration-anchor-only", "face_anchor_expansion"),
             ],
         )
         events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
@@ -644,14 +653,16 @@ class SearchJobTests(TestCase):
         terminal_event = next(
             event for event in events if event["event"] == "selfie_search_terminal"
         )
-        self.assertEqual(ranking_event["schema_version"], 4)
+        self.assertEqual(ranking_event["schema_version"], 5)
         self.assertEqual(ranking_event["direct_matched_photo_count"], 1)
         self.assertEqual(ranking_event["cluster_expanded_photo_count"], 1)
-        self.assertEqual(ranking_event["final_matched_photo_count"], 2)
+        self.assertEqual(ranking_event["anchor_expanded_photo_count"], 1)
+        self.assertEqual(ranking_event["final_matched_photo_count"], 3)
         self.assertEqual(ranking_event["cluster_expansion_outcome"], "expanded")
-        self.assertEqual(terminal_event["schema_version"], 2)
+        self.assertEqual(terminal_event["schema_version"], 3)
         self.assertEqual(terminal_event["direct_matched_photo_count"], 1)
         self.assertEqual(terminal_event["cluster_expanded_photo_count"], 1)
+        self.assertEqual(terminal_event["anchor_expanded_photo_count"], 1)
         self.assertEqual(terminal_event["cluster_corpus_version"], 1)
         self.assertEqual(
             terminal_event["cluster_configuration_hash"],

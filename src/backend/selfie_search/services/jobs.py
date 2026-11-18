@@ -24,6 +24,7 @@ from psycopg import Cursor
 from selfie_search.models import (
     FaceSearchTask,
     SelfieSearch,
+    SelfieSearchAnchorEvidence,
     SelfieSearchAttempt,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
@@ -613,7 +614,9 @@ def _verify_prepared_result_identity(search: SelfieSearch, expansion: RankedPhot
     if (
         len(expansion.results) != expansion.final_matched_photo_count
         or expansion.final_matched_photo_count
-        != expansion.direct_matched_photo_count + expansion.cluster_expanded_photo_count
+        != expansion.direct_matched_photo_count
+        + expansion.cluster_expanded_photo_count
+        + expansion.anchor_expanded_photo_count
         or SelfieSearchResult.objects.filter(search=search).count()
         != expansion.final_matched_photo_count
         or SelfieSearchDirectEvidence.objects.filter(result__search=search).count()
@@ -623,6 +626,14 @@ def _verify_prepared_result_identity(search: SelfieSearch, expansion: RankedPhot
             primary_source=SelfieSearchResult.PrimarySource.FACE_CLUSTER_EXPANSION,
         ).count()
         != expansion.cluster_expanded_photo_count
+        or (
+            expansion.anchor_expanded_photo_count
+            and SelfieSearchAnchorEvidence.objects.filter(
+                result__search=search,
+                result__primary_source=SelfieSearchResult.PrimarySource.FACE_ANCHOR_EXPANSION,
+            ).count()
+            != expansion.anchor_expanded_photo_count
+        )
     ):
         raise SearchCompletionConflict("prepared selfie result identity failed")
 
@@ -649,17 +660,16 @@ def prepare_search_result(
         ]
         SelfieSearchResult.objects.bulk_create(result_rows)
         result_by_photo = {row.photo_id: row for row in result_rows}
-        SelfieSearchDirectEvidence.objects.bulk_create(
-            [
-                SelfieSearchDirectEvidence(
-                    result=result_by_photo[row.photo_id],
-                    detection_id=row.direct.detection_id,
-                    cosine_distance=row.direct.cosine_distance,
-                )
-                for row in expansion.results
-                if row.direct is not None
-            ]
-        )
+        direct_evidence_by_photo = {
+            row.photo_id: SelfieSearchDirectEvidence(
+                result=result_by_photo[row.photo_id],
+                detection_id=row.direct.detection_id,
+                cosine_distance=row.direct.cosine_distance,
+            )
+            for row in expansion.results
+            if row.direct is not None
+        }
+        SelfieSearchDirectEvidence.objects.bulk_create(direct_evidence_by_photo.values())
         SelfieSearchClusterEvidence.objects.bulk_create(
             [
                 SelfieSearchClusterEvidence(
@@ -676,10 +686,23 @@ def prepare_search_result(
                 for evidence in row.cluster_evidence
             ]
         )
+        SelfieSearchAnchorEvidence.objects.bulk_create(
+            [
+                SelfieSearchAnchorEvidence(
+                    result=result_by_photo[row.photo_id],
+                    anchor=direct_evidence_by_photo[row.anchor_evidence.anchor_photo_id],
+                    detection_id=row.anchor_evidence.detection_id,
+                    cosine_distance=row.anchor_evidence.cosine_distance,
+                )
+                for row in expansion.results
+                if row.anchor_evidence is not None
+            ]
+        )
         _verify_prepared_result_identity(search, expansion)
         search.final_matched_photo_count = expansion.final_matched_photo_count
         search.direct_matched_photo_count = expansion.direct_matched_photo_count
         search.cluster_expanded_photo_count = expansion.cluster_expanded_photo_count
+        search.anchor_expanded_photo_count = expansion.anchor_expanded_photo_count
         search.strong_anchor_count = expansion.strong_anchor_count
         search.expanded_cluster_count = expansion.expanded_cluster_count
         search.cluster_corpus_id = expansion.cluster_corpus_id
@@ -707,6 +730,7 @@ def prepare_search_result(
             "final_matched_photo_count",
             "direct_matched_photo_count",
             "cluster_expanded_photo_count",
+            "anchor_expanded_photo_count",
             "strong_anchor_count",
             "expanded_cluster_count",
             "cluster_corpus",
@@ -830,6 +854,11 @@ def emit_ranking_finished(
         cluster_configuration_hash=cluster_configuration_hash,
         cluster_expansion_ms=cluster_expansion_ms,
         cluster_expansion_outcome=cluster_expansion_outcome,
+        **(
+            {"anchor_expanded_photo_count": expansion.anchor_expanded_photo_count}
+            if expansion is not None and expansion.anchor_expanded_photo_count
+            else {}
+        ),
         configuration_hash=(
             search.configuration_hash
             if len(search.configuration_hash) == 64
@@ -857,6 +886,11 @@ def _emit_search_terminal(*, search: SelfieSearch, now: timezone.datetime) -> No
             cluster_expanded_photo_count=(search.cluster_expanded_photo_count or 0) if ready else 0,
             cluster_corpus_version=search.cluster_corpus_version if ready else None,
             cluster_configuration_hash=search.cluster_configuration_hash if ready else None,
+            **(
+                {"anchor_expanded_photo_count": search.anchor_expanded_photo_count}
+                if ready and search.anchor_expanded_photo_count
+                else {}
+            ),
         )
     except Exception:
         emit_selfie_observability_failure(logger)

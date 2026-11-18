@@ -29,6 +29,14 @@ class RankedPhoto:
     cosine_distance: float
 
 
+@dataclass(frozen=True, slots=True)
+class AnchorMatch:
+    photo_id: str
+    anchor_photo_id: str
+    detection_id: UUID
+    cosine_distance: float
+
+
 @dataclass(frozen=True)
 class _SearchConfiguration:
     model: str

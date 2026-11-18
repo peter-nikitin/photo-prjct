@@ -193,6 +193,8 @@ Callback распознавания селфи сохраняет вектор �
 готового результата Django проверяет текущую доступность найденных фотографий.
 [ADR 0066](adr/0066-store-vectors-in-face-search-queue.md) · [Эксплуатация очереди](runbooks/gallery-search-queue.md)
 
+[Алгоритм поиска по лицу](face-search.md)
+
 <a id="purchase-and-download"></a>
 ## Покупка и выдача
 

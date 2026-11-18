@@ -7,7 +7,7 @@ from uuid import UUID
 
 from django.contrib.postgres.expressions import ArraySubquery
 from django.core.cache import cache
-from django.db.models import Count, Exists, F, Subquery, Value, Window
+from django.db.models import Count, Exists, F, QuerySet, Subquery, Value, Window
 from django.db.models.functions import Greatest, JSONObject, Least, RowNumber
 from pgvector.django import CosineDistance
 from picflow.gallery import retrieval_gallery_photo_queryset
@@ -20,6 +20,18 @@ from selfie_search.services.ranking import RankedPhoto, _configuration, validate
 _COUNT_CACHE_TTL_SECONDS = 60
 
 
+def accepted_kept_faces(search: SelfieSearch, model: str) -> QuerySet[PhotoProcessingState]:
+    """Return current kept vectors in the result photo cohort."""
+    photos = retrieval_gallery_photo_queryset(event=search.event).order_by().values("pk")
+    return PhotoProcessingState.objects.filter(
+        photo_id__in=Subquery(photos),
+        processor_type="face_embedding",
+        accepted_attempt_id__isnull=False,
+        accepted_attempt__face_detections__status=PhotoFaceDetection.Status.KEPT,
+        accepted_attempt__face_detections__embedding_vector__model_version=model,
+    ).order_by()
+
+
 def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRankingOutcome:
     """Rank current vectors; fresh matches and emptiness share one database snapshot."""
     configuration = _configuration(search)
@@ -28,31 +40,18 @@ def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRank
         if isinstance(query_vector, Subquery)
         else list(validate_query_vector(search, query_vector))
     )
-    photos = retrieval_gallery_photo_queryset(event=search.event).order_by().values("pk")
-    states = (
-        PhotoProcessingState.objects.filter(
-            photo_id__in=Subquery(photos),
-            processor_type="face_embedding",
-            accepted_attempt_id__isnull=False,
-            accepted_attempt__face_detections__status=PhotoFaceDetection.Status.KEPT,
-            accepted_attempt__face_detections__embedding_vector__model_version=(
-                configuration.model
-            ),
-        )
-        .annotate(
-            detection_id=F("accepted_attempt__face_detections__id"),
-            distance=Least(
-                Value(2.0),
-                Greatest(
-                    Value(0.0),
-                    CosineDistance(
-                        "accepted_attempt__face_detections__embedding_vector__vector",
-                        query,
-                    ),
+    states = accepted_kept_faces(search, configuration.model).annotate(
+        detection_id=F("accepted_attempt__face_detections__id"),
+        distance=Least(
+            Value(2.0),
+            Greatest(
+                Value(0.0),
+                CosineDistance(
+                    "accepted_attempt__face_detections__embedding_vector__vector",
+                    query,
                 ),
             ),
-        )
-        .order_by()
+        ),
     )
     matches = (
         states.annotate(
@@ -97,7 +96,7 @@ def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRank
         RankedPhoto(
             photo_id=row["photo_id"],
             detection_id=UUID(row["detection_id"]),
-            cosine_distance=row["distance"],
+            cosine_distance=float(row["distance"]),
         )
         for row in result["matches"]
     )

@@ -227,11 +227,15 @@ PY
   `terminal_without_accepted`, `duplicate_logical_events`, `malformed_events`,
   `unknown_schema_or_event`, `late_events`, `ranking_without_terminal`,
   `terminal_without_ranking`, `ranking_terminal_mismatches`.
-- `expansion` агрегирует только ranking/terminal schema v2: `eligible_searches` включает
+- `expansion` агрегирует кластерные результаты из ranking/terminal schema v2 и новее.
+  `eligible_searches` включает
   `expanded`, `no_strong_anchor` и `no_new_photos`, но исключает `disabled`,
   `corpus_unavailable` и `corpus_incompatible`. `added_photos` и `expansion_ms` содержат
   `count`/`p50`/`p95`; `searches_helped_rate` и `incremental_photo_rate` всегда показывают
   целочисленные `numerator`/`denominator` рядом с вычисленным `rate`.
+- При добавлении фотографий от прямых опор ranking v5 и terminal v3 содержат
+  `anchor_expanded_photo_count`. Парсер сверяет этот счётчик и общий итог, а кластерный
+  агрегат `expansion` учитывает сумму прямых и кластерных совпадений.
 - Пустой direct cohort завершает search как `search_unavailable`: ranking может сохранить
   `no_strong_anchor`, но schema v2 очищает corpus identity и duration в обоих событиях. Нулевые
   source counts и совпадающие `null` identity — валидная пара, не mismatch и не eligible sample.

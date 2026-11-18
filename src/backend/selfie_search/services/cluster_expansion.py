@@ -18,7 +18,7 @@ from processing.models import (
 )
 
 from selfie_search.models import SelfieSearch
-from selfie_search.services.ranking import RankedPhoto
+from selfie_search.services.ranking import AnchorMatch, RankedPhoto
 
 
 class ClusterExpansionError(ValueError):
@@ -41,6 +41,7 @@ class ExpandedRankedPhoto:
     primary_source: str
     direct: RankedPhoto | None
     cluster_evidence: tuple[ClusterEvidenceValue, ...]
+    anchor_evidence: AnchorMatch | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,7 @@ class RankedPhotoExpansion:
     cluster_configuration_hash: str | None
     duration_ms: int
     outcome: str
+    anchor_expanded_photo_count: int = 0
 
 
 def expand_ranked_photos(

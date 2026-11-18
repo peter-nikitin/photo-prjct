@@ -805,3 +805,75 @@ def test_v2_reconciliation_mismatch_duplicate_and_malformed_event_make_summary_i
     assert summary.integrity["ranking_terminal_mismatches"] == 1
     assert summary.integrity["malformed_events"] == 1
     assert "SECRET-SENTINEL" not in json.dumps(summary.to_dict(), sort_keys=True)
+
+
+def test_native_anchor_expansion_reconciles_without_inflating_cluster_summary() -> None:
+    summarize = _load_module()
+    search_id = _search_id(721)
+    corpus_hash = "a" * 64
+    ranking = json.loads(
+        _ranking_v2(
+            search_id,
+            direct=2,
+            expanded=1,
+            final=6,
+            anchors=1,
+            clusters=1,
+            corpus_version=7,
+            configuration_hash=corpus_hash,
+            expansion_ms=4,
+        )
+    )
+    ranking.update(
+        schema_version=5,
+        cache_outcome="native",
+        identity_ms=0,
+        build_ms=0,
+        validated_face_count=7,
+        shortlist_count=2,
+        reader="pgvector",
+        native_sql_ms=ranking["rank_ms"],
+        anchor_expanded_photo_count=3,
+    )
+    terminal = json.loads(
+        _terminal_v2(
+            search_id,
+            direct=2,
+            expanded=1,
+            matched=6,
+            corpus_version=7,
+            configuration_hash=corpus_hash,
+        )
+    )
+    terminal.update(schema_version=3, anchor_expanded_photo_count=3)
+
+    summary = summarize.summarize_jsonl(
+        [_submission(search_id), json.dumps(ranking), json.dumps(terminal)],
+        report_date=date(2026, 8, 3),
+    )
+
+    assert summary.complete
+    assert summary.expansion["cluster_expanded_photo_count"] == 1
+    assert summary.expansion["final_matched_photo_count"] == 3
+
+
+def test_native_timing_validation_leaves_other_readers_to_common_event_contract() -> None:
+    summarize = _load_module()
+    legacy_id, native_id = _search_id(731), _search_id(732)
+    records = []
+    for search_id, reader in ((legacy_id, "legacy"), (native_id, "pgvector")):
+        ranking = json.loads(_ranking_v2(search_id))
+        ranking.update(
+            schema_version=4,
+            cache_outcome="miss" if reader == "legacy" else "native",
+            identity_ms=0,
+            build_ms=0,
+            validated_face_count=7,
+            shortlist_count=2,
+            reader=reader,
+            native_sql_ms=None if reader == "legacy" else ranking["rank_ms"],
+        )
+        records.extend([_submission(search_id), json.dumps(ranking), _terminal_v2(search_id)])
+    summary = summarize.summarize_jsonl(records, report_date=date(2026, 8, 3))
+    assert summary.complete
+    assert not any(summary.integrity.values())

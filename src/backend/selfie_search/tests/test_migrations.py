@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.core.management import call_command
 from django.db import connection
@@ -364,3 +365,66 @@ class SharedFaceSearchUpgradeTests(TransactionTestCase):
             )
         finally:
             MigrationExecutor(connection).migrate(leaves)
+
+
+class FaceAnchorExpansionUpgradeTests(TransactionTestCase):
+    make_event = GalleryPhotoSubmissionTests.make_event
+    make_photo = GalleryPhotoSubmissionTests.make_photo
+
+    def test_existing_results_and_writes_from_old_code_keep_default_zero_expansion(self):
+        from selfie_search.models import SelfieSearch
+
+        GalleryPhotoSubmissionTests.setUp(self)
+        direct = self.make_photo(event=self.event, photo_id="legacy-direct")
+        cluster = self.make_photo(event=self.event, photo_id="legacy-cluster")
+        before = [("selfie_search", "0012_publish_before_cleanup")]
+        executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(leaves))
+        executor.migrate(before)
+        old_apps = executor.loader.project_state(before).apps
+        OldSearch = old_apps.get_model("selfie_search", "SelfieSearch")
+        OldResult = old_apps.get_model("selfie_search", "SelfieSearchResult")
+
+        def save_old_result():
+            snapshot = OldSearch.objects.create(
+                event_id=self.event.pk,
+                public_token_digest=uuid4().hex * 2,
+                status="ready",
+                stage="matching",
+                terminal_at=timezone.now(),
+                matched_photo_count=2,
+                direct_matched_photo_count=1,
+                cluster_expanded_photo_count=1,
+                final_matched_photo_count=2,
+            )
+            OldResult.objects.bulk_create(
+                [
+                    OldResult(search_id=snapshot.pk, photo_id=direct.pk, rank=1),
+                    OldResult(
+                        search_id=snapshot.pk,
+                        photo_id=cluster.pk,
+                        primary_source="face_cluster_expansion",
+                        rank=2,
+                    ),
+                ]
+            )
+            return snapshot.pk
+
+        old_search = save_old_result()
+        MigrationExecutor(connection).migrate(leaves)
+        old_code_write = save_old_result()
+        with connection.cursor() as cursor:
+            columns = connection.introspection.get_table_description(
+                cursor, SelfieSearch._meta.db_table
+            )
+        self.assertNotIn("anchor_expansion_staff_eligible", {column.name for column in columns})
+        for pk in (old_search, old_code_write):
+            migrated = SelfieSearch.objects.get(pk=pk)
+            self.assertNotIn("anchor_expansion_staff_eligible", migrated.configuration)
+            self.assertEqual(migrated.anchor_expanded_photo_count, 0)
+            self.assertEqual(migrated.final_matched_photo_count, 2)
+            self.assertEqual(
+                list(migrated.results.order_by("rank").values_list("primary_source", flat=True)),
+                ["direct", "face_cluster_expansion"],
+            )

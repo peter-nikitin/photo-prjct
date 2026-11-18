@@ -66,6 +66,7 @@ class SelfieSearchAdmin(ProvenanceReadOnlyAdmin):
         "final_matched_photo_count",
         "direct_matched_photo_count",
         "cluster_expanded_photo_count",
+        "anchor_expanded_photo_count",
         "cluster_expansion_outcome",
         "created_at",
     )

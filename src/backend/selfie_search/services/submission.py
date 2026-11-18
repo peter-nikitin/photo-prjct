@@ -12,6 +12,8 @@ from django.db import DatabaseError, transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
+from feature_flags.services import is_enabled_for_state
+from feature_flags.states import FEATURE_FLAG_STAFF
 from picflow.gallery import (
     GalleryFaceCrop,
     gallery_face_crop,
@@ -79,6 +81,7 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user)
                 temporary_object_key=stored.key,
                 configuration=configuration,
                 configuration_hash=_configuration_hash(configuration),
+                anchor_expansion_staff_eligible=is_enabled_for_state(FEATURE_FLAG_STAFF, user),
             )
             SelfieSearchJob.objects.create(search=search, configuration=configuration)
     except Exception:
@@ -179,6 +182,7 @@ def submit_gallery_photo_search(
                 configuration=configuration,
                 configuration_hash=_configuration_hash(configuration),
                 state_changed_at=now,
+                anchor_expansion_staff_eligible=is_enabled_for_state(FEATURE_FLAG_STAFF, user),
             )
             enqueue_face_search(
                 search,

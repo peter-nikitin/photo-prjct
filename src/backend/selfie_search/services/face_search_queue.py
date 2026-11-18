@@ -8,15 +8,18 @@ from config.queue_events import notify_queue_completion
 from django.db import DatabaseError, connection, transaction
 from django.db.models import Q, Subquery
 from django.utils import timezone
+from feature_flags.registry import FACE_SEARCH_ANCHOR_EXPANSION
+from feature_flags.services import is_enabled_for_staff_eligibility
 
 from selfie_search.models import FaceSearchTask, SelfieSearch, SelfieSearchAttempt
 from selfie_search.observability import emit_selfie_observability_failure
+from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
 from selfie_search.services.jobs import (
     emit_ranking_finished,
     expand_direct_ranking,
     prepare_search_result,
 )
-from selfie_search.services.ranking import RankingError, _configuration
+from selfie_search.services.ranking import AnchorMatch, RankingError, _configuration
 from selfie_search.services.read_selection import rank_selected_direct
 
 logger = logging.getLogger(__name__)
@@ -92,6 +95,11 @@ def _expired(task: FaceSearchTask, now: datetime) -> bool:
     return task.expires_at is not None and task.expires_at <= now
 
 
+def _set_statement_timeout(timeout_ms: int) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT set_config('statement_timeout', %s, true)", [str(timeout_ms)])
+
+
 def process_face_search(task: FaceSearchTask) -> None:
     search = task.search
     if search.status != SelfieSearch.Status.PROCESSING:
@@ -104,18 +112,42 @@ def process_face_search(task: FaceSearchTask) -> None:
 
     # Resolve the vector inside PostgreSQL so it is never included in the SQL text or worker logs.
     query = Subquery(FaceSearchTask.objects.filter(pk=task.pk).values("vector"))
+    anchor_matches: tuple[AnchorMatch, ...] = ()
     with transaction.atomic():
         timeout_ms = RANKING_TIMEOUT_MS
+        started_at = timezone.now()
         if task.expires_at is not None:
-            remaining_ms = int((task.expires_at - timezone.now()).total_seconds() * 1000)
+            remaining_ms = int((task.expires_at - started_at).total_seconds() * 1000)
             if remaining_ms <= 0:
                 _fail(task, code="matching_query_expired")
                 return
             timeout_ms = min(timeout_ms, remaining_ms)
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT set_config('statement_timeout', %s, true)", [str(timeout_ms)])
+        _set_statement_timeout(timeout_ms)
         ranking = rank_selected_direct(search, query)
+        if ranking.photos and is_enabled_for_staff_eligibility(
+            FACE_SEARCH_ANCHOR_EXPANSION, staff_eligible=search.anchor_expansion_staff_eligible
+        ):
+            source = search.configuration.get("query_source")
+            source_photo_id = source.get("photo_id") if isinstance(source, dict) else None
+            if task.source != FaceSearchTask.Source.GALLERY or isinstance(source_photo_id, str):
+                now = timezone.now()
+                if _expired(task, now):
+                    _fail(task, code="matching_query_expired")
+                    return
+                remaining_ms = timeout_ms - int((now - started_at).total_seconds() * 1000)
+                if remaining_ms <= 0:
+                    _fail(task, code="failed")
+                    return
+                _set_statement_timeout(remaining_ms)
+                anchor_matches = find_anchor_matches(
+                    search,
+                    ranking.photos,
+                    embedding_model=task.embedding_model,
+                    source_photo_id=source_photo_id if isinstance(source_photo_id, str) else None,
+                )
     expansion = expand_direct_ranking(search=search, ranked=ranking.photos, query=query)
+    if anchor_matches:
+        expansion = append_anchor_matches(expansion, anchor_matches)
 
     with transaction.atomic():
         locked_search = SelfieSearch.objects.select_for_update().get(pk=task.search_id)

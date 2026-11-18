@@ -16,6 +16,7 @@ from processing.models import (
 )
 
 JSON_MAX_BYTES = 16_384
+ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY = "anchor_expansion_staff_eligible"
 FEEDBACK_OBJECT_MAX_BYTES = 20 * 1024 * 1024
 FEEDBACK_CONSENT_TEXT_VERSION = "2026-08-05"
 _TERMINAL_SEARCH_STATUSES = (
@@ -77,7 +78,6 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     temporary_object_etag = models.CharField(max_length=128, blank=True, default="")
     configuration = models.JSONField(default=dict, validators=[validate_bounded_json])
     configuration_hash = models.CharField(max_length=64, blank=True, default="")
-    anchor_expansion_staff_eligible = models.BooleanField(default=False, db_default=False)
     eligible_photo_count = models.PositiveIntegerField(default=0)
     eligible_face_count = models.PositiveIntegerField(default=0)
     matched_photo_count = models.PositiveIntegerField(default=0)
@@ -95,7 +95,9 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     )
     direct_matched_photo_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_expanded_photo_count = models.PositiveIntegerField(null=True, blank=True)
-    anchor_expanded_photo_count = models.PositiveIntegerField(default=0, db_default=0)
+    anchor_expanded_photo_count = models.PositiveIntegerField(
+        "anchor-expanded photo count (analytics)", default=0, db_default=0
+    )
     strong_anchor_count = models.PositiveIntegerField(null=True, blank=True)
     expanded_cluster_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_expansion_outcome = models.CharField(  # noqa: DJ001
@@ -425,7 +427,7 @@ class SelfieSearchDirectEvidence(models.Model):  # noqa: DJ008
 
 
 class SelfieSearchAnchorEvidence(models.Model):  # noqa: DJ008
-    """Immutable evidence for the best face-to-anchor match of an added photo."""
+    """Immutable analytics evidence for the best face-to-anchor match of an added photo."""
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     result = models.OneToOneField(
@@ -441,6 +443,8 @@ class SelfieSearchAnchorEvidence(models.Model):  # noqa: DJ008
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        verbose_name = "anchor match evidence (analytics)"
+        verbose_name_plural = "anchor match evidence (analytics)"
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(cosine_distance__gte=0, cosine_distance__lte=0.42),

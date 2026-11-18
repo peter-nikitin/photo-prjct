@@ -6,6 +6,7 @@ from ingestion.storage import ObjectMissing, StorageUnavailable
 
 from selfie_search.models import (
     SelfieSearch,
+    SelfieSearchAnchorEvidence,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
@@ -93,6 +94,13 @@ class SelfieSearchDirectEvidenceAdmin(ProvenanceReadOnlyAdmin):
 @admin.register(SelfieSearchClusterEvidence)
 class SelfieSearchClusterEvidenceAdmin(ProvenanceReadOnlyAdmin):
     list_display = ("created_at",)
+    readonly_fields = list_display
+    fields = readonly_fields
+
+
+@admin.register(SelfieSearchAnchorEvidence)
+class SelfieSearchAnchorEvidenceAdmin(ProvenanceReadOnlyAdmin):
+    list_display = ("cosine_distance", "created_at")
     readonly_fields = list_display
     fields = readonly_fields
 

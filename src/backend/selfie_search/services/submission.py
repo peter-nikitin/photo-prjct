@@ -30,6 +30,7 @@ from processing.services.face_quality import active_face_embedding_generations
 
 from selfie_search.images import PreparedSelfie
 from selfie_search.models import (
+    ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY,
     FaceSearchTask,
     SelfieSearch,
     SelfieSearchJob,
@@ -75,13 +76,15 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user)
             configuration = _configuration(
                 event=event, content_type=content_type, content_size=len(content)
             )
+            configuration[ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY] = is_enabled_for_state(
+                FEATURE_FLAG_STAFF, user
+            )
             search = SelfieSearch.objects.create(
                 event=event,
                 public_token_digest=_token_digest(public_token),
                 temporary_object_key=stored.key,
                 configuration=configuration,
                 configuration_hash=_configuration_hash(configuration),
-                anchor_expansion_staff_eligible=is_enabled_for_state(FEATURE_FLAG_STAFF, user),
             )
             SelfieSearchJob.objects.create(search=search, configuration=configuration)
     except Exception:
@@ -172,6 +175,9 @@ def submit_gallery_photo_search(
             configuration = _gallery_configuration(
                 event=event, photo=photo, detection_id=detection_id
             )
+            configuration[ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY] = is_enabled_for_state(
+                FEATURE_FLAG_STAFF, user
+            )
             query = _gallery_source_vector(event=event, configuration=configuration)
 
             public_token = secrets.token_urlsafe(32)
@@ -182,7 +188,6 @@ def submit_gallery_photo_search(
                 configuration=configuration,
                 configuration_hash=_configuration_hash(configuration),
                 state_changed_at=now,
-                anchor_expansion_staff_eligible=is_enabled_for_state(FEATURE_FLAG_STAFF, user),
             )
             enqueue_face_search(
                 search,

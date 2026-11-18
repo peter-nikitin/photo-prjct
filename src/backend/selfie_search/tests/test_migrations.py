@@ -414,9 +414,14 @@ class FaceAnchorExpansionUpgradeTests(TransactionTestCase):
         old_search = save_old_result()
         MigrationExecutor(connection).migrate(leaves)
         old_code_write = save_old_result()
+        with connection.cursor() as cursor:
+            columns = connection.introspection.get_table_description(
+                cursor, SelfieSearch._meta.db_table
+            )
+        self.assertNotIn("anchor_expansion_staff_eligible", {column.name for column in columns})
         for pk in (old_search, old_code_write):
             migrated = SelfieSearch.objects.get(pk=pk)
-            self.assertFalse(migrated.anchor_expansion_staff_eligible)
+            self.assertNotIn("anchor_expansion_staff_eligible", migrated.configuration)
             self.assertEqual(migrated.anchor_expanded_photo_count, 0)
             self.assertEqual(migrated.final_matched_photo_count, 2)
             self.assertEqual(

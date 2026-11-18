@@ -11,7 +11,12 @@ from django.utils import timezone
 from feature_flags.registry import FACE_SEARCH_ANCHOR_EXPANSION
 from feature_flags.services import is_enabled_for_staff_eligibility
 
-from selfie_search.models import FaceSearchTask, SelfieSearch, SelfieSearchAttempt
+from selfie_search.models import (
+    ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY,
+    FaceSearchTask,
+    SelfieSearch,
+    SelfieSearchAttempt,
+)
 from selfie_search.observability import emit_selfie_observability_failure
 from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
 from selfie_search.services.jobs import (
@@ -124,9 +129,11 @@ def process_face_search(task: FaceSearchTask) -> None:
             timeout_ms = min(timeout_ms, remaining_ms)
         _set_statement_timeout(timeout_ms)
         ranking = rank_selected_direct(search, query)
-        if ranking.photos and is_enabled_for_staff_eligibility(
-            FACE_SEARCH_ANCHOR_EXPANSION, staff_eligible=search.anchor_expansion_staff_eligible
-        ):
+        expand_from_anchors = is_enabled_for_staff_eligibility(
+            FACE_SEARCH_ANCHOR_EXPANSION,
+            staff_eligible=search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True,
+        )
+        if ranking.photos and expand_from_anchors:
             source = search.configuration.get("query_source")
             source_photo_id = source.get("photo_id") if isinstance(source, dict) else None
             if task.source != FaceSearchTask.Source.GALLERY or isinstance(source_photo_id, str):

@@ -855,3 +855,25 @@ def test_native_anchor_expansion_reconciles_without_inflating_cluster_summary() 
     assert summary.complete
     assert summary.expansion["cluster_expanded_photo_count"] == 1
     assert summary.expansion["final_matched_photo_count"] == 3
+
+
+def test_native_timing_validation_leaves_other_readers_to_common_event_contract() -> None:
+    summarize = _load_module()
+    legacy_id, native_id = _search_id(731), _search_id(732)
+    records = []
+    for search_id, reader in ((legacy_id, "legacy"), (native_id, "pgvector")):
+        ranking = json.loads(_ranking_v2(search_id))
+        ranking.update(
+            schema_version=4,
+            cache_outcome="miss" if reader == "legacy" else "native",
+            identity_ms=0,
+            build_ms=0,
+            validated_face_count=7,
+            shortlist_count=2,
+            reader=reader,
+            native_sql_ms=None if reader == "legacy" else ranking["rank_ms"],
+        )
+        records.extend([_submission(search_id), json.dumps(ranking), _terminal_v2(search_id)])
+    summary = summarize.summarize_jsonl(records, report_date=date(2026, 8, 3))
+    assert summary.complete
+    assert not any(summary.integrity.values())

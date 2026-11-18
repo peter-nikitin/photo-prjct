@@ -27,6 +27,10 @@ class Migration(migrations.Migration):
                 ("cosine_distance", models.FloatField()),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
             ],
+            options={
+                "verbose_name": "anchor match evidence (analytics)",
+                "verbose_name_plural": "anchor match evidence (analytics)",
+            },
         ),
         migrations.RemoveConstraint(
             model_name="selfiesearch",
@@ -39,12 +43,9 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="selfiesearch",
             name="anchor_expanded_photo_count",
-            field=models.PositiveIntegerField(db_default=0, default=0),
-        ),
-        migrations.AddField(
-            model_name="selfiesearch",
-            name="anchor_expansion_staff_eligible",
-            field=models.BooleanField(db_default=False, default=False),
+            field=models.PositiveIntegerField(
+                "anchor-expanded photo count (analytics)", db_default=0, default=0
+            ),
         ),
         migrations.AlterField(
             model_name="selfiesearchresult",

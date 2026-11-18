@@ -597,17 +597,16 @@ def _validate_ranking_v3(value: dict[str, Any], *, native: bool) -> None:
 
 
 def _validate_ranking_v4(value: dict[str, Any]) -> None:
-    reader = _choice(value, "reader", ("legacy", "pgvector"))
+    # Native timing belongs only to the PostgreSQL reader.
+    if _required_string(value, "reader") != "pgvector":
+        return
     native_ms = _duration(value, "native_sql_ms", nullable=True)
-    if reader == "legacy" and (native_ms is not None or value["cache_outcome"] == "native"):
-        raise ValueError("legacy ranking cannot have native timing")
-    if reader == "pgvector":
-        if value["outcome"] == "succeeded" and (
-            value["cache_outcome"] != "native" or native_ms != value["rank_ms"]
-        ):
-            raise ValueError("native ranking requires complete SQL timing")
-        if value["outcome"] == "incompatible" and native_ms is not None:
-            raise ValueError("failed native ranking cannot have SQL timing")
+    if value["outcome"] == "succeeded" and (
+        value["cache_outcome"] != "native" or native_ms != value["rank_ms"]
+    ):
+        raise ValueError("native ranking requires complete SQL timing")
+    if value["outcome"] == "incompatible" and native_ms is not None:
+        raise ValueError("failed native ranking cannot have SQL timing")
 
 
 def _anchor_expanded_count(value: dict[str, Any]) -> int:

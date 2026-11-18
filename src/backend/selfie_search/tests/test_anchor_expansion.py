@@ -1,3 +1,5 @@
+import hashlib
+import json
 from io import StringIO
 from math import sqrt
 from unittest.mock import patch
@@ -6,8 +8,9 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.db import DatabaseError, connection
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
 from django.utils import timezone
 from feature_flags.models import FeatureFlag
 from processing.models import PhotoFaceDetection
@@ -94,7 +97,27 @@ class AnchorExpansionTests(TestCase):
             ):
                 with self.subTest(submit=submit, state=at_execution, staff=user.is_staff):
                     self.set_gate("off")
-                    search = submit(user)
+                    with CaptureQueriesContext(connection) as submission_queries:
+                        search = submit(user)
+                    self.assertFalse(
+                        any(
+                            "face-search-anchor-expansion" in query["sql"]
+                            for query in submission_queries
+                        )
+                    )
+                    search.refresh_from_db()
+                    self.assertIs(
+                        search.configuration["anchor_expansion_staff_eligible"],
+                        user.is_staff and user.is_active,
+                    )
+                    self.assertEqual(
+                        search.configuration_hash,
+                        hashlib.sha256(
+                            json.dumps(
+                                search.configuration, sort_keys=True, separators=(",", ":")
+                            ).encode()
+                        ).hexdigest(),
+                    )
                     if at_execution == "missing":
                         FeatureFlag.objects.filter(key="face-search-anchor-expansion").delete()
                     else:
@@ -109,8 +132,63 @@ class AnchorExpansionTests(TestCase):
                             sum("anchor_candidates AS" in query["sql"] for query in queries),
                             int(expected != baseline),
                         )
+                        self.assertEqual(
+                            sum(
+                                'FROM "feature_flags_featureflag"' in query["sql"]
+                                and "face-search-anchor-expansion" in query["sql"]
+                                for query in queries
+                            ),
+                            1,
+                        )
                     finally:
                         get_user_model().objects.filter(pk=user.pk).update(is_staff=user.is_staff)
+
+    def test_staff_gate_requires_a_json_boolean_true_in_the_search_snapshot(self):
+        source = self.add_face("query-source", 1)
+        self.add_face("anchor", 0.75)
+        self.add_face("addition", 0.5)
+        self.set_gate("staff")
+        staff = get_user_model().objects.create_user(username="snapshot-staff", is_staff=True)
+        for invalid_eligibility in (None, 1, "true"):
+            with self.subTest(staff_eligibility=invalid_eligibility):
+                search = self.submit_gallery(source, staff)
+                configuration = search.configuration.copy()
+                if invalid_eligibility is None:
+                    configuration.pop("anchor_expansion_staff_eligible", None)
+                else:
+                    configuration["anchor_expansion_staff_eligible"] = invalid_eligibility
+                SelfieSearch.objects.filter(pk=search.pk).update(
+                    configuration=configuration,
+                    configuration_hash=hashlib.sha256(
+                        json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest(),
+                )
+                self.assertTrue(run_once())
+                self.assertEqual(self.result_photos(search), ["query-source", "anchor"])
+
+    @override_settings(
+        STORAGES={
+            "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}
+        }
+    )
+    def test_admin_marks_anchor_evidence_as_read_only_analytics(self):
+        self.set_gate("on")
+        source = self.add_face("query-source", 1)
+        anchor = self.add_face("anchor", 0.75)
+        addition = self.add_face("addition", 0.5)
+        search = self.submit_gallery(source)
+        self.assertTrue(run_once())
+        evidence = search.results.get(photo_id="addition").anchor_evidence
+
+        user = get_user_model().objects.create_superuser(username="anchor-admin")
+        self.client.force_login(user)
+        url = reverse("admin:selfie_search_selfiesearchanchorevidence_change", args=(evidence.pk,))
+        response = self.client.get(url)
+        self.assertContains(response, "Anchor match evidence (analytics)")
+        self.assertContains(response, "Cosine distance")
+        self.assertNotContains(response, str(anchor.detection_id))
+        self.assertNotContains(response, str(addition.detection_id))
+        self.assertEqual(self.client.post(url, {"cosine_distance": 0}).status_code, 403)
 
     def test_selects_three_diverse_anchors_and_saves_the_best_single_evidence(self):
         self.set_gate("on")

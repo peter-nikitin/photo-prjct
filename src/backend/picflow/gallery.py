@@ -311,17 +311,25 @@ def _legacy_or_clean_preview_ready() -> Q:
     )
 
 
+def _watermarked_preview_ready() -> Q:
+    return Q(
+        gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
+        gallery_media_projection__watermarked_preview_final_key__isnull=False,
+    )
+
+
+def gallery_media_policy_ready() -> Q:
+    """Technical readiness of an accepted original under its persisted media policy."""
+    return _legacy_or_clean_preview_ready() | _watermarked_preview_ready()
+
+
 def _gallery_media_eligibility(
     *,
     paid_watermarked_previews_enabled: bool,
     keep_legacy_saved_members: bool = False,
 ) -> Q:
     legacy_or_clean = _legacy_or_clean_preview_ready()
-    watermarked = Q(
-        event__access_type=Event.AccessType.PAID,
-        gallery_media_policy=Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED,
-        gallery_media_projection__watermarked_preview_final_key__isnull=False,
-    )
+    watermarked = Q(event__access_type=Event.AccessType.PAID) & _watermarked_preview_ready()
     if keep_legacy_saved_members:
         gated_watermarked = watermarked if paid_watermarked_previews_enabled else Q(pk__in=())
         return legacy_or_clean | gated_watermarked

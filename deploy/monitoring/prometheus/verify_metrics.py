@@ -34,6 +34,11 @@ SOURCES = {
             {"__name__": "findme_selfie_search_queue_depth", "job": "findme-http", "stage": stage}
             for stage in ("recognition", "matching")
         ),
+        *(
+            {"__name__": f"findme_photo_import_{kind}_count", "job": "findme-http", "queue": queue}
+            for kind in ("pending", "failed")
+            for queue in ("photo_import_gallery", "photo_import_face")
+        ),
     ),
     "queue-telemetry": (
         {"__name__": "findme_queue_telemetry_listening", "job": "findme-queue-telemetry"},

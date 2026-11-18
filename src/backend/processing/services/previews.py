@@ -27,6 +27,7 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
+from processing.photo_import_telemetry import schedule_photo_import_completion
 from processing.services import jobs
 from processing.storage import ExactPreviewStorage, ObjectConflict, PreviewObject
 
@@ -341,6 +342,7 @@ def _publish_after_verification(
         jobs._close_locked_run_if_terminal(run, now)
         if profile.variant == "preview-small-v1":
             transaction.on_commit(observe_accepted_preview, robust=True)
+        schedule_photo_import_completion(photo, attempt)
         return AttemptCompletion(attempt=attempt)
 
 

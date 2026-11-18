@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 
 from commerce.models import EmailDelivery, EmailDeliveryAttempt, PaymentAttempt
@@ -14,6 +16,7 @@ from django.utils import timezone
 from ingestion.models import ImportAttempt, ImportBatch, ImportItem
 from ingestion.services.imports import MAX_OPERATION_ATTEMPTS, _owner_is_eligible
 from processing.models import EventProcessingRun, PhotoProcessingState, ProcessingJob
+from processing.photo_import_telemetry import photo_import_backlogs
 from processing.services.worker_pool_state import BULK_IDENTITIES
 from selfie_search.models import FaceSearchTask, SelfieSearch, SelfieSearchJob
 
@@ -212,18 +215,30 @@ def collect_queue_samples() -> dict[str, QueueSample]:
         ("commerce", _commerce),
     ):
         try:
-            with transaction.atomic():
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT current_setting('statement_timeout')")
-                    previous_timeout = cursor.fetchone()[0]
-                    cursor.execute("SET LOCAL statement_timeout = 2000")
+            with _observation_timeout():
                 sample = collector(now)
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT set_config('statement_timeout', %s, true)", [previous_timeout]
-                    )
             if sample is not None:
                 samples[name] = sample
         except (DatabaseError, ValueError):
             continue
     return samples
+
+
+@contextmanager
+def _observation_timeout() -> Iterator[None]:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT current_setting('statement_timeout')")
+            previous_timeout = cursor.fetchone()[0]
+            cursor.execute("SET LOCAL statement_timeout = 2000")
+        yield
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT set_config('statement_timeout', %s, true)", [previous_timeout])
+
+
+def collect_photo_import_backlogs() -> dict[str, tuple[int, int]]:
+    try:
+        with _observation_timeout():
+            return photo_import_backlogs()
+    except DatabaseError:
+        return {}

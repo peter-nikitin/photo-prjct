@@ -26,6 +26,7 @@ from ingestion.services.imports import (
 from ingestion.storage import ObjectIdentity, ObjectMissing, UploadGrant
 from picflow.models import Event, Photo
 from processing.models import PhotoProcessingState
+from processing.photo_import_telemetry import FACE_QUEUE, GALLERY_QUEUE, photo_import_backlogs
 from prometheus_client import REGISTRY
 
 
@@ -84,7 +85,14 @@ class ImportPublicationTests(TestCase):
         self.flags = {YANDEX_DISK_IMPORT: FEATURE_FLAG_ON}
         self.storage = FakeImportStorage()
 
-    def ready_item(self, *, submission: str, source_path: str, sha256: str = "a" * 64):
+    def ready_item(
+        self,
+        *,
+        submission: str,
+        source_path: str,
+        sha256: str = "a" * 64,
+        oriented_geometry: tuple[int, int] | None = None,
+    ):
         with override_feature_flags(self.flags):
             batch = create_import(
                 actor=self.owner,
@@ -125,6 +133,7 @@ class ImportPublicationTests(TestCase):
                 content_sha256=sha256,
                 byte_size=100,
                 storage=self.storage,
+                oriented_geometry=oriented_geometry,
             )
         item = ImportItem.objects.get(pk=claim.item_id)
         attempt = ImportAttempt.objects.get(pk=claim.attempt_id)
@@ -135,6 +144,7 @@ class ImportPublicationTests(TestCase):
                 content_sha256=sha256,
                 byte_size=100,
                 storage=self.storage,
+                oriented_geometry=oriented_geometry,
             )
         self.assertEqual(replay.status, prepared.status)
         item.refresh_from_db()
@@ -179,6 +189,19 @@ class ImportPublicationTests(TestCase):
             PhotoProcessingState.objects.filter(photo_id=first.photo_id).count(),
             1,
         )
+
+    @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=True)
+    def test_accepted_disk_import_enters_each_global_backlog_once(self) -> None:
+        _, claim, _, item = self.ready_item(
+            submission="photo-backlogs", source_path="/photo.jpg", oriented_geometry=(64, 40)
+        )
+        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)})
+        with override_feature_flags(self.flags):
+            for _ in range(2):
+                complete_import_item(
+                    attempt_id=claim.attempt_id, item_id=item.id, storage=self.storage
+                )
+        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
 
     @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=False)
     def test_same_content_in_same_scope_is_skipped_but_other_scope_is_not(self) -> None:

@@ -131,6 +131,12 @@ def collect_queue_samples() -> dict[str, tuple[int, float, float, float]]:
     return collect()
 
 
+def collect_photo_import_backlogs() -> dict[str, tuple[int, int]]:
+    from config.queue_metrics import collect_photo_import_backlogs as collect
+
+    return collect()
+
+
 def observe_accepted_preview() -> None:
     ACCEPTED_PREVIEWS.inc()
 
@@ -285,6 +291,19 @@ def generate_metrics() -> bytes:
                 f'findme_queue_oldest_ready_age_seconds{{queue="{queue}"}} {age}',
                 f'findme_queue_last_success_timestamp_seconds{{queue="{queue}"}} {success_at}',
                 f'findme_queue_observed_timestamp_seconds{{queue="{queue}"}} {observed_at}',
+            )
+        )
+    lines.extend(
+        (
+            "# TYPE findme_photo_import_pending_count gauge",
+            "# TYPE findme_photo_import_failed_count gauge",
+        )
+    )
+    for queue, (pending, failed) in collect_photo_import_backlogs().items() if success else ():
+        lines.extend(
+            (
+                f'findme_photo_import_pending_count{{queue="{queue}"}} {pending}',
+                f'findme_photo_import_failed_count{{queue="{queue}"}} {failed}',
             )
         )
     return generate_latest(registry) + ("\n".join(lines) + "\n").encode()

@@ -37,6 +37,7 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingJob,
 )
+from processing.photo_import_telemetry import FACE_QUEUE, GALLERY_QUEUE, photo_import_backlogs
 from processing.services.jobs import claim_job, complete_attempt, fail_attempt
 from processing.services.previews import complete_preview_attempt
 from processing.storage import ObjectConflict, PreviewObject
@@ -354,6 +355,7 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
         )
 
         photo = self.confirm_jpeg(event, filename="new-paid.jpg")
+        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
 
         self.assertEqual(
             (photo.processing_generation, photo.gallery_media_policy),
@@ -389,8 +391,18 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
         self.assertIn(str(clean.accepted_attempt_id), clean.final_key)
         self.assertNotEqual(clean.final_key, photo.original_key)
 
-        detection = self.complete_face(photo)
-        watermarked = self.publish_watermark(photo, label="paid-watermarked")
+        with patch("config.queue_events.notify_queue_completion") as notify:
+            with self.captureOnCommitCallbacks(execute=True):
+                detection = self.complete_face(photo)
+            self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (0, 0)})
+            with self.captureOnCommitCallbacks(execute=True):
+                watermarked = self.publish_watermark(photo, label="paid-watermarked")
+        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)})
+        calls = notify.call_args_list
+        self.assertEqual([call.args[0] for call in calls], [FACE_QUEUE, GALLERY_QUEUE])
+        face_segments, gallery_segments = (call.args[1] for call in calls)
+        self.assertEqual(face_segments["preview_wait"], gallery_segments["preview_wait"])
+        self.assertEqual(face_segments["preview_elapsed"], gallery_segments["preview_elapsed"])
 
         self.assertEqual(
             list(PhotoDerivative.objects.filter(photo=photo).values_list("variant", flat=True)),

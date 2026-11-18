@@ -122,6 +122,9 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
 class MultiprocessMetricsTests(SimpleTestCase):
     def setUp(self):
         super().setUp()
+        import_patch = patch("config.metrics.collect_photo_import_backlogs", return_value={})
+        import_patch.start()
+        self.addCleanup(import_patch.stop)
         queue_patch = patch("config.metrics.collect_queue_samples", return_value={})
         queue_patch.start()
         self.addCleanup(queue_patch.stop)

@@ -22,6 +22,10 @@ def test_application_check_succeeds_without_completion_traffic():
         ("findme_gallery_search_queue_depth", "findme-http", None): 0,
         ("findme_selfie_search_queue_depth", "findme-http", "recognition"): 0,
         ("findme_selfie_search_queue_depth", "findme-http", "matching"): 0,
+        ("findme_photo_import_pending_count", "findme-http", "photo_import_gallery"): 0,
+        ("findme_photo_import_failed_count", "findme-http", "photo_import_gallery"): 0,
+        ("findme_photo_import_pending_count", "findme-http", "photo_import_face"): 0,
+        ("findme_photo_import_failed_count", "findme-http", "photo_import_face"): 0,
     }
 
     class Transport:
@@ -29,7 +33,13 @@ def test_application_check_succeeds_without_completion_traffic():
             return [
                 [[(990, samples[key])]] if key in samples else []
                 for selector in selectors
-                for key in [(selector["__name__"], selector["job"], selector.get("stage"))]
+                for key in [
+                    (
+                        selector["__name__"],
+                        selector["job"],
+                        selector.get("stage", selector.get("queue")),
+                    )
+                ]
             ]
 
     checker.check(Transport(), "application", now=1000)

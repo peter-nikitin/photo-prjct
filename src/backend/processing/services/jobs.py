@@ -28,6 +28,7 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
+from processing.photo_import_telemetry import schedule_photo_import_completion
 from processing.services.face_quality import (
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSIONS,
@@ -310,6 +311,8 @@ def _terminal_submission(
                     state=state,
                     accepted_attempt=attempt if attempt.processor_version == 2 else None,
                 )
+            if attempt.processor_type == FACE_EMBEDDING_PROCESSOR:
+                schedule_photo_import_completion(photo, attempt)
         else:
             _terminal_failure(attempt, payload, now)
             _transition_failure(run, job, state, attempt, now=now, jitter=jitter)

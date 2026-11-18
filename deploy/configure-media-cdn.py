@@ -123,7 +123,7 @@ def rules(
     }
     private = {
         "secureKey": {"enabled": True, "type": "DISABLE_IP_SIGNING", "key": token},
-        "staticHeaders": {"enabled": True, "value": {"Cache-Control": "private, no-store"}},
+        "staticHeaders": {"enabled": True, "value": {"Cache-Control": "private, no-cache"}},
     }
     storage_options = {
         **cache,
@@ -138,6 +138,7 @@ def rules(
             storage_id,
             {
                 **storage_options,
+                "browserCacheSettings": {"enabled": True, "value": "31536000"},
                 "secureKey": {"enabled": False},
             },
         ),

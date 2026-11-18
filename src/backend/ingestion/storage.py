@@ -66,6 +66,7 @@ class OpenedObject:
     size: int
     content_type: Literal["image/jpeg", "image/png"]
     content_range: str | None = None
+    etag_wire: str | None = None
 
 
 class StorageError(Exception):
@@ -252,6 +253,7 @@ class PrivateUploadStorage:
             size=size,
             content_type=content_type,
             content_range=response.get("ContentRange"),
+            etag_wire=response.get("ETag"),
         )
 
     def read_range(self, *, key: str, etag_wire: str, start: int, end: int) -> bytes:

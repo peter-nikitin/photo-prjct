@@ -1832,17 +1832,9 @@
                 {
                   "monitoringTarget": {
                     "dataSourceId": "bc5aa99a-1242-59a9-a824-d50072cd4be6",
-                    "query": "alias(1000 * series_sum(\"rps\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"storage\", resource_id=\"findme-photo-media-delivery-prod-b1g2qttg|findme-photo-media-originals-prod-b1g2qttg\", method=\"GetRequests\"}) / drop_below(series_sum(\"edge.requests\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}), 1e-12), \"GET\")",
+                    "query": "alias(100 * series_sum(\"edge.requests_cache_status\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\", cache_status=\"MISS|EXPIRED|NO_CACHE\"}) / drop_below(series_sum(\"edge.requests_cache_status\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\", cache_status=\"HIT|MISS|EXPIRED|NO_CACHE\"}), 1e-12), \"Вне кеша\")",
                     "textMode": true,
                     "name": "A"
-                  }
-                },
-                {
-                  "monitoringTarget": {
-                    "dataSourceId": "bc5aa99a-1242-59a9-a824-d50072cd4be6",
-                    "query": "alias(1000 * series_sum(\"rps\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"storage\", resource_id=\"findme-photo-media-delivery-prod-b1g2qttg|findme-photo-media-originals-prod-b1g2qttg\", method=\"HeadRequests\"}) / drop_below(series_sum(\"edge.requests\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}), 1e-12), \"HEAD\")",
-                    "textMode": true,
-                    "name": "B"
                   }
                 }
               ],
@@ -1866,8 +1858,8 @@
                   }
                 }
               },
-              "title": "Чтения S3 на 1000 запросов к CDN",
-              "description": "Суммарная нагрузка двух бакетов, нормированная на трафик CDN. При нулевом трафике CDN график оставляет пропуск."
+              "title": "Доля ответов CDN вне кеша, %",
+              "description": "Доля MISS, EXPIRED и NO_CACHE среди всех статусов кеша CDN. Например, 20% означает 200 ответов вне кеша на 1000 запросов. NO_CACHE включает ответы без кеширования, в том числе отказы в доступе. Число чтений S3 показано отдельно на графике GET и HEAD. При отсутствии запросов график оставляет пропуск."
             },
             "position": {
               "w": "12",

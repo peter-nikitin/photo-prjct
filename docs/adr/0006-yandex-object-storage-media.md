@@ -4,7 +4,7 @@
 - Date: 2026-07-12
 - Deciders: project maintainer
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0068](0068-separate-originals-event-media-and-operational-storage.md) for bucket layout and preview access.
 
 ## Context
 

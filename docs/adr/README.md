@@ -88,3 +88,4 @@ ADR фиксирует долговременный выбор, причины, 
 | 0065 | [Проверять публичную доступность вне VM бессерверной функцией](0065-run-public-probe-as-serverless-function.md) | Proposed |
 | 0066 | [Передавать вектор в задаче общей очереди поиска по лицу](0066-store-vectors-in-face-search-queue.md) | Accepted |
 | 0067 | [Собирать телеметрию очередей из событий завершения](0067-aggregate-queue-telemetry-from-completion-events.md) | Accepted |
+| 0068 | [Разделить оригиналы, медиа мероприятий и временные файлы](0068-separate-originals-event-media-and-operational-storage.md) | Accepted |

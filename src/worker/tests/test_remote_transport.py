@@ -102,14 +102,17 @@ def test_remote_api_real_tls_verification_and_no_alternate_attempt(scenario, mon
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
+            assert self.rfile.read(int(self.headers["Content-Length"])) == b"{}"
             requests.append((self.path, self.headers.get("Authorization")))
+            body = b'{"ok":true}'
             self.send_response(
                 302 if scenario == "redirect" else 401 if scenario == "unauthorized" else 200
             )
             if scenario == "redirect":
                 self.send_header("Location", "http://alternate.test/credential-sink")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(b'{"ok":true}')
+            self.wfile.write(body)
 
         def log_message(self, *_args):
             pass

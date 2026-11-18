@@ -5,7 +5,7 @@
 - Авторы решения: владелец проекта
 - Заменяет: схему бакетов и выдачу превью из [ADR 0006](0006-yandex-object-storage-media.md),
   размещение входящих и финальных объектов из [ADR 0013](0013-use-direct-private-object-storage-ingestion.md)
-- Заменено: нет
+- Заменено: [ADR 0069](0069-serve-media-through-cdn-without-imgproxy.md) для роли прежнего image origin.
 
 ## Контекст
 

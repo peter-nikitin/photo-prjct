@@ -5,6 +5,7 @@
 - Deciders: project maintainer
 - Approval: maintainer requested CDN delivery for cart and order thumbnails after the current paths and HTML-time order authorization were explained.
 - Supersedes: [ADR 0038](0038-deliver-gallery-grid-images-through-cdn-and-imgproxy.md) only for its exclusion of commerce small-preview presentation.
+- Superseded by: [ADR 0069](0069-serve-media-through-cdn-without-imgproxy.md) для маршрутизации и преобразования при выдаче миниатюр.
 
 ## Context and decision
 

@@ -1,7 +1,8 @@
 from commerce import views as commerce_views
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
 from django.views.decorators.gzip import gzip_page
+from picflow.cdn_origin import original_origin
 from processing.admin_progress import admin_processing_progress
 from processing.telemetry_views import metrics as worker_diagnostic_metrics
 
@@ -9,6 +10,11 @@ from config import views
 from config.web_vitals import web_vitals
 
 urlpatterns = [
+    re_path(
+        r"^delivery/originals/(?P<object_id>[0-9a-f]{32})/"
+        r"(?P<disposition>inline|findme-photo-[A-Za-z0-9_-]{1,32}\.(?:jpg|png))\Z",
+        original_origin,
+    ),
     path("", include("picflow.event_management_urls")),
     path("internal/photo-processing/v1/", include("processing.urls")),
     path("internal/photo-import/v1/", include("ingestion.import_worker_urls")),

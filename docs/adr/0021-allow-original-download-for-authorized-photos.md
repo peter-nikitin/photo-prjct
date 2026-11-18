@@ -6,6 +6,7 @@
 - Supersedes: ADR 0019 and ADR 0020 only for their exclusion of attachment downloads
 - Superseded by: [ADR 0029](0029-use-watermarked-previews-for-paid-photos.md) for original-download
   authorization by the new paid-photo generation only
+- Superseded by: [ADR 0069](0069-serve-media-through-cdn-without-imgproxy.md) для транспорта скачиваний через CDN.
 
 ## Context
 

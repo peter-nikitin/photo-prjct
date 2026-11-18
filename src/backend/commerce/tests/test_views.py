@@ -1,4 +1,3 @@
-import base64
 from datetime import date, timedelta
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -48,15 +47,16 @@ FLAG_ON = FEATURE_FLAG_ON
 CDN_SETTINGS = {
     "GALLERY_CDN_ORIGIN": "https://img.example.test",
     "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
-    "GALLERY_IMGPROXY_KEY": "736563726574",
-    "GALLERY_IMGPROXY_SALT": "68656c6c6f",
     "EVENT_MEDIA_S3_BUCKET": "gallery-media",
+    "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "PUBLICEXAMPLE",
+    "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "secret-example",
+    "PRIVATE_MEDIA_S3_ENDPOINT_URL": "https://storage.yandexcloud.net",
+    "PRIVATE_MEDIA_S3_REGION": "ru-central1",
 }
 
 
-def cdn_source(url: str) -> str:
-    encoded = urlsplit(url).path.rsplit("/", 1)[-1].removesuffix(".jpg")
-    return base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+def cdn_path(url: str) -> str:
+    return urlsplit(url).path
 
 
 @override_settings(
@@ -774,8 +774,8 @@ class CartViewTests(TestCase):
         small_url = shown.photo.preview_media_small.url
         self.assertContains(response, "https://img.example.test/")
         self.assertEqual(
-            cdn_source(small_url),
-            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
+            cdn_path(small_url),
+            f"/gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
         )
         self.assertNotIn(other.pk, response.content.decode())
         self.assertEqual(
@@ -815,10 +815,10 @@ class CartViewTests(TestCase):
             direct_url,
         )
         self.assertEqual(
-            cdn_source(
+            cdn_path(
                 staff_response.context["cart_presentation"].photos[0].photo.preview_media_small.url
             ),
-            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
+            f"/gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
         )
 
     @override_settings(**CDN_SETTINGS)
@@ -836,10 +836,8 @@ class CartViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "https://img.example.test/")
         self.assertEqual(
-            cdn_source(
-                response.context["cart_presentation"].photos[0].photo.preview_media_small.url
-            ),
-            f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
+            cdn_path(response.context["cart_presentation"].photos[0].photo.preview_media_small.url),
+            f"/gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
         )
 
     @override_settings(
@@ -886,8 +884,8 @@ class CartViewTests(TestCase):
             self.assertNotContains(response, "data-web-vitals-page=")
             (shown,) = response.context["order_presentation"].photos
             self.assertEqual(
-                cdn_source(shown.photo.preview_media_small.url),
-                f"s3://gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
+                cdn_path(shown.photo.preview_media_small.url),
+                f"/gallery-media/{self.photo.gallery_media_projection.watermarked_preview_final_key.removeprefix('derivatives/')}",
             )
             self.assertNotIn(other.pk, response.content.decode())
             self.assertContains(response, "Скачать оригинал")

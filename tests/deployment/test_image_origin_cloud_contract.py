@@ -339,16 +339,19 @@ def _apply_origin_access_phase(tmp_path: Path, environment: dict[str, str]) -> d
     return _plan(result)
 
 
-def test_origin_credentials_are_not_granted_to_application_consumers() -> None:
+def test_origin_credentials_are_scoped_to_delivery_consumers() -> None:
     manifest = json.loads(MANIFEST.read_text())
     consumers = {name: set(keys) for name, keys in manifest["consumers"].items()}
-    origin_private = {
+    origin_storage_credentials = {
         "IMAGE_ORIGIN_S3_ACCESS_KEY_ID",
         "IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY",
-        "IMAGE_ORIGIN_HEADER_SECRET",
     }
-    for consumer in ("local-web", "deploy"):
-        assert consumers[consumer].isdisjoint(origin_private)
+    for consumer in ("local-web", "deploy", "media-cdn"):
+        assert consumers[consumer].isdisjoint(origin_storage_credentials)
+    header_secret = "IMAGE_ORIGIN_HEADER_SECRET"
+    assert header_secret in consumers["deploy"]
+    assert header_secret not in consumers["local-web"]
+    assert consumers["media-cdn"] == {header_secret, "GALLERY_CDN_TOKEN_SECRET"}
     assert "GALLERY_CDN_TOKEN_SECRET" not in consumers["image-origin"]
     assert consumers["image-delivery-provision"].isdisjoint(
         {"IMAGE_ORIGIN_S3_SECRET_ACCESS_KEY", "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY"}

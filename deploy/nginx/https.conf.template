@@ -5,6 +5,7 @@ map $uri $selfie_search_access_client_address {
     ~^/events/[^/]+/selfie-search(?:/|$) "-";
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
     ~^/orders/[^/]+/download/$ "-";
+    ~^/delivery/originals/ "-";
 }
 
 map $uri $selfie_search_access_remote_user {
@@ -12,6 +13,7 @@ map $uri $selfie_search_access_remote_user {
     ~^/events/[^/]+/selfie-search(?:/|$) "-";
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
     ~^/orders/[^/]+/download/$ "-";
+    ~^/delivery/originals/ "-";
 }
 
 map $uri $selfie_search_access_request {
@@ -20,6 +22,7 @@ map $uri $selfie_search_access_request {
     ~^/events/[^/]+/selfie-search/[^/]+(?:/|$) "$request_method <selfie-search>";
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "$request_method <order-access>";
     ~^/orders/[^/]+/download/$ "$request_method <order-archive>";
+    ~^/delivery/originals/ "$request_method <media-original>";
 }
 
 map $uri $selfie_search_access_referrer {
@@ -27,6 +30,7 @@ map $uri $selfie_search_access_referrer {
     ~^/events/[^/]+/selfie-search(?:/|$) "-";
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
     ~^/orders/[^/]+/download/$ "-";
+    ~^/delivery/originals/ "-";
 }
 
 map $uri $selfie_search_access_user_agent {
@@ -34,6 +38,7 @@ map $uri $selfie_search_access_user_agent {
     ~^/events/[^/]+/selfie-search(?:/|$) "-";
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
     ~^/orders/[^/]+/download/$ "-";
+    ~^/delivery/originals/ "-";
 }
 
 log_format selfie_search_safe '$selfie_search_access_client_address - $selfie_search_access_remote_user [$time_local] '
@@ -221,6 +226,19 @@ server {
         add_header X-Frame-Options "DENY" always;
 
         proxy_pass http://django_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host ${PUBLIC_DOMAIN};
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-SSL on;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ^~ /delivery/originals/ {
+        error_log /dev/null emerg;
+        set $args "";
+        proxy_pass http://django_upstream/delivery/originals/;
         proxy_http_version 1.1;
         proxy_set_header Host ${PUBLIC_DOMAIN};
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

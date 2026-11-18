@@ -1,4 +1,3 @@
-import base64
 import json
 from datetime import UTC, date, datetime, timedelta
 from gzip import decompress
@@ -73,9 +72,11 @@ from picflow.models import Event, EventFolder, Photo
 GALLERY_CDN_TEST_SETTINGS = {
     "GALLERY_CDN_ORIGIN": "https://img.example.test",
     "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
-    "GALLERY_IMGPROXY_KEY": "736563726574",
-    "GALLERY_IMGPROXY_SALT": "68656c6c6f",
     "EVENT_MEDIA_S3_BUCKET": "gallery-media",
+    "PRIVATE_MEDIA_S3_ACCESS_KEY_ID": "PUBLICEXAMPLE",
+    "PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY": "secret-example",
+    "PRIVATE_MEDIA_S3_ENDPOINT_URL": "https://storage.yandexcloud.net",
+    "PRIVATE_MEDIA_S3_REGION": "ru-central1",
 }
 
 
@@ -143,10 +144,8 @@ class ImageMarkupParser(HTMLParser):
             self.sources.append(source)
 
 
-def cdn_source_uri(url: str) -> str:
-    encoded_source = urlsplit(url).path.rsplit("/", 1)[-1].removesuffix(".jpg")
-    padded_source = encoded_source + "=" * (-len(encoded_source) % 4)
-    return base64.urlsafe_b64decode(padded_source).decode("utf-8")
+def cdn_path(url: str) -> str:
+    return urlsplit(url).path
 
 
 @override_settings(
@@ -1029,8 +1028,6 @@ class GalleryPageTests(TestCase):
     @override_settings(
         GALLERY_CDN_ORIGIN="",
         GALLERY_CDN_TOKEN_SECRET="",
-        GALLERY_IMGPROXY_KEY="",
-        GALLERY_IMGPROXY_SALT="",
     )
     @patch("config.views.PrivateUploadStorage")
     def test_gallery_cdn_gate_off_uses_direct_preview_without_validating_cdn_settings(
@@ -1093,8 +1090,8 @@ class GalleryPageTests(TestCase):
         staff_url = staff.context["gallery_photos"][0].preview_media_small.url
         self.assertTrue(staff_url.startswith("https://img.example.test/"))
         self.assertEqual(
-            cdn_source_uri(staff_url),
-            f"s3://gallery-media/{derivative.final_key.removeprefix('derivatives/')}",
+            cdn_path(staff_url),
+            f"/gallery-media/{derivative.final_key.removeprefix('derivatives/')}",
         )
 
     @override_settings(**GALLERY_CDN_TEST_SETTINGS)
@@ -1134,8 +1131,8 @@ class GalleryPageTests(TestCase):
         self.assertLessEqual(len(set(card_urls)), 100)
         self.assertTrue(all(url.startswith("https://img.example.test/") for url in card_urls))
         self.assertEqual(
-            {cdn_source_uri(url) for url in card_urls},
-            {f"s3://gallery-media/{key.removeprefix('derivatives/')}" for key in expected_keys},
+            {cdn_path(url) for url in card_urls},
+            {f"/gallery-media/{key.removeprefix('derivatives/')}" for key in expected_keys},
         )
         image_markup = ImageMarkupParser()
         image_markup.feed(response.content.decode(response.charset))
@@ -1195,8 +1192,8 @@ class GalleryPageTests(TestCase):
             presentation.preview_media_small.url.startswith("https://img.example.test/")
         )
         self.assertEqual(
-            cdn_source_uri(presentation.preview_media_small.url),
-            f"s3://gallery-media/{watermarked.final_key.removeprefix('derivatives/')}",
+            cdn_path(presentation.preview_media_small.url),
+            f"/gallery-media/{watermarked.final_key.removeprefix('derivatives/')}",
         )
         self.assertNotIn(clean.final_key, response.content.decode(response.charset))
         self.assertEqual(
@@ -1234,8 +1231,6 @@ class GalleryPageTests(TestCase):
     @override_settings(
         GALLERY_CDN_ORIGIN="",
         GALLERY_CDN_TOKEN_SECRET="",
-        GALLERY_IMGPROXY_KEY="",
-        GALLERY_IMGPROXY_SALT="",
     )
     @patch("config.views.PrivateUploadStorage")
     def test_enabled_gallery_cdn_configuration_failure_returns_sanitized_503(
@@ -1268,8 +1263,6 @@ class GalleryPageTests(TestCase):
     @override_settings(
         GALLERY_CDN_ORIGIN="",
         GALLERY_CDN_TOKEN_SECRET="",
-        GALLERY_IMGPROXY_KEY="",
-        GALLERY_IMGPROXY_SALT="",
     )
     def test_enabled_gallery_cdn_leaves_legacy_small_large_and_download_routes_unchanged(
         self,

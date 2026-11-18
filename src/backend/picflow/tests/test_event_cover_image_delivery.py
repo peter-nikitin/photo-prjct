@@ -1,7 +1,6 @@
-import base64
 from datetime import date
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -18,8 +17,6 @@ COVER_KEY = "event-covers/00000000-0000-4000-8000-000000000001.jpg"
 DELIVERY_SETTINGS = {
     "GALLERY_CDN_ORIGIN": "https://img.example.test",
     "GALLERY_CDN_TOKEN_SECRET": "cdn-secret",
-    "GALLERY_IMGPROXY_KEY": "736563726574",
-    "GALLERY_IMGPROXY_SALT": "68656c6c6f",
     "EVENT_MEDIA_S3_BUCKET": "public-covers",
 }
 COVER_FLAG = EVENT_COVER_CDN_IMAGES
@@ -83,12 +80,9 @@ def test_catalog_cover_uses_its_own_gate(client, covered_event, state, staff, cd
     images = CoverImages(response.content.decode()).images
     assert response.status_code == 200
     assert len(images) == 1
-    assert ("/cover-v1/" in images[0]["src"]) is cdn
+    assert (urlsplit(images[0]["src"]).netloc == "img.example.test") is cdn
     if cdn:
-        encoded = urlsplit(images[0]["src"]).path.rsplit("/", 1)[-1][:-4]
-        assert base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode() == (
-            "https://storage.yandexcloud.net/public-covers/" + COVER_KEY
-        )
+        assert urlsplit(images[0]["src"]).path == "/public-covers/" + COVER_KEY
     assert images[0]["loading"] == "eager"
 
 
@@ -100,7 +94,7 @@ def test_catalog_missing_cover_gate_preserves_direct_url(client, covered_event):
 
 
 @pytest.mark.django_db
-@override_settings(**(DELIVERY_SETTINGS | {"GALLERY_IMGPROXY_KEY": ""}))
+@override_settings(**(DELIVERY_SETTINGS | {"GALLERY_CDN_ORIGIN": ""}))
 def test_catalog_missing_cdn_prerequisite_preserves_cover_and_placeholder(client, covered_event):
     Event.objects.create(
         name="Empty",
@@ -139,14 +133,8 @@ def test_cover_capability_uses_only_the_public_https_managed_key() -> None:
         GalleryImageDeliverySettings.from_django_settings(), clock=lambda: 1_700_000_000.75
     )
     url = urlsplit(signer.sign_event_cover(key=COVER_KEY))
-    signature, preset, encoded = url.path.strip("/").split("/")
-    assert signature == "YPUshlEz_rd0ZpUZrTtkY6x2Abopig9tWxsnwnx2SEI"
-    assert preset == "cover-v1"
-    assert base64.urlsafe_b64decode(encoded[:-4] + "==").decode() == (
-        "https://storage.yandexcloud.net/public-covers/" + COVER_KEY
-    )
-    assert parse_qs(url.query)["expires"] == ["1700021600"]
-    assert parse_qs(url.query)["md5"] == ["CqadsrGnlKsVpIzmdRBYig"]
+    assert url.path == "/public-covers/" + COVER_KEY
+    assert not url.query
 
 
 @override_settings(**DELIVERY_SETTINGS)

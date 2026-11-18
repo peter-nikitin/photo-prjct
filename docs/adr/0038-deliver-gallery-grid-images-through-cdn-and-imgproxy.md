@@ -8,6 +8,7 @@
 - Superseded by: [ADR 0044](0044-deliver-public-event-covers-through-image-cdn.md) only for the exclusion of public event covers from the image origin
 - Superseded by: [ADR 0045](0045-deliver-commerce-thumbnails-through-gallery-cdn.md) only for the exclusion of commerce small-preview presentation
 - Superseded by: [ADR 0056](0056-minimum-viable-infrastructure.md) — только для отдельного размещения image origin
+- Superseded by: [ADR 0069](0069-serve-media-through-cdn-without-imgproxy.md) для маршрутизации и преобразования при CDN-выдаче.
 
 ## Context
 

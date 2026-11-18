@@ -65,6 +65,7 @@ class OpenedObject:
     body: ReadableBody
     size: int
     content_type: Literal["image/jpeg", "image/png"]
+    content_range: str | None = None
 
 
 class StorageError(Exception):
@@ -78,6 +79,10 @@ class StorageError(Exception):
 class StorageUnavailable(StorageError):
     code = "storage_unavailable"
     message = "Object storage is unavailable."
+
+
+class RangeNotSatisfiable(StorageError):
+    pass
 
 
 class ObjectMissing(StorageError):
@@ -158,14 +163,16 @@ class PrivateUploadStorage:
         _validate_managed_key(key)
         return self._inspect(key)
 
+    def _verify_final_image(self, key: str) -> None:
+        _validate_public_final_key(key)
+        if self._inspect(key).content_type not in {"image/jpeg", "image/png"}:
+            raise ObjectMismatch()
+
     def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str:
         """Verify then create a short-lived GET URL for one public final object."""
-        _validate_public_final_key(key)
         if attachment_filename is not None:
-            _validate_attachment_filename(attachment_filename)
-        object_identity = self._inspect(key)
-        if object_identity.content_type not in {"image/jpeg", "image/png"}:
-            raise ObjectMismatch()
+            validate_attachment_filename(attachment_filename)
+        self._verify_final_image(key)
         params = {"Bucket": self._bucket_for_key(key), "Key": s3_object_key(key)}
         if attachment_filename is not None:
             params["ResponseContentDisposition"] = f'attachment; filename="{attachment_filename}"'
@@ -204,13 +211,16 @@ class PrivateUploadStorage:
             raise StorageUnavailable() from None
         return url
 
-    def open_final(self, *, key: str) -> OpenedObject:
+    def open_final(self, *, key: str, byte_range: str | None = None) -> OpenedObject:
         _validate_public_final_key(key)
+        params = {"Bucket": self._bucket_for_key(key), "Key": s3_object_key(key)}
+        if byte_range is not None:
+            params["Range"] = byte_range
         try:
-            response = self._client.get_object(
-                Bucket=self._bucket_for_key(key), Key=s3_object_key(key)
-            )
+            response = self._client.get_object(**params)
         except ClientError as error:
+            if _status(error) == 416:
+                raise RangeNotSatisfiable() from None
             raise _mapped_error(error) from None
         except BotoCoreError:
             raise StorageUnavailable() from None
@@ -237,7 +247,12 @@ class PrivateUploadStorage:
                 close()
             raise ObjectMismatch() from None
 
-        return OpenedObject(body=cast(ReadableBody, body), size=size, content_type=content_type)
+        return OpenedObject(
+            body=cast(ReadableBody, body),
+            size=size,
+            content_type=content_type,
+            content_range=response.get("ContentRange"),
+        )
 
     def read_range(self, *, key: str, etag_wire: str, start: int, end: int) -> bytes:
         _validate_managed_key(key)
@@ -274,7 +289,7 @@ class PrivateUploadStorage:
 
     def promote(self, *, incoming_key: str, final_key: str, etag_wire: str) -> ObjectIdentity:
         _validate_incoming_key(incoming_key)
-        _validate_final_key(final_key)
+        validate_original_key(final_key)
         expected_etag = _etag_value(etag_wire)
 
         source = self._inspect(incoming_key, if_match=etag_wire)
@@ -373,7 +388,7 @@ def _validate_incoming_key(key: str) -> None:
         raise ValueError("invalid incoming object key")
 
 
-def _validate_final_key(key: str) -> None:
+def validate_original_key(key: str) -> None:
     if not isinstance(key, str) or _FINAL_KEY.fullmatch(key) is None:
         raise ValueError("invalid final object key")
 
@@ -397,7 +412,7 @@ def _validate_managed_key(key: str) -> None:
         raise ValueError("invalid managed object key")
 
 
-def _validate_attachment_filename(filename: str) -> None:
+def validate_attachment_filename(filename: str) -> None:
     if not isinstance(filename, str) or _ATTACHMENT_FILENAME.fullmatch(filename) is None:
         raise ValueError("invalid attachment filename")
 

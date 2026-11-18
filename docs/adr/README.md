@@ -89,3 +89,4 @@ ADR фиксирует долговременный выбор, причины, 
 | 0066 | [Передавать вектор в задаче общей очереди поиска по лицу](0066-store-vectors-in-face-search-queue.md) | Accepted |
 | 0067 | [Собирать телеметрию очередей из событий завершения](0067-aggregate-queue-telemetry-from-completion-events.md) | Accepted |
 | 0068 | [Разделить оригиналы, медиа мероприятий и временные файлы](0068-separate-originals-event-media-and-operational-storage.md) | Accepted |
+| 0069 | [Выдавать готовые файлы через CDN без imgproxy](0069-serve-media-through-cdn-without-imgproxy.md) | Accepted |

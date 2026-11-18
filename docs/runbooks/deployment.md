@@ -70,9 +70,7 @@ listener 8081 предоставляет только `/health/`: Django вып�
 security group для проверок NLB. PostgreSQL и worker API не публикуются; Nginx
 закрывает `/internal/`, `/metrics/` и `/worker-diagnostics/`.
 
-CDN пока не восстановлен: origin указывает на остановленную прежнюю ВМ, поэтому превью через CDN
-возвращают 504. Оба CDN gate остаются включены. Условия восстановления приведены в
-[future work](../future-work/2026-11-07-restore-cdn-origin.md).
+Порядок переключения `img.findme-photo.ru` на новые источники приведён в [инструкции по CDN](gallery-image-delivery.md).
 
 ## Сертификат и домены
 
@@ -96,8 +94,7 @@ sudo docker compose --project-directory /opt/photo-prjct --project-name photo-pr
   --profile acme run --rm --no-deps certbot renew --dry-run --webroot -w /var/www/certbot
 ```
 
-Проверить доверенный HTTPS, редиректы, доступ к каталогу и сохранность БД. До такой проверки
-не считать DNS или сертификат восстановленными; CDN остаётся отдельной незавершённой задачей.
+Проверить доверенный HTTPS, редиректы, доступ к каталогу и сохранность БД.
 
 ## Воркеры во время восстановления
 

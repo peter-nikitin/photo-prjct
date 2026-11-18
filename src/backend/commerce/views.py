@@ -42,7 +42,11 @@ from picflow.gallery import (
     PublicMediaResolver,
     purchasable_paid_photo_queryset,
 )
-from picflow.gallery_image_delivery import GalleryImageDeliverySettings, GalleryImageUrlSigner
+from picflow.gallery_image_delivery import (
+    CdnFinalObjectStorage,
+    GalleryImageDeliverySettings,
+    GalleryImageUrlSigner,
+)
 from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, Photo
 
@@ -1035,7 +1039,7 @@ def _download_order(
                 "COMMERCE_ORDER_ACCESS_SIGNING_SECRET",
                 "",
             ),
-            storage=_purchased_original_storage(),
+            storage=_purchased_original_storage(request),
         )
     except PurchasedOriginalDenied:
         return _purchase_not_found()
@@ -1044,8 +1048,10 @@ def _download_order(
     return private_purchase_response(redirect(signed_download.signed_url))
 
 
-def _purchased_original_storage() -> PrivateUploadStorage:
+def _purchased_original_storage(request: HttpRequest) -> PrivateUploadStorage:
     try:
+        if feature_flag_services.is_enabled(GALLERY_CDN_IMAGES, request.user):
+            return CdnFinalObjectStorage()
         return PrivateUploadStorage()
     except (TypeError, ValueError):
         raise StorageUnavailable() from None
@@ -1081,7 +1087,7 @@ def _order_media(
     ):
         return _purchase_not_found()
     try:
-        signed_url = _purchased_watermarked_media_resolver().resolve_signed(
+        signed_url = _purchased_watermarked_media_resolver(request).resolve_signed(
             photo=item.photo,
             variant=variant,
         )
@@ -1092,11 +1098,8 @@ def _order_media(
     return private_purchase_response(redirect(signed_url))
 
 
-def _purchased_watermarked_media_resolver() -> PublicMediaResolver:
-    try:
-        return PublicMediaResolver(storage=PrivateUploadStorage())
-    except (TypeError, ValueError):
-        raise StorageUnavailable() from None
+def _purchased_watermarked_media_resolver(request: HttpRequest) -> PublicMediaResolver:
+    return PublicMediaResolver(storage=_purchased_original_storage(request))
 
 
 @sensitive_variables()

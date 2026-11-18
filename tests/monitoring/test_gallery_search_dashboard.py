@@ -47,7 +47,8 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
             ): target["prometheusTarget"]["query"]
             for chart in charts(dashboard["widgets"])
             for target in chart["targets"]
-            if f'queue="{queue}"' in target["prometheusTarget"]["query"]
+            if "prometheusTarget" in target
+            and f'queue="{queue}"' in target["prometheusTarget"]["query"]
             and "findme_queue_segment_duration_seconds_total" in target["prometheusTarget"]["query"]
         }
         stack = by_visualization["VISUALIZATION_TYPE_STACK", "Секунды"]

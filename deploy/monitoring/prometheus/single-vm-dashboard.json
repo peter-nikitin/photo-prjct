@@ -1582,6 +1582,389 @@
           }
         ]
       }
+    },
+    {
+      "position": {
+        "y": "144",
+        "w": "24",
+        "h": "32"
+      },
+      "group": {
+        "id": "4834ec4f-f221-5ae2-b2c7-d48a9a03a856",
+        "title": "CDN и Object Storage",
+        "widgets": [
+          {
+            "id": "16df9a2c-7b6f-563f-8b3b-cb8cdd694166",
+            "multiSourceChart": {
+              "id": "16df9a2c-7b6f-563f-8b3b-cb8cdd694166",
+              "targets": [
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "40735bbb-143a-52ef-ab30-614cc8bdefe1",
+                    "query": "alias(\"edge.requests\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}, \"CDN\")",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                },
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "40735bbb-143a-52ef-ab30-614cc8bdefe1",
+                    "query": "alias(\"origin.requests\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}, \"Источники\")",
+                    "textMode": true,
+                    "name": "B"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "monitoringDataSource": {
+                    "id": "40735bbb-143a-52ef-ab30-614cc8bdefe1"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Запросы к CDN и источникам, запросов/с",
+              "description": "Источник обложек и превью — Object Storage. Источник оригиналов — Django."
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "7d798717-00e4-5b39-9451-2a5a25653b3a",
+            "multiSourceChart": {
+              "id": "7d798717-00e4-5b39-9451-2a5a25653b3a",
+              "targets": [
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "19fde688-8901-584e-af90-474ff926c96a",
+                    "query": "alias(100 * series_sum(\"edge.requests_cache_status\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\", cache_status=\"HIT\"}) / drop_below(series_sum(\"edge.requests\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}), 1e-12), \"HIT\")",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "monitoringDataSource": {
+                    "id": "19fde688-8901-584e-af90-474ff926c96a"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Доля попаданий в кеш CDN, %",
+              "description": "Доля запросов со статусом HIT среди всех запросов к CDN. Загрузки из локального кеша браузера сюда не попадают."
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12"
+            }
+          },
+          {
+            "id": "bda93c0f-9a15-57e0-a3f9-1c047277e164",
+            "multiSourceChart": {
+              "id": "bda93c0f-9a15-57e0-a3f9-1c047277e164",
+              "targets": [
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "95c14b2c-2ba5-54de-b548-e492d194b132",
+                    "query": "alias(\"edge.bytes_sent\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}, \"Отдано CDN\")",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                },
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "95c14b2c-2ba5-54de-b548-e492d194b132",
+                    "query": "alias(\"origin.bytes_fetched\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}, \"Получено от источников\")",
+                    "textMode": true,
+                    "name": "B"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "monitoringDataSource": {
+                    "id": "95c14b2c-2ba5-54de-b548-e492d194b132"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Трафик CDN и источников, байт/с",
+              "description": "Сравнивает объём данных, отданных CDN, с объёмом данных, полученных от источников."
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "8"
+            }
+          },
+          {
+            "id": "4dbfc117-cdbe-597c-b9a0-4fb4490735f9",
+            "multiSourceChart": {
+              "id": "4dbfc117-cdbe-597c-b9a0-4fb4490735f9",
+              "targets": [
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "49fcf9b8-1ae2-5bae-bae4-66c78e2bb94a",
+                    "query": "alias(\"edge.requests_status_detailed\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\", status=\"304\"}, \"304\")",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "monitoringDataSource": {
+                    "id": "49fcf9b8-1ae2-5bae-bae4-66c78e2bb94a"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Ответы CDN 304, запросов/с",
+              "description": "Ответы на условные запросы. Браузер использует сохранённое тело изображения."
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "8"
+            }
+          },
+          {
+            "id": "3f74f988-143b-538a-a8fd-0927ced2348f",
+            "multiSourceChart": {
+              "id": "3f74f988-143b-538a-a8fd-0927ced2348f",
+              "targets": [
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "48f3f5c9-b9ce-57df-969d-039bb0cfd03e",
+                    "query": "\"rps\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"storage\", resource_id=\"findme-photo-media-delivery-prod-b1g2qttg|findme-photo-media-originals-prod-b1g2qttg\", method=\"GetRequests|HeadRequests\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "monitoringDataSource": {
+                    "id": "48f3f5c9-b9ce-57df-969d-039bb0cfd03e"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "GET и HEAD в S3, запросов/с",
+              "description": "Чтения бакетов доставки и оригиналов, включая обращения приложения и других потребителей."
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "16"
+            }
+          },
+          {
+            "id": "f1ea1691-dbd6-5c8e-b94d-1549098a46d7",
+            "multiSourceChart": {
+              "id": "f1ea1691-dbd6-5c8e-b94d-1549098a46d7",
+              "targets": [
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "bc5aa99a-1242-59a9-a824-d50072cd4be6",
+                    "query": "alias(1000 * series_sum(\"rps\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"storage\", resource_id=\"findme-photo-media-delivery-prod-b1g2qttg|findme-photo-media-originals-prod-b1g2qttg\", method=\"GetRequests\"}) / drop_below(series_sum(\"edge.requests\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}), 1e-12), \"GET\")",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                },
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "bc5aa99a-1242-59a9-a824-d50072cd4be6",
+                    "query": "alias(1000 * series_sum(\"rps\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"storage\", resource_id=\"findme-photo-media-delivery-prod-b1g2qttg|findme-photo-media-originals-prod-b1g2qttg\", method=\"HeadRequests\"}) / drop_below(series_sum(\"edge.requests\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}), 1e-12), \"HEAD\")",
+                    "textMode": true,
+                    "name": "B"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "monitoringDataSource": {
+                    "id": "bc5aa99a-1242-59a9-a824-d50072cd4be6"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Чтения S3 на 1000 запросов к CDN",
+              "description": "Суммарная нагрузка двух бакетов, нормированная на трафик CDN. При нулевом трафике CDN график оставляет пропуск."
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "16"
+            }
+          },
+          {
+            "id": "7e746746-e37c-58e7-9035-8ef06dd7f937",
+            "multiSourceChart": {
+              "id": "7e746746-e37c-58e7-9035-8ef06dd7f937",
+              "targets": [
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "fd39d210-48d8-533c-80bf-5af63be4bdc5",
+                    "query": "alias(100 * series_sum(\"edge.requests_status\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\", status=\"5XX\"}) / drop_below(series_sum(\"edge.requests\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}), 1e-12), \"5xx\")",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "monitoringDataSource": {
+                    "id": "fd39d210-48d8-533c-80bf-5af63be4bdc5"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Доля ответов CDN 5xx, %",
+              "description": "Доля серверных ошибок среди всех запросов к CDN. При нулевом трафике CDN график оставляет пропуск."
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "24"
+            }
+          },
+          {
+            "id": "1cc81848-74bb-567a-ac24-00ec3c92a78d",
+            "multiSourceChart": {
+              "id": "1cc81848-74bb-567a-ac24-00ec3c92a78d",
+              "targets": [
+                {
+                  "monitoringTarget": {
+                    "dataSourceId": "535f3bd9-8d78-5c54-a2b6-c3cc73f664ab",
+                    "query": "alias(histogram_percentile(95, \"bin\", \"edge.request_time_seconds\"{folderId=\"b1g2qttgfhb4gdunvlge\", service=\"yccdn\", resource=\"img.findme-photo.ru\"}), \"p95\")",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "monitoringDataSource": {
+                    "id": "535f3bd9-8d78-5c54-a2b6-c3cc73f664ab"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Время скачивания с CDN p95, секунды",
+              "description": "95-й перцентиль времени скачивания файла, рассчитанный по гистограмме CDN."
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "24"
+            }
+          }
+        ]
+      }
     }
   ]
 }

@@ -28,6 +28,11 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
+from processing.photo_import_telemetry import (
+    capture_photo_import_backlog,
+    schedule_photo_import_backlog_delta,
+    schedule_photo_import_completion,
+)
 from processing.services.face_quality import (
     QUALITY_FACE_CONTRACT_VERSION,
     QUALITY_FACE_PROCESSOR_VERSIONS,
@@ -292,6 +297,11 @@ def _terminal_submission(
             _terminal_stale(attempt, payload, payload_hash, now)
             return AttemptCompletion(attempt=attempt, stale=True)
         if payload["outcome"] == "success":
+            backlog_before = (
+                capture_photo_import_backlog(photo.pk, attempt.processor_type)
+                if attempt.processor_type == FACE_EMBEDDING_PROCESSOR
+                else None
+            )
             _terminal_success(attempt, payload, now)
             job.status = ProcessingJob.Status.SUCCEEDED
             job.completed_at = now
@@ -310,6 +320,9 @@ def _terminal_submission(
                     state=state,
                     accepted_attempt=attempt if attempt.processor_version == 2 else None,
                 )
+            if attempt.processor_type == FACE_EMBEDDING_PROCESSOR:
+                schedule_photo_import_backlog_delta(photo.pk, backlog_before)
+                schedule_photo_import_completion(photo, attempt)
         else:
             _terminal_failure(attempt, payload, now)
             _transition_failure(run, job, state, attempt, now=now, jitter=jitter)
@@ -416,6 +429,7 @@ def _transition_failure(
             next_attempt_at=retry_at,
         )
         return
+    backlog_before = capture_photo_import_backlog(job.photo_id, job.processor_type)
     job.status = ProcessingJob.Status.FAILED
     job.completed_at = now
     job.save(update_fields=["status", "completed_at"])
@@ -426,6 +440,7 @@ def _transition_failure(
         failed_at=now,
         next_attempt_at=None,
     )
+    schedule_photo_import_backlog_delta(job.photo_id, backlog_before)
 
 
 def _record_late_receipt(

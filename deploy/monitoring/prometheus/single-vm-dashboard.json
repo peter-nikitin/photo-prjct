@@ -1440,6 +1440,407 @@
       "position": {
         "y": "128",
         "w": "24",
+        "h": "32"
+      },
+      "group": {
+        "id": "423abdea-4a68-574e-9b02-421b091a7a78",
+        "title": "Загрузка и обработка фотографий",
+        "widgets": [
+          {
+            "id": "61007b90-3a57-50c1-86ad-bf35c6a07c77",
+            "multiSourceChart": {
+              "id": "61007b90-3a57-50c1-86ad-bf35c6a07c77",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "c10b8a44-0961-56df-a4f2-f05d8bffdca6",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "label_replace(findme_photo_import_pending_count{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}, \"status\", \"Осталось\", \"queue\", \".+\")",
+                    "textMode": true,
+                    "name": "Pending"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "c10b8a44-0961-56df-a4f2-f05d8bffdca6",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "label_replace(findme_photo_import_failed_count{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}, \"status\", \"Ошибки\", \"queue\", \".+\")",
+                    "textMode": true,
+                    "name": "Failed"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "c10b8a44-0961-56df-a4f2-f05d8bffdca6",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Осталось опубликовать",
+              "description": "Уникальные фото с принятым оригиналом, которым ещё не хватает превью по их политике. Окончательные ошибки входят в остаток. Остаток приблизительный, сверяется с PostgreSQL каждые 15 минут. Разрыв означает отсутствие данных.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "df2e1038-e5a9-5294-bde2-fb11ede629f0",
+            "multiSourceChart": {
+              "id": "df2e1038-e5a9-5294-bde2-fb11ede629f0",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "9e366408-8529-5621-b339-e9c89b024549",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "label_replace(findme_photo_import_pending_count{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}, \"status\", \"Осталось\", \"queue\", \".+\")",
+                    "textMode": true,
+                    "name": "Pending"
+                  }
+                },
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "9e366408-8529-5621-b339-e9c89b024549",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "label_replace(findme_photo_import_failed_count{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}, \"status\", \"Ошибки\", \"queue\", \".+\")",
+                    "textMode": true,
+                    "name": "Failed"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "9e366408-8529-5621-b339-e9c89b024549",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Осталось распознать",
+              "description": "Уникальные фото, которым ещё нужно распознавание лиц, включая ожидание превью. Окончательные ошибки входят в остаток. Успешный результат без лиц завершает путь. Остаток приблизительный, сверяется с PostgreSQL каждые 15 минут. Разрыв означает отсутствие данных.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12"
+            }
+          },
+          {
+            "id": "902086f1-9319-563b-aedf-a44e5341248f",
+            "multiSourceChart": {
+              "id": "902086f1-9319-563b-aedf-a44e5341248f",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "8b307ef9-cdaa-5c04-adef-c1e471cbc876",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "8b307ef9-cdaa-5c04-adef-c1e471cbc876",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "Секунды"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Время до готовности галереи, с",
+              "description": "Среднее время по этапам для завершений за 5 минут. Отсчёт начинается с приёма оригинала. Этапы включают ожидание и обработку с повторами. Для фото с водяным знаком путь продолжается до готовности отмеченного превью.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "8"
+            }
+          },
+          {
+            "id": "a2efbaa7-4b6d-5553-a79b-3fc025dc4820",
+            "multiSourceChart": {
+              "id": "a2efbaa7-4b6d-5553-a79b-3fc025dc4820",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "98758b01-8d7a-5408-b923-dfccd8de6de9",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "98758b01-8d7a-5408-b923-dfccd8de6de9",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "Секунды"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Время до завершения распознавания, с",
+              "description": "Среднее время по этапам для завершений за 5 минут. Отсчёт начинается с приёма оригинала. Этапы включают ожидание и обработку с повторами. После чистого превью путь продолжается до принятия результата распознавания.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "8"
+            }
+          },
+          {
+            "id": "c4781fc0-3169-5ca7-ab0d-4e291adaafb6",
+            "multiSourceChart": {
+              "id": "c4781fc0-3169-5ca7-ab0d-4e291adaafb6",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "6200107c-b99c-5f6e-ab25-1cc70a77f99c",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m] @ end()))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "6200107c-b99c-5f6e-ab25-1cc70a77f99c",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "type": "VISUALIZATION_TYPE_PIE",
+                "aggregation": "SERIES_AGGREGATION_LAST"
+              },
+              "title": "Доли времени публикации",
+              "description": "Состав суммарного времени по этапам за 5 минут до конца выбранного периода.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "16"
+            }
+          },
+          {
+            "id": "dfbbb1ae-8716-549f-9b57-2616ace9dcf3",
+            "multiSourceChart": {
+              "id": "dfbbb1ae-8716-549f-9b57-2616ace9dcf3",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "c939afe3-86a2-5b76-b3eb-58ca9d9e855c",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m] @ end()))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "c939afe3-86a2-5b76-b3eb-58ca9d9e855c",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "type": "VISUALIZATION_TYPE_PIE",
+                "aggregation": "SERIES_AGGREGATION_LAST"
+              },
+              "title": "Доли времени распознавания",
+              "description": "Состав суммарного времени по этапам за 5 минут до конца выбранного периода.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "16"
+            }
+          },
+          {
+            "id": "3afbc928-c91e-57ee-9cd3-5d0a8ed816d0",
+            "multiSourceChart": {
+              "id": "3afbc928-c91e-57ee-9cd3-5d0a8ed816d0",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "25dce951-90b7-5adc-8a21-00254707fbce",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "25dce951-90b7-5adc-8a21-00254707fbce",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "%",
+                    "min": "0",
+                    "max": "100"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Доли времени публикации в динамике, %",
+              "description": "Доля каждого этапа в суммарном времени завершений за предыдущие 5 минут. Разрыв означает, что в окне нет наблюдаемой длительности.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "y": "24"
+            }
+          },
+          {
+            "id": "b3eaec33-106e-5f1d-82cc-b0928c5a70a5",
+            "multiSourceChart": {
+              "id": "b3eaec33-106e-5f1d-82cc-b0928c5a70a5",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "0c2fd883-4021-5a66-83a4-b9cadef96732",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "0c2fd883-4021-5a66-83a4-b9cadef96732",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "%",
+                    "min": "0",
+                    "max": "100"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Доли времени распознавания в динамике, %",
+              "description": "Доля каждого этапа в суммарном времени завершений за предыдущие 5 минут. Разрыв означает, что в окне нет наблюдаемой длительности.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8",
+              "x": "12",
+              "y": "24"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "position": {
+        "y": "160",
+        "w": "24",
         "h": "16"
       },
       "group": {
@@ -1585,7 +1986,7 @@
     },
     {
       "position": {
-        "y": "144",
+        "y": "176",
         "w": "24",
         "h": "32"
       },

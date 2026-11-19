@@ -158,18 +158,13 @@ def eligible_face_detections(
     Explicit generations pin online use. Without them, operator reconciliation covers every
     internally consistent current projection, including older accepted generations.
     """
-    projections = _scalar_face_projections(event, include_hidden=include_hidden)
+    projections = accepted_face_projections(event, include_hidden=include_hidden)
     if generations is not None:
         if not generations:
             raise ValueError("face-embedding generations are required")
         projections = projections.filter(
             _projection_generation_predicate(generations),
-            photo__processing_states__processor_type="face_embedding",
-            photo__processing_states__status="succeeded",
-            photo__processing_states__accepted_attempt=F("accepted_attempt"),
-            photo__processing_states__current_attempt=F("accepted_attempt"),
-            photo__processing_states__current_job=F("accepted_attempt__job"),
-            photo__processing_states__current_run=F("accepted_attempt__run"),
+            current_accepted_face_result(),
         )
     else:
         projections = projections.filter(
@@ -186,16 +181,18 @@ def eligible_face_detections(
             accepted_attempt__run__configuration_hash=F("configuration_hash"),
         )
     return PhotoFaceDetection.objects.filter(
-        pk__in=projections.values("accepted_attempt__face_detections__id")
+        pk__in=projections.filter(accepted_attempt__face_detections__status="kept").values(
+            "accepted_attempt__face_detections__id"
+        )
     )
 
 
-def _scalar_face_projections(
-    event: Event | None,
-    generation_predicate: Q | None = None,
+def accepted_face_projections(
+    event: Event | None = None,
     *,
     include_hidden: bool = False,
 ) -> QuerySet[PhotoFaceEmbeddingProjection]:
+    """Accepted recognition results, including projections that detected zero faces."""
     predicate = Q(
         photo__src="",
         photo__original_key__isnull=False,
@@ -205,12 +202,21 @@ def _scalar_face_projections(
         accepted_attempt__photo_id=F("photo_id"),
         accepted_attempt__status="succeeded",
         accepted_attempt__accepted=True,
-        accepted_attempt__face_detections__status="kept",
     )
     if not include_hidden:
         predicate &= Q(photo__is_hidden=False)
     if event is not None:
         predicate &= Q(photo__event=event)
-    if generation_predicate is not None:
-        predicate &= generation_predicate
     return PhotoFaceEmbeddingProjection.objects.filter(predicate)
+
+
+def current_accepted_face_result() -> Q:
+    """The projection and the photo's active face state refer to the same result."""
+    return Q(
+        photo__processing_states__processor_type="face_embedding",
+        photo__processing_states__status="succeeded",
+        photo__processing_states__accepted_attempt=F("accepted_attempt"),
+        photo__processing_states__current_attempt=F("accepted_attempt"),
+        photo__processing_states__current_job=F("accepted_attempt__job"),
+        photo__processing_states__current_run=F("accepted_attempt__run"),
+    )

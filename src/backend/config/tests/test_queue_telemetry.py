@@ -139,3 +139,48 @@ def test_scrape_uses_one_snapshot_for_count_and_timing_series():
             assert count is not None and wait == count and work == 2 * count
     finally:
         writer.join(timeout=3)
+
+
+def test_backlog_changes_use_a_memory_snapshot_and_reject_unbounded_events():
+    from config.queue_telemetry import QueueTelemetry
+
+    telemetry = QueueTelemetry()
+    registry = CollectorRegistry()
+    registry.register(telemetry)
+    counts = {"photo_import_gallery": (4, 1), "photo_import_face": (7, 0)}
+    payload = json.dumps(
+        {
+            "event": "queue.backlog.changed",
+            "version": 1,
+            "deltas": {"photo_import_gallery": [-1, -1], "photo_import_face": [0, 1]},
+        }
+    )
+    telemetry.record(payload)
+    assert not any(metric.startswith("findme_photo_import_") for metric, _ in samples(registry))
+
+    telemetry.set_backlog_snapshot(counts, reconciled_at=1234)
+    telemetry.record(event())
+    for updated in (
+        payload.replace("photo_import_face", "arbitrary_queue"),
+        payload.replace("[-1, -1]", "[-2, -1]"),
+        payload.replace("[0, 1]", "[0, true]"),
+        payload.replace("[0, 1]", "[0, 1, 2]"),
+        payload.replace("[0, 1]", "[]"),
+    ):
+        telemetry.record(updated)
+    assert (
+        samples(registry)[
+            ("findme_photo_import_pending_count", (("queue", "photo_import_gallery"),))
+        ]
+        == 4
+    )
+    telemetry.record(payload)
+
+    observed = samples(registry)
+    assert observed[("findme_photo_import_last_reconciliation_timestamp_seconds", ())] == 1234
+    assert (
+        observed[("findme_photo_import_pending_count", (("queue", "photo_import_gallery"),))] == 3
+    )
+    assert observed[("findme_photo_import_failed_count", (("queue", "photo_import_gallery"),))] == 0
+    assert observed[("findme_photo_import_failed_count", (("queue", "photo_import_face"),))] == 1
+    assert observed[("findme_queue_completed_total", (("queue", "another_queue"),))] == 1

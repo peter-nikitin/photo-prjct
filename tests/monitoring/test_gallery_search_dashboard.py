@@ -28,6 +28,14 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
     for queue, segments in (
         ("gallery_search", {"matching_wait": 5, "matching_elapsed": 15}),
         (
+            "photo_import_gallery",
+            {"preview_wait": 5, "preview_elapsed": 15, "watermark_wait": 2, "watermark_elapsed": 4},
+        ),
+        (
+            "photo_import_face",
+            {"preview_wait": 5, "preview_elapsed": 15, "face_wait": 3, "face_elapsed": 7},
+        ),
+        (
             "selfie_search",
             {
                 "recognition_wait": 3,
@@ -98,12 +106,12 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
             expressions.extend(
                 [
                     {
-                        "expr": share,
+                        "expr": f"round({share}, 0.000001)",
                         "eval_time": f"{minute}m",
                         "exp_samples": [
                             {
                                 "labels": f'{{segment="{segment}"}}',
-                                "value": 100 * seconds / sum(window.values()),
+                                "value": round(100 * seconds / sum(window.values()), 6),
                             }
                             for segment, seconds in window.items()
                         ],
@@ -126,6 +134,34 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
                 },
             ]
         )
+
+    for queue, initial, failures in (("photo_import_gallery", 12, 3), ("photo_import_face", 8, 2)):
+        for metric, status, first, later in (
+            ("pending", "Осталось", initial, initial - 2),
+            ("failed", "Ошибки", failures, failures - 1),
+        ):
+            metric_name = f"findme_photo_import_{metric}_count"
+            labels = f'job="findme-queue-telemetry",queue="{queue}"'
+            series.append({"series": f"{metric_name}{{{labels}}}", "values": f"{first} {later} 0"})
+            (query,) = (
+                target["prometheusTarget"]["query"]
+                for chart in charts(dashboard["widgets"])
+                for target in chart["targets"]
+                if "prometheusTarget" in target
+                and metric_name in target["prometheusTarget"]["query"]
+                and f'queue="{queue}"' in target["prometheusTarget"]["query"]
+            )
+            expressions.extend(
+                {
+                    "expr": query,
+                    "eval_time": moment,
+                    "exp_samples": [
+                        {"labels": f'{metric_name}{{{labels},status="{status}"}}', "value": value}
+                    ],
+                }
+                for moment, value in (("0m", first), ("1m", later), ("2m", 0))
+            )
+            idle_expressions.append({"expr": query, "eval_time": "15m", "exp_samples": []})
 
     tests = {
         "evaluation_interval": "1m",

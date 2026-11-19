@@ -59,7 +59,7 @@ class ArchiveJobTests(TestCase):
         ]
 
         with (
-            patch("config.queue_events._notify") as notify,
+            patch("picflow.archive_jobs.notify_queue_completion") as notify,
             self.captureOnCommitCallbacks(execute=True),
         ):
             call_command("run_archive_worker", once=True)
@@ -173,7 +173,7 @@ class ArchiveJobTests(TestCase):
         )
 
         with (
-            patch("config.queue_events._notify") as notify,
+            patch("picflow.archive_jobs.notify_queue_completion") as notify,
             patch("picflow.archive_jobs.timezone.now", return_value=now),
             patch(
                 "picflow.archive_jobs.monotonic_ns",
@@ -187,15 +187,8 @@ class ArchiveJobTests(TestCase):
                 notify.assert_not_called()
 
             notify.assert_called_once_with(
-                "queue.task.completed",
-                {
-                    "queue": "photo_archive",
-                    "segments_ms": {
-                        "archive_wait": 4000,
-                        "zip_build": 2000,
-                        "storage_upload": 3000,
-                    },
-                },
+                "photo_archive",
+                {"archive_wait": 4000, "zip_build": 2000, "storage_upload": 3000},
             )
 
     def test_shared_queue_metrics_observe_only_claimable_work_and_latest_success(self) -> None:

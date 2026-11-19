@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,10 +43,21 @@ def test_application_check_succeeds_without_completion_traffic():
 
 
 @pytest.mark.parametrize(
-    ("listening", "reconciled_at"),
-    [(1, 1990), (0, 1990), (None, 1990), (1, None), (1, 700), (1, 2001)],
+    ("listening", "reconciled_at", "valid"),
+    [
+        (1, 1990, True),
+        (0, 1990, False),
+        (None, 1990, False),
+        (1, None, False),
+        (1, 700, True),
+        (1, 200, True),
+        (1, 199, False),
+        (1, 2001, False),
+    ],
 )
-def test_queue_telemetry_requires_live_listener_and_recent_snapshot(listening, reconciled_at):
+def test_queue_telemetry_requires_live_listener_and_recent_snapshot(
+    listening, reconciled_at, valid
+):
     checker = load("release_queue_telemetry", "deploy/monitoring/prometheus/verify_metrics.py")
 
     class Transport:
@@ -62,7 +74,7 @@ def test_queue_telemetry_requires_live_listener_and_recent_snapshot(listening, r
                 rows.append([[(1995, value)]] if value is not None else [])
             return rows
 
-    if (listening, reconciled_at) == (1, 1990):
+    if valid:
         checker.check(Transport(), "queue-telemetry", now=2000)
     else:
         with pytest.raises(checker.control.ControlError):
@@ -160,3 +172,55 @@ def test_cli_stops_at_deadline_and_reports_source(monkeypatch, capsys):
     monkeypatch.setattr(checker, "check", check)
     assert checker.main() == 1
     assert "root disk" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("scope", "available_at", "result", "elapsed_expected"),
+    [
+        ("queue-telemetry", 330, 0, 330),
+        ("queue-telemetry", 910, 1, 900),
+        ("application", 330, 1, 300),
+        ("vm", 330, 1, 300),
+    ],
+)
+def test_cli_waits_for_first_snapshot_with_scope_specific_budget(
+    monkeypatch, scope, available_at, result, elapsed_expected
+):
+    import sys
+
+    checker = load(
+        "release_metrics_initial_snapshot", "deploy/monitoring/prometheus/verify_metrics.py"
+    )
+    elapsed = 0
+
+    def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    class Transport:
+        def read_samples(self, selectors, *, now):
+            rows = []
+            for selector in selectors:
+                name = selector["__name__"]
+                if elapsed < available_at and name != "findme_queue_telemetry_listening":
+                    rows.append([])
+                    continue
+                timestamp = 2000 + elapsed
+                value = (
+                    timestamp
+                    if name == "findme_photo_import_last_reconciliation_timestamp_seconds"
+                    else 1
+                )
+                rows.append([[(timestamp, value)]])
+            return rows
+
+    monkeypatch.setattr(sys, "argv", ["verify_metrics.py", scope])
+    monkeypatch.setattr(checker.control, "identity", lambda *_args: "token")
+    monkeypatch.setattr(checker.control, "CloudTransport", lambda *_args: Transport())
+    monkeypatch.setattr(
+        checker,
+        "time",
+        SimpleNamespace(monotonic=lambda: elapsed, time=lambda: 2000 + elapsed, sleep=sleep),
+    )
+    assert checker.main() == result
+    assert elapsed == elapsed_expected

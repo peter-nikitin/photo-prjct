@@ -151,14 +151,21 @@ def test_backlog_changes_use_a_memory_snapshot_and_reject_unbounded_events():
     payload = json.dumps(
         {
             "event": "queue.backlog.changed",
-            "version": 1,
+            "version": 2,
+            "photo_id": "a" * 32,
             "deltas": {"photo_import_gallery": [-1, -1], "photo_import_face": [0, 1]},
         }
     )
     telemetry.record(payload)
     assert not any(metric.startswith("findme_photo_import_") for metric, _ in samples(registry))
 
-    telemetry.set_backlog_snapshot(counts, reconciled_at=1234)
+    assert telemetry._backlogs["photo_import_gallery"] == (-1, -1)
+    telemetry.set_listening(True)
+    draft = telemetry.start_backlog_reconciliation()
+    assert draft is not None
+    assert telemetry.set_backlog_reconciliation_upper_bound(draft, "e")
+    assert telemetry.add_backlog_reconciliation_page(draft, after="e", counts=counts)
+    telemetry.finish_backlog_reconciliation(draft, reconciled_at=1234)
     telemetry.record(event())
     for updated in (
         payload.replace("photo_import_face", "arbitrary_queue"),
@@ -166,6 +173,9 @@ def test_backlog_changes_use_a_memory_snapshot_and_reject_unbounded_events():
         payload.replace("[0, 1]", "[0, true]"),
         payload.replace("[0, 1]", "[0, 1, 2]"),
         payload.replace("[0, 1]", "[]"),
+        payload.replace('"version": 2', '"version": 1'),
+        payload.replace("a" * 32, "a" * 33),
+        payload.replace("a" * 32, "unwanted photo id"),
     ):
         telemetry.record(updated)
     assert (
@@ -184,3 +194,44 @@ def test_backlog_changes_use_a_memory_snapshot_and_reject_unbounded_events():
     assert observed[("findme_photo_import_failed_count", (("queue", "photo_import_gallery"),))] == 0
     assert observed[("findme_photo_import_failed_count", (("queue", "photo_import_face"),))] == 1
     assert observed[("findme_queue_completed_total", (("queue", "another_queue"),))] == 1
+
+
+def test_reconciliation_uses_only_deltas_beyond_bound_or_behind_cursor():
+    from config.queue_telemetry import QueueTelemetry
+
+    telemetry = QueueTelemetry()
+    registry = CollectorRegistry()
+    registry.register(telemetry)
+    telemetry.set_listening(True)
+    draft = telemetry.start_backlog_reconciliation()
+    assert draft is not None
+    assert telemetry.set_backlog_reconciliation_upper_bound(draft, "8")
+
+    def change(photo_id, pending):
+        telemetry.record(
+            json.dumps(
+                {
+                    "event": "queue.backlog.changed",
+                    "version": 2,
+                    "photo_id": photo_id,
+                    "deltas": {"photo_import_gallery": [pending, 0]},
+                }
+            )
+        )
+
+    change("9", 1)  # A new photo beyond the fixed upper bound is not in any page.
+    assert telemetry.add_backlog_reconciliation_page(
+        draft, after="4", counts={"photo_import_gallery": (1, 0)}
+    )
+    change("1", -1)  # Completion during the next page, after its earlier page was counted.
+    change("2", 1)  # Insertion behind the cursor.
+    change("5", 1)  # An unread photo will be included in the next page.
+    assert telemetry.add_backlog_reconciliation_page(
+        draft, after="8", counts={"photo_import_gallery": (2, 0)}
+    )
+    telemetry.finish_backlog_reconciliation(draft, reconciled_at=1234)
+    observed = samples(registry)
+    assert (
+        observed[("findme_photo_import_pending_count", (("queue", "photo_import_gallery"),))] == 4
+    )
+    assert all("photo_id" not in dict(labels) for _, labels in observed)

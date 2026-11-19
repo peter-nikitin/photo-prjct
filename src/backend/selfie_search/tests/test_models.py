@@ -11,6 +11,8 @@ from picflow.models import Event, Photo
 from processing.models import FaceCluster, FaceClusterCorpus, FaceClusterMember, PhotoFaceDetection
 from selfie_search.models import (
     SelfieSearch,
+    SelfieSearchAnchorEvidence,
+    SelfieSearchAnchorEvidenceSource,
     SelfieSearchAttempt,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
@@ -154,6 +156,93 @@ class SelfieSearchModelTests(TestCase):
         evidence.cosine_distance = float("nan")
         with self.assertRaises(ValidationError):
             evidence.full_clean()
+
+    def test_anchor_sources_are_unique_bounded_and_immutable(self) -> None:
+        anchor = self.make_result().direct_evidence
+        other_anchor = SelfieSearchDirectEvidence.objects.create(
+            result=SelfieSearchResult.objects.create(
+                search=self.search, photo=self.dual_photo, rank=2
+            ),
+            detection_id=self.make_detection_id(photo=self.dual_photo),
+            cosine_distance=0.2,
+        )
+        evidence = self.make_anchor_evidence()
+        source = SelfieSearchAnchorEvidenceSource.objects.create(
+            evidence=evidence, anchor=anchor, position=1
+        )
+        for invalid_anchor, position in (
+            (anchor, 2),
+            (other_anchor, 1),
+            (other_anchor, 0),
+            (other_anchor, 6),
+        ):
+            with self.subTest(anchor=invalid_anchor.pk, position=position):
+                with self.assertRaises(IntegrityError), transaction.atomic():
+                    SelfieSearchAnchorEvidenceSource.objects.create(
+                        evidence=evidence, anchor=invalid_anchor, position=position
+                    )
+
+        source.position = 2
+        evidence.cosine_distance = 0.3
+        for row in (source, evidence):
+            with self.assertRaises(ValidationError):
+                row.save()
+            with self.assertRaises(ValidationError):
+                row.delete()
+
+    def test_ready_anchor_evidence_rejects_a_new_source(self) -> None:
+        anchor = self.make_result().direct_evidence
+        evidence = self.make_anchor_evidence()
+        SelfieSearchAnchorEvidenceSource.objects.create(
+            evidence=evidence, anchor=anchor, position=1
+        )
+        second_anchor = SelfieSearchDirectEvidence.objects.create(
+            result=SelfieSearchResult.objects.create(
+                search=self.search, photo=self.dual_photo, rank=2
+            ),
+            detection_id=self.make_detection_id(photo=self.dual_photo),
+            cosine_distance=0.2,
+        )
+        SelfieSearch.objects.filter(pk=self.search.pk).update(status=SelfieSearch.Status.READY)
+
+        with self.assertRaises(ValidationError):
+            SelfieSearchAnchorEvidenceSource.objects.create(
+                evidence=evidence, anchor=second_anchor, position=2
+            )
+        self.assertEqual(evidence.sources.count(), 1)
+
+    def test_anchor_evidence_and_sources_validate_result_identity(self) -> None:
+        anchor = self.make_result().direct_evidence
+        evidence = self.make_anchor_evidence()
+        evidence.full_clean()
+        SelfieSearchAnchorEvidenceSource(evidence=evidence, anchor=anchor, position=1).full_clean()
+
+        other_search = SelfieSearch.objects.create(event=self.event, public_token_digest="c" * 64)
+        cross_search_anchor = self.make_result(search=other_search).direct_evidence
+        source = SelfieSearchAnchorEvidenceSource(
+            evidence=evidence, anchor=cross_search_anchor, position=1
+        )
+        with self.assertRaises(ValidationError) as invalid_source:
+            source.full_clean()
+        self.assertIn("anchor", invalid_source.exception.message_dict)
+
+        evidence.detection = anchor.detection
+        with self.assertRaises(ValidationError) as wrong_photo:
+            evidence.full_clean()
+        self.assertIn("detection", wrong_photo.exception.message_dict)
+
+    def make_anchor_evidence(self):
+        result = SelfieSearchResult.objects.create(
+            search=self.search,
+            photo=self.expanded_photo,
+            primary_source=SelfieSearchResult.PrimarySource.FACE_ANCHOR_EXPANSION,
+            rank=3,
+        )
+        return SelfieSearchAnchorEvidence.objects.create(
+            result=result,
+            detection_id=self.make_detection_id(photo=self.expanded_photo),
+            cosine_distance=0.4,
+        )
 
     def test_cluster_evidence_supports_expanded_and_dual_results(self) -> None:
         anchor_result = self.make_result()

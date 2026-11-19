@@ -17,7 +17,7 @@ control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
 CONFIG = control.load_config()
 BACKLOG_RECONCILED = "findme_photo_import_last_reconciliation_timestamp_seconds"
-RECONCILIATION_MAX_AGE_SECONDS = 1200
+RECONCILIATION_MAX_AGE_SECONDS = 1800
 SOURCES = {
     "vm": (
         {"__name__": "sys_memory_MemAvailable", "instance": "findme-photo-app"},
@@ -89,7 +89,8 @@ def main() -> int:
     try:
         mode = "github-oidc" if args.oidc_config else "yc"
         transport = control.CloudTransport(CONFIG, control.identity(mode, args.oidc_config))
-        deadline = time.monotonic() + 300
+        timeout = 900 if args.scope == "queue-telemetry" else 300
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 check(transport, args.scope)

@@ -197,7 +197,9 @@ class ImportPublicationTests(TestCase):
         _, claim, _, item = self.ready_item(
             submission="photo-backlogs", source_path="/photo.jpg", oriented_geometry=(64, 40)
         )
-        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)})
+        self.assertEqual(
+            photo_import_backlogs([item.id.hex]), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)}
+        )
         with (
             override_feature_flags(self.flags),
             patch("config.queue_events.notify_queue_backlog_delta") as delta,
@@ -207,8 +209,10 @@ class ImportPublicationTests(TestCase):
                 complete_import_item(
                     attempt_id=claim.attempt_id, item_id=item.id, storage=self.storage
                 )
-        delta.assert_called_once_with({GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
-        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
+        delta.assert_called_once_with(item.id.hex, {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
+        self.assertEqual(
+            photo_import_backlogs([item.id.hex]), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)}
+        )
 
     @override_settings(PHOTO_PROCESSING_PREVIEW_ENABLED=False)
     def test_same_content_in_same_scope_is_skipped_but_other_scope_is_not(self) -> None:

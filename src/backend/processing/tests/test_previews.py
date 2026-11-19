@@ -34,7 +34,7 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
-from processing.photo_import_telemetry import photo_import_backlogs
+from processing.photo_import_telemetry import _point_photo_import_backlogs, photo_import_backlogs
 from processing.services import jobs
 from processing.services.bibs import bib_configuration
 from processing.services.enrollment import (
@@ -213,16 +213,23 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
     def test_backlog_follows_projection_and_counts_hidden_photos_once(self) -> None:
         photo, _, watermark = self._claim_watermark("import-backlog-paid")
         Photo.objects.filter(pk=photo.pk).update(is_hidden=True)
-        self._claim("import-backlog-legacy")
+        legacy, _ = self._claim("import-backlog-legacy")
 
-        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
+        self.assertEqual(
+            photo_import_backlogs([photo.pk, legacy.pk]),
+            {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)},
+        )
         with (
             patch("config.queue_events.notify_queue_backlog_delta") as notify,
             self.captureOnCommitCallbacks(execute=True),
         ):
             jobs.fail_attempt(watermark.attempt.id, error_code="invalid_media", retryable=False)
-        notify.assert_called_once_with({GALLERY_QUEUE: (0, 1)})
-        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 1), FACE_QUEUE: (1, 0)})
+        notify.assert_called_once_with(photo.pk, {GALLERY_QUEUE: (0, 1)})
+        self.assertEqual(photo_import_backlogs([photo.pk]), _point_photo_import_backlogs(photo.pk))
+        self.assertEqual(
+            photo_import_backlogs([photo.pk, legacy.pk]),
+            {GALLERY_QUEUE: (1, 1), FACE_QUEUE: (1, 0)},
+        )
 
     def test_observer_sql_failure_does_not_abort_preview_and_restores_timeout(self) -> None:
         photo, claim = self._claim("import-observer-read-failure")
@@ -1202,7 +1209,8 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
             by_event["queue.backlog.changed"],
             {
                 "event": "queue.backlog.changed",
-                "version": 1,
+                "version": 2,
+                "photo_id": photo.pk,
                 "deltas": {"photo_import_gallery": [-1, 0]},
             },
         )
@@ -1244,7 +1252,7 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
             )
         self.assertEqual(publish_attempts, [True])
         self.assertTrue(GalleryMediaProjection.objects.filter(pk=photo.pk).exists())
-        self.assertEqual(photo_import_backlogs()[GALLERY_QUEUE], (0, 0))
+        self.assertEqual(photo_import_backlogs([photo.pk])[GALLERY_QUEUE], (0, 0))
 
     def _existing_bib_enrollment_rows(
         self,

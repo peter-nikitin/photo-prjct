@@ -73,5 +73,5 @@ opened, CI passed, merged, deployed, and live verified. Never infer a later stat
 one.
 
 Before the final commit and pull-request merge, remove temporary specifications and plans from
-the Git index; retain accepted durable decisions with rationale in ADRs and implemented facts in
-architecture and runbooks.
+the Git index. Update long-lived documents according to the
+[documentation scope in AGENTS.md](../../../AGENTS.md#documentation-scope).

@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from struct import pack
@@ -36,6 +36,7 @@ from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.gallery import GalleryPhotoFactory
 from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo, PhotoArchiveJob
+from picflow.tests.event_management_helpers import captured_at
 from PIL import Image
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
@@ -1372,8 +1373,12 @@ class PublicSelfieResultViewTests(TestCase):
                 self.assertEqual(response.json(), {"status": status})
                 self.assert_bearer_headers(response)
 
-    def test_ready_page_reopens_saved_result_order_without_recomputation(self) -> None:
+    def test_ready_page_reopens_saved_members_in_capture_time_order(self) -> None:
+        event = self.make_event(
+            name="Chronological result", slug="chronological-result", timezone_name="Europe/Moscow"
+        )
         search, token = self.make_search(
+            event=event,
             status=SelfieSearch.Status.READY,
             eligible_photo_count=3,
             matched_photo_count=2,
@@ -1382,6 +1387,8 @@ class PublicSelfieResultViewTests(TestCase):
         second = self.make_private_photo(search.event, photo_id="rank-two")
         self.add_result(search=search, photo=second, rank=2)
         self.add_result(search=search, photo=first, rank=1)
+        captured_at(first, datetime(2026, 7, 30, 9, 5, tzinfo=UTC))
+        captured_at(second, datetime(2026, 7, 30, 9, tzinfo=UTC))
         late_photo = self.make_private_photo(search.event, photo_id="added-later")
 
         first_open = self.client.get(self.result_url(event=search.event, token=token))
@@ -1391,7 +1398,7 @@ class PublicSelfieResultViewTests(TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(
                 [item.photo_id for item in response.context["gallery_photos"]],
-                [first.id, second.id],
+                [second.id, first.id],
             )
             self.assertNotContains(response, late_photo.id)
             self.assertContains(response, "2")

@@ -28,7 +28,7 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
-from processing.photo_import_telemetry import photo_import_backlogs
+from processing.photo_import_telemetry import _point_photo_import_backlogs, photo_import_backlogs
 from processing.services import jobs as jobs_service
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
@@ -1169,7 +1169,9 @@ class ProcessingJobServiceTests(TestCase):
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
         photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
         photo.save(update_fields=["processing_generation", "gallery_media_policy"])
-        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 0))
+        membership = photo_import_backlogs([photo.pk])
+        self.assertEqual(membership, _point_photo_import_backlogs(photo.pk))
+        self.assertEqual(membership[FACE_QUEUE], (1, 0))
         preview = self.publish_preview(
             photo, claimed_at=photo.uploaded_at + timedelta(milliseconds=1)
         )
@@ -1186,7 +1188,7 @@ class ProcessingJobServiceTests(TestCase):
             processor_version=5,
             now=preview_terminal + timedelta(seconds=2),
         )
-        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 0))
+        self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 0))
         with (
             patch("config.queue_events.notify_queue_backlog_delta") as delta,
             self.captureOnCommitCallbacks(execute=True),
@@ -1199,7 +1201,7 @@ class ProcessingJobServiceTests(TestCase):
                 jitter=lambda _low, _high: 0,
             )
         delta.assert_not_called()
-        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 0))
+        self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 0))
         claimed.job.refresh_from_db()
         retry = claim_job(
             contract_version=3,
@@ -1226,14 +1228,18 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(
             sum(segments.values()), (completed_at - photo.uploaded_at) // timedelta(milliseconds=1)
         )
-        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (0, 0))
-        delta.assert_called_once_with({FACE_QUEUE: (-1, 0)})
+        membership = photo_import_backlogs([photo.pk])
+        self.assertEqual(membership, _point_photo_import_backlogs(photo.pk))
+        self.assertEqual(membership[FACE_QUEUE], (0, 0))
+        delta.assert_called_once_with(photo.pk, {FACE_QUEUE: (-1, 0)})
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_legacy_face_enrollment_and_replacement_of_failed_job_emits_changes(self) -> None:
         photo = self.private_photo("import-legacy-face")
         preview = self.publish_preview(photo)
-        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)})
+        self.assertEqual(
+            photo_import_backlogs([photo.pk]), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)}
+        )
         with patch("config.queue_events.notify_queue_backlog_delta") as delta:
             with self.captureOnCommitCallbacks(execute=True):
                 request_face_embedding_enqueue(photo)
@@ -1242,7 +1248,7 @@ class ProcessingJobServiceTests(TestCase):
             )
             with self.captureOnCommitCallbacks(execute=True):
                 fail_attempt(claimed.attempt.id, error_code="invalid_media", retryable=False)
-            self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 1))
+            self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 1))
             with self.captureOnCommitCallbacks(execute=True):
                 request_processor(
                     photo,
@@ -1254,10 +1260,14 @@ class ProcessingJobServiceTests(TestCase):
                     input_fingerprint=self.face_input_fingerprint(preview),
                     replace_terminal_generation=True,
                 )
-        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 0))
+        self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 0))
         self.assertEqual(
-            [call.args[0] for call in delta.call_args_list],
-            [{FACE_QUEUE: (1, 0)}, {FACE_QUEUE: (0, 1)}, {FACE_QUEUE: (0, -1)}],
+            [call.args for call in delta.call_args_list],
+            [
+                (photo.pk, {FACE_QUEUE: (1, 0)}),
+                (photo.pk, {FACE_QUEUE: (0, 1)}),
+                (photo.pk, {FACE_QUEUE: (0, -1)}),
+            ],
         )
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)

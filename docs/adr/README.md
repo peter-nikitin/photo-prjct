@@ -91,4 +91,3 @@ ADR фиксирует долговременный выбор, причины, 
 | 0068 | [Разделить оригиналы, медиа мероприятий и временные файлы](0068-separate-originals-event-media-and-operational-storage.md) | Accepted |
 | 0069 | [Выдавать готовые файлы через CDN без imgproxy](0069-serve-media-through-cdn-without-imgproxy.md) | Accepted |
 | 0070 | [Расширять поиск по лицу от прямых совпадений](0070-expand-face-search-from-direct-matches.md) | Accepted |
-| 0071 | [Проверять выбранные опоры по первой опоре без замены](0071-filter-selected-face-anchors-by-consistency.md) | Accepted |

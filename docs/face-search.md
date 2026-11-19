@@ -47,5 +47,4 @@ PostgreSQL. Затем общий исполнитель очереди срав
 гарантирует отсутствие других людей на снимке. Отсутствие архивной разметки
 оставляет принадлежность нового кадра неизвестной.
 
-[ADR 0070](adr/0070-expand-face-search-from-direct-matches.md) ·
-[ADR 0071](adr/0071-filter-selected-face-anchors-by-consistency.md)
+[ADR 0070](adr/0070-expand-face-search-from-direct-matches.md)

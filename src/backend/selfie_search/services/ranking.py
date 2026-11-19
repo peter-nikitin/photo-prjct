@@ -32,7 +32,7 @@ class RankedPhoto:
 @dataclass(frozen=True, slots=True)
 class AnchorMatch:
     photo_id: str
-    anchor_photo_id: str
+    anchor_photo_ids: tuple[str, ...]
     detection_id: UUID
     cosine_distance: float
 

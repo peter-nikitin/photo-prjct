@@ -15,6 +15,7 @@ from django.utils import timezone
 from feature_flags.models import FeatureFlag
 from processing.models import PhotoFaceDetection
 from selfie_search.models import FaceSearchTask, SelfieSearch
+from selfie_search.services.anchor_expansion import _EXPAND_SQL
 from selfie_search.services.face_search_queue import run_once
 from selfie_search.services.jobs import ClaimedSearchJob, claim_search_job, complete_search_attempt
 from selfie_search.services.submission import submit_gallery_photo_search, submit_selfie_search
@@ -133,10 +134,6 @@ class AnchorExpansionTests(TestCase):
                             self.assertTrue(run_once())
                         self.assertEqual(self.result_photos(search), expected)
                         self.assertEqual(
-                            sum("anchor_candidates AS" in query["sql"] for query in queries),
-                            int(expected != baseline),
-                        )
-                        self.assertEqual(
                             sum(
                                 'FROM "feature_flags_featureflag"' in query["sql"]
                                 and "face-search-anchor-expansion" in query["sql"]
@@ -194,143 +191,125 @@ class AnchorExpansionTests(TestCase):
         self.assertNotContains(response, str(addition.detection_id))
         self.assertEqual(self.client.post(url, {"cosine_distance": 0}).status_code, 403)
 
-    def test_selects_three_diverse_anchors_and_saves_the_best_single_evidence(self):
+    def test_finds_a_face_close_to_the_centroid_of_two_anchors(self):
+        source = self.add_face("query-source", 1)
+        for photo_id, third_component in (("first", 0.3), ("second", -0.3)):
+            self.make_eligible_embedding(
+                event=self.event,
+                photo_id=photo_id,
+                vector=_pad_vector(0.7, sqrt(0.42), third_component),
+            )
+        addition = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="addition",
+            vector=_pad_vector(0.4, 0.44, 0, sqrt(0.6464)),
+            detection_id=UUID(int=1),
+        )
+        better_vector = _pad_vector(0.4, 0.45, 0, sqrt(0.6375))
+        tied_face = self.make_additional_face(
+            embedding=addition, vector=better_vector, detection_id=UUID(int=3)
+        )
+        # The worst detection sorts first by UUID. The best two tie on distance.
+        better_face = self.make_additional_face(
+            embedding=tied_face, vector=better_vector, detection_id=UUID(int=2)
+        )
+
+        self.set_gate("off")
+        baseline = self.submit_gallery(source)
+        self.assertTrue(run_once())
+        self.assertEqual(self.result_photos(baseline), ["query-source", "first", "second"])
+        self.set_gate("on")
+        search = self.submit_gallery(source)
+        self.assertTrue(run_once())
+
+        # The better face's dot product is about .572 with either unit anchor
+        # and .599 with their unit centroid. Only the centroid passes .58.
+        self.assertEqual(
+            self.result_photos(search), ["query-source", "first", "second", "addition"]
+        )
+        self.assertEqual(search.direct_matched_photo_count, 3)
+        self.assertEqual(search.anchor_expanded_photo_count, 1)
+        self.assertEqual(search.final_matched_photo_count, 4)
+        direct_fields = (
+            "photo_id",
+            "rank",
+            "direct_evidence__detection_id",
+            "direct_evidence__cosine_distance",
+        )
+        self.assertEqual(
+            list(
+                search.results.filter(primary_source="direct")
+                .order_by("rank")
+                .values_list(*direct_fields)
+            ),
+            list(baseline.results.order_by("rank").values_list(*direct_fields)),
+        )
+        evidence = search.results.get(photo_id="addition").anchor_evidence
+        self.assertEqual(evidence.detection_id, better_face.detection_id)
+        self.assertAlmostEqual(evidence.cosine_distance, 0.40077, places=4)
+        self.assertEqual(
+            list(evidence.sources.values_list("position", "anchor__result__photo_id")),
+            [(1, "first"), (2, "second")],
+        )
+
+    def test_uses_at_most_five_nearest_consistent_single_face_results(self):
         self.set_gate("on")
         source = self.add_face("query-source", 1)
-        anchor_a = self.add_face("a", 0.8, 1)
-        self.add_face("a-near", 0.75, 1)
-        vector_b = _pad_vector(0.7, 0.2, sqrt(0.47))
-        anchor_b = self.make_eligible_embedding(event=self.event, photo_id="b", vector=vector_b)
-        self.make_eligible_embedding(event=self.event, photo_id="b-near", vector=vector_b)
-        anchor_c = self.make_eligible_embedding(
-            event=self.event, photo_id="c", vector=_pad_vector(0.7, 0.2, 0, sqrt(0.47))
-        )
-        self.add_face("weak", 0.6, 4)
-        group = self.add_face("group", 0.7, 5)
+        self.add_face("first", 0.8)
+        group = self.add_face("group", 0.78)
         PhotoFaceDetection.objects.create(
             artifact=group.detection.artifact,
             attempt=group.detection.attempt,
             face_index=1,
             status=PhotoFaceDetection.Status.QUALITY_REJECTED,
         )
-        addition_a = self.add_face("a-addition", 0.5, 1)
-        addition_b = self.add_face("b-addition", 0.5, 2)
-        addition_c = self.add_face("c-addition", 0.5, 3)
-        better_c_face = self.make_additional_face(
-            embedding=addition_c,
-            vector=_vector(0.51, 3),
-            detection_id=UUID(int=1),
-        )
-        shared = self.make_eligible_embedding(
-            event=self.event,
-            photo_id="b-c-shared",
-            vector=[0.5, 0, sqrt(0.375), sqrt(0.375)] + [0.0] * 508,
-        )
-        self.add_face("weak-only", 0.5, 4)
-        self.add_face("group-only", 0.5, 5)
-        hidden = self.add_face("hidden", 0.5, 1).detection.attempt.photo
+        self.add_face("inconsistent", 0.77, axis=2)
+        for suffix in "edcba":
+            self.add_face(f"near-{suffix}", 0.75)
+        self.add_face("weak", 0.60)
+        self.add_face("addition", 0.5)
+        self.add_face("inconsistent-only", 0.5, axis=2)
+        hidden = self.add_face("hidden", 0.5).detection.attempt.photo
         hidden.is_hidden = True
         hidden.save(update_fields=["is_hidden"])
-        self.add_face("foreign", 0.5, 1, event=self.other_event)
+        self.add_face("foreign", 0.5, event=self.other_event)
         search = self.submit_gallery(source)
 
-        with CaptureQueriesContext(connection) as queries:
-            self.assertTrue(run_once())
+        self.assertTrue(run_once())
 
         self.assertEqual(
             self.result_photos(search),
             [
                 "query-source",
-                "a",
-                "a-near",
-                "b",
-                "b-near",
-                "c",
+                "first",
                 "group",
+                "inconsistent",
+                "near-a",
+                "near-b",
+                "near-c",
+                "near-d",
+                "near-e",
                 "weak",
-                "c-addition",
-                "b-addition",
-                "a-addition",
-                "b-c-shared",
+                "addition",
             ],
         )
-        self.assertEqual(sum("anchor_candidates AS" in q["sql"] for q in queries), 1)
-        self.assertEqual(search.anchor_expanded_photo_count, 4)
-        self.assertEqual(search.final_matched_photo_count, 12)
+        evidence = search.results.get(photo_id="addition").anchor_evidence
         self.assertEqual(
-            set(
-                search.results.filter(primary_source="face_anchor_expansion").values_list(
-                    "photo_id",
-                    "anchor_evidence__anchor__detection_id",
-                    "anchor_evidence__detection_id",
-                )
-            ),
-            {
-                ("a-addition", anchor_a.detection_id, addition_a.detection_id),
-                ("b-addition", anchor_b.detection_id, addition_b.detection_id),
-                ("c-addition", anchor_c.detection_id, better_c_face.detection_id),
-                ("b-c-shared", anchor_b.detection_id, shared.detection_id),
-            },
+            list(evidence.sources.values_list("position", "anchor__result__photo_id")),
+            [(1, "first"), (2, "near-a"), (3, "near-b"), (4, "near-c"), (5, "near-d")],
         )
 
-    def test_filters_original_choices_by_distance_to_first_without_replacement(self):
+    def test_gallery_search_has_no_centroid_when_the_source_is_the_only_strong_result(self):
         self.set_gate("on")
-        for retain_third in (True, False):
-            with self.subTest(retain_third=retain_third):
-                self.event = self.make_event(f"consistency-{retain_third}", "free")
-                suffix = "keep-third" if retain_third else "drop-third"
-                source = self.add_face(f"{suffix}-query", 1)
-                self.add_face(f"{suffix}-first", 0.8)
-                self.add_face(f"{suffix}-second", 0.64, 2)
-                self.make_eligible_embedding(
-                    event=self.event,
-                    photo_id=f"{suffix}-spare",
-                    vector=_pad_vector(0.68, 0.25, 0.65, -sqrt(0.0526)),
-                )
-                third_y = 0.35 if retain_third else 0.1
-                third_w = sqrt(0.3875 - third_y**2)
-                self.make_eligible_embedding(
-                    event=self.event,
-                    photo_id=f"{suffix}-third",
-                    vector=_pad_vector(0.7, third_y, -0.35, third_w),
-                )
-                first_only = self.add_face(f"{suffix}-first-only", 0.3).detection.attempt.photo_id
-                second_only = self.add_face(
-                    f"{suffix}-second-only", 0, 2
-                ).detection.attempt.photo_id
-                third_only = f"{suffix}-third-only"
-                self.make_eligible_embedding(
-                    event=self.event,
-                    photo_id=third_only,
-                    vector=_pad_vector(
-                        0, third_y / sqrt(0.51), -0.35 / sqrt(0.51), third_w / sqrt(0.51)
-                    ),
-                )
-                self.make_eligible_embedding(
-                    event=self.event,
-                    photo_id=f"{suffix}-spare-only",
-                    vector=_pad_vector(0.5, 0, 0.3, -sqrt(0.66)),
-                )
-                search = self.submit_gallery(source)
+        source = self.add_face("query-source", 1)
+        self.add_face("weak", 0.60)
+        self.add_face("weak-only", 0.50)
+        search = self.submit_gallery(source)
 
-                self.assertTrue(run_once())
+        self.assertTrue(run_once())
 
-                self.assertEqual(
-                    self.result_photos(search)[:5],
-                    [f"{suffix}-{name}" for name in ("query", "first", "third", "spare", "second")],
-                )
-                # The spare is farther from the first than the retained third, but is
-                # too close to the second to win the original maximin selection.
-                original_additions = {first_only, second_only, third_only}
-                removed = {second_only} if retain_third else {second_only, third_only}
-                self.assertEqual(
-                    set(
-                        search.results.filter(primary_source="face_anchor_expansion").values_list(
-                            "photo_id", flat=True
-                        )
-                    ),
-                    original_additions - removed,
-                )
+        self.assertEqual(self.result_photos(search), ["query-source", "weak"])
+        self.assertEqual(search.anchor_expanded_photo_count, 0)
 
     def test_includes_selected_anchor_at_exact_pgvector_distance_boundary(self):
         self.set_gate("on")
@@ -360,11 +339,9 @@ class AnchorExpansionTests(TestCase):
             event=self.event, photo_id="boundary-query", vector=mixed_vector(sqrt(0.9975), 0.05)
         )
         self.make_eligible_embedding(event=self.event, photo_id="boundary-first", vector=first)
-        boundary = self.make_eligible_embedding(
-            event=self.event, photo_id="boundary-second", vector=second
-        )
+        self.make_eligible_embedding(event=self.event, photo_id="boundary-second", vector=second)
         self.make_eligible_embedding(
-            event=self.event, photo_id="boundary-addition", vector=mixed_vector(0.4, -sqrt(0.84))
+            event=self.event, photo_id="boundary-addition", vector=mixed_vector(0.6, -0.8)
         )
         search = self.submit_gallery(source)
 
@@ -375,7 +352,10 @@ class AnchorExpansionTests(TestCase):
             ["boundary-query", "boundary-first", "boundary-second", "boundary-addition"],
         )
         evidence = search.results.get(photo_id="boundary-addition").anchor_evidence
-        self.assertEqual(evidence.anchor.detection_id, boundary.detection_id)
+        self.assertEqual(
+            list(evidence.sources.values_list("anchor__result__photo_id", flat=True)),
+            ["boundary-first", "boundary-second"],
+        )
 
     def test_flag_is_registered_and_synchronized_off(self):
         call_command("sync_feature_flags", stdout=StringIO())
@@ -386,19 +366,25 @@ class AnchorExpansionTests(TestCase):
         source = self.add_face("query-source", 1)
         self.add_face("anchor", 0.75)
         self.add_face("addition", 0.5)
-        for statement in (
-            "anchor_candidates AS",
-            'INSERT INTO "selfie_search_selfiesearchanchorevidence"',
+
+        def fail_source_insert(execute, sql, params, many, context):
+            if 'INSERT INTO "selfie_search_selfiesearchanchorevidencesource"' in sql:
+                raise DatabaseError("simulated source write failure")
+            return execute(sql, params, many, context)
+
+        for failure, inject in (
+            (
+                "ranking",
+                patch(
+                    "selfie_search.services.anchor_expansion._EXPAND_SQL",
+                    f"{_EXPAND_SQL}\nLIMIT (1 / 0)",
+                ),
+            ),
+            ("publication", connection.execute_wrapper(fail_source_insert)),
         ):
-            with self.subTest(statement=statement):
+            with self.subTest(failure=failure):
                 search = self.submit_gallery(source)
-
-                def fail_statement(execute, sql, params, many, context, *, statement=statement):
-                    if statement in sql:
-                        raise DatabaseError("simulated transient failure")
-                    return execute(sql, params, many, context)
-
-                with connection.execute_wrapper(fail_statement):
+                with inject:
                     self.assertTrue(run_once())
 
                 search.refresh_from_db()
@@ -408,34 +394,71 @@ class AnchorExpansionTests(TestCase):
                 self.assertTrue(run_once())
                 self.assertEqual(self.result_photos(search), ["query-source", "anchor", "addition"])
 
-    def test_anchor_statement_timeout_uses_remaining_budget_and_publishes_no_rows(self):
+    def test_anchor_statement_timeout_protects_parameters_and_publishes_no_rows(self):
         self.set_gate("on")
-        source = self.add_face("query-source", 1)
-        self.add_face("anchor", 0.75)
+        source = self.add_face("synthetic-centroid-source", 1)
+        anchor = self.make_eligible_embedding(
+            event=self.event,
+            photo_id="synthetic-centroid-anchor",
+            vector=_vector(0.7654321),
+            detection_id=UUID("01234567-89ab-cdef-0123-456789abcdef"),
+        )
         self.add_face("addition", 0.5)
         search = self.submit_gallery(source)
-        ranking_timeouts = []
 
-        def time_out_expansion(execute, sql, params, many, context):
-            if "anchor_candidates AS" in sql:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT current_setting('statement_timeout')::interval")
-                    timeout = cursor.fetchone()[0].total_seconds()
-                    ranking_timeouts.append(timeout)
-                    cursor.execute("SELECT pg_sleep(1)")
-            return execute(sql, params, many, context)
+        with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL log_parameter_max_length_on_error = -1")
+            cursor.execute("""
+                CREATE FUNCTION pg_temp.observe_centroid_timeout() RETURNS void
+                LANGUAGE plpgsql AS $$
+                BEGIN
+                    RAISE NOTICE USING MESSAGE = json_build_array(
+                        current_query(),
+                        current_setting('log_parameter_max_length_on_error'),
+                        extract(epoch FROM current_setting('statement_timeout')::interval)
+                    )::text;
+                    PERFORM pg_sleep(1);
+                END;
+                $$
+            """)
+        timed_sql = f"""
+            WITH delay AS MATERIALIZED (SELECT pg_temp.observe_centroid_timeout()),
+            matches AS MATERIALIZED ({_EXPAND_SQL})
+            SELECT matches.* FROM matches CROSS JOIN delay
+        """
+        statements = []
 
-        with (
-            patch("selfie_search.services.face_search_queue.RANKING_TIMEOUT_MS", 250),
-            connection.execute_wrapper(time_out_expansion),
-        ):
-            self.assertTrue(run_once())
+        def record_statement(diagnostic):
+            if diagnostic.message_primary.startswith("["):
+                statements.append(json.loads(diagnostic.message_primary))
 
-        self.assertEqual(len(ranking_timeouts), 1)
-        self.assertGreater(ranking_timeouts[0], 0)
-        self.assertLess(ranking_timeouts[0], 0.25)
+        database = connection.connection
+        database.add_notice_handler(record_statement)
+        try:
+            with (
+                patch("selfie_search.services.face_search_queue.RANKING_TIMEOUT_MS", 250),
+                patch("selfie_search.services.anchor_expansion._EXPAND_SQL", timed_sql),
+            ):
+                self.assertTrue(run_once())
+        finally:
+            database.remove_notice_handler(record_statement)
+
+        self.assertEqual(len(statements), 1)
+        sql, parameter_log_limit, timeout = statements[0]
+        self.assertNotIn(source.detection.attempt.photo_id, sql)
+        self.assertNotIn(anchor.detection.attempt.photo_id, sql)
+        self.assertNotIn(anchor.detection_id.hex, sql)
+        self.assertNotIn(str(anchor.detection_id), sql)
+        self.assertRegex(sql, r"unnest\(\$\d+::varchar\[\], \$\d+::uuid\[\], \$\d+::float8\[\]\)")
+        self.assertRegex(sql, r"direct.photo_id IS DISTINCT FROM \$\d+")
+        self.assertEqual(parameter_log_limit, "0")
+        self.assertGreater(timeout, 0)
+        self.assertLess(timeout, 0.25)
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.FAILED)
         self.assertEqual(search.failure_code, "failed")
         self.assertEqual(search.matching_task.status, FaceSearchTask.Status.TERMINAL)
         self.assertFalse(search.results.exists())
+        with connection.cursor() as cursor:
+            cursor.execute("SHOW log_parameter_max_length_on_error")
+            self.assertEqual(cursor.fetchone(), ("-1",))

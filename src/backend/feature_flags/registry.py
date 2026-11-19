@@ -55,7 +55,8 @@ EVENT_COVER_CDN_IMAGES: Final = FeatureDefinition(
 
 WEB_VITALS: Final = FeatureDefinition("web-vitals", "Collect Web Vitals on public pages")
 FACE_SEARCH_ANCHOR_EXPANSION: Final = FeatureDefinition(
-    "face-search-anchor-expansion", "Expand face search from strong single-face results"
+    "face-search-anchor-expansion",
+    "Expand face search using a centroid of strong single-face results",
 )
 
 FEATURE_DEFINITIONS: Final = (

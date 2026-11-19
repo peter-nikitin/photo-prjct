@@ -427,14 +427,11 @@ class SelfieSearchDirectEvidence(models.Model):  # noqa: DJ008
 
 
 class SelfieSearchAnchorEvidence(models.Model):  # noqa: DJ008
-    """Immutable analytics evidence for the best face-to-anchor match of an added photo."""
+    """Immutable analytics evidence for a photo found by anchor expansion."""
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     result = models.OneToOneField(
         SelfieSearchResult, on_delete=models.PROTECT, related_name="anchor_evidence"
-    )
-    anchor = models.ForeignKey(
-        SelfieSearchDirectEvidence, on_delete=models.PROTECT, related_name="anchor_matches"
     )
     detection = models.ForeignKey(
         PhotoFaceDetection, on_delete=models.PROTECT, related_name="selfie_search_anchor_matches"
@@ -468,11 +465,6 @@ class SelfieSearchAnchorEvidence(models.Model):  # noqa: DJ008
         if self.result_id:
             if self.result.primary_source != SelfieSearchResult.PrimarySource.FACE_ANCHOR_EXPANSION:
                 errors["result"] = "Anchor evidence requires an anchor-expanded result."
-            if self.anchor_id and (
-                self.anchor.result.search_id != self.result.search_id
-                or self.anchor.result.primary_source != SelfieSearchResult.PrimarySource.DIRECT
-            ):
-                errors["anchor"] = "The anchor must be direct evidence from the same search."
             if self.detection_id and (
                 self.detection.attempt.event_id != self.result.search.event_id
                 or self.detection.attempt.photo_id != self.result.photo_id
@@ -480,6 +472,67 @@ class SelfieSearchAnchorEvidence(models.Model):  # noqa: DJ008
                 errors["detection"] = "The detection must belong to the result photo and event."
         if errors:
             raise ValidationError(errors)
+
+
+class SelfieSearchAnchorEvidenceSource(models.Model):  # noqa: DJ008
+    """Immutable reference to one of the direct matches used in anchor expansion."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    evidence = models.ForeignKey(
+        SelfieSearchAnchorEvidence, on_delete=models.PROTECT, related_name="sources"
+    )
+    anchor = models.ForeignKey(
+        SelfieSearchDirectEvidence, on_delete=models.PROTECT, related_name="anchor_matches"
+    )
+    position = models.PositiveSmallIntegerField()
+
+    class Meta:
+        ordering = ("position",)
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(position__gte=1, position__lte=5),
+                name="selfie_anchor_source_position_chk",
+            ),
+            models.UniqueConstraint(
+                fields=("evidence", "position"), name="selfie_anchor_source_position_uniq"
+            ),
+            models.UniqueConstraint(
+                fields=("evidence", "anchor"), name="selfie_anchor_source_anchor_uniq"
+            ),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie anchor evidence sources are immutable.")
+        if (
+            self.evidence_id
+            and SelfieSearchAnchorEvidence.objects.filter(
+                pk=self.evidence_id, result__search__status__in=_TERMINAL_SEARCH_STATUSES
+            ).exists()
+        ):
+            raise ValidationError("Terminal selfie anchor evidence cannot gain sources.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs) -> tuple[int, dict[str, int]]:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie anchor evidence sources are immutable.")
+        return super().delete(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        if self.evidence_id and self.anchor_id:
+            result = self.evidence.result
+            anchor_result = self.anchor.result
+            attempt = self.anchor.detection.attempt
+            if (
+                anchor_result.search_id != result.search_id
+                or anchor_result.primary_source != SelfieSearchResult.PrimarySource.DIRECT
+                or attempt.photo_id != anchor_result.photo_id
+                or attempt.event_id != result.search.event_id
+            ):
+                raise ValidationError(
+                    {"anchor": "The anchor must be direct evidence from the same search."}
+                )
 
 
 class SelfieSearchClusterEvidence(models.Model):  # noqa: DJ008

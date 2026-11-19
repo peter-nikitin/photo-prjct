@@ -7,17 +7,18 @@ description: Use when proposing, recording, revisiting, rejecting, or supersedin
 
 ## Purpose
 
-Record durable choices without confusing proposals, implementation plans, and existing facts. Keep
-the ADR index and architecture summary consistent.
+Record durable architectural choices. Use the
+[documentation scope in AGENTS.md](../../../AGENTS.md#documentation-scope) to decide where to
+record each fact.
 
 ## Workflow
 
 1. Read `docs/architecture.md`, `docs/adr/README.md`, all ADRs relevant to the topic, and any linked
    approved specification, plan, or experiment. Inspect the current code when the decision depends
    on implemented behavior.
-2. Confirm that an ADR is warranted. Create one for a choice with meaningful alternatives and
-   lasting effects on architecture, data, operations, security, or team workflow. Use a plan or
-   ordinary documentation for reversible implementation detail.
+2. Identify the durable architectural choice and its meaningful alternatives before drafting an
+   ADR. Use the documentation scope to place implementation details, including updates to details
+   recorded in older ADRs.
 3. Stop and request the missing decision when product intent, legal policy, experimental evidence,
    or authority is required. Never turn an open question into an accepted decision by assumption.
    Approval of a specification is decision evidence, not automatic ADR acceptance. Keep a derived

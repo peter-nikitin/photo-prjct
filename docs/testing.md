@@ -52,5 +52,12 @@
 собирает на одном экране палитру, типографику Manrope, компоненты и их состояния,
 а также каталог SVG-иконок.
 
-Команда запуска локального сервера приведена в
-[разделе «Дизайн-система»](architecture.md#дизайн-система).
+Из корня рабочего дерева запустите локальный сервер:
+
+```bash
+PYTHONPATH=.:src/backend DJANGO_SETTINGS_MODULE=tests.visual.settings \
+  sh scripts/run-in-test-env.sh .venv/bin/python src/backend/manage.py runserver 127.0.0.1:8001
+```
+
+Страница доступна только в локальной визуальной галерее.
+[Дизайн-система в архитектуре](architecture.md#дизайн-система).

@@ -9,7 +9,6 @@
   const POLL_DELAY_MS = 2000;
   const MAX_BACKOFF_MS = 30000;
   const FEEDBACK_PENDING_KEY = 'findme_selfie_feedback_pending';
-  const FEEDBACK_MARKS_PREFIX = 'findme_selfie_feedback_marks:';
   const FEEDBACK_DB_NAME = 'findme-photo-feedback';
   const FEEDBACK_DB_VERSION = 1;
   const FEEDBACK_STORE_NAME = 'selfie-searches';
@@ -435,73 +434,9 @@
         // IndexedDB can be unavailable while sessionStorage is still writable.
       }
       this._clearPendingHandle();
-      try {
-        const markKeys = [];
-        for (let index = 0; index < (this.sessionStorage?.length || 0); index += 1) {
-          const key = this.sessionStorage.key(index);
-          if (typeof key === 'string' && key.startsWith(FEEDBACK_MARKS_PREFIX)) markKeys.push(key);
-        }
-        markKeys.forEach((key) => this.sessionStorage.removeItem(key));
-      } catch (_error) {
-        // Cleanup remains best effort when browser key-value storage is unavailable.
-      }
       return cleared;
     }
 
-  }
-
-  class FeedbackMarkStore {
-    constructor({ sessionStorage, resultDigest }) {
-      this.sessionStorage = sessionStorage;
-      this.resultDigest = normalizedDigest(resultDigest);
-      this.key = `${FEEDBACK_MARKS_PREFIX}${this.resultDigest}`;
-    }
-
-    getMarks() {
-      if (!this.resultDigest || !this.sessionStorage) return {};
-      try {
-        const parsed = JSON.parse(this.sessionStorage.getItem(this.key) || '{}');
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-        return Object.fromEntries(
-          Object.entries(parsed).filter(([, value]) => value === 'present' || value === 'absent'),
-        );
-      } catch (_error) {
-        return {};
-      }
-    }
-
-    _save(marks) {
-      if (!this.resultDigest || !this.sessionStorage) return false;
-      try {
-        this.sessionStorage.setItem(this.key, JSON.stringify(marks));
-        return true;
-      } catch (_error) {
-        return false;
-      }
-    }
-
-    toggle(resultId, value) {
-      if (typeof resultId !== 'string' || !['present', 'absent'].includes(value)) return null;
-      const marks = this.getMarks();
-      if (marks[resultId] === value) delete marks[resultId];
-      else marks[resultId] = value;
-      this._save(marks);
-      return marks[resultId] || null;
-    }
-
-    count() {
-      return Object.keys(this.getMarks()).length;
-    }
-
-    clear() {
-      try {
-        this.sessionStorage?.removeItem(this.key);
-        return true;
-      } catch (_error) {
-        // The privacy-sensitive storage adapter already handles its own failure paths.
-        return false;
-      }
-    }
   }
 
   function showFeedbackError(element, message) {
@@ -510,56 +445,22 @@
     element.hidden = !message;
   }
 
-  class FeedbackUiController {
-    constructor({ root, storage, resultDigest, window, document }) {
+  class FeedbackSelfieController {
+    constructor({ root, storage, resultDigest, window }) {
       this.root = root;
       this.storage = storage;
       this.resultDigest = normalizedDigest(resultDigest);
       this.window = window;
-      this.document = document || root.ownerDocument;
       this.form = root.querySelector?.('[data-feedback-form]');
-      this.progress = root.querySelector?.('[data-feedback-progress]');
       this.contact = root.querySelector?.('[name="contact"]');
       this.consent = root.querySelector?.('[name="personal_data_consent"]');
       this.contactError = root.querySelector?.('[data-feedback-contact-error]');
       this.consentError = root.querySelector?.('[data-feedback-consent-error]');
       this.submitError = root.querySelector?.('[data-feedback-submit-error]');
-      this.total = Number(root.dataset.feedbackTotal || 0);
-      this.variant = root.dataset.feedbackVariant;
-      this.marks = new FeedbackMarkStore({
-        sessionStorage: safeObjectValue(this.window, 'sessionStorage') || safeGlobalValue('sessionStorage'),
-        resultDigest: this.resultDigest,
-      });
-    }
-
-    _labelButtons() {
-      return this.document?.querySelectorAll?.('[data-feedback-label]') || [];
     }
 
     bind() {
       this.form?.addEventListener('submit', (event) => this.submit(event));
-      this._labelButtons().forEach((button) => {
-        button.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          this.marks.toggle(button.dataset.feedbackResultId, button.dataset.feedbackLabel);
-          this.renderMarks();
-        });
-      });
-      this.renderMarks();
-    }
-
-    renderMarks() {
-      const marks = this.marks.getMarks();
-      this._labelButtons().forEach((button) => {
-        button.setAttribute(
-          'aria-pressed',
-          String(marks[button.dataset.feedbackResultId] === button.dataset.feedbackLabel),
-        );
-      });
-      if (this.progress) {
-        this.progress.textContent = `Размечено ${Object.keys(marks).length} из ${this.total} фотографий`;
-      }
     }
 
     _clearErrors() {
@@ -591,7 +492,6 @@
       data.append('selfie', new Blob([selfie.bytes], { type: selfie.mediaType }), `selfie.${extension}`);
       data.append('contact', contact);
       data.append('personal_data_consent', 'true');
-      data.append('labels', JSON.stringify(this.variant === 'result_labels' ? this.marks.getMarks() : {}));
       const csrf = this.form?.querySelector?.('[name="csrfmiddlewaretoken"]')?.value;
       if (csrf) data.append('csrfmiddlewaretoken', csrf);
       const submit = this.form?.querySelector?.('[data-feedback-submit]');
@@ -604,94 +504,71 @@
           headers: csrf ? { 'X-CSRFToken': csrf } : {},
         });
         const payload = await response.json().catch(() => ({}));
-        if (payload.status === 'result_changed') {
-          this.marks.clear();
-          this.window.location.reload();
-          return;
-        }
-        if (payload.status === 'submitted' || payload.status === 'already_submitted') {
-          const marksCleared = this.marks.clear();
-          const selfieCleared = marksCleared
-            ? await this.storage.clearAssociatedSelfie(this.resultDigest)
-            : false;
-          if (!marksCleared || !selfieCleared) {
+        if (response.ok && ['submitted', 'already_submitted'].includes(payload.status)) {
+          if (!await this.storage.clearAssociatedSelfie(this.resultDigest)) {
             showFeedbackError(
               this.submitError,
-              'Отзыв сохранён, но локальные данные удалить не удалось. Повторите отправку, чтобы завершить очистку.',
+              'Селфи отправлено, но локальную копию удалить не удалось. Повторите отправку, чтобы завершить очистку.',
             );
             return;
           }
-          this.root.innerHTML = '<p role="status">Спасибо, отзыв отправлен.</p>';
+          this.root.innerHTML = '<p role="status">Спасибо, селфи отправлено.</p>';
           return;
         }
-        showFeedbackError(this.submitError, 'Не удалось отправить отзыв. Проверьте данные и попробуйте ещё раз.');
+        showFeedbackError(this.submitError, 'Не удалось отправить селфи. Проверьте данные и попробуйте ещё раз.');
       } catch (_error) {
-        showFeedbackError(this.submitError, 'Не удалось отправить отзыв. Проверьте подключение и попробуйте ещё раз.');
+        showFeedbackError(this.submitError, 'Не удалось отправить селфи. Проверьте подключение и попробуйте ещё раз.');
       } finally {
         if (submit) submit.disabled = false;
       }
     }
   }
 
-  async function initializeFeedbackUi({ document, window, storage, result }) {
+  async function initializeFeedbackSelfieUi({ document, window, storage, result }) {
     const root = document?.querySelector?.('[data-selfie-feedback]');
     if (!root || !result) return null;
     const resultDigest = result.dataset?.resultDigest;
     if (!normalizedDigest(resultDigest)) return null;
-    const unavailable = document.querySelector?.('[data-feedback-unavailable]');
-    if (root.dataset.feedbackPreview !== 'true') {
-      const selfie = await storage.getAssociatedSelfie(resultDigest);
-      if (!selfie) {
-        if (unavailable) unavailable.hidden = false;
-        root.hidden = true;
-        return null;
-      }
+    if (root.dataset.feedbackPreview !== 'true' && !await storage.getAssociatedSelfie(resultDigest)) {
+      return null;
     }
-    if (unavailable) unavailable.hidden = true;
     root.hidden = false;
-    const controller = new FeedbackUiController({ root, storage, resultDigest, window, document });
+    const controller = new FeedbackSelfieController({ root, storage, resultDigest, window });
     controller.bind();
     return controller;
   }
 
   class FeedbackCleanupUiController {
-    constructor({ root, storage, resultDigest, window }) {
+    constructor({ root, storage, resultDigest }) {
       this.root = root;
       this.storage = storage;
       this.resultDigest = normalizedDigest(resultDigest);
       this.pending = root.querySelector?.('[data-feedback-cleanup-pending]');
       this.error = root.querySelector?.('[data-feedback-cleanup-error]');
       this.success = root.querySelector?.('[data-feedback-cleanup-success]');
-      this.marks = new FeedbackMarkStore({
-        sessionStorage: safeObjectValue(window, 'sessionStorage') || safeGlobalValue('sessionStorage'),
-        resultDigest: this.resultDigest,
-      });
     }
 
     async cleanup() {
       if (this.pending) this.pending.hidden = false;
       showFeedbackError(this.error, '');
       if (this.success) this.success.hidden = true;
-      const marksCleared = this.marks.clear();
       let selfieCleared = false;
-      if (marksCleared) {
-        try {
-          selfieCleared = await this.storage.clearAssociatedSelfie(this.resultDigest);
-        } catch (_error) {
-          selfieCleared = false;
-        }
+      try {
+        selfieCleared = await this.storage.clearAssociatedSelfie(this.resultDigest);
+      } catch (_error) {
+        selfieCleared = false;
       }
-      if (!marksCleared || !selfieCleared) {
+      if (!selfieCleared) {
         if (this.pending) this.pending.hidden = true;
         showFeedbackError(
           this.error,
-          'Отзыв отправлен, но локальные данные удалить не удалось. Повторите очистку.',
+          'Селфи отправлено, но локальную копию удалить не удалось. Обновите страницу, чтобы повторить очистку.',
         );
         return false;
       }
       if (this.pending) this.pending.hidden = true;
       if (this.success) {
-        this.success.textContent = 'Спасибо, отзыв отправлен.';
+        this.success.textContent = 'Спасибо, селфи отправлено.';
         this.success.hidden = false;
       }
       return true;
@@ -702,7 +579,7 @@
     }
   }
 
-  async function initializeFeedbackCleanupUi({ document, window, storage, result }) {
+  async function initializeFeedbackCleanupUi({ document, storage, result }) {
     const root = document?.querySelector?.('[data-feedback-cleanup]');
     const resultDigest = result?.dataset?.resultDigest;
     if (!root || !normalizedDigest(resultDigest)) return null;
@@ -710,7 +587,6 @@
       root,
       storage,
       resultDigest,
-      window,
     });
     await controller.bind();
     return controller;
@@ -906,9 +782,9 @@
         }))
       : Promise.resolve({ available: false });
     if (feedbackEnabled) storageReady.then((state) => {
-      initializeFeedbackCleanupUi({ document, window, storage, result }).catch(() => {});
+      initializeFeedbackCleanupUi({ document, storage, result }).catch(() => {});
       if (state.available) {
-        initializeFeedbackUi({ document, window, storage, result }).catch(() => {});
+        initializeFeedbackSelfieUi({ document, window, storage, result }).catch(() => {});
       }
     });
     if (!result || !result.dataset.statusUrl) return null;
@@ -931,15 +807,14 @@
   return {
     BrowserStorageAdapter,
     FEEDBACK_PENDING_KEY,
-    FeedbackMarkStore,
     FeedbackCleanupUiController,
-    FeedbackUiController,
+    FeedbackSelfieController,
     SELFIE_RETENTION_MS,
     SelfieSearchPoller,
     bindSelfieSearchForm,
     initializeBrowserStorage,
     initializeFeedbackCleanupUi,
-    initializeFeedbackUi,
+    initializeFeedbackSelfieUi,
     focusSelfieSearchError,
     startBrowserUi,
   };

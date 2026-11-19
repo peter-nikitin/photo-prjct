@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     "picflow.apps.PicflowConfig",
     "processing.apps.ProcessingConfig",
     "selfie_search.apps.SelfieSearchConfig",
+    "search_feedback",
 ]
 
 MIDDLEWARE = [

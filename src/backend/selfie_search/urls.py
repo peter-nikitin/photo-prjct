@@ -27,9 +27,9 @@ urlpatterns = [
         name="status",
     ),
     path(
-        "events/<str:event_slug>/selfie-search/<str:public_token>/feedback/",
-        views.feedback,
-        name="feedback",
+        "events/<str:event_slug>/selfie-search/<str:public_token>/feedback-selfie/",
+        views.feedback_selfie,
+        name="feedback_selfie",
     ),
     path(
         "events/<str:event_slug>/selfie-search/<str:public_token>/photos/<str:photo_id>/media/<str:variant>/",

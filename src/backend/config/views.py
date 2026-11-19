@@ -49,6 +49,7 @@ from picflow.gallery_image_delivery import (
 from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, EventFolder, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
+from search_feedback.models import SearchFeedback
 from selfie_search.forms import SelfieSearchUploadForm
 from selfie_search.services.submission import gallery_search_faces_by_photo
 
@@ -241,6 +242,21 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                 )
                 for photo in gallery_page_photos
             )
+    reported_photo_ids = (
+        set(
+            SearchFeedback.objects.filter(
+                event_id=event.pk,
+                search_type=SearchFeedback.SearchType.BIB,
+                value=SearchFeedback.Value.ABSENT,
+                search_context__bib_number=bib_number,
+                photo_id__in=[photo.photo_id for photo in gallery_photos],
+            )
+            .values_list("photo_id", flat=True)
+            .distinct()
+        )
+        if bib_number is not None and gallery_photos
+        else set()
+    )
     cart_state = cart_state_for_photos(
         request=request,
         event=event,
@@ -254,6 +270,12 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             "cart_presentation": cart_state.presentation if cart_state is not None else None,
             "event": event,
             "bib_number": bib_number,
+            "result_feedback_url": (
+                reverse("search_feedback_submit", kwargs={"event_slug": event.slug})
+                if bib_number is not None
+                else ""
+            ),
+            "reported_photo_ids": reported_photo_ids,
             "bib_search_form": bib_search_form,
             "bib_search_invalid": bib_search_invalid,
             "gallery_photos": gallery_photos,

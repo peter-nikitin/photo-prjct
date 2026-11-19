@@ -5,6 +5,7 @@ from django.views.decorators.gzip import gzip_page
 from picflow.cdn_origin import original_origin
 from processing.admin_progress import admin_processing_progress
 from processing.telemetry_views import metrics as worker_diagnostic_metrics
+from search_feedback.views import submit as submit_search_feedback
 
 from config import views
 from config.web_vitals import web_vitals
@@ -42,6 +43,11 @@ urlpatterns = [
         "events/<str:slug>/photos/<str:photo_id>/download/",
         views.photo_download,
         name="photo_download",
+    ),
+    path(
+        "events/<str:event_slug>/search-feedback/",
+        submit_search_feedback,
+        name="search_feedback_submit",
     ),
     path("events/<str:slug>/", gzip_page(views.event_detail), name="event_detail"),
     path("legal/", views.legal, name="legal"),

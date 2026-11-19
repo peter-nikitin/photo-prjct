@@ -97,7 +97,7 @@ def _is_allowed_bearer_post(request: HttpRequest) -> bool:
         return False
     try:
         return resolve(request.path_info).view_name in {
-            "selfie_search:feedback",
+            "selfie_search:feedback_selfie",
             "commerce:grant_order_resend",
         }
     except Resolver404:

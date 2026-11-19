@@ -8,7 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase
 from PIL import Image
 from selfie_search.forms import (
-    FeedbackSubmissionForm,
+    FeedbackSelfieForm,
     SelfieSearchUploadForm,
     SelfieUploadObservation,
 )
@@ -226,30 +226,24 @@ class SelfieSearchUploadFormTests(SimpleTestCase):
         self.assertEqual(error.message, "Размер фотографии не должен превышать 20 МиБ.")
 
 
-class FeedbackSubmissionFormTests(SimpleTestCase):
+class FeedbackSelfieFormTests(SimpleTestCase):
     """The production breaks caught here are accepting unsafe feedback metadata or media."""
 
-    def make_form(self, *, data=None, upload=None) -> FeedbackSubmissionForm:
-        return FeedbackSubmissionForm(
+    def make_form(self, *, data=None, upload=None) -> FeedbackSelfieForm:
+        return FeedbackSelfieForm(
             data={
                 "contact": "  person@example.test  ",
                 "personal_data_consent": "on",
-                "labels": '{"00000000-0000-0000-0000-000000000001":"present"}',
                 **(data or {}),
             },
             files={"selfie": upload or image_upload(image_format="JPEG")},
         )
 
-    def test_accepts_valid_multipart_payload_and_uses_server_consent_version(self) -> None:
+    def test_accepts_valid_multipart_payload(self) -> None:
         form = self.make_form()
 
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["contact"], "person@example.test")
-        self.assertEqual(
-            form.cleaned_data["labels"],
-            {"00000000-0000-0000-0000-000000000001": "present"},
-        )
-        self.assertEqual(form.consent_text_version, "2026-08-05")
 
     def test_normalizes_blank_and_whitespace_only_contact_to_empty_string(self) -> None:
         for contact in ("", "   "):
@@ -267,20 +261,11 @@ class FeedbackSubmissionFormTests(SimpleTestCase):
         self.assertIsInstance(selfie, PreparedSelfie)
         self.assertEqual(selfie.content_type, "image/jpeg")
 
-    def test_rejects_unconsented_or_unsafe_contact_and_duplicate_labels(self) -> None:
+    def test_rejects_unconsented_or_unsafe_contact(self) -> None:
         cases = (
             ({"personal_data_consent": ""}, "personal_data_consent"),
             ({"contact": "x\x00@example.test"}, "contact"),
             ({"contact": "x" * 255}, "contact"),
-            (
-                {
-                    "labels": (
-                        '{"00000000-0000-0000-0000-000000000001":"present",'
-                        '"00000000-0000-0000-0000-000000000001":"absent"}'
-                    )
-                },
-                "labels",
-            ),
         )
         for data, field in cases:
             with self.subTest(data=data):
@@ -289,10 +274,7 @@ class FeedbackSubmissionFormTests(SimpleTestCase):
                 self.assertFalse(form.is_valid())
                 self.assertIn(field, form.errors)
 
-    def test_rejects_unknown_label_value_and_corrupt_or_oversize_image(self) -> None:
-        unknown_label = self.make_form(
-            data={"labels": '{"00000000-0000-0000-0000-000000000001":"maybe"}'}
-        )
+    def test_rejects_corrupt_or_oversize_image(self) -> None:
         corrupt = self.make_form(
             upload=SimpleUploadedFile("selfie.jpg", b"broken", content_type="image/jpeg")
         )
@@ -302,7 +284,7 @@ class FeedbackSubmissionFormTests(SimpleTestCase):
             )
         )
 
-        for form, field in ((unknown_label, "labels"), (corrupt, "selfie"), (oversize, "selfie")):
+        for form, field in ((corrupt, "selfie"), (oversize, "selfie")):
             with self.subTest(field=field):
                 self.assertFalse(form.is_valid())
                 self.assertIn(field, form.errors)

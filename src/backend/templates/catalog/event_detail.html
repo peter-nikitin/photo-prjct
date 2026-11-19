@@ -108,6 +108,9 @@
                 {% endif %}
               </a>
               <div class="gallery-card-actions">
+                {% if result_feedback_url %}
+                  {% include "ui/search_result_feedback.html" with feedback_url=result_feedback_url photo_id=photo.photo_id %}
+                {% endif %}
                 {% if cart_presentation %}
                   {% for cart_photo in cart_presentation.photos %}
                     {% if cart_photo.photo.photo_id == photo.photo_id %}
@@ -126,55 +129,8 @@
                     {% endif %}
                   {% endfor %}
                 {% endif %}
-                {% if photo.faces %}
-                  <div class="gallery-face-control">
-                    {% if photo.faces|length == 1 %}
-                      {% with face=photo.faces.0 %}
-                        <form class="gallery-face-search" action="{{ face.search_url }}" method="post" target="_blank">
-                          {% csrf_token %}
-                          <button class="gallery-face-button gallery-face-button--direct" type="submit" aria-label="Найти похожие фото этого человека">
-                            <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
-                              <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="">
-                            </span>
-                          </button>
-                        </form>
-                      {% endwith %}
-                    {% else %}
-                      <details class="gallery-face-chooser" data-face-chooser>
-                        <summary class="gallery-face-stack" data-face-chooser-trigger aria-label="Выбрать человека для поиска">
-                          {% for face in photo.faces %}
-                            {% if forloop.counter <= 2 %}
-                              <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
-                                <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="">
-                              </span>
-                            {% elif forloop.counter == 3 %}
-                              {% if photo.faces|length > 3 %}
-                                <span class="gallery-face-more" aria-hidden="true">+ {{ photo.faces|length|add:"-2" }}</span>
-                              {% else %}
-                                <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
-                                  <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="">
-                                </span>
-                              {% endif %}
-                            {% endif %}
-                          {% endfor %}
-                        </summary>
-                        <div class="gallery-face-chooser-popover" role="dialog" aria-label="Кого искать?">
-                          <div class="gallery-face-grid">
-                            {% for face in photo.faces %}
-                              <form class="gallery-face-search" action="{{ face.search_url }}" method="post" target="_blank">
-                                {% csrf_token %}
-                                <button class="gallery-face-button" type="submit" data-face-choice aria-label="Найти похожие фото человека {{ face.face_number }}">
-                                  <span class="gallery-face-crop" aria-hidden="true" style="--face-left: {{ face.left_percent }}; --face-top: {{ face.top_percent }}; --face-size: {{ face.size_percent }};">
-                                    <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="">
-                                  </span>
-                                </button>
-                              </form>
-                            {% endfor %}
-                          </div>
-                        </div>
-                      </details>
-                    {% endif %}
-                  </div>
+                {% if not result_feedback_url %}
+                  {% include "ui/gallery_face_control.html" %}
                 {% endif %}
                 <div class="gallery-card-download">
                   {% if photo.capture_time_display %}<time class="gallery-card-time">{{ photo.capture_time_display }}</time>{% endif %}
@@ -184,6 +140,9 @@
                     </a>
                   {% endif %}
                 </div>
+                {% if result_feedback_url %}
+                  {% include "ui/gallery_face_control.html" %}
+                {% endif %}
               </div>
             </figure>
           {% endfor %}
@@ -205,6 +164,7 @@
 {% block extra_js %}
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
+  {% if result_feedback_url and gallery_photos %}<script src="{% static 'ui/search-result-feedback.js' %}"></script>{% endif %}
   {% if cart_presentation %}<script src="{% static 'ui/commerce-cart.js' %}"></script>{% endif %}
   {% if selfie_search_form %}<script src="{% static 'ui/selfie-search.js' %}"></script>{% endif %}
   {% if selfie_search_form %}<script src="{% static 'ui/selfie-search-history.js' %}"></script>{% endif %}

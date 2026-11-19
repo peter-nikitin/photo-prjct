@@ -42,7 +42,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | PJ-010 | Customer | Purchase selected photos | In progress | 2026-08-22 |
 | PJ-011 | Customer | Download purchased photos | In progress | 2026-08-22 |
 | PJ-012 | Visitor | Jump to a known gallery page | Delivered | 2026-08-21 |
-| PJ-013 | Customer | Report selfie-search quality | In progress | 2026-08-05 |
+| PJ-013 | Customer | Сообщить об ошибке поиска | In progress | 2026-11-18 |
 | PJ-014 | Customer | Return to saved selfie-search results | In progress | 2026-08-04 |
 | PJ-015 | Customer | Filter an event gallery by capture time | Delivered | 2026-08-21 |
 | PJ-016 | Customer | Select paid event photos | In progress | 2026-08-22 |
@@ -304,29 +304,23 @@ directly to it, so I can reach that part of the photo list quickly.
   focused event pagination coverage in [`src/backend/picflow/tests/test_views.py::GalleryPageTests::test_event_detail_uses_numbered_pages_in_filename_order`](../src/backend/picflow/tests/test_views.py), focused selfie pagination coverage in [`src/backend/selfie_search/tests/test_views.py::PublicSelfieResultViewTests::test_ready_page_uses_numbered_pages_without_reranking_or_expanding_membership`](../src/backend/selfie_search/tests/test_views.py), and four production-screen visual baselines covered by [`tests/visual/visual.spec.js`](../tests/visual/visual.spec.js): [`desktop-event-gallery-populated.png`](../tests/visual/visual.spec.js-snapshots/desktop-event-gallery-populated.png), [`mobile-event-gallery-populated.png`](../tests/visual/visual.spec.js-snapshots/mobile-event-gallery-populated.png), [`desktop-selfie-search-ready.png`](../tests/visual/visual.spec.js-snapshots/desktop-selfie-search-ready.png), and [`mobile-selfie-search-ready.png`](../tests/visual/visual.spec.js-snapshots/mobile-selfie-search-ready.png). Current-main CI run `32457775703` and automatic Deploy run `32457775668` succeeded. This delivery evidence does not establish customer-outcome validation.
 - Last updated: 2026-08-21
 
-### PJ-013 — Customer — Report selfie-search quality
+### PJ-013 — Покупатель — Сообщить об ошибке поиска
 
-When a selfie search finishes, I want to report whether its result was useful and optionally mark
-which returned photos contain me, so I can help FindMe Photo investigate failures and improve
-search quality without selecting the same selfie again, while retaining the ability to disable
-future feedback prompts in my browser.
+Когда в результатах поиска по селфи, выбранному лицу или номеру есть чужая фотография,
+я хочу отметить её на месте. Если поиск по моему селфи не удался, я хочу иметь возможность
+добровольно отправить его для разбора проблемы без повторного выбора файла.
 
-- Status: In progress
-- Evidence: The repository implementation covers the approved browser-local selfie reuse,
-  compact failed/empty report, in-gallery result marking, consent/contact validation, immutable
-  feedback schema, restricted audited admin inspection, and guarded feedback-bucket lifecycle.
-  Focused Django/deployment tests, JavaScript tests, containerized visual tests, and the complete
-  CI-equivalent release gate pass on this branch. The
-  [selfie-search quality feedback specification](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/superpowers/specs/2026-08-04-selfie-search-quality-feedback-design.md),
-  [implementation plan](https://github.com/peter-nikitin/photo-prjct/blob/c20ea18e8f9647ad6b29f3163279646220927198/docs/plans/2026-08-04-selfie-search-quality-feedback.md), and
-  [ADR 0023](adr/0023-store-consented-selfie-search-feedback.md) define the accepted boundary.
-  `SELFIE_FEEDBACK_ENABLED=False` remains the default; no canonical-deployment activation or
-  real customer-outcome evidence is claimed. The face-cluster increment also provides the
-  aggregate-only `report_face_cluster_expansion` command, which derives direct-primary,
-  cluster-primary, dual-evidence, and labelled-sample feedback metrics from immutable server-side
-  provenance without accepting a customer-supplied source field. This is implementation evidence,
-  not evidence that customers have used the expanded path.
-- Last updated: 2026-08-05
+- Статус — в работе. Подтверждения от посетителей пока нет.
+- Реализация сохраняет отметку «Это не я» при каждом успешном запросе и выводит подтверждение
+  рядом с фотографией. Приём добровольного селфи с отдельным согласием и необязательным контактом
+  управляется `SELFIE_FEEDBACK_ENABLED`. Сотрудники с разрешением могут открыть селфи или контакт,
+  каждое открытие записывается в аудит.
+- Единый журнал хранит отметки с типом и контекстом поиска. Повтор запроса может добавить
+  строку с тем же идентификатором отправки. Отчёт считает такую отправку один раз.
+- В отчёте `report_face_cluster_expansion` покрытие учитывает результаты с любыми отметками,
+  а доля подтверждённых совпадений рассчитывается по исторической двусторонней разметке.
+  Новые отрицательные отметки в эту долю не входят.
+- Обновлено 2026-11-18.
 
 ### PJ-014 — Customer — Return to saved selfie-search results
 

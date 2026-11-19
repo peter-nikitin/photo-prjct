@@ -45,7 +45,7 @@ history row with PR or commit evidence where available, and never edit earlier h
 | EJ-011 | Maintainer | Gate private gallery media activation | Validated | 2026-07-19 |
 | EJ-012 | Maintainer | Gate temporary selfie storage activation | Validated | 2026-07-31 |
 | EJ-013 | Contributor | Start isolated repository work reliably | Validated | 2026-08-21 |
-| EJ-014 | Maintainer | Gate consented feedback storage activation | Validated | 2026-08-04 |
+| EJ-014 | Maintainer | Управлять приёмом добровольного селфи | Validated | 2026-11-18 |
 | EJ-015 | Operator | Inspect bounded selfie-search operational evidence | Delivered | 2026-08-04 |
 | EJ-016 | Maintainer | Build and guard event face-cluster expansion | Delivered | 2026-08-05 |
 | EJ-017 | Developer | Read canonical secret projections consistently | Delivered | 2026-08-20 |
@@ -313,22 +313,20 @@ validated the integrated workflow.
   current acceptance evidence for the repaired bootstrap and literal worker selector.
 - Last updated: 2026-08-21
 
-### EJ-014 — Maintainer — Gate consented feedback storage activation
+### EJ-014 — Сопровождающий — Управлять приёмом добровольного селфи
 
-When I prepare the canonical deployment for consented selfie-search feedback, I want the dedicated bucket,
-KMS, lifecycle, anonymous-denial, and web-only credential contract checked fail-closed, so I can
-keep feedback disabled until its private storage boundary is ready.
+Перед включением приёма селфи для обратной связи сопровождающий проверяет выделенный бакет,
+ключ KMS, правила удаления, запрет анонимного доступа и передачу учётных данных только
+веб-сервису. Отметки результатов хранятся в PostgreSQL и доступны независимо от приёма селфи.
 
-The repository provides a guarded 30-day lifecycle mutation with exact bucket/KMS digest,
-unversioned and unlocked checks, readback, and recovery. Its explicit real-storage preflight checks
-default KMS encryption, private ACLs, anonymous object and list denial, lifecycle, and one opaque
-put/head/range/grant/delete scratch cycle. Deployment tests verify disabled-by-default wiring,
-preflight confirmation before enablement, and that feedback credentials reach only the web service;
-no Yandex bucket or canonical-deployment activation is claimed.
+Предварительная проверка хранилища проверяет шифрование KMS по умолчанию, закрытый ACL,
+запрет анонимного чтения и перечисления объектов, правило удаления через 30 дней и работу
+загрузки, чтения, выдачи временной ссылки и удаления тестового объекта. Тесты развёртывания
+проверяют отключённый по умолчанию приём селфи и допуск после проверки хранилища.
 
-- Status: Validated
-- Evidence: [`src/backend/selfie_search/feedback_lifecycle.py`](../src/backend/selfie_search/feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py`](../src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py`](../src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py), [`src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py`](../src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py), [`src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py`](../src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py), [`src/backend/selfie_search/tests/test_feedback_storage_contract_command.py`](../src/backend/selfie_search/tests/test_feedback_storage_contract_command.py), and [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py)
-- Last updated: 2026-08-04
+- Статус — проверено автоматическими тестами.
+- Проверки: [`src/backend/selfie_search/feedback_lifecycle.py`](../src/backend/selfie_search/feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py`](../src/backend/selfie_search/management/commands/configure_selfie_feedback_lifecycle.py), [`src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py`](../src/backend/selfie_search/management/commands/verify_selfie_feedback_storage.py), [`src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py`](../src/backend/selfie_search/tests/test_feedback_lifecycle_configuration.py), [`src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py`](../src/backend/selfie_search/tests/test_configure_feedback_lifecycle_command.py), [`src/backend/selfie_search/tests/test_feedback_storage_contract_command.py`](../src/backend/selfie_search/tests/test_feedback_storage_contract_command.py), and [`tests/deployment/test_deployment_scripts.py`](../tests/deployment/test_deployment_scripts.py)
+- Обновлено 2026-11-18.
 
 ### EJ-016 — Maintainer — Build and guard event face-cluster expansion
 

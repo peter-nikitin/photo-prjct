@@ -11,7 +11,6 @@ from selfie_search.models import (
     SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
     SelfieSearchFeedbackAccessAudit,
-    SelfieSearchFeedbackLabel,
     SelfieSearchResult,
 )
 from selfie_search.storage import FeedbackSelfieStorage
@@ -29,12 +28,6 @@ class ReadOnlyInline(admin.TabularInline):
 
     def has_delete_permission(self, request, obj=None) -> bool:  # noqa: ARG002
         return False
-
-
-class FeedbackLabelInline(ReadOnlyInline):
-    model = SelfieSearchFeedbackLabel
-    fields = ("result", "value")
-    readonly_fields = fields
 
 
 class FeedbackAccessAuditInline(ReadOnlyInline):
@@ -137,7 +130,7 @@ class SelfieSearchFeedbackAdmin(admin.ModelAdmin):
         "created_at",
     )
     readonly_fields = fields
-    inlines = (FeedbackLabelInline, FeedbackAccessAuditInline)
+    inlines = (FeedbackAccessAuditInline,)
 
     def has_add_permission(self, request) -> bool:  # noqa: ARG002
         return False
@@ -164,6 +157,9 @@ class SelfieSearchFeedbackAdmin(admin.ModelAdmin):
         ] + super().get_urls()
 
     def render_change_form(self, request, context, add=False, change=False, form_url="", obj=None):
+        if obj is not None and request.user.has_perm("search_feedback.view_searchfeedback"):
+            history_url = reverse("admin:search_feedback_searchfeedback_changelist")
+            context["feedback_history_url"] = f"{history_url}?legacy_attachment_id__exact={obj.pk}"
         if obj is not None and self._can_view_sensitive_feedback(request):
             context["sensitive_feedback_action_urls"] = {
                 "contact": reverse(

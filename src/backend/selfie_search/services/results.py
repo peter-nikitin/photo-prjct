@@ -6,6 +6,8 @@ import hashlib
 from typing import Final
 
 from django.core.paginator import Page, Paginator
+from django.db.models import QuerySet
+from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import saved_result_photo_queryset
 from picflow.models import Event, Photo
 
@@ -19,6 +21,7 @@ class PublicSearchNotFound(LookupError):
 SELFIE_SEARCH_RESULT_PAGE_SIZE: Final = 100
 
 
+@sensitive_variables("public_token")
 def resolve_public_result(*, event_slug: str, public_token: str, user) -> SelfieSearch:
     """Resolve one stable bearer result only while its event is site-visible to the caller."""
     try:
@@ -74,9 +77,23 @@ def saved_ready_result_photo(
     paid_watermarked_previews_enabled: bool = False,
 ) -> Photo | None:
     """Return one currently eligible saved bearer member, never a general event photo."""
+    row = saved_ready_result_row(
+        search=search,
+        photo_id=photo_id,
+        paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+    )
+    return row.photo if row is not None else None
+
+
+def saved_ready_result_row(
+    *,
+    search: SelfieSearch,
+    photo_id: str,
+    paid_watermarked_previews_enabled: bool,
+) -> SelfieSearchResult | None:
     if search.status != SelfieSearch.Status.READY:
         return None
-    row = (
+    return (
         _eligible_saved_result_rows(
             search,
             paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
@@ -84,14 +101,13 @@ def saved_ready_result_photo(
         .filter(photo_id=photo_id)
         .first()
     )
-    return row.photo if row is not None else None
 
 
 def _eligible_saved_result_rows(
     search: SelfieSearch,
     *,
     paid_watermarked_previews_enabled: bool,
-):
+) -> QuerySet[SelfieSearchResult]:
     return (
         SelfieSearchResult.objects.filter(
             search=search,

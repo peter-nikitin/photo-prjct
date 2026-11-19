@@ -44,6 +44,9 @@
                   <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
                 </a>
                 <div class="gallery-card-actions">
+                  {% if result_feedback_url %}
+                    {% include "ui/search_result_feedback.html" with feedback_url=result_feedback_url photo_id=photo.photo_id %}
+                  {% endif %}
                   {% if cart_presentation %}
                     {% for cart_photo in cart_presentation.photos %}
                       {% if cart_photo.photo.photo_id == photo.photo_id %}
@@ -61,12 +64,6 @@
                         </div>
                       {% endif %}
                     {% endfor %}
-                  {% endif %}
-                  {% if feedback and feedback.variant == "result_labels" %}
-                    <div class="gallery-card-feedback-controls" data-feedback-card-controls>
-                      <button class="gallery-feedback-choice" type="button" data-feedback-result-id="{{ result.pk }}" data-feedback-label="present" aria-pressed="false" aria-label="На фотографии {{ forloop.counter }}: я есть">Я есть</button>
-                      <button class="gallery-feedback-choice" type="button" data-feedback-result-id="{{ result.pk }}" data-feedback-label="absent" aria-pressed="false" aria-label="На фотографии {{ forloop.counter }}: меня нет">Меня нет</button>
-                    </div>
                   {% endif %}
                   <div class="gallery-card-download">
                     {% if photo.capture_time_display %}<time class="gallery-card-time">{{ photo.capture_time_display }}</time>{% endif %}
@@ -105,18 +102,11 @@
         {% if feedback or feedback_submitted %}
           <div class="selfie-search-terminal-feedback">
             {% if feedback %}
-              <p class="selfie-search-feedback-unavailable" data-feedback-unavailable role="status" hidden>Отзыв об этом поиске можно отправить только из браузера, где он был начат, пока локальная копия селфи ещё доступна.</p>
-              <section class="selfie-search-feedback" data-selfie-feedback data-feedback-variant="{{ feedback.variant }}" data-feedback-total="{{ feedback.visible_result_count }}" data-feedback-url="{{ feedback.url }}"{% if feedback.preview %} data-feedback-preview="true"{% endif %} aria-labelledby="selfie-search-feedback-title">
+              <section class="selfie-search-feedback" data-selfie-feedback data-feedback-url="{{ feedback.url }}"{% if feedback.preview %} data-feedback-preview="true"{% endif %} aria-labelledby="selfie-search-feedback-title"{% if not feedback.preview %} hidden{% endif %}>
                 <form class="selfie-search-feedback-form" data-feedback-form novalidate>
                   {% csrf_token %}
-                  <h2 id="selfie-search-feedback-title">Помогите улучшить поиск</h2>
-                  {% if feedback.variant == "problem" %}
-                    <p>Поиск не дал подходящих фотографий. Ваш отзыв поможет нам улучшить результат.</p>
-                  {% else %}
-                    <p class="selfie-search-feedback-progress" data-feedback-progress>Размечено 0 из {{ feedback.visible_result_count }} фотографий</p>
-                    <p>Можно отправить отзыв и без полной разметки, но каждая отметка очень поможет улучшить поиск.</p>
-                  {% endif %}
-                  <p class="selfie-search-feedback-disclosure">К отзыву приложим ваше селфи — то самое, которое вы использовали для этого поиска. Повторно выбирать файл не нужно.</p>
+                  <h2 id="selfie-search-feedback-title">{% if feedback.is_problem %}Сообщить о проблеме с поиском{% else %}Поделиться селфи для улучшения поиска{% endif %}</h2>
+                  <p class="selfie-search-feedback-disclosure">Приложим селфи, которое вы использовали для этого поиска. Повторно выбирать файл не нужно.</p>
                   <details class="selfie-search-feedback-contact">
                     <summary>Оставить контакт для связи — необязательно</summary>
                     <div class="selfie-search-feedback-contact-body">
@@ -128,13 +118,13 @@
                   </details>
                   <label class="selfie-search-feedback-consent" for="feedback-consent">
                     <input id="feedback-consent" name="personal_data_consent" type="checkbox" required aria-describedby="feedback-consent-error">
-                    <span>Я согласен на обработку моего селфи и оценки результатов поиска для анализа качества поиска, а если оставлю контакт — также контактных данных для связи со мной в соответствии с <a href="{% static 'ui/legal/personal-data-policy.pdf' %}">Политикой обработки персональных данных</a>.</span>
+                    <span>Я согласен на обработку моего селфи для анализа качества поиска, а если оставлю контакт — также контактных данных для связи со мной в соответствии с <a href="{% static 'ui/legal/personal-data-policy.pdf' %}">Политикой обработки персональных данных</a>.</span>
                   </label>
                   <p id="feedback-consent-error" class="selfie-search-feedback-error" data-feedback-consent-error hidden></p>
                   <p class="selfie-search-feedback-lifecycle">Селфи будет автоматически удалено из закрытого хранилища.</p>
                   <p class="selfie-search-feedback-error" data-feedback-submit-error role="alert" hidden></p>
                   <div class="selfie-search-feedback-actions">
-                    <button class="button" type="submit" data-feedback-submit>Отправить отзыв</button>
+                    <button class="button" type="submit" data-feedback-submit>Отправить селфи</button>
                   </div>
                 </form>
               </section>
@@ -154,6 +144,7 @@
 {% block extra_js %}
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
+  {% if gallery_result_items %}<script src="{% static 'ui/search-result-feedback.js' %}"></script>{% endif %}
   {% if cart_presentation %}<script src="{% static 'ui/commerce-cart.js' %}"></script>{% endif %}
   <script src="{% static 'ui/selfie-search.js' %}"></script>
   <script src="{% static 'ui/selfie-search-history.js' %}"></script>

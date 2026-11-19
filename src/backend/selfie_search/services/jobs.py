@@ -25,6 +25,7 @@ from selfie_search.models import (
     FaceSearchTask,
     SelfieSearch,
     SelfieSearchAnchorEvidence,
+    SelfieSearchAnchorEvidenceSource,
     SelfieSearchAttempt,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
@@ -686,18 +687,30 @@ def prepare_search_result(
                 for evidence in row.cluster_evidence
             ]
         )
-        SelfieSearchAnchorEvidence.objects.bulk_create(
-            [
-                SelfieSearchAnchorEvidence(
-                    result=result_by_photo[row.photo_id],
-                    anchor=direct_evidence_by_photo[row.anchor_evidence.anchor_photo_id],
-                    detection_id=row.anchor_evidence.detection_id,
-                    cosine_distance=row.anchor_evidence.cosine_distance,
+        anchor_evidence_rows: list[SelfieSearchAnchorEvidence] = []
+        anchor_source_rows: list[SelfieSearchAnchorEvidenceSource] = []
+        for row in expansion.results:
+            match = row.anchor_evidence
+            if match is None:
+                continue
+            if not 1 <= len(match.anchor_photo_ids) <= 5 or any(
+                photo_id not in direct_evidence_by_photo for photo_id in match.anchor_photo_ids
+            ):
+                raise SearchCompletionConflict("prepared selfie anchor sources are invalid")
+            evidence = SelfieSearchAnchorEvidence(
+                result=result_by_photo[row.photo_id],
+                detection_id=match.detection_id,
+                cosine_distance=match.cosine_distance,
+            )
+            anchor_evidence_rows.append(evidence)
+            anchor_source_rows.extend(
+                SelfieSearchAnchorEvidenceSource(
+                    evidence=evidence, anchor=direct_evidence_by_photo[photo_id], position=position
                 )
-                for row in expansion.results
-                if row.anchor_evidence is not None
-            ]
-        )
+                for position, photo_id in enumerate(match.anchor_photo_ids, start=1)
+            )
+        SelfieSearchAnchorEvidence.objects.bulk_create(anchor_evidence_rows)
+        SelfieSearchAnchorEvidenceSource.objects.bulk_create(anchor_source_rows)
         _verify_prepared_result_identity(search, expansion)
         search.final_matched_photo_count = expansion.final_matched_photo_count
         search.direct_matched_photo_count = expansion.direct_matched_photo_count

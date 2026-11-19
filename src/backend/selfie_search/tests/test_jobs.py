@@ -560,11 +560,12 @@ class SearchJobTests(TestCase):
         self.assertFalse(search.results.exists())
 
     @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
-    def test_cluster_and_anchor_expansions_persist_deduplicated_provenance_before_cleanup(
+    def test_cluster_and_centroid_expansions_persist_deduplicated_provenance_before_cleanup(
         self,
     ) -> None:
         search = self.make_search(with_candidate=False)
         anchor = self.add_candidate(search=search, photo_id="integration-anchor", distance=0.1)
+        second = self.add_candidate(search=search, photo_id="integration-second", distance=0.2)
         member = self.add_candidate(search=search, photo_id="integration-member", distance=0.45)
         self.add_candidate(search=search, photo_id="integration-anchor-only", distance=0.5)
         FeatureFlag.objects.create(
@@ -633,18 +634,24 @@ class SearchJobTests(TestCase):
 
         search.refresh_from_db()
         self.assertEqual(search.status, SelfieSearch.Status.READY)
-        self.assertEqual(search.direct_matched_photo_count, 1)
+        self.assertEqual(search.direct_matched_photo_count, 2)
         self.assertEqual(search.cluster_expanded_photo_count, 1)
         self.assertEqual(search.anchor_expanded_photo_count, 1)
-        self.assertEqual(search.final_matched_photo_count, 3)
+        self.assertEqual(search.final_matched_photo_count, 4)
         self.assertEqual(search.cluster_expansion_outcome, "expanded")
         self.assertEqual(
             list(search.results.order_by("rank").values_list("photo_id", "primary_source")),
             [
                 ("integration-anchor", "direct"),
+                ("integration-second", "direct"),
                 ("integration-member", "face_cluster_expansion"),
                 ("integration-anchor-only", "face_anchor_expansion"),
             ],
+        )
+        evidence = search.results.get(photo_id="integration-anchor-only").anchor_evidence
+        self.assertEqual(
+            list(evidence.sources.values_list("position", "anchor__detection_id")),
+            [(1, anchor.id), (2, second.id)],
         )
         events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
         ranking_event = next(
@@ -654,13 +661,13 @@ class SearchJobTests(TestCase):
             event for event in events if event["event"] == "selfie_search_terminal"
         )
         self.assertEqual(ranking_event["schema_version"], 5)
-        self.assertEqual(ranking_event["direct_matched_photo_count"], 1)
+        self.assertEqual(ranking_event["direct_matched_photo_count"], 2)
         self.assertEqual(ranking_event["cluster_expanded_photo_count"], 1)
         self.assertEqual(ranking_event["anchor_expanded_photo_count"], 1)
-        self.assertEqual(ranking_event["final_matched_photo_count"], 3)
+        self.assertEqual(ranking_event["final_matched_photo_count"], 4)
         self.assertEqual(ranking_event["cluster_expansion_outcome"], "expanded")
         self.assertEqual(terminal_event["schema_version"], 3)
-        self.assertEqual(terminal_event["direct_matched_photo_count"], 1)
+        self.assertEqual(terminal_event["direct_matched_photo_count"], 2)
         self.assertEqual(terminal_event["cluster_expanded_photo_count"], 1)
         self.assertEqual(terminal_event["anchor_expanded_photo_count"], 1)
         self.assertEqual(terminal_event["cluster_corpus_version"], 1)

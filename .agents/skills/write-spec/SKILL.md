@@ -8,7 +8,8 @@ description: Use when preparing, reviewing, or approving a FindMe Photo feature 
 ## Purpose
 
 Augment design work with FindMe Photo architecture and ADR reconciliation. Produce an approved
-specification whose architectural impact is explicit before `$write-plan` begins.
+specification whose architectural impact is explicit before `$write-plan` begins. Follow the
+[documentation scope in AGENTS.md](../../../AGENTS.md#documentation-scope).
 
 **REQUIRED SUB-SKILL:** Use `superpowers:brainstorming` for intent, alternatives, incremental design
 approval, written review, and transition to planning.
@@ -36,11 +37,11 @@ specification must not anticipate the plan by duplicating those mechanics.
 
 ## Workflow
 
-1. Before proposing approaches, read the relevant current, accepted, proposed, and open-decision
-   sections of `docs/architecture.md`; `docs/adr/README.md`; every applicable ADR; linked plans,
-   specifications, experiments, and jobs; and implementation/tests when behavior already exists.
-2. Resolve contradictions before approval. Revise the design or classify it as superseding the
-   affected ADR; never rely only on an ADR title or architecture summary.
+1. Before proposing approaches, read the relevant sections of `docs/architecture.md`, the ADR
+   index and applicable decisions, and the implementation and tests for existing behavior.
+2. Resolve conflicts with accepted architectural choices before approval. Read the decision text
+   to distinguish the choice from historical implementation details. Revise the design or
+   classify the architectural choice it supersedes.
 3. Save the design temporarily under ignored `docs/superpowers/specs/YYYY-MM-DD-topic-design.md`
    with exact `Related architecture`, `Related ADRs`, and `ADR impact` metadata. Write prose in Russian.
 4. During self-review, verify scope, internal consistency, ambiguity, applicable ADR boundaries,
@@ -50,24 +51,22 @@ specification must not anticipate the plan by duplicating those mechanics.
    silently accept a new or superseding ADR.
 6. Invoke `$write-plan` after approval. Pass the approved specification and its ADR-impact
    classification so planning begins with ADR resolution.
-7. Before merge, transfer accepted durable decisions and reasons to ADRs, reconcile implemented
-   architecture, and remove the specification from the Git index and final commit.
+7. Before merge, update the relevant long-lived documents using the documentation scope. Remove
+   the specification from the Git index and final commit.
 
 ## Required ADR impact
 
 | Classification | Use when |
 | --- | --- |
 | `None — reversible implementation detail` | No durable architecture choice is made. |
-| `Conforms to ADR NNNN` | The design stays inside accepted decisions. |
-| `Requires new ADR` | Approval selects a durable choice not yet governed by an accepted ADR. |
-| `Supersedes ADR NNNN` | Approval changes an accepted decision. |
+| `Conforms to ADR NNNN` | The design stays within an accepted architectural decision. |
+| `Requires new ADR` | The design introduces a durable architectural choice. |
+| `Supersedes ADR NNNN` | The design changes an accepted architectural choice. |
 
 Use `Related ADRs: none` only after checking the ADR index. Multiple conforming ADRs may share one
 classification; list independent new or superseding decisions separately.
 
 ## Boundaries
 
-- Do not edit an accepted ADR to match a specification; use `$write-adr` to supersede it.
-- Do not update current implemented architecture merely because a specification was approved.
-- Do not require an ADR for reversible implementation detail.
-- Old specifications remain available in Git history; reconcile them only when needed.
+- Use `$write-adr` when an accepted architectural choice needs a successor.
+- Old specifications remain available in Git history. Reconcile them only when needed.

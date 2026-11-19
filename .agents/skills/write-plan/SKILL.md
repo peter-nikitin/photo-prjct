@@ -8,7 +8,8 @@ description: Use when planning multi-step, cross-cutting, migration-sensitive, o
 ## Purpose
 
 Turn an approved outcome into decision-complete, verifiable work that follows the repository's
-architecture and accepted ADRs.
+architecture and accepted ADRs. Follow the
+[documentation scope in AGENTS.md](../../../AGENTS.md#documentation-scope).
 
 ## Document contract
 
@@ -62,7 +63,7 @@ Do not require a plan file for a small, reversible single VM or domain change th
 governed by an accepted ADR and the existing deployment entrypoint. Record the scope and acceptance
 checks in the pull request instead. Take a scope checkpoint and return to the normal planning
 workflow when the change introduces multi-environment coordination, persistent release state, a
-data migration, a pricing-affecting cloud action, or a conflict with an accepted ADR.
+data migration, a pricing-affecting cloud action, or a conflict with an accepted architectural choice.
 
 ## Workflow
 
@@ -71,7 +72,7 @@ data migration, a pricing-affecting cloud action, or a conflict with an accepted
 2. When an approved specification exists, read it completely and resolve its `ADR impact` before
    creating a plan file:
    - `None — reversible implementation detail`: record that no ADR or architecture update is needed;
-   - `Conforms to ADR NNNN`: verify the final text remains inside every cited ADR boundary;
+   - `Conforms to ADR NNNN`: verify the design against every cited architectural boundary;
    - `Requires new ADR`: invoke `$write-adr` and obtain explicit maintainer acceptance;
    - `Supersedes ADR NNNN`: invoke `$write-adr`, cross-link both records, and obtain explicit
      maintainer acceptance.
@@ -81,9 +82,9 @@ data migration, a pricing-affecting cloud action, or a conflict with an accepted
    compatibility requirements, and operational constraints. Stop for user input only when a
    missing choice materially changes the outcome; update the specification rather than deciding it
    inside the plan.
-4. Detect architectural decisions hidden in the request. Invoke `$write-adr` before planning when
-   the work requires a durable choice that is neither accepted nor safely reversible. Never let a
-   plan silently override an accepted ADR.
+4. For work without an approved specification, classify ADR impact using the same rules. Invoke
+   `$write-adr` for a new or changed architectural choice. Place changes to historical implementation
+   details in the relevant topic documentation.
 5. Create a temporary plan at the ignored `docs/plans/YYYY-MM-DD-topic.md` path. Link the approved
    specification, exact architecture sections, and resolved ADR impact; write `none` only after
    checking. Apply the Worker/state/artifact plan gate when its observable condition is true.
@@ -95,15 +96,13 @@ data migration, a pricing-affecting cloud action, or a conflict with an accepted
    outcomes rather than vague instructions such as “test thoroughly.”
 8. Describe configuration, deployment order, compatibility, monitoring, and rollback. State `None`
    explicitly when a section has no runtime effect.
-9. End every plan with architecture and ADR reconciliation after behavior verification and before
-   push. Require one explicit outcome: no ADR impact, conformance, architecture update, new ADR, or
-   superseding ADR.
+9. End the plan with behavior verification and the documentation updates required by the
+   resolved ADR impact and documentation scope.
 10. Remove unresolved implementation choices. If an open question remains, mark the plan blocked or
    return to the decision owner instead of leaving the implementer to guess.
 11. For subagent execution, add one instruction to use `$execute-implementation-plan`; do not repeat
     its orchestration contract in the plan or individual tasks.
-12. Before merge, transfer accepted durable decisions and reasons to ADRs, reconcile implemented
-    architecture, and remove the plan and specification from the Git index and final commit.
+12. Before merge, remove the plan and specification from the Git index and final commit.
 
 ## Quality rules
 
@@ -116,4 +115,3 @@ data migration, a pricing-affecting cloud action, or a conflict with an accepted
 - Keep the production dependency and Docker deployment model stable unless the request changes it.
 - Do not introduce proposed services or technologies merely because they appear in the target
   architecture.
-- Update related documentation in the same plan when delivered behavior changes architectural facts.

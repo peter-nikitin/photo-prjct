@@ -537,3 +537,99 @@ class IndependentSearchFeedbackMigrationTests(TransactionTestCase):
 
 def old_feedback_model_to_dict(row):
     return {field.attname: getattr(row, field.attname) for field in row._meta.concrete_fields}
+
+
+class FaceCentroidSourcesMigrationTests(TransactionTestCase):
+    make_event = GalleryPhotoSubmissionTests.make_event
+    make_eligible_embedding = GalleryPhotoSubmissionTests.make_eligible_embedding
+    before = [("selfie_search", "0014_independent_search_feedback")]
+    after = [("selfie_search", "0015_face_centroid_sources")]
+
+    def test_preserves_saved_singleton_and_rejects_lossy_downgrade(self) -> None:
+        GalleryPhotoSubmissionTests.setUp(self)
+        faces = [
+            self.make_eligible_embedding(
+                event=self.event, photo_id=photo_id, vector=[1.0] + [0.0] * 511
+            )
+            for photo_id in ("historical-anchor", "other-anchor", "historical-addition")
+        ]
+        executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(leaves))
+        executor.migrate(self.before)
+        old_apps = executor.loader.project_state(self.before).apps
+        Search = old_apps.get_model("selfie_search", "SelfieSearch")
+        Result = old_apps.get_model("selfie_search", "SelfieSearchResult")
+        DirectEvidence = old_apps.get_model("selfie_search", "SelfieSearchDirectEvidence")
+        AnchorEvidence = old_apps.get_model("selfie_search", "SelfieSearchAnchorEvidence")
+        search = Search.objects.create(
+            event_id=self.event.pk,
+            public_token_digest="f" * 64,
+            status="ready",
+            terminal_at=timezone.now(),
+            matched_photo_count=3,
+            direct_matched_photo_count=2,
+            cluster_expanded_photo_count=0,
+            anchor_expanded_photo_count=1,
+            final_matched_photo_count=3,
+        )
+        results = [
+            Result.objects.create(
+                search=search,
+                photo_id=face.detection.attempt.photo_id,
+                rank=rank,
+                primary_source="direct" if rank < 3 else "face_anchor_expansion",
+            )
+            for rank, face in enumerate(faces, start=1)
+        ]
+        anchors = [
+            DirectEvidence.objects.create(
+                result=result, detection_id=face.detection_id, cosine_distance=0.3
+            )
+            for result, face in zip(results[:2], faces[:2], strict=True)
+        ]
+        evidence = AnchorEvidence.objects.create(
+            result=results[2],
+            anchor=anchors[0],
+            detection_id=faces[2].detection_id,
+            cosine_distance=0.4,
+        )
+        saved_search = Search.objects.values().get(pk=search.pk)
+        saved_results = list(Result.objects.filter(search=search).order_by("rank").values())
+        saved_evidence = AnchorEvidence.objects.values().get(pk=evidence.pk)
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        new_apps = executor.loader.project_state(self.after).apps
+        NewSearch = new_apps.get_model("selfie_search", "SelfieSearch")
+        NewResult = new_apps.get_model("selfie_search", "SelfieSearchResult")
+        NewEvidence = new_apps.get_model("selfie_search", "SelfieSearchAnchorEvidence")
+        Source = new_apps.get_model("selfie_search", "SelfieSearchAnchorEvidenceSource")
+        self.assertEqual(NewSearch.objects.values().get(pk=search.pk), saved_search)
+        self.assertEqual(
+            list(NewResult.objects.filter(search_id=search.pk).order_by("rank").values()),
+            saved_results,
+        )
+        self.assertEqual(
+            NewEvidence.objects.values().get(pk=evidence.pk),
+            {key: value for key, value in saved_evidence.items() if key != "anchor_id"},
+        )
+        self.assertEqual(
+            list(
+                Source.objects.filter(evidence_id=evidence.pk).values_list("anchor_id", "position")
+            ),
+            [(anchors[0].pk, 1)],
+        )
+
+        second = Source.objects.create(evidence_id=evidence.pk, anchor_id=anchors[1].pk, position=2)
+        with self.assertRaisesRegex(RuntimeError, "exactly one source"):
+            MigrationExecutor(connection).migrate(self.before)
+        self.assertEqual(Source.objects.filter(evidence_id=evidence.pk).count(), 2)
+        second.delete()
+        Source.objects.filter(evidence_id=evidence.pk).delete()
+        with self.assertRaisesRegex(RuntimeError, "exactly one source"):
+            MigrationExecutor(connection).migrate(self.before)
+        Source.objects.create(evidence_id=evidence.pk, anchor_id=anchors[0].pk, position=1)
+
+        MigrationExecutor(connection).migrate(self.before)
+        self.assertEqual(AnchorEvidence.objects.values().get(pk=evidence.pk), saved_evidence)

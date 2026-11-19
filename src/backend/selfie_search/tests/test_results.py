@@ -1,6 +1,7 @@
 import hashlib
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import cast
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -9,6 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event, Photo
+from picflow.tests.event_management_helpers import captured_at
 from processing.models import (
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
     EventProcessingRun,
@@ -24,6 +26,7 @@ from selfie_search.services.results import (
     PublicSearchNotFound,
     resolve_public_result,
     saved_ready_result_page,
+    saved_ready_result_photos,
 )
 
 LEGACY_ORIGINAL_POLICY: str = cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
@@ -55,6 +58,7 @@ class SavedReadyResultPageTests(TestCase):
         photo_id: str,
         rank: int,
         gallery_media_policy: str = LEGACY_ORIGINAL_POLICY,
+        primary_source: str = str(SelfieSearchResult.PrimarySource.DIRECT),
     ) -> Photo:
         generation = (
             Photo.ProcessingGeneration.PREVIEW_FIRST_WATERMARKED_V1
@@ -73,6 +77,11 @@ class SavedReadyResultPageTests(TestCase):
             processing_generation=generation,
             gallery_media_policy=gallery_media_policy,
         )
+        result = SelfieSearchResult.objects.create(
+            search=self.search, photo=photo, rank=rank, primary_source=primary_source
+        )
+        if primary_source != SelfieSearchResult.PrimarySource.DIRECT:
+            return photo
         configuration_hash = "a" * 64
         run = EventProcessingRun.objects.create(
             event=self.event,
@@ -113,11 +122,6 @@ class SavedReadyResultPageTests(TestCase):
             attempt=attempt,
             face_index=0,
             status=PhotoFaceDetection.Status.KEPT,
-        )
-        result = SelfieSearchResult.objects.create(
-            search=self.search,
-            photo=photo,
-            rank=rank,
         )
         SelfieSearchDirectEvidence.objects.create(
             result=result, detection=detection, cosine_distance=0.1
@@ -187,7 +191,7 @@ class SavedReadyResultPageTests(TestCase):
         )
         photo.gallery_media_projection = publish_gallery_media(derivative)
 
-    def test_page_preserves_saved_rank_after_current_eligibility_filtering(self) -> None:
+    def test_page_filters_no_longer_eligible_saved_members(self) -> None:
         first = self.add_result(photo_id="rank-one", rank=1)
         removed = self.add_result(photo_id="rank-two", rank=2)
         third = self.add_result(photo_id="rank-three", rank=3)
@@ -197,6 +201,47 @@ class SavedReadyResultPageTests(TestCase):
 
         self.assertEqual(tuple(row.photo_id for row in page.object_list), (first.pk, third.pk))
         self.assertFalse(page.has_next())
+
+    def test_full_result_and_pages_share_capture_time_order_across_sources(self) -> None:
+        source = SelfieSearchResult.PrimarySource
+        morning = datetime(2026, 7, 30, 9, tzinfo=UTC)
+        for rank, (photo_id, primary_source, minute) in enumerate(
+            (
+                ("direct-null-z", source.DIRECT, None),
+                ("direct-tie-z", source.DIRECT, 10),
+                ("direct-null-a", source.DIRECT, None),
+                ("cluster-late", source.FACE_CLUSTER_EXPANSION, 20),
+                ("cluster-tie-a", source.FACE_CLUSTER_EXPANSION, 10),
+                ("centroid-early", source.FACE_ANCHOR_EXPANSION, 0),
+            ),
+            start=1,
+        ):
+            photo = self.add_result(
+                photo_id=photo_id, rank=rank, primary_source=str(primary_source)
+            )
+            if minute is not None:
+                captured_at(photo, morning + timedelta(minutes=minute))
+
+        stored_results = self.search.results.order_by("rank").values_list(
+            "photo_id", "rank", "primary_source"
+        )
+        original_snapshot = list(stored_results)
+        expected_pages = (
+            ("centroid-early", "cluster-tie-a"),
+            ("direct-tie-z", "cluster-late"),
+            ("direct-null-a", "direct-null-z"),
+        )
+        self.assertEqual(
+            tuple(photo.pk for photo in saved_ready_result_photos(self.search)),
+            tuple(photo_id for page in expected_pages for photo_id in page),
+        )
+        with patch("selfie_search.services.results.SELFIE_SEARCH_RESULT_PAGE_SIZE", 2):
+            for number, expected in enumerate(expected_pages, start=1):
+                with self.subTest(page=number):
+                    page = saved_ready_result_page(search=self.search, page_number=str(number))
+                    self.assertEqual(tuple(row.photo_id for row in page.object_list), expected)
+                    self.assertEqual(page.paginator.num_pages, 3)
+        self.assertEqual(list(stored_results.all()), original_snapshot)
 
     def test_nonready_search_has_empty_page(self) -> None:
         self.search.status = SelfieSearch.Status.PROCESSING

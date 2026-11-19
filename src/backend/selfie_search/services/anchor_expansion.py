@@ -1,8 +1,9 @@
-"""Select diverse direct anchors and compare their kept vectors inside PostgreSQL."""
+"""Rank face matches against one transient centroid inside PostgreSQL."""
 
 from dataclasses import replace
 
 from django.db import connection
+from psycopg import Cursor
 
 from selfie_search.models import SelfieSearch, SelfieSearchResult
 from selfie_search.services.cluster_expansion import ExpandedRankedPhoto, RankedPhotoExpansion
@@ -13,8 +14,6 @@ _ANCHOR_DISTANCE = 0.38
 _ANCHOR_CONSISTENCY_DISTANCE = 0.35
 _MATCH_DISTANCE = 0.42
 
-# The greedy choices only compare a candidate to the previously selected anchors.
-# WITH ORDINALITY preserves direct rank as the tie-breaker at each step.
 _EXPAND_SQL = """
 WITH kept_faces(photo_id, attempt_id, detection_id, embedding) AS NOT MATERIALIZED (
     {cohort_sql}
@@ -22,10 +21,10 @@ WITH kept_faces(photo_id, attempt_id, detection_id, embedding) AS NOT MATERIALIZ
 direct_matches AS (
     SELECT *
     FROM unnest(%s::varchar[], %s::uuid[], %s::float8[])
-    WITH ORDINALITY AS direct(photo_id, detection_id, distance, rank)
+    AS direct(photo_id, detection_id, distance)
 ),
 anchor_candidates AS (
-    SELECT direct.photo_id, direct.rank, face.embedding
+    SELECT direct.photo_id, direct.detection_id, direct.distance, face.embedding
     FROM direct_matches AS direct
     JOIN kept_faces AS face USING (photo_id, detection_id)
     WHERE direct.distance <= %s
@@ -38,51 +37,39 @@ anchor_candidates AS (
       )
 ),
 first_anchor AS (
-    SELECT * FROM anchor_candidates ORDER BY rank LIMIT 1
-),
-second_anchor AS (
-    SELECT candidate.*
-    FROM anchor_candidates AS candidate
-    CROSS JOIN first_anchor AS first
-    WHERE candidate.rank <> first.rank
-    ORDER BY (candidate.embedding <=> first.embedding) DESC, candidate.rank
-    LIMIT 1
-),
-third_anchor AS (
-    SELECT candidate.*
-    FROM anchor_candidates AS candidate
-    CROSS JOIN first_anchor AS first
-    CROSS JOIN second_anchor AS second
-    WHERE candidate.rank NOT IN (first.rank, second.rank)
-    ORDER BY least(
-        candidate.embedding <=> first.embedding,
-        candidate.embedding <=> second.embedding
-    ) DESC, candidate.rank
+    SELECT embedding
+    FROM anchor_candidates
+    ORDER BY distance, photo_id, detection_id
     LIMIT 1
 ),
 anchors AS (
-    SELECT photo_id, rank, embedding FROM first_anchor
-    UNION ALL SELECT photo_id, rank, embedding FROM second_anchor
-    UNION ALL SELECT photo_id, rank, embedding FROM third_anchor
-),
-consistent_anchors AS (
-    SELECT anchor.photo_id, anchor.rank, anchor.embedding
-    FROM anchors AS anchor
+    SELECT candidate.*
+    FROM anchor_candidates AS candidate
     CROSS JOIN first_anchor AS first
-    WHERE anchor.rank = first.rank OR (anchor.embedding <=> first.embedding) <= %s
+    WHERE (candidate.embedding <=> first.embedding) <= %s
+    ORDER BY candidate.distance, candidate.photo_id, candidate.detection_id
+    LIMIT 5
+),
+centroid AS (
+    SELECT
+        l2_normalize(avg(l2_normalize(embedding))) AS embedding,
+        array_agg(photo_id ORDER BY distance, photo_id, detection_id) AS anchor_photo_ids
+    FROM anchors
+    HAVING count(*) > 0
 ),
 best_matches AS (
     SELECT DISTINCT ON (face.photo_id)
-        face.photo_id, anchor.photo_id AS anchor_photo_id, face.detection_id,
-        greatest(0.0, face.embedding <=> anchor.embedding) AS distance
-    FROM consistent_anchors AS anchor
+        face.photo_id, face.detection_id,
+        greatest(0.0, face.embedding <=> centroid.embedding) AS distance
+    FROM centroid
     CROSS JOIN kept_faces AS face
-    WHERE (face.embedding <=> anchor.embedding) <= %s
+    WHERE (face.embedding <=> centroid.embedding) <= %s
       AND NOT EXISTS (SELECT 1 FROM direct_matches WHERE photo_id = face.photo_id)
-    ORDER BY face.photo_id, distance, anchor.rank, face.detection_id
+    ORDER BY face.photo_id, distance, face.detection_id
 )
-SELECT photo_id, anchor_photo_id, detection_id, distance
+SELECT photo_id, anchor_photo_ids, detection_id, distance
 FROM best_matches
+CROSS JOIN centroid
 ORDER BY distance, photo_id
 """
 
@@ -104,7 +91,9 @@ def find_anchor_matches(
         )
         .query.sql_with_params()
     )
-    with connection.cursor() as cursor:
+    # Bind match provenance on the server so values stay out of logged error statements.
+    with connection.wrap_database_errors, Cursor(connection.connection) as cursor:
+        cursor.execute("SET LOCAL log_parameter_max_length_on_error = 0")
         cursor.execute(
             _EXPAND_SQL.format(cohort_sql=cohort_sql),
             (
@@ -118,7 +107,10 @@ def find_anchor_matches(
                 _MATCH_DISTANCE,
             ),
         )
-        return tuple(AnchorMatch(*row) for row in cursor.fetchall())
+        return tuple(
+            AnchorMatch(photo_id, tuple(anchor_photo_ids), detection_id, distance)
+            for photo_id, anchor_photo_ids, detection_id, distance in cursor.fetchall()
+        )
 
 
 def append_anchor_matches(

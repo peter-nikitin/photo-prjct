@@ -13,6 +13,8 @@
   initial exclusion of vector infrastructure only, and
   [ADR 0066](0066-store-vectors-in-face-search-queue.md) for ranking in the HTTP callback and the prohibition
   on temporary query vector storage only
+- Proposed partial successor: [ADR 0071](0071-expand-face-search-with-anchor-centroid.md)
+  for the presentation order of ready face-search results only
 
 ## Context
 

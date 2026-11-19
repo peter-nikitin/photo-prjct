@@ -5,6 +5,8 @@
 - Deciders: project maintainers
 - Supersedes: ADR 0020 only for its cursor-pagination follow-up
 - Superseded by: none
+- Proposed partial successor: [ADR 0071](0071-expand-face-search-with-anchor-centroid.md)
+  for the presentation order of ready face-search results only
 
 ## Context
 

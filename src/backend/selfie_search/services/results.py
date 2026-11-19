@@ -6,7 +6,7 @@ import hashlib
 from typing import Final
 
 from django.core.paginator import Page, Paginator
-from django.db.models import QuerySet
+from django.db.models import F, QuerySet
 from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import saved_result_photo_queryset
 from picflow.models import Event, Photo
@@ -42,7 +42,7 @@ def saved_ready_result_photos(
     *,
     paid_watermarked_previews_enabled: bool = False,
 ) -> tuple[Photo, ...]:
-    """Return current eligible saved members in their immutable persisted rank order."""
+    """Return eligible saved members in capture-time order."""
     if search.status != SelfieSearch.Status.READY:
         return ()
     rows = _eligible_saved_result_rows(
@@ -58,7 +58,7 @@ def saved_ready_result_page(
     page_number: str | None,
     paid_watermarked_previews_enabled: bool = False,
 ) -> Page:
-    """Return one bounded current presentation page of the immutable saved result."""
+    """Return one capture-time-ordered page of eligible saved members."""
     rows = (
         _eligible_saved_result_rows(
             search,
@@ -122,7 +122,7 @@ def _eligible_saved_result_rows(
             ),
         )
         .select_related("photo__event", "photo__gallery_media_projection")
-        .order_by("rank", "photo_id")
+        .order_by(F("photo__capture_time").asc(nulls_last=True), "photo_id")
     )
 
 

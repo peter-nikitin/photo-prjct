@@ -29,6 +29,10 @@ def _vector(first, axis=1):
     return vector
 
 
+def _pad_vector(*components: float) -> list[float]:
+    return [*components, *([0.0] * (512 - len(components)))]
+
+
 class AnchorExpansionTests(TestCase):
     setUp = fixtures.GalleryPhotoSubmissionTests.setUp
     make_event = fixtures.GalleryPhotoSubmissionTests.make_event
@@ -195,9 +199,12 @@ class AnchorExpansionTests(TestCase):
         source = self.add_face("query-source", 1)
         anchor_a = self.add_face("a", 0.8, 1)
         self.add_face("a-near", 0.75, 1)
-        anchor_b = self.add_face("b", 0.7, 2)
-        self.add_face("b-near", 0.7, 2)
-        anchor_c = self.add_face("c", 0.7, 3)
+        vector_b = _pad_vector(0.7, 0.2, sqrt(0.47))
+        anchor_b = self.make_eligible_embedding(event=self.event, photo_id="b", vector=vector_b)
+        self.make_eligible_embedding(event=self.event, photo_id="b-near", vector=vector_b)
+        anchor_c = self.make_eligible_embedding(
+            event=self.event, photo_id="c", vector=_pad_vector(0.7, 0.2, 0, sqrt(0.47))
+        )
         self.add_face("weak", 0.6, 4)
         group = self.add_face("group", 0.7, 5)
         PhotoFaceDetection.objects.create(
@@ -265,6 +272,110 @@ class AnchorExpansionTests(TestCase):
                 ("b-c-shared", anchor_b.detection_id, shared.detection_id),
             },
         )
+
+    def test_filters_original_choices_by_distance_to_first_without_replacement(self):
+        self.set_gate("on")
+        for retain_third in (True, False):
+            with self.subTest(retain_third=retain_third):
+                self.event = self.make_event(f"consistency-{retain_third}", "free")
+                suffix = "keep-third" if retain_third else "drop-third"
+                source = self.add_face(f"{suffix}-query", 1)
+                self.add_face(f"{suffix}-first", 0.8)
+                self.add_face(f"{suffix}-second", 0.64, 2)
+                self.make_eligible_embedding(
+                    event=self.event,
+                    photo_id=f"{suffix}-spare",
+                    vector=_pad_vector(0.68, 0.25, 0.65, -sqrt(0.0526)),
+                )
+                third_y = 0.35 if retain_third else 0.1
+                third_w = sqrt(0.3875 - third_y**2)
+                self.make_eligible_embedding(
+                    event=self.event,
+                    photo_id=f"{suffix}-third",
+                    vector=_pad_vector(0.7, third_y, -0.35, third_w),
+                )
+                first_only = self.add_face(f"{suffix}-first-only", 0.3).detection.attempt.photo_id
+                second_only = self.add_face(
+                    f"{suffix}-second-only", 0, 2
+                ).detection.attempt.photo_id
+                third_only = f"{suffix}-third-only"
+                self.make_eligible_embedding(
+                    event=self.event,
+                    photo_id=third_only,
+                    vector=_pad_vector(
+                        0, third_y / sqrt(0.51), -0.35 / sqrt(0.51), third_w / sqrt(0.51)
+                    ),
+                )
+                self.make_eligible_embedding(
+                    event=self.event,
+                    photo_id=f"{suffix}-spare-only",
+                    vector=_pad_vector(0.5, 0, 0.3, -sqrt(0.66)),
+                )
+                search = self.submit_gallery(source)
+
+                self.assertTrue(run_once())
+
+                self.assertEqual(
+                    self.result_photos(search)[:5],
+                    [f"{suffix}-{name}" for name in ("query", "first", "third", "spare", "second")],
+                )
+                # The spare is farther from the first than the retained third, but is
+                # too close to the second to win the original maximin selection.
+                original_additions = {first_only, second_only, third_only}
+                removed = {second_only} if retain_third else {second_only, third_only}
+                self.assertEqual(
+                    set(
+                        search.results.filter(primary_source="face_anchor_expansion").values_list(
+                            "photo_id", flat=True
+                        )
+                    ),
+                    original_additions - removed,
+                )
+
+    def test_includes_selected_anchor_at_exact_pgvector_distance_boundary(self):
+        self.set_gate("on")
+        # The dyadic coordinates make pgvector's float32 accumulation exact.
+        # Both squared norms are 4194300 / 4194304, and the dot is 2726295 / 4194304.
+        positive = (3719, 98, 25)
+        negative = (1712, 71, 5)
+        first = _pad_vector(*(component / 4096 for component in (*positive, *negative)))
+        second = _pad_vector(
+            *(component / 4096 for component in positive),
+            *(-component / 4096 for component in negative),
+        )
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT %s::vector <=> %s::vector", (first, second))
+            self.assertEqual(cursor.fetchone(), (0.35,))
+
+        positive_norm = sqrt(sum(component**2 for component in positive))
+        negative_norm = sqrt(sum(component**2 for component in negative))
+
+        def mixed_vector(positive_weight, negative_weight):
+            return _pad_vector(
+                *(component * positive_weight / positive_norm for component in positive),
+                *(component * negative_weight / negative_norm for component in negative),
+            )
+
+        source = self.make_eligible_embedding(
+            event=self.event, photo_id="boundary-query", vector=mixed_vector(sqrt(0.9975), 0.05)
+        )
+        self.make_eligible_embedding(event=self.event, photo_id="boundary-first", vector=first)
+        boundary = self.make_eligible_embedding(
+            event=self.event, photo_id="boundary-second", vector=second
+        )
+        self.make_eligible_embedding(
+            event=self.event, photo_id="boundary-addition", vector=mixed_vector(0.4, -sqrt(0.84))
+        )
+        search = self.submit_gallery(source)
+
+        self.assertTrue(run_once())
+
+        self.assertEqual(
+            self.result_photos(search),
+            ["boundary-query", "boundary-first", "boundary-second", "boundary-addition"],
+        )
+        evidence = search.results.get(photo_id="boundary-addition").anchor_evidence
+        self.assertEqual(evidence.anchor.detection_id, boundary.detection_id)
 
     def test_flag_is_registered_and_synchronized_off(self):
         call_command("sync_feature_flags", stdout=StringIO())

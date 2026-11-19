@@ -10,6 +10,7 @@ from selfie_search.services.ranking import AnchorMatch, RankedPhoto
 from selfie_search.services.vector_ranking import accepted_kept_faces
 
 _ANCHOR_DISTANCE = 0.38
+_ANCHOR_CONSISTENCY_DISTANCE = 0.35
 _MATCH_DISTANCE = 0.42
 
 # The greedy choices only compare a candidate to the previously selected anchors.
@@ -64,11 +65,17 @@ anchors AS (
     UNION ALL SELECT photo_id, rank, embedding FROM second_anchor
     UNION ALL SELECT photo_id, rank, embedding FROM third_anchor
 ),
+consistent_anchors AS (
+    SELECT anchor.photo_id, anchor.rank, anchor.embedding
+    FROM anchors AS anchor
+    CROSS JOIN first_anchor AS first
+    WHERE anchor.rank = first.rank OR (anchor.embedding <=> first.embedding) <= %s
+),
 best_matches AS (
     SELECT DISTINCT ON (face.photo_id)
         face.photo_id, anchor.photo_id AS anchor_photo_id, face.detection_id,
         greatest(0.0, face.embedding <=> anchor.embedding) AS distance
-    FROM anchors AS anchor
+    FROM consistent_anchors AS anchor
     CROSS JOIN kept_faces AS face
     WHERE (face.embedding <=> anchor.embedding) <= %s
       AND NOT EXISTS (SELECT 1 FROM direct_matches WHERE photo_id = face.photo_id)
@@ -107,6 +114,7 @@ def find_anchor_matches(
                 [row.cosine_distance for row in direct],
                 _ANCHOR_DISTANCE,
                 source_photo_id,
+                _ANCHOR_CONSISTENCY_DISTANCE,
                 _MATCH_DISTANCE,
             ),
         )

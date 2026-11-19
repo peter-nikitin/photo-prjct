@@ -41,11 +41,6 @@ visual_patterns = [
     path("order/paid/multi/", views.order_paid_multi, name="visual_order_paid_multi"),
     path("order/email-failed/", views.order_email_failed, name="visual_order_email_failed"),
     path(
-        "event/gallery-bib-feedback/",
-        views.event_gallery_bib_feedback,
-        name="visual_event_gallery_bib_feedback",
-    ),
-    path(
         "event/gallery-staff-preview/",
         views.event_gallery_staff_preview,
         name="visual_event_gallery_staff_preview",

@@ -768,25 +768,24 @@ def event_uncovered(request: HttpRequest) -> HttpResponse:
 
 
 def event_gallery_populated(request: HttpRequest) -> HttpResponse:
-    return _render(
-        request, "catalog/event_detail.html", {**_gallery_context(), "web_vitals_page": "gallery"}
-    )
-
-
-def event_gallery_bib_feedback(request: HttpRequest) -> HttpResponse:
-    photos = SELFIE_RESULT_PHOTOS[:2]
-    return _render(
-        request,
-        "catalog/event_detail.html",
-        _gallery_context(photos=photos)
-        | {
-            "bib_search_form": BibSearchForm({"bib": "007"}),
+    if request.GET.get("bib") == "007":
+        photos = (
+            SELFIE_RESULT_PHOTOS[0],
+            replace(
+                SELFIE_RESULT_PHOTOS[1],
+                faces=(_gallery_face("1190", 1, 45, 45, 9), _gallery_face("1190", 2, 72, 55, 9)),
+            ),
+        )
+        context = _gallery_context(photos=photos) | {
+            "bib_search_form": BibSearchForm(request.GET),
             "bib_number": "007",
             "gallery_filters_active": True,
             "result_feedback_url": reverse("search_feedback_submit", args=(EVENTS[0].slug,)),
             "reported_photo_ids": {photos[0].photo_id},
-        },
-    )
+        }
+    else:
+        context = _gallery_context()
+    return _render(request, "catalog/event_detail.html", context | {"web_vitals_page": "gallery"})
 
 
 def event_gallery_paid(request: HttpRequest) -> HttpResponse:

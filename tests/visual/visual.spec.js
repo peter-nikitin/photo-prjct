@@ -71,7 +71,7 @@ const desktopPages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
-  ['event-gallery-bib-feedback', '/__visual__/event/gallery-bib-feedback/'],
+  ['event-gallery-bib-feedback', '/__visual__/event/gallery-populated/?bib=007'],
   ['event-cart', '/__visual__/event/cart/'],
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
   ['event-cart-legacy-locked', '/__visual__/event/cart/legacy-locked/'],
@@ -126,7 +126,7 @@ const mobilePages = [
   ['event-uncovered', '/__visual__/event/uncovered/'],
   ['event-gallery-populated', '/__visual__/event/gallery-populated/'],
   ['event-gallery-paid', '/__visual__/event/gallery-paid/'],
-  ['event-gallery-bib-feedback', '/__visual__/event/gallery-bib-feedback/'],
+  ['event-gallery-bib-feedback', '/__visual__/event/gallery-populated/?bib=007'],
   ['event-cart', '/__visual__/event/cart/'],
   ['event-cart-empty', '/__visual__/event/cart/empty/'],
   ['event-cart-legacy-locked', '/__visual__/event/cart/legacy-locked/'],
@@ -1318,6 +1318,113 @@ test('mobile feedback stacks the new-search action before the form', async ({ pa
   expect(layout.columns).toMatch(/^\d+(?:\.\d+)?px$/);
   expect(layout.stacked).toBe(true);
   expect(layout.fullWidth).toBe(true);
+});
+
+for (const viewport of [
+  DESKTOP_VIEWPORT,
+  { width: 901, height: 900 },
+  { width: 761, height: 900 },
+  MOBILE_VIEWPORT,
+  { width: 320, height: 750 },
+]) {
+  test(`paid result feedback reserves the price and right actions at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await preloadCookieAcknowledgement(page);
+    let calls = 0;
+    await page.route('**/search-feedback/', (route) => {
+      calls += 1;
+      return route.fulfill({
+        status: calls === 1 ? 503 : 201,
+        json: { status: calls === 1 ? 'unavailable' : 'saved' },
+      });
+    });
+    await page.goto('/__visual__/event/selfie-search/ready/paid/');
+    await settlePage(page);
+
+    const row = page.locator('.gallery-card-actions').first();
+    const boxes = () => row.evaluate((element) => {
+      const box = (selector) => element.querySelector(selector).getBoundingClientRect().toJSON();
+      const price = element.querySelector('.gallery-card-price');
+      const text = document.createRange();
+      text.selectNodeContents(price);
+      return {
+        row: element.getBoundingClientRect().toJSON(),
+        feedback: box('[data-result-feedback]'),
+        price: price.getBoundingClientRect().toJSON(),
+        priceText: text.getBoundingClientRect().toJSON(),
+        priceFits: price.scrollWidth <= price.clientWidth,
+        time: box('.gallery-card-time'),
+        cart: box('.gallery-cart-button'),
+      };
+    });
+
+    const before = await boxes();
+    expect(before.priceFits, JSON.stringify(before)).toBe(true);
+    expect(before.feedback.left, JSON.stringify(before)).toBeCloseTo(before.row.left, 0);
+    expect(before.feedback.right).toBeLessThanOrEqual(before.priceText.left);
+    expect(before.priceText.right).toBeLessThanOrEqual(before.time.left);
+    expect(before.priceText.right).toBeLessThanOrEqual(before.price.right);
+    expect(before.time.right).toBeLessThanOrEqual(before.cart.left);
+    expect(before.cart.right).toBeCloseTo(before.row.right, 0);
+    expect(Math.abs(
+      (before.priceText.left + before.priceText.right) / 2
+      - (before.feedback.right + before.time.left) / 2
+    )).toBeLessThan(2);
+
+    const checkRightSlots = async () => {
+      const current = await boxes();
+      expect(current.time.left).toBeCloseTo(before.time.left, 0);
+      expect(current.time.top - current.row.top).toBeCloseTo(before.time.top - before.row.top, 0);
+      expect(current.cart.left).toBeCloseTo(before.cart.left, 0);
+      expect(current.cart.top - current.row.top).toBeCloseTo(before.cart.top - before.row.top, 0);
+    };
+    const report = row.getByRole('button', { name: 'Это не я' });
+    await report.click();
+    await expect(row.getByRole('alert')).toBeVisible();
+    await checkRightSlots();
+    await report.click();
+    await expect(row.getByRole('status')).toHaveText('Отметка сохранена');
+    await checkRightSlots();
+
+    const price = row.locator('.gallery-card-price');
+    await price.evaluate((element) => { element.textContent = '4 500,99 ₽'; });
+    expect((await boxes()).priceFits).toBe(true);
+    await checkRightSlots();
+    await price.evaluate((element) => { element.hidden = true; });
+    await checkRightSlots();
+    await row.locator('.gallery-card-time').evaluate((element) => { element.hidden = true; });
+    const noTime = await boxes();
+    expect(noTime.cart.left).toBeCloseTo(before.cart.left, 0);
+    expect(noTime.cart.top - noTime.row.top).toBeCloseTo(before.cart.top - before.row.top, 0);
+  });
+}
+
+test('bib and selfie forms use the same feedback URL and the bib gallery keeps its face chooser', async ({ page }) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await preloadCookieAcknowledgement(page);
+  await page.goto('/__visual__/event/selfie-search/ready/');
+  const selfieForm = page.locator('[data-result-feedback]').first();
+  await expect(selfieForm.locator('[name="public_token"]')).toHaveValue('visual-ready-result');
+  const action = await selfieForm.getAttribute('action');
+
+  await page.goto('/__visual__/event/gallery-populated/?bib=007');
+  const card = page.locator('.gallery-card').nth(1);
+  const bibForm = card.locator('[data-result-feedback]');
+  expect(action).toBe('/events/london-10k/search-feedback/');
+  await expect(bibForm).toHaveAttribute('action', action);
+  await expect(bibForm.locator('[name="bib"]')).toHaveValue('007');
+
+  const feedback = bibForm.getByRole('button', { name: 'Это не я' });
+  const download = card.getByRole('link', { name: 'Скачать оригинал' });
+  const chooser = card.locator('[data-face-chooser-trigger]');
+  await feedback.focus();
+  await page.keyboard.press('Tab');
+  await expect(download).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(chooser).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(card.getByRole('dialog', { name: 'Кого искать?' })).toBeVisible();
+  await expect(card.locator('[data-face-choice]')).toHaveCount(2);
 });
 
 test('result feedback retries a failed request and leaves other photos usable without a selfie', async ({ page }) => {

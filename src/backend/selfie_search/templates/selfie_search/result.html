@@ -44,6 +44,9 @@
                   <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
                 </a>
                 <div class="gallery-card-actions">
+                  {% if result_feedback_url %}
+                    {% include "ui/search_result_feedback.html" with feedback_url=result_feedback_url photo_id=photo.photo_id %}
+                  {% endif %}
                   {% if cart_presentation %}
                     {% for cart_photo in cart_presentation.photos %}
                       {% if cart_photo.photo.photo_id == photo.photo_id %}
@@ -61,9 +64,6 @@
                         </div>
                       {% endif %}
                     {% endfor %}
-                  {% endif %}
-                  {% if result_feedback_url %}
-                    {% include "ui/search_result_feedback.html" with feedback_url=result_feedback_url photo_id=photo.photo_id %}
                   {% endif %}
                   <div class="gallery-card-download">
                     {% if photo.capture_time_display %}<time class="gallery-card-time">{{ photo.capture_time_display }}</time>{% endif %}

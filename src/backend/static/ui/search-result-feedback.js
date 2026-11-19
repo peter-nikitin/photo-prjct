@@ -7,6 +7,12 @@
     const error = form.querySelector('[data-feedback-error]');
     if (button.disabled || button.hidden) return;
 
+    const submissionId = form.querySelector('[name="submission_id"]');
+    if (!submissionId.dataset.started) {
+      submissionId.value = globalThis.crypto?.randomUUID?.() ?? submissionId.value;
+      submissionId.dataset.started = 'true';
+    }
+    body.set('submission_id', submissionId.value);
     button.disabled = true;
     error.hidden = true;
     try {

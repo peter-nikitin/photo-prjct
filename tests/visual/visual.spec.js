@@ -1322,7 +1322,7 @@ test('mobile feedback stacks the new-search action before the form', async ({ pa
 
 test('result feedback retries a failed request and leaves other photos usable without a selfie', async ({ page }) => {
   let calls = 0;
-  await page.route('**/result-feedback/', async (route) => {
+  await page.route('**/search-feedback/', async (route) => {
     calls += 1;
     await route.fulfill({
       status: calls === 1 ? 503 : 201,

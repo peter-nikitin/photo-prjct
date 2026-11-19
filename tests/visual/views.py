@@ -783,7 +783,7 @@ def event_gallery_bib_feedback(request: HttpRequest) -> HttpResponse:
             "bib_search_form": BibSearchForm({"bib": "007"}),
             "bib_number": "007",
             "gallery_filters_active": True,
-            "bib_result_feedback_url": reverse("bib_result_feedback", args=(EVENTS[0].slug,)),
+            "result_feedback_url": reverse("search_feedback_submit", args=(EVENTS[0].slug,)),
             "reported_photo_ids": {photos[0].photo_id},
         },
     )
@@ -950,9 +950,8 @@ def _selfie_search_ready(
             ),
             "gallery_photos": visible_photos,
             "gallery_result_items": tuple(zip(results, visible_photos, strict=True)),
-            "result_feedback_url": reverse(
-                "selfie_search:result_feedback", args=(event.slug, "visual-ready-result")
-            ),
+            "public_token": "visual-ready-result",
+            "result_feedback_url": reverse("search_feedback_submit", args=(event.slug,)),
             "selfie_search_page": selfie_search_page,
             "is_terminal": True,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
@@ -1205,9 +1204,8 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
             "event": EVENTS[0],
             "gallery_photos": photos,
             "gallery_result_items": tuple(zip(results, photos, strict=True)),
-            "result_feedback_url": reverse(
-                "selfie_search:result_feedback", args=(EVENTS[0].slug, "visual-feedback")
-            ),
+            "public_token": "visual-feedback",
+            "result_feedback_url": reverse("search_feedback_submit", args=(EVENTS[0].slug,)),
             "selfie_search_page": Paginator(photos, 2).page(1),
             "is_terminal": True,
             "public_token_digest": "b" * 64,

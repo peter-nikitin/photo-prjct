@@ -1837,7 +1837,9 @@ class PublicSelfieResultViewTests(TestCase):
             states[PAID_PHOTO_CART] = FEATURE_FLAG_ON
             gate_on = self.client.get(self.result_url(event=paid_event, token=token))
 
-        csrf_input = rb'name="csrfmiddlewaretoken" value="[^"]+"'
+        csrf_input = (
+            rb'name="(?:csrfmiddlewaretoken|submission_id)" (?:type="hidden" )?value="[^"]+"'
+        )
         self.assertEqual(
             re.sub(csrf_input, b"csrf-token", gate_off.content),
             re.sub(csrf_input, b"csrf-token", gate_on.content),

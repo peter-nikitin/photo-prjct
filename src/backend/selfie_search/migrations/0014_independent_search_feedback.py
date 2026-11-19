@@ -1,84 +1,71 @@
-import django.db.models.deletion
 from django.db import migrations, models
-from django.db.models import OuterRef, Subquery
+
+TRANSFER_LABELS = """
+    INSERT INTO search_feedback_searchfeedback (
+        submission_id, event_id, photo_id, search_type, value,
+        search_context, legacy_attachment_id, created_at
+    )
+    SELECT
+        label.id, search.event_id, result.photo_id,
+        CASE WHEN search.configuration->>'processor' = 'gallery_photo_query'
+            THEN 'gallery' ELSE 'selfie' END,
+        label.value,
+        jsonb_build_object(
+            'search_id', search.id,
+            'result_id', result.id,
+            'primary_source', result.primary_source
+        ) || CASE WHEN search.configuration->>'processor' = 'gallery_photo_query'
+            AND search.configuration #>> '{query_source,kind}' = 'gallery_photo'
+            THEN jsonb_strip_nulls(jsonb_build_object(
+                'source_photo_id', search.configuration #>> '{query_source,photo_id}',
+                'source_detection_id', search.configuration #>> '{query_source,detection_id}'
+            ))
+            ELSE '{}'::jsonb END,
+        attachment.id, attachment.created_at
+    FROM selfie_search_selfiesearchfeedbacklabel AS label
+    JOIN selfie_search_selfiesearchfeedback AS attachment ON attachment.id = label.feedback_id
+    JOIN selfie_search_selfiesearchresult AS result ON result.id = label.result_id
+    JOIN selfie_search_selfiesearch AS search ON search.id = result.search_id
+"""
+
+RESTORE_LABELS = """
+    INSERT INTO selfie_search_selfiesearchfeedbacklabel (id, feedback_id, result_id, value)
+    SELECT submission_id, legacy_attachment_id, (search_context->>'result_id')::uuid, value
+    FROM search_feedback_searchfeedback
+    WHERE legacy_attachment_id IS NOT NULL
+"""
 
 
 def migrate_feedback(apps, schema_editor):
     feedback = apps.get_model("selfie_search", "SelfieSearchFeedback")
-    labels = apps.get_model("selfie_search", "SearchResultFeedback")
-    database = schema_editor.connection.alias
-    submissions = feedback.objects.using(database)
-    submissions.filter(variant="result_labels").update(variant="selfie")
-    labels.objects.using(database).update(
-        created_at=Subquery(submissions.filter(pk=OuterRef("feedback_id")).values("created_at")[:1])
+    feedback.objects.using(schema_editor.connection.alias).filter(variant="result_labels").update(
+        variant="selfie"
     )
+    schema_editor.execute(TRANSFER_LABELS)
 
 
-def restore_feedback_variant(apps, schema_editor):
+def restore_feedback(apps, schema_editor):
     feedback = apps.get_model("selfie_search", "SelfieSearchFeedback")
     feedback.objects.using(schema_editor.connection.alias).filter(variant="selfie").update(
         variant="result_labels"
+    )
+    schema_editor.execute(RESTORE_LABELS)
+    schema_editor.execute(
+        "DELETE FROM search_feedback_searchfeedback WHERE legacy_attachment_id IS NOT NULL"
     )
 
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("picflow", "0018_photo_gallery_order_index"),
+        ("search_feedback", "0001_initial"),
         ("selfie_search", "0013_face_anchor_expansion"),
     ]
 
     operations = [
-        migrations.RenameModel("SelfieSearchFeedbackLabel", "SearchResultFeedback"),
-        migrations.RemoveConstraint(
-            "searchresultfeedback", "selfie_feedback_label_membership_uniq"
-        ),
-        migrations.RemoveConstraint("searchresultfeedback", "selfie_feedback_label_value_chk"),
         migrations.RemoveConstraint("selfiesearchfeedback", "selfie_feedback_variant_chk"),
         migrations.RemoveConstraint("selfiesearchfeedback", "selfie_feedback_variant_source_chk"),
-        migrations.AddField(
-            model_name="searchresultfeedback",
-            name="created_at",
-            field=models.DateTimeField(null=True),
-        ),
-        migrations.RunPython(migrate_feedback, restore_feedback_variant),
-        migrations.AlterField(
-            model_name="searchresultfeedback",
-            name="created_at",
-            field=models.DateTimeField(auto_now_add=True),
-        ),
-        migrations.AlterField(
-            model_name="searchresultfeedback",
-            name="feedback",
-            field=models.ForeignKey(
-                blank=True,
-                null=True,
-                on_delete=django.db.models.deletion.PROTECT,
-                related_name="result_feedback",
-                to="selfie_search.selfiesearchfeedback",
-            ),
-        ),
-        migrations.AlterField(
-            model_name="searchresultfeedback",
-            name="result",
-            field=models.ForeignKey(
-                on_delete=django.db.models.deletion.PROTECT,
-                related_name="result_feedback",
-                to="selfie_search.selfiesearchresult",
-            ),
-        ),
-        migrations.AddConstraint(
-            "searchresultfeedback",
-            models.UniqueConstraint(
-                fields=("result", "value"), name="search_result_feedback_value_uniq"
-            ),
-        ),
-        migrations.AddConstraint(
-            "searchresultfeedback",
-            models.CheckConstraint(
-                condition=models.Q(value__in=("present", "absent")),
-                name="search_result_feedback_value_chk",
-            ),
-        ),
+        migrations.RunPython(migrate_feedback, restore_feedback),
+        migrations.DeleteModel("SelfieSearchFeedbackLabel"),
         migrations.AlterField(
             model_name="selfiesearchfeedback",
             name="variant",
@@ -121,42 +108,5 @@ class Migration(migrations.Migration):
                 ),
                 name="selfie_feedback_variant_source_chk",
             ),
-        ),
-        migrations.CreateModel(
-            name="BibResultFeedback",
-            fields=[
-                (
-                    "id",
-                    models.BigAutoField(
-                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
-                    ),
-                ),
-                ("bib_number", models.CharField(max_length=16)),
-                ("created_at", models.DateTimeField(auto_now_add=True)),
-                (
-                    "event",
-                    models.ForeignKey(
-                        on_delete=django.db.models.deletion.PROTECT, to="picflow.event"
-                    ),
-                ),
-                (
-                    "photo",
-                    models.ForeignKey(
-                        on_delete=django.db.models.deletion.PROTECT, to="picflow.photo"
-                    ),
-                ),
-            ],
-            options={
-                "constraints": [
-                    models.UniqueConstraint(
-                        fields=("event", "bib_number", "photo"),
-                        name="bib_result_feedback_membership_uniq",
-                    ),
-                    models.CheckConstraint(
-                        condition=models.Q(bib_number__regex=r"^[0-9]{1,16}$"),
-                        name="bib_result_feedback_number_chk",
-                    ),
-                ],
-            },
         ),
     ]

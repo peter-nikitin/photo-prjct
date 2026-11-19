@@ -10,11 +10,11 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.core.paginator import InvalidPage
 from django.db import DatabaseError, connection
-from django.http import Http404, HttpResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.debug import sensitive_variables
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET
 from feature_flags import services as feature_flag_services
 from feature_flags.registry import (
     EVENT_COVER_CDN_IMAGES,
@@ -49,8 +49,8 @@ from picflow.gallery_image_delivery import (
 from picflow.gallery_preview_grants import issue_gallery_preview_urls
 from picflow.models import Event, EventFolder, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
+from search_feedback.models import SearchFeedback
 from selfie_search.forms import SelfieSearchUploadForm
-from selfie_search.models import BibResultFeedback
 from selfie_search.services.submission import gallery_search_faces_by_photo
 
 from config.metrics import generate_metrics
@@ -244,11 +244,15 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             )
     reported_photo_ids = (
         set(
-            BibResultFeedback.objects.filter(
-                event=event,
-                bib_number=bib_number,
+            SearchFeedback.objects.filter(
+                event_id=event.pk,
+                search_type=SearchFeedback.SearchType.BIB,
+                value=SearchFeedback.Value.ABSENT,
+                search_context__bib_number=bib_number,
                 photo_id__in=[photo.photo_id for photo in gallery_photos],
-            ).values_list("photo_id", flat=True)
+            )
+            .values_list("photo_id", flat=True)
+            .distinct()
         )
         if bib_number is not None and gallery_photos
         else set()
@@ -266,8 +270,8 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             "cart_presentation": cart_state.presentation if cart_state is not None else None,
             "event": event,
             "bib_number": bib_number,
-            "bib_result_feedback_url": (
-                reverse("bib_result_feedback", kwargs={"slug": event.slug})
+            "result_feedback_url": (
+                reverse("search_feedback_submit", kwargs={"event_slug": event.slug})
                 if bib_number is not None
                 else ""
             ),
@@ -290,31 +294,6 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     if cart_state is not None:
         private_cart_response(response)
     return response
-
-
-@require_POST
-def bib_result_feedback(request, slug: str) -> JsonResponse:
-    event = get_object_or_404(
-        Event.objects.site_visible_to(request.user), slug=slug, bib_search_enabled=True
-    )
-    form = BibSearchForm(request.POST)
-    if not form.is_valid() or not (bib_number := form.cleaned_data["bib"]):
-        raise Http404
-    paid_previews_enabled = _paid_watermarked_previews_enabled(request)
-    if event.access_type != Event.AccessType.FREE and not paid_previews_enabled:
-        raise Http404
-    photo = get_object_or_404(
-        gallery_photo_queryset(
-            event=event,
-            bib_number=bib_number,
-            paid_watermarked_previews_enabled=paid_previews_enabled,
-        ),
-        pk=request.POST.get("photo_id", ""),
-    )
-    _, created = BibResultFeedback.objects.get_or_create(
-        event=event, bib_number=bib_number, photo=photo
-    )
-    return JsonResponse({"status": "saved"}, status=201 if created else 200)
 
 
 def _public_media_resolver(request) -> PublicMediaResolver:

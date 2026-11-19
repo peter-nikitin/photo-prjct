@@ -486,7 +486,19 @@ class IndependentSearchFeedbackMigrationTests(TransactionTestCase):
             )
             result = old_results.objects.create(search=search, rank=rank, photo=photo)
             label = old_labels.objects.create(feedback=selfie, result=result, value=value)
-            historical_labels[label.pk] = (result.pk, value, selfie.pk, selfie.created_at)
+            historical_labels[label.pk] = (
+                event.pk,
+                photo.pk,
+                "selfie",
+                value,
+                {
+                    "search_id": str(search.pk),
+                    "result_id": str(result.pk),
+                    "primary_source": result.primary_source,
+                },
+                selfie.pk,
+                selfie.created_at,
+            )
         audit = old_apps.get_model(
             "selfie_search", "SelfieSearchFeedbackAccessAudit"
         ).objects.create(feedback=selfie, staff=staff, action="contact_view")
@@ -495,7 +507,7 @@ class IndependentSearchFeedbackMigrationTests(TransactionTestCase):
         forward.migrate(self.migrate_to)
         current = forward.loader.project_state(self.migrate_to).apps
         feedback = current.get_model("selfie_search", "SelfieSearchFeedback")
-        labels = current.get_model("selfie_search", "SearchResultFeedback")
+        labels = current.get_model("search_feedback", "SearchFeedback")
         audits = current.get_model("selfie_search", "SelfieSearchFeedbackAccessAudit")
         self.assertEqual(
             feedback.objects.values().get(pk=selfie.pk),
@@ -503,9 +515,16 @@ class IndependentSearchFeedbackMigrationTests(TransactionTestCase):
         )
         self.assertEqual(
             {
-                pk: (result_id, value, feedback_id, created_at)
-                for pk, result_id, value, feedback_id, created_at in labels.objects.values_list(
-                    "pk", "result_id", "value", "feedback_id", "created_at"
+                submission_id: tuple(fields)
+                for submission_id, *fields in labels.objects.values_list(
+                    "submission_id",
+                    "event_id",
+                    "photo_id",
+                    "search_type",
+                    "value",
+                    "search_context",
+                    "legacy_attachment_id",
+                    "created_at",
                 )
             },
             historical_labels,

@@ -2,6 +2,9 @@
 
 {% block after_field_sets %}
 {{ block.super }}
+{% if feedback_history_url %}
+<p><a href="{{ feedback_history_url }}">Исторические отметки результатов</a></p>
+{% endif %}
 {% if sensitive_feedback_action_urls %}
 <fieldset class="module aligned">
   <h2>Чувствительные данные</h2>

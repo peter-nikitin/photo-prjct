@@ -1,5 +1,8 @@
+{% load search_feedback %}
 <form class="gallery-result-feedback" data-result-feedback action="{{ feedback_url }}" method="post">
   {% csrf_token %}
+  <input name="submission_id" type="hidden" value="{% feedback_submission_id %}">
+  {% if public_token %}<input name="public_token" type="hidden" value="{{ public_token }}">{% endif %}
   <input name="photo_id" type="hidden" value="{{ photo_id }}">
   {% if bib_number %}<input name="bib" type="hidden" value="{{ bib_number }}">{% endif %}
   <button class="gallery-feedback-button" type="submit"{% if photo_id in reported_photo_ids %} hidden{% endif %}>Это не я</button>

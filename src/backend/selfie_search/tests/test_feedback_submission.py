@@ -3,6 +3,7 @@ from datetime import date
 from io import BytesIO
 from typing import Any
 from unittest.mock import Mock, patch
+from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -28,10 +29,10 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
+from search_feedback.models import SearchFeedback
+from search_feedback.services import record_result_report
 from selfie_search.images import prepare_selfie_image
 from selfie_search.models import (
-    BibResultFeedback,
-    SearchResultFeedback,
     SelfieSearch,
     SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
@@ -216,6 +217,13 @@ class FeedbackSubmissionTests(TestCase):
             kwargs={"event_slug": self.event.slug, "public_token": token},
         )
 
+    def report_url(self) -> str:
+        return reverse("search_feedback_submit", args=(self.event.slug,))
+
+    @staticmethod
+    def report_data(photo_id: str, **context: str) -> dict[str, str]:
+        return {"photo_id": photo_id, "submission_id": str(uuid4()), **context}
+
     def csrf_post(self, url: str, data: dict) -> Any:
         self.client.get(reverse("event_detail", kwargs={"slug": self.event.slug}))
         return self.client.post(url, data, HTTP_X_CSRFTOKEN=self.client.cookies["csrftoken"].value)
@@ -238,22 +246,34 @@ class FeedbackSubmissionTests(TestCase):
             PAID_EVENTS: FEATURE_FLAG_ON,
             PAID_WATERMARKED_PREVIEWS: FEATURE_FLAG_OFF,
         }
-        url = reverse("selfie_search:result_feedback", args=(self.event.slug, token))
+        url = self.report_url()
         with override_feature_flags(states):
-            self.assertEqual(self.csrf_post(url, {"photo_id": result.photo_id}).status_code, 404)
+            self.assertEqual(
+                self.csrf_post(
+                    url, self.report_data(result.photo_id, public_token=token)
+                ).status_code,
+                404,
+            )
             states[PAID_WATERMARKED_PREVIEWS] = FEATURE_FLAG_ON
-            self.assertEqual(self.csrf_post(url, {"photo_id": result.photo_id}).status_code, 201)
+            self.assertEqual(
+                self.csrf_post(
+                    url, self.report_data(result.photo_id, public_token=token)
+                ).status_code,
+                201,
+            )
 
     def test_selfie_consent_and_upload_leave_previous_and_future_reports_independent(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         first = self.make_result(search=search)
         second = self.make_result(search=search, photo_id="feedback-second", rank=2)
-        report_url = reverse("selfie_search:result_feedback", args=(self.event.slug, token))
+        report_url = self.report_url()
         selfie_url = self.feedback_url(token=token)
         storage = Mock()
         storage.put.side_effect = StorageUnavailable()
         with patch("selfie_search.views.FeedbackSelfieStorage", return_value=storage):
-            first_report = self.csrf_post(report_url, {"photo_id": first.photo_id})
+            first_report = self.csrf_post(
+                report_url, self.report_data(first.photo_id, public_token=token)
+            )
             self.assertEqual(first_report.status_code, 201)
             self.assertEqual(first_report["Cache-Control"], "private, no-store")
             self.assertEqual(
@@ -262,7 +282,7 @@ class FeedbackSubmissionTests(TestCase):
             storage.put.assert_not_called()
             self.assertEqual(self.csrf_post(selfie_url, self.submission_data()).status_code, 503)
             self.assertFalse(SelfieSearchFeedback.objects.exists())
-            self.assertEqual(SearchResultFeedback.objects.filter(result=first).count(), 1)
+            self.assertEqual(SearchFeedback.objects.filter(photo_id=first.photo_id).count(), 1)
             storage.put.side_effect = None
             storage.put.return_value = Mock(
                 key="0123456789abcdef0123456789abcdef", size=100, content_type="image/jpeg"
@@ -278,8 +298,13 @@ class FeedbackSubmissionTests(TestCase):
         self.assertTrue(feedback.personal_data_consent)
         self.assertEqual(feedback.consent_text_version, "2026-11-18")
         self.assertEqual(feedback.contact, "")
-        self.assertEqual(self.csrf_post(report_url, {"photo_id": second.photo_id}).status_code, 201)
-        self.assertFalse(feedback.result_feedback.exists())
+        self.assertEqual(
+            self.csrf_post(
+                report_url, self.report_data(second.photo_id, public_token=token)
+            ).status_code,
+            201,
+        )
+        self.assertFalse(SearchFeedback.objects.exclude(legacy_attachment_id=None).exists())
 
     def test_problem_selfie_is_idempotent_and_rejects_missing_consent_or_nonterminal_results(
         self,
@@ -395,46 +420,73 @@ class FeedbackSubmissionTests(TestCase):
         first = self.make_result(search=search)
         second = self.make_result(search=search, photo_id="second-result", rank=2)
         result_url = reverse("selfie_search:result", args=(self.event.slug, token))
-        first_photo = {"photo_id": first.photo_id}
-        url = reverse("selfie_search:result_feedback", args=(self.event.slug, token))
+        first_photo = self.report_data(first.photo_id, public_token=token)
+        url = self.report_url()
         with patch("selfie_search.services.results.SELFIE_SEARCH_RESULT_PAGE_SIZE", 1):
             first_page = self.client.get(result_url)
             self.assertContains(first_page, "data-result-feedback", count=1)
             self.assertEqual(self.client.post(url, first_photo).status_code, 403)
             self.assertEqual(self.csrf_post(url, first_photo).status_code, 201)
-            self.assertEqual(self.csrf_post(url, first_photo).status_code, 200)
+            self.assertEqual(self.csrf_post(url, first_photo).status_code, 201)
             second_page = self.client.get(result_url, {"page": 2})
             self.assertContains(second_page, f'value="{second.photo_id}"')
-            self.assertEqual(self.csrf_post(url, {"photo_id": second.photo_id}).status_code, 201)
+            self.assertEqual(
+                self.csrf_post(
+                    url, self.report_data(second.photo_id, public_token=token)
+                ).status_code,
+                201,
+            )
             for page in (1, 2):
                 self.assertContains(
                     self.client.get(result_url, {"page": page}),
                     'data-feedback-saved role="status">',
                     count=1,
                 )
-        self.assertEqual(SearchResultFeedback.objects.filter(result__search=search).count(), 2)
+        self.assertEqual(
+            SearchFeedback.objects.filter(search_context__search_id=str(search.pk)).count(), 3
+        )
         self.assertFalse(SelfieSearchFeedback.objects.exists())
 
     @override_settings(SELFIE_FEEDBACK_ENABLED=False)
     def test_gallery_face_result_accepts_reports_only_for_visible_members(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
-        search.configuration = {"processor": "gallery_photo_query"}
+        source = {"kind": "gallery_photo", "photo_id": "source-photo", "detection_id": str(uuid4())}
+        search.configuration = {"processor": "gallery_photo_query", "query_source": source}
         search.save(update_fields=["configuration"])
         own = self.make_result(search=search)
         other, _ = self.make_search(status=SelfieSearch.Status.READY)
         foreign = self.make_result(search=other, photo_id="foreign-result")
-        url = reverse("selfie_search:result", args=(self.event.slug, token)) + "result-feedback/"
-        self.assertEqual(self.csrf_post(url, {"photo_id": foreign.photo_id}).status_code, 404)
-        self.assertEqual(self.csrf_post(url, {"photo_id": own.photo_id}).status_code, 201)
+        url = self.report_url()
+        self.assertEqual(
+            self.csrf_post(url, self.report_data(foreign.photo_id, public_token=token)).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.csrf_post(url, self.report_data(own.photo_id, public_token=token)).status_code, 201
+        )
+        feedback = SearchFeedback.objects.get()
+        self.assertEqual(feedback.search_type, SearchFeedback.SearchType.GALLERY)
+        self.assertEqual(
+            feedback.search_context,
+            {
+                "search_id": str(search.pk),
+                "result_id": str(own.pk),
+                "primary_source": own.primary_source,
+                "source_photo_id": source["photo_id"],
+                "source_detection_id": source["detection_id"],
+            },
+        )
         Photo.objects.filter(pk=own.photo_id).update(is_hidden=True)
-        self.assertEqual(self.csrf_post(url, {"photo_id": own.photo_id}).status_code, 404)
+        self.assertEqual(
+            self.csrf_post(url, self.report_data(own.photo_id, public_token=token)).status_code, 404
+        )
         Photo.objects.filter(pk=own.photo_id).update(is_hidden=False)
         self.event.publication_status = Event.PublicationStatus.UNAVAILABLE
         self.event.save(update_fields=["publication_status"])
         self.assertEqual(
             self.client.post(
                 url,
-                {"photo_id": own.photo_id},
+                self.report_data(own.photo_id, public_token=token),
                 HTTP_X_CSRFTOKEN=self.client.cookies["csrftoken"].value,
             ).status_code,
             404,
@@ -462,23 +514,27 @@ class FeedbackSubmissionTests(TestCase):
             "Это не я",
             count=1,
         )
-        url = f"{gallery_url}bib-result-feedback/"
+        url = self.report_url()
         self.assertEqual(
-            self.csrf_post(url, {"bib": "007", "photo_id": unnumbered.photo_id}).status_code, 404
+            self.csrf_post(url, self.report_data(unnumbered.photo_id, bib="007")).status_code, 404
         )
         self.assertEqual(
-            self.csrf_post(url, {"bib": "7", "photo_id": numbered.photo_id}).status_code, 404
+            self.csrf_post(url, self.report_data(numbered.photo_id, bib="7")).status_code, 404
         )
         self.assertEqual(
-            self.csrf_post(url, {"bib": "007", "photo_id": numbered.photo_id}).status_code, 201
+            self.csrf_post(url, self.report_data(numbered.photo_id, bib="007")).status_code, 201
         )
         self.assertEqual(
-            self.csrf_post(url, {"bib": "007", "photo_id": numbered.photo_id}).status_code, 200
+            self.csrf_post(url, self.report_data(numbered.photo_id, bib="007")).status_code, 201
         )
         self.assertEqual(SelfieSearch.objects.count(), 1)
         self.assertEqual(
-            list(BibResultFeedback.objects.values_list("event_id", "bib_number", "photo_id")),
-            [(self.event.pk, "007", numbered.photo_id)],
+            list(
+                SearchFeedback.objects.values_list(
+                    "event_id", "search_type", "photo_id", "search_context"
+                )
+            ),
+            [(self.event.pk, "bib", numbered.photo_id, {"bib_number": "007"})] * 2,
         )
         self.assertContains(
             self.client.get(gallery_url, {"bib": "007", "folder": folder.pk}),
@@ -486,5 +542,55 @@ class FeedbackSubmissionTests(TestCase):
         )
         Photo.objects.filter(pk=numbered.photo_id).update(is_hidden=True)
         self.assertEqual(
-            self.csrf_post(url, {"bib": "007", "photo_id": numbered.photo_id}).status_code, 404
+            self.csrf_post(url, self.report_data(numbered.photo_id, bib="007")).status_code, 404
         )
+
+    @override_settings(SELFIE_FEEDBACK_ENABLED=False)
+    def test_common_feedback_endpoint_accepts_a_ready_selfie_match(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        result = self.make_result(search=search)
+        url = f"/events/{self.event.slug}/search-feedback/"
+        data = {
+            "photo_id": result.photo_id,
+            "public_token": token,
+            "submission_id": "3e72a744-2ebc-4dd9-a40f-a83b319f1eb2",
+        }
+        self.assertEqual(self.csrf_post(url, data).status_code, 201)
+        self.assertEqual(self.csrf_post(url, data).status_code, 201)
+
+        expected_context = {
+            "search_id": str(search.pk),
+            "result_id": str(result.pk),
+            "primary_source": result.primary_source,
+        }
+        self.assertEqual(
+            list(
+                SearchFeedback.objects.values_list(
+                    "event_id", "search_type", "photo_id", "value", "search_context"
+                )
+            ),
+            [(self.event.pk, "selfie", result.photo_id, "absent", expected_context)] * 2,
+        )
+        self.assertEqual(
+            set(SearchFeedback.objects.values_list("submission_id", flat=True)),
+            {UUID(data["submission_id"])},
+        )
+        for invalid in (
+            {**data, "submission_id": ""},
+            {**data, "submission_id": "invalid"},
+            {**data, "bib": "007"},
+            {**data, "public_token": ""},
+        ):
+            self.assertEqual(self.csrf_post(url, invalid).status_code, 422)
+        self.assertEqual(SearchFeedback.objects.count(), 2)
+
+    def test_journal_write_executes_one_insert(self) -> None:
+        with self.assertNumQueries(1):
+            record_result_report(
+                submission_id=uuid4(),
+                event_id=self.event.pk,
+                photo_id="known-photo",
+                search_type=SearchFeedback.SearchType("bib"),
+                search_context={"bib_number": "007"},
+            )
+        self.assertEqual(SearchFeedback.objects.get().photo_id, "known-photo")

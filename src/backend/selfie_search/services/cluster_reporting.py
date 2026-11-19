@@ -8,10 +8,13 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from django.db.models import Count, Q
+from django.db.models import CharField, Count, Q, Subquery
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Cast
 from picflow.models import Event
+from search_feedback.models import SearchFeedback
 
-from selfie_search.models import SearchResultFeedback, SelfieSearch, SelfieSearchResult
+from selfie_search.models import SelfieSearch, SelfieSearchResult
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 NOT_AVAILABLE = "not_available"
@@ -85,7 +88,7 @@ def build_cluster_expansion_report(
 
     results = SelfieSearchResult.objects.filter(search__in=available_searches)
     result_volume = _result_volume(results)
-    feedback = _feedback_aggregates(results=results, available_searches=available_searches)
+    feedback = _feedback_aggregates(results=results)
     return {
         "window": {
             "start": start_bound.date().isoformat(),
@@ -144,32 +147,36 @@ def _result_volume(results) -> dict[str, int]:  # noqa: ANN001
     }
 
 
-def _feedback_aggregates(*, results, available_searches) -> dict[str, dict[str, Any]]:  # noqa: ANN001
-    labels = SearchResultFeedback.objects.filter(
-        result__search__in=available_searches,
-        result__in=results,
+def _feedback_aggregates(*, results) -> dict[str, dict[str, Any]]:  # noqa: ANN001
+    first_submissions = (
+        SearchFeedback.objects.order_by("submission_id", "id")
+        .distinct("submission_id")
+        .values("id")
+    )
+    labels = SearchFeedback.objects.filter(pk__in=Subquery(first_submissions)).annotate(
+        saved_result_id=KeyTextTransform("result_id", "search_context")
     )
     direct = results.filter(primary_source=_RESULT_SOURCES["direct"])
     expanded = results.filter(primary_source=_RESULT_SOURCES["expanded"])
     dual = direct.filter(cluster_evidence__isnull=False).distinct()
     return {
-        "direct": _source_feedback(labels.filter(result__in=direct), results_volume=direct.count()),
-        "expanded": _source_feedback(
-            labels.filter(result__in=expanded), results_volume=expanded.count()
-        ),
-        "dual_evidence": _source_feedback(
-            labels.filter(result__in=dual), results_volume=dual.count()
-        ),
+        name: _source_feedback(
+            labels.filter(
+                saved_result_id__in=rows.annotate(text_pk=Cast("pk", CharField())).values("text_pk")
+            ),
+            results_volume=rows.count(),
+        )
+        for name, rows in (("direct", direct), ("expanded", expanded), ("dual_evidence", dual))
     }
 
 
 def _source_feedback(labels, *, results_volume: int) -> dict[str, Any]:  # noqa: ANN001
-    absent = Q(value=SearchResultFeedback.Value.ABSENT)
+    absent = Q(value=SearchFeedback.Value.ABSENT)
     counts = labels.aggregate(
-        present=Count("pk", filter=Q(value=SearchResultFeedback.Value.PRESENT)),
+        present=Count("pk", filter=Q(value=SearchFeedback.Value.PRESENT)),
         absent=Count("pk", filter=absent),
-        historical_absent=Count("pk", filter=absent & Q(feedback__isnull=False)),
-        labelled=Count("result_id", distinct=True),
+        historical_absent=Count("pk", filter=absent & Q(legacy_attachment_id__isnull=False)),
+        labelled=Count("saved_result_id", distinct=True),
     )
     labelled = counts["labelled"]
     return {
@@ -195,7 +202,12 @@ def _ratio(numerator: int, denominator: int) -> dict[str, int | float | None]:
 
 def _zero_report_metrics() -> dict[str, Mapping[str, Any]]:
     feedback = {
-        source: _source_feedback(SearchResultFeedback.objects.none(), results_volume=0)
+        source: _source_feedback(
+            SearchFeedback.objects.none().annotate(
+                saved_result_id=KeyTextTransform("result_id", "search_context")
+            ),
+            results_volume=0,
+        )
         for source in ("direct", "expanded", "dual_evidence")
     }
     return {

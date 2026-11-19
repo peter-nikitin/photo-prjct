@@ -7,6 +7,7 @@ from typing import Final
 
 from django.core.paginator import Page, Paginator
 from django.db.models import QuerySet
+from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import saved_result_photo_queryset
 from picflow.models import Event, Photo
 
@@ -20,6 +21,7 @@ class PublicSearchNotFound(LookupError):
 SELFIE_SEARCH_RESULT_PAGE_SIZE: Final = 100
 
 
+@sensitive_variables("public_token")
 def resolve_public_result(*, event_slug: str, public_token: str, user) -> SelfieSearch:
     """Resolve one stable bearer result only while its event is site-visible to the caller."""
     try:

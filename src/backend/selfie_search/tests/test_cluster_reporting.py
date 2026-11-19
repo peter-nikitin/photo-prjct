@@ -19,9 +19,9 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
+from search_feedback.models import SearchFeedback
 from selfie_search.models import (
     FEEDBACK_CONSENT_TEXT_VERSION,
-    SearchResultFeedback,
     SelfieSearch,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
@@ -264,17 +264,30 @@ class ClusterExpansionReportTests(TestCase):
             rank=3,
         )
         feedback = self.make_feedback(search=search)
-        SearchResultFeedback.objects.create(
-            feedback=feedback, result=dual, value=SearchResultFeedback.Value.PRESENT
-        )
-        SearchResultFeedback.objects.create(
-            feedback=feedback, result=direct, value=SearchResultFeedback.Value.ABSENT
-        )
-        SearchResultFeedback.objects.create(
-            feedback=feedback, result=expanded, value=SearchResultFeedback.Value.PRESENT
-        )
-
-        SearchResultFeedback.objects.create(result=dual, value=SearchResultFeedback.Value.ABSENT)
+        for result, value in (
+            (dual, SearchFeedback.Value.PRESENT),
+            (direct, SearchFeedback.Value.ABSENT),
+            (expanded, SearchFeedback.Value.PRESENT),
+        ):
+            SearchFeedback.objects.create(
+                submission_id=uuid4(),
+                event_id=search.event_id,
+                photo_id=result.photo_id,
+                search_type=SearchFeedback.SearchType.SELFIE,
+                value=value,
+                search_context={"result_id": str(result.pk)},
+                legacy_attachment_id=feedback.pk,
+            )
+        retry_id = uuid4()
+        for _ in range(2):
+            SearchFeedback.objects.create(
+                submission_id=retry_id,
+                event_id=search.event_id,
+                photo_id=dual.photo_id,
+                search_type=SearchFeedback.SearchType.SELFIE,
+                value=SearchFeedback.Value.ABSENT,
+                search_context={"result_id": str(dual.pk)},
+            )
 
         report = build_cluster_expansion_report(start=date(2026, 8, 5), end=date(2026, 8, 6))
 

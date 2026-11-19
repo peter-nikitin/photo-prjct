@@ -42,9 +42,10 @@ from picflow.gallery import (
     gallery_photo_queryset,
 )
 from picflow.models import Event, Photo
+from search_feedback.models import SearchFeedback
 
 from selfie_search.forms import FeedbackSelfieForm, SelfieSearchUploadForm
-from selfie_search.models import SearchResultFeedback, SelfieSearch, SelfieSearchFeedback
+from selfie_search.models import SelfieSearch, SelfieSearchFeedback
 from selfie_search.observability import SelfieEventName, emit_selfie_event
 from selfie_search.services.feedback import save_feedback_selfie
 from selfie_search.services.results import (
@@ -53,7 +54,6 @@ from selfie_search.services.results import (
     resolve_public_result,
     saved_ready_result_page,
     saved_ready_result_photo,
-    saved_ready_result_row,
 )
 from selfie_search.services.submission import (
     GallerySearchFailed,
@@ -280,10 +280,14 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             }
     reported_photo_ids = (
         set(
-            SearchResultFeedback.objects.filter(
-                result_id__in=[row.pk for row, _photo in gallery_result_items],
-                value=SearchResultFeedback.Value.ABSENT,
-            ).values_list("result__photo_id", flat=True)
+            SearchFeedback.objects.filter(
+                event_id=search.event_id,
+                search_context__search_id=str(search.pk),
+                photo_id__in=[photo.photo_id for photo in gallery_photos],
+                value=SearchFeedback.Value.ABSENT,
+            )
+            .values_list("photo_id", flat=True)
+            .distinct()
         )
         if gallery_result_items
         else set()
@@ -309,8 +313,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "gallery_result_items": gallery_result_items,
             "feedback": feedback_context,
             "result_feedback_url": reverse(
-                "selfie_search:result_feedback",
-                kwargs={"event_slug": search.event.slug, "public_token": public_token},
+                "search_feedback_submit", kwargs={"event_slug": search.event.slug}
             ),
             "reported_photo_ids": reported_photo_ids,
             "feedback_submitted": feedback_submitted,
@@ -340,26 +343,6 @@ def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # 
     if search is None:
         return _not_found_response()
     return JsonResponse(public_status_payload(search))
-
-
-@require_POST
-@_sanitize_result_exception_path
-@sensitive_variables()
-def result_feedback(request, event_slug: str, public_token: str) -> HttpResponseBase:
-    search = _public_search(request, event_slug=event_slug, public_token=public_token)
-    if search is None:
-        return _not_found_response()
-    row = saved_ready_result_row(
-        search=search,
-        photo_id=request.POST.get("photo_id", ""),
-        paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
-    )
-    if row is None:
-        return _not_found_response()
-    _, created = SearchResultFeedback.objects.get_or_create(
-        result=row, value=SearchResultFeedback.Value.ABSENT
-    )
-    return JsonResponse({"status": "saved"}, status=201 if created else 200)
 
 
 @require_POST

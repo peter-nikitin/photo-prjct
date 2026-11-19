@@ -1,8 +1,10 @@
 """Observe the publication and face-recognition paths of accepted originals."""
 
+import logging
 from datetime import datetime, timedelta
 
 from config import queue_events
+from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE, PhotoImportBacklogs
 from django.db import connection, transaction
 from django.db.models import Count, F, Min, Q
 from picflow.gallery import gallery_media_policy_ready
@@ -21,8 +23,7 @@ from processing.services.face_cohort import (
     current_accepted_face_result,
 )
 
-GALLERY_QUEUE = "photo_import_gallery"
-FACE_QUEUE = "photo_import_face"
+logger = logging.getLogger(__name__)
 
 _MILLISECOND = timedelta(milliseconds=1)
 
@@ -32,13 +33,19 @@ _PREVIEW_POLICIES = (
 )
 
 
-def photo_import_backlogs() -> dict[str, tuple[int, int]]:
+def photo_import_backlogs(*, photo_id: str | None = None) -> PhotoImportBacklogs:
     """Return (unfinished photos, photos blocked by permanent failure), from one SQL snapshot."""
     # Non-null photo IDs let PostgreSQL hash each membership set once per observation.
     current_states = PhotoProcessingState.objects.filter(
         current_job__photo_id=F("photo_id"),
         current_job__processor_type=F("processor_type"),
     )
+    photos = Photo.objects.filter(src="", original_key__gt="")
+    face_projections = accepted_face_projections(include_hidden=True)
+    if photo_id is not None:
+        photos = photos.filter(pk=photo_id)
+        current_states = current_states.filter(photo_id=photo_id)
+        face_projections = face_projections.filter(photo_id=photo_id)
     failed_states = current_states.filter(
         status=PhotoProcessingState.Status.FAILED,
         current_job__status=ProcessingJob.Status.FAILED,
@@ -68,12 +75,10 @@ def photo_import_backlogs() -> dict[str, tuple[int, int]]:
         .values("photo_id")
     )
     face_complete = Q(
-        pk__in=accepted_face_projections(include_hidden=True)
-        .filter(
+        pk__in=face_projections.filter(
             current_accepted_face_result(),
             accepted_attempt__processor_type=FACE_EMBEDDING_PROCESSOR,
-        )
-        .values("photo_id"),
+        ).values("photo_id"),
     )
     face_pending = (
         Q(original_content_type="image/jpeg")
@@ -84,18 +89,81 @@ def photo_import_backlogs() -> dict[str, tuple[int, int]]:
         pk__in=failed_states.filter(processor_type=FACE_EMBEDDING_PROCESSOR).values("photo_id"),
     )
 
-    counts = Photo.objects.filter(src="", original_key__gt="").aggregate(
-        publication_pending=Count("pk", filter=publication_pending),
-        publication_failed=Count(
-            "pk", filter=publication_pending & (preview_failed | watermark_failed)
-        ),
-        face_pending=Count("pk", filter=face_pending),
-        face_failed=Count("pk", filter=(face_failed | preview_failed) & face_pending),
-    )
-    return {
-        GALLERY_QUEUE: (counts["publication_pending"], counts["publication_failed"]),
-        FACE_QUEUE: (counts["face_pending"], counts["face_failed"]),
+    membership = {
+        "publication_pending": publication_pending,
+        "publication_failed": publication_pending & (preview_failed | watermark_failed),
+        "face_pending": face_pending,
+        "face_failed": (face_failed | preview_failed) & face_pending,
     }
+    if photo_id is None:
+        counts = photos.aggregate(
+            **{key: Count("pk", filter=predicate) for key, predicate in membership.items()}
+        )
+    else:
+        counts = photos.annotate(**membership).values(*membership).first() or dict.fromkeys(
+            membership, 0
+        )
+    return {
+        GALLERY_QUEUE: (int(counts["publication_pending"]), int(counts["publication_failed"])),
+        FACE_QUEUE: (int(counts["face_pending"]), int(counts["face_failed"])),
+    }
+
+
+def read_photo_import_backlogs(*, photo_id: str | None = None) -> PhotoImportBacklogs | None:
+    """Isolate best-effort reads from the business transaction using a savepoint."""
+    try:
+        with transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute("SELECT current_setting('statement_timeout')")
+            previous_timeout = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT set_config('statement_timeout', %s, true)",
+                ["2s" if photo_id is None else "100ms"],
+            )
+            counts = photo_import_backlogs(photo_id=photo_id)
+            cursor.execute("SELECT set_config('statement_timeout', %s, true)", [previous_timeout])
+    except Exception:
+        logger.warning("Could not observe photo import backlog")
+        return None
+    return counts
+
+
+def schedule_original_accepted(photo: Photo) -> None:
+    """An accepted preview-first original enters both paths before processing."""
+    if photo.gallery_media_policy in _PREVIEW_POLICIES:
+        deltas = {GALLERY_QUEUE: (1, 0)}
+        if photo.original_content_type == "image/jpeg":
+            deltas[FACE_QUEUE] = (1, 0)
+        _schedule_backlog_delta(deltas)
+
+
+def capture_photo_import_backlog(photo_id: str, processor_type: str) -> PhotoImportBacklogs | None:
+    if processor_type not in (
+        FACE_EMBEDDING_PROCESSOR,
+        GENERATE_PREVIEW_PROCESSOR,
+        GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+    ):
+        return None
+    return read_photo_import_backlogs(photo_id=photo_id)
+
+
+def schedule_photo_import_backlog_delta(photo_id: str, before: PhotoImportBacklogs | None) -> None:
+    if before is None:
+        return
+    after = read_photo_import_backlogs(photo_id=photo_id)
+    if after is None:
+        return
+    deltas = {}
+    for queue, (pending, failed) in after.items():
+        previous_pending, previous_failed = before[queue]
+        delta = (pending - previous_pending, failed - previous_failed)
+        if delta != (0, 0):
+            deltas[queue] = delta
+    if deltas:
+        _schedule_backlog_delta(deltas)
+
+
+def _schedule_backlog_delta(deltas: PhotoImportBacklogs) -> None:
+    transaction.on_commit(lambda: queue_events.notify_queue_backlog_delta(deltas), robust=True)
 
 
 def schedule_photo_import_completion(photo: Photo, attempt: ProcessingAttempt) -> None:

@@ -27,6 +27,10 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingJob,
 )
+from processing.photo_import_telemetry import (
+    capture_photo_import_backlog,
+    schedule_photo_import_backlog_delta,
+)
 from processing.services.bibs import bib_configuration
 from processing.services.jobs import transition_capture_time_projection
 
@@ -709,6 +713,17 @@ def request_processor(
                 status=ProcessingJob.Status.QUEUED,
             )
 
+        # The preview-first path already includes photos awaiting first face enrollment.
+        changes_backlog = replacing_terminal_generation or (
+            processor_type == FACE_EMBEDDING_PROCESSOR
+            and locked_photo.gallery_media_policy
+            == Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED
+        )
+        backlog_before = (
+            capture_photo_import_backlog(locked_photo.pk, processor_type)
+            if changes_backlog
+            else None
+        )
         now = timezone.now()
         state.status = PhotoProcessingState.Status.QUEUED
         state.current_run = run
@@ -736,6 +751,7 @@ def request_processor(
                 ]
             )
         state.save(update_fields=update_fields)
+        schedule_photo_import_backlog_delta(locked_photo.pk, backlog_before)
         if processor_type == CAPTURE_METADATA_PROCESSOR:
             transition_capture_time_projection(
                 photo=locked_photo, state=state, accepted_attempt=None

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from uuid import UUID
 
 import psycopg
+from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE
 from django.contrib.auth import get_user_model
 from django.db import OperationalError, close_old_connections, connection, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
@@ -33,6 +34,7 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
+from processing.photo_import_telemetry import photo_import_backlogs
 from processing.services import jobs
 from processing.services.bibs import bib_configuration
 from processing.services.enrollment import (
@@ -208,33 +210,54 @@ class _PreviewPublicationFixture:
 
 class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
     @override_settings(PHOTO_PROCESSING_ENABLED=False, PHOTO_PROCESSING_FACE_ENABLED=False)
-    @patch("config.metrics.multiprocess.MultiProcessCollector")
-    def test_backlog_follows_projection_and_counts_hidden_photos_once(self, _collector) -> None:
+    def test_backlog_follows_projection_and_counts_hidden_photos_once(self) -> None:
         photo, _, watermark = self._claim_watermark("import-backlog-paid")
         Photo.objects.filter(pk=photo.pk).update(is_hidden=True)
         self._claim("import-backlog-legacy")
 
-        from config.metrics import generate_metrics
+        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
+        with (
+            patch("config.queue_events.notify_queue_backlog_delta") as notify,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            jobs.fail_attempt(watermark.attempt.id, error_code="invalid_media", retryable=False)
+        notify.assert_called_once_with({GALLERY_QUEUE: (0, 1)})
+        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 1), FACE_QUEUE: (1, 0)})
 
-        exposition = generate_metrics().decode()
-        self.assertIn(
-            'findme_photo_import_pending_count{queue="photo_import_gallery"} 1', exposition
+    def test_observer_sql_failure_does_not_abort_preview_and_restores_timeout(self) -> None:
+        photo, claim = self._claim("import-observer-read-failure")
+        Photo.objects.filter(pk=photo.pk).update(
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
         )
-        self.assertIn('findme_photo_import_pending_count{queue="photo_import_face"} 1', exposition)
-        self.assertIn(
-            'findme_photo_import_failed_count{queue="photo_import_gallery"} 0', exposition
-        )
-        self.assertIn('findme_photo_import_failed_count{queue="photo_import_face"} 0', exposition)
+        object = self._stored_object()
+        failed_reads = []
 
-        jobs.fail_attempt(watermark.attempt.id, error_code="invalid_media", retryable=False)
-        exposition = generate_metrics().decode()
-        self.assertIn(
-            'findme_photo_import_pending_count{queue="photo_import_gallery"} 1', exposition
-        )
-        self.assertIn(
-            'findme_photo_import_failed_count{queue="photo_import_gallery"} 1', exposition
-        )
-        self.assertIn('findme_photo_import_failed_count{queue="photo_import_face"} 0', exposition)
+        def fail_backlog_read(execute, sql, params, many, context):
+            if "publication_pending" in sql:
+                failed_reads.append(sql)
+                return execute("SELECT 1 / 0", None, False, context)
+            return execute(sql, params, many, context)
+
+        with (
+            transaction.atomic(),
+            connection.cursor() as cursor,
+            patch("config.queue_events.notify_queue_backlog_delta") as notify,
+        ):
+            cursor.execute("SET LOCAL statement_timeout = 7000")
+            with self.captureOnCommitCallbacks(execute=True):
+                with connection.execute_wrapper(fail_backlog_read):
+                    complete_preview_attempt(
+                        claim.attempt.id,
+                        result=self._result(object),
+                        storage=FakePreviewStorage(object),
+                    )
+                cursor.execute("SHOW statement_timeout")
+                self.assertEqual(cursor.fetchone()[0], "7s")
+
+        self.assertEqual(len(failed_reads), 1)
+        notify.assert_not_called()
+        self.assertTrue(GalleryMediaProjection.objects.filter(pk=photo.pk).exists())
 
     def test_gallery_completion_timing_published_once_after_commit(self) -> None:
         photo, claim = self._claim("import-gallery-completion")
@@ -284,7 +307,10 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
         )
         object = self._stored_object()
 
-        with patch("config.queue_events.notify_queue_completion") as notify:
+        with (
+            patch("config.queue_events.notify_queue_completion") as notify,
+            patch("config.queue_events.notify_queue_backlog_delta") as delta,
+        ):
             with self.captureOnCommitCallbacks(execute=True), self.assertRaises(RuntimeError):
                 with transaction.atomic():
                     complete_preview_attempt(
@@ -295,6 +321,7 @@ class PreviewPublicationServiceTests(_PreviewPublicationFixture, TestCase):
                     raise RuntimeError("abort transaction")
 
         notify.assert_not_called()
+        delta.assert_not_called()
         self.assertFalse(GalleryMediaProjection.objects.filter(pk=photo.pk).exists())
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
@@ -1164,10 +1191,23 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
                     clock=lambda: first_start + timedelta(seconds=3),
                 )
                 self.assertEqual(list(listener.notifies(timeout=0.01)), [])
-            notifications = list(listener.notifies(timeout=2, stop_after=1))
-        self.assertEqual(len(notifications), 1)
+            notifications = list(listener.notifies(timeout=2, stop_after=2))
+        by_event = {
+            payload["event"]: payload
+            for note in notifications
+            for payload in (json.loads(note.payload),)
+        }
+        self.assertEqual(len(notifications), 2)
         self.assertEqual(
-            json.loads(notifications[0].payload),
+            by_event["queue.backlog.changed"],
+            {
+                "event": "queue.backlog.changed",
+                "version": 1,
+                "deltas": {"photo_import_gallery": [-1, 0]},
+            },
+        )
+        self.assertEqual(
+            by_event["queue.task.completed"],
             {
                 "event": "queue.task.completed",
                 "version": 1,
@@ -1180,6 +1220,31 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
                 },
             },
         )
+
+    def test_backlog_notify_failure_does_not_undo_ready_photo(self) -> None:
+        photo, claim = self._claim("import-notify-failure")
+        Photo.objects.filter(pk=photo.pk).update(
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        object = self._stored_object()
+        publish_attempts = []
+
+        def fail_delta_notify(execute, sql, params, many, context):
+            if "pg_notify" in sql and "queue.backlog.changed" in params[1]:
+                publish_attempts.append(True)
+                return execute("SELECT 1 / 0", None, False, context)
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(fail_delta_notify):
+            complete_preview_attempt(
+                claim.attempt.id,
+                result=self._result(object),
+                storage=FakePreviewStorage(object),
+            )
+        self.assertEqual(publish_attempts, [True])
+        self.assertTrue(GalleryMediaProjection.objects.filter(pk=photo.pk).exists())
+        self.assertEqual(photo_import_backlogs()[GALLERY_QUEUE], (0, 0))
 
     def _existing_bib_enrollment_rows(
         self,

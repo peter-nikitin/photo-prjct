@@ -27,7 +27,11 @@ from processing.models import (
     ProcessingAttempt,
     ProcessingJob,
 )
-from processing.photo_import_telemetry import schedule_photo_import_completion
+from processing.photo_import_telemetry import (
+    capture_photo_import_backlog,
+    schedule_photo_import_backlog_delta,
+    schedule_photo_import_completion,
+)
 from processing.services import jobs
 from processing.storage import ExactPreviewStorage, ObjectConflict, PreviewObject
 
@@ -307,7 +311,10 @@ def _publish_after_verification(
             sha256=publication.result["sha256"],
             accepted_attempt=attempt,
         )
+        # Downstream enrollment observes its own changes after the projection is published.
+        backlog_before = capture_photo_import_backlog(photo.pk, attempt.processor_type)
         publish_gallery_media(derivative)
+        schedule_photo_import_backlog_delta(photo.pk, backlog_before)
         if photo.bib_processing_policy == Photo.BibProcessingPolicy.ORIGINAL_V1:
             from processing.services.enrollment import request_bib_recognition
 

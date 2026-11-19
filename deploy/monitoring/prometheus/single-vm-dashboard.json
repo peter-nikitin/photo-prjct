@@ -1455,7 +1455,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "c10b8a44-0961-56df-a4f2-f05d8bffdca6",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "label_replace(findme_photo_import_pending_count{job=\"findme-http\",queue=\"photo_import_gallery\"}, \"status\", \"Осталось\", \"queue\", \".+\")",
+                    "query": "label_replace(findme_photo_import_pending_count{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}, \"status\", \"Осталось\", \"queue\", \".+\")",
                     "textMode": true,
                     "name": "Pending"
                   }
@@ -1464,7 +1464,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "c10b8a44-0961-56df-a4f2-f05d8bffdca6",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "label_replace(findme_photo_import_failed_count{job=\"findme-http\",queue=\"photo_import_gallery\"}, \"status\", \"Ошибки\", \"queue\", \".+\")",
+                    "query": "label_replace(findme_photo_import_failed_count{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}, \"status\", \"Ошибки\", \"queue\", \".+\")",
                     "textMode": true,
                     "name": "Failed"
                   }
@@ -1492,7 +1492,7 @@
                 }
               },
               "title": "Осталось опубликовать",
-              "description": "Уникальные фото с принятым оригиналом, которым ещё не хватает превью по их политике. Окончательные ошибки входят в остаток. Ноль означает пустой остаток. Разрыв означает отсутствие данных.",
+              "description": "Уникальные фото с принятым оригиналом, которым ещё не хватает превью по их политике. Окончательные ошибки входят в остаток. Остаток приблизительный, сверяется с PostgreSQL каждые 15 минут. Разрыв означает отсутствие данных.",
               "displayLegend": true
             },
             "position": {
@@ -1509,7 +1509,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "9e366408-8529-5621-b339-e9c89b024549",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "label_replace(findme_photo_import_pending_count{job=\"findme-http\",queue=\"photo_import_face\"}, \"status\", \"Осталось\", \"queue\", \".+\")",
+                    "query": "label_replace(findme_photo_import_pending_count{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}, \"status\", \"Осталось\", \"queue\", \".+\")",
                     "textMode": true,
                     "name": "Pending"
                   }
@@ -1518,7 +1518,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "9e366408-8529-5621-b339-e9c89b024549",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "label_replace(findme_photo_import_failed_count{job=\"findme-http\",queue=\"photo_import_face\"}, \"status\", \"Ошибки\", \"queue\", \".+\")",
+                    "query": "label_replace(findme_photo_import_failed_count{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}, \"status\", \"Ошибки\", \"queue\", \".+\")",
                     "textMode": true,
                     "name": "Failed"
                   }
@@ -1546,7 +1546,7 @@
                 }
               },
               "title": "Осталось распознать",
-              "description": "Уникальные фото, которым ещё нужно распознавание лиц, включая ожидание превью. Окончательные ошибки входят в остаток. Успешный результат без лиц завершает путь. Ноль означает пустой остаток. Разрыв означает отсутствие данных.",
+              "description": "Уникальные фото, которым ещё нужно распознавание лиц, включая ожидание превью. Окончательные ошибки входят в остаток. Успешный результат без лиц завершает путь. Остаток приблизительный, сверяется с PostgreSQL каждые 15 минут. Разрыв означает отсутствие данных.",
               "displayLegend": true
             },
             "position": {

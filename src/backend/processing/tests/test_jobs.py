@@ -7,6 +7,7 @@ from queue import Queue
 from threading import Barrier, Thread
 from unittest.mock import patch
 
+from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, close_old_connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
@@ -27,6 +28,7 @@ from processing.models import (
     ProcessingJob,
     ProcessingLateReceipt,
 )
+from processing.photo_import_telemetry import photo_import_backlogs
 from processing.services import jobs as jobs_service
 from processing.services.enrollment import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
@@ -1162,18 +1164,12 @@ class ProcessingJobServiceTests(TestCase):
         self.assertIsNone(photo.capture_time_source_attempt_id)
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
-    @patch("config.metrics.multiprocess.MultiProcessCollector")
-    def test_face_backlog_distinguishes_current_work_and_no_face_success(self, _collector) -> None:
-        from config.metrics import generate_metrics
-
+    def test_face_backlog_distinguishes_current_work_and_no_face_success(self) -> None:
         photo = self.private_photo("import-face")
         photo.processing_generation = Photo.ProcessingGeneration.PREVIEW_FIRST_V1
         photo.gallery_media_policy = Photo.GalleryMediaPolicy.PREVIEW_REQUIRED
         photo.save(update_fields=["processing_generation", "gallery_media_policy"])
-        self.assertIn(
-            'findme_photo_import_pending_count{queue="photo_import_face"} 1',
-            generate_metrics().decode(),
-        )
+        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 0))
         preview = self.publish_preview(
             photo, claimed_at=photo.uploaded_at + timedelta(milliseconds=1)
         )
@@ -1190,21 +1186,20 @@ class ProcessingJobServiceTests(TestCase):
             processor_version=5,
             now=preview_terminal + timedelta(seconds=2),
         )
-        self.assertIn(
-            'findme_photo_import_pending_count{queue="photo_import_face"} 1',
-            generate_metrics().decode(),
-        )
-        fail_attempt(
-            claimed.attempt.id,
-            error_code="network",
-            retryable=True,
-            now=claimed.attempt.claimed_at + timedelta(seconds=1),
-            jitter=lambda _low, _high: 0,
-        )
-        self.assertIn(
-            'findme_photo_import_failed_count{queue="photo_import_face"} 0',
-            generate_metrics().decode(),
-        )
+        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 0))
+        with (
+            patch("config.queue_events.notify_queue_backlog_delta") as delta,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            fail_attempt(
+                claimed.attempt.id,
+                error_code="network",
+                retryable=True,
+                now=claimed.attempt.claimed_at + timedelta(seconds=1),
+                jitter=lambda _low, _high: 0,
+            )
+        delta.assert_not_called()
+        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 0))
         claimed.job.refresh_from_db()
         retry = claim_job(
             contract_version=3,
@@ -1213,7 +1208,10 @@ class ProcessingJobServiceTests(TestCase):
             now=claimed.job.available_at,
         )
         completed_at = claimed.job.available_at + timedelta(seconds=1)
-        with patch("config.queue_events.notify_queue_completion") as notify:
+        with (
+            patch("config.queue_events.notify_queue_completion") as notify,
+            patch("config.queue_events.notify_queue_backlog_delta") as delta,
+        ):
             with self.captureOnCommitCallbacks(execute=True):
                 complete_attempt(retry.attempt.id, result=self.quality_result([]), now=completed_at)
                 duplicate = complete_attempt(retry.attempt.id, result=self.quality_result([]))
@@ -1228,9 +1226,38 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(
             sum(segments.values()), (completed_at - photo.uploaded_at) // timedelta(milliseconds=1)
         )
-        self.assertIn(
-            'findme_photo_import_pending_count{queue="photo_import_face"} 0',
-            generate_metrics().decode(),
+        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (0, 0))
+        delta.assert_called_once_with({FACE_QUEUE: (-1, 0)})
+
+    @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
+    def test_legacy_face_enrollment_and_replacement_of_failed_job_emits_changes(self) -> None:
+        photo = self.private_photo("import-legacy-face")
+        preview = self.publish_preview(photo)
+        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)})
+        with patch("config.queue_events.notify_queue_backlog_delta") as delta:
+            with self.captureOnCommitCallbacks(execute=True):
+                request_face_embedding_enqueue(photo)
+            claimed = claim_job(
+                contract_version=3, processor_type="face_embedding", processor_version=5
+            )
+            with self.captureOnCommitCallbacks(execute=True):
+                fail_attempt(claimed.attempt.id, error_code="invalid_media", retryable=False)
+            self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 1))
+            with self.captureOnCommitCallbacks(execute=True):
+                request_processor(
+                    photo,
+                    processor_type="face_embedding",
+                    contract_version=3,
+                    processor_version=5,
+                    configuration=self.quality_configuration()
+                    | {"embedding_storage": "vector_only"},
+                    input_fingerprint=self.face_input_fingerprint(preview),
+                    replace_terminal_generation=True,
+                )
+        self.assertEqual(photo_import_backlogs()[FACE_QUEUE], (1, 0))
+        self.assertEqual(
+            [call.args[0] for call in delta.call_args_list],
+            [{FACE_QUEUE: (1, 0)}, {FACE_QUEUE: (0, 1)}, {FACE_QUEUE: (0, -1)}],
         )
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)

@@ -7,6 +7,7 @@ from typing import cast
 from unittest.mock import patch
 from uuid import uuid4
 
+from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE
 from django.contrib.auth import get_user_model
 from django.test import TestCase, modify_settings, override_settings
 from django.urls import reverse
@@ -37,7 +38,7 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingJob,
 )
-from processing.photo_import_telemetry import FACE_QUEUE, GALLERY_QUEUE, photo_import_backlogs
+from processing.photo_import_telemetry import photo_import_backlogs
 from processing.services.jobs import claim_job, complete_attempt, fail_attempt
 from processing.services.previews import complete_preview_attempt
 from processing.storage import ObjectConflict, PreviewObject

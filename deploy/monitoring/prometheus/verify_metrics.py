@@ -16,6 +16,8 @@ assert spec and spec.loader
 control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
 CONFIG = control.load_config()
+BACKLOG_RECONCILED = "findme_photo_import_last_reconciliation_timestamp_seconds"
+RECONCILIATION_MAX_AGE_SECONDS = 1200
 SOURCES = {
     "vm": (
         {"__name__": "sys_memory_MemAvailable", "instance": "findme-photo-app"},
@@ -34,14 +36,19 @@ SOURCES = {
             {"__name__": "findme_selfie_search_queue_depth", "job": "findme-http", "stage": stage}
             for stage in ("recognition", "matching")
         ),
-        *(
-            {"__name__": f"findme_photo_import_{kind}_count", "job": "findme-http", "queue": queue}
-            for kind in ("pending", "failed")
-            for queue in ("photo_import_gallery", "photo_import_face")
-        ),
     ),
     "queue-telemetry": (
         {"__name__": "findme_queue_telemetry_listening", "job": "findme-queue-telemetry"},
+        {"__name__": BACKLOG_RECONCILED, "job": "findme-queue-telemetry"},
+        *(
+            {
+                "__name__": f"findme_photo_import_{kind}_count",
+                "job": "findme-queue-telemetry",
+                "queue": queue,
+            }
+            for kind in ("pending", "failed")
+            for queue in ("photo_import_gallery", "photo_import_face")
+        ),
     ),
 }
 
@@ -68,6 +75,10 @@ def check(transport, scope: str, *, now: float | None = None) -> None:
                 raise control.ControlError("PostgreSQL exporter cannot connect")
             if selector["__name__"] == "findme_queue_telemetry_listening" and value != 1:
                 raise control.ControlError("Queue telemetry listener is disconnected")
+            if selector["__name__"] == BACKLOG_RECONCILED and (
+                value <= 0 or not 0 <= observed_at - value <= RECONCILIATION_MAX_AGE_SECONDS
+            ):
+                raise control.ControlError("Queue telemetry backlog reconciliation is stale")
 
 
 def main() -> int:
@@ -91,6 +102,7 @@ def main() -> int:
                             "sample stale/nonfinite:",
                             "PostgreSQL exporter",
                             "Queue telemetry listener",
+                            "Queue telemetry backlog reconciliation",
                         )
                     )
                     or time.monotonic() >= deadline

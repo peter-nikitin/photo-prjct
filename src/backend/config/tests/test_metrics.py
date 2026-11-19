@@ -122,9 +122,6 @@ class HttpMetricsMiddlewareTests(SimpleTestCase):
 class MultiprocessMetricsTests(SimpleTestCase):
     def setUp(self):
         super().setUp()
-        import_patch = patch("config.metrics.collect_photo_import_backlogs", return_value={})
-        import_patch.start()
-        self.addCleanup(import_patch.stop)
         queue_patch = patch("config.metrics.collect_queue_samples", return_value={})
         queue_patch.start()
         self.addCleanup(queue_patch.stop)
@@ -199,6 +196,7 @@ class MultiprocessMetricsTests(SimpleTestCase):
             patch.dict(os.environ, {"PROMETHEUS_MULTIPROC_DIR": directory}),
         ):
             output = generate_metrics().decode()
+        self.assertNotIn("findme_photo_import_", output)
         self.assertIn('findme_queue_ready_count{queue="gallery-search"} 2', output)
         self.assertIn('findme_queue_oldest_ready_age_seconds{queue="gallery-search"} 310.0', output)
         self.assertIn('findme_queue_last_success_timestamp_seconds{queue="selfie"} 950.0', output)

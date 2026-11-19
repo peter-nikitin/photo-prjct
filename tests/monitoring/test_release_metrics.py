@@ -22,10 +22,6 @@ def test_application_check_succeeds_without_completion_traffic():
         ("findme_gallery_search_queue_depth", "findme-http", None): 0,
         ("findme_selfie_search_queue_depth", "findme-http", "recognition"): 0,
         ("findme_selfie_search_queue_depth", "findme-http", "matching"): 0,
-        ("findme_photo_import_pending_count", "findme-http", "photo_import_gallery"): 0,
-        ("findme_photo_import_failed_count", "findme-http", "photo_import_gallery"): 0,
-        ("findme_photo_import_pending_count", "findme-http", "photo_import_face"): 0,
-        ("findme_photo_import_failed_count", "findme-http", "photo_import_face"): 0,
     }
 
     class Transport:
@@ -37,7 +33,7 @@ def test_application_check_succeeds_without_completion_traffic():
                     (
                         selector["__name__"],
                         selector["job"],
-                        selector.get("stage", selector.get("queue")),
+                        selector.get("stage"),
                     )
                 ]
             ]
@@ -45,29 +41,32 @@ def test_application_check_succeeds_without_completion_traffic():
     checker.check(Transport(), "application", now=1000)
 
 
-@pytest.mark.parametrize("listening", [1, 0, None])
-def test_queue_telemetry_check_requires_a_live_listener_without_completion_traffic(listening):
+@pytest.mark.parametrize(
+    ("listening", "reconciled_at"),
+    [(1, 1990), (0, 1990), (None, 1990), (1, None), (1, 700), (1, 2001)],
+)
+def test_queue_telemetry_requires_live_listener_and_recent_snapshot(listening, reconciled_at):
     checker = load("release_queue_telemetry", "deploy/monitoring/prometheus/verify_metrics.py")
 
     class Transport:
         def read_samples(self, selectors, *, now):
-            return [
-                [[(990, listening)]]
-                if listening is not None
-                and selector
-                == {
-                    "__name__": "findme_queue_telemetry_listening",
-                    "job": "findme-queue-telemetry",
-                }
-                else []
-                for selector in selectors
-            ]
+            rows = []
+            for selector in selectors:
+                assert selector["job"] == "findme-queue-telemetry"
+                value = {
+                    "findme_queue_telemetry_listening": listening,
+                    "findme_photo_import_last_reconciliation_timestamp_seconds": reconciled_at,
+                    "findme_photo_import_pending_count": 0,
+                    "findme_photo_import_failed_count": 0,
+                }[selector["__name__"]]
+                rows.append([[(1995, value)]] if value is not None else [])
+            return rows
 
-    if listening == 1:
-        checker.check(Transport(), "queue-telemetry", now=1000)
+    if (listening, reconciled_at) == (1, 1990):
+        checker.check(Transport(), "queue-telemetry", now=2000)
     else:
         with pytest.raises(checker.control.ControlError):
-            checker.check(Transport(), "queue-telemetry", now=1000)
+            checker.check(Transport(), "queue-telemetry", now=2000)
 
 
 @pytest.mark.parametrize("sample", [None, (0, 1), (990, float("nan")), (1001, 1), (990, 0)])

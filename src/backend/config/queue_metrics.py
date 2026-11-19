@@ -16,7 +16,6 @@ from django.utils import timezone
 from ingestion.models import ImportAttempt, ImportBatch, ImportItem
 from ingestion.services.imports import MAX_OPERATION_ATTEMPTS, _owner_is_eligible
 from processing.models import EventProcessingRun, PhotoProcessingState, ProcessingJob
-from processing.photo_import_telemetry import photo_import_backlogs
 from processing.services.worker_pool_state import BULK_IDENTITIES
 from selfie_search.models import FaceSearchTask, SelfieSearch, SelfieSearchJob
 
@@ -234,11 +233,3 @@ def _observation_timeout() -> Iterator[None]:
         yield
         with connection.cursor() as cursor:
             cursor.execute("SELECT set_config('statement_timeout', %s, true)", [previous_timeout])
-
-
-def collect_photo_import_backlogs() -> dict[str, tuple[int, int]]:
-    try:
-        with _observation_timeout():
-            return photo_import_backlogs()
-    except DatabaseError:
-        return {}

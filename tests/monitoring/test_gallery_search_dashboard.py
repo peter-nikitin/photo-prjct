@@ -141,7 +141,7 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
             ("failed", "Ошибки", failures, failures - 1),
         ):
             metric_name = f"findme_photo_import_{metric}_count"
-            labels = f'job="findme-http",queue="{queue}"'
+            labels = f'job="findme-queue-telemetry",queue="{queue}"'
             series.append({"series": f"{metric_name}{{{labels}}}", "values": f"{first} {later} 0"})
             (query,) = (
                 target["prometheusTarget"]["query"]

@@ -9,6 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 from picflow.models import Event, EventFolder, Photo
 from picflow.photo_policy import policy_for_new_photo
+from processing.photo_import_telemetry import schedule_original_accepted
 from processing.services.enrollment import request_capture_metadata, request_generate_preview
 
 from ingestion.storage import ObjectIdentity
@@ -124,6 +125,7 @@ def publish_photo(
                 photo.pk, verified_source_etag=original.identity.etag_value
             )
         )
+    schedule_original_accepted(photo)
     return photo
 
 

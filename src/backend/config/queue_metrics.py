@@ -15,6 +15,7 @@ from django.db.models import Count, Exists, Max, Min, OuterRef, Q
 from django.utils import timezone
 from ingestion.models import ImportAttempt, ImportBatch, ImportItem
 from ingestion.services.imports import MAX_OPERATION_ATTEMPTS, _owner_is_eligible
+from picflow.models import PhotoArchiveJob
 from processing.models import EventProcessingRun, PhotoProcessingState, ProcessingJob
 from processing.services.worker_pool_state import BULK_IDENTITIES
 from selfie_search.models import FaceSearchTask, SelfieSearch, SelfieSearchJob
@@ -201,6 +202,18 @@ def _commerce(now: datetime) -> QueueSample:
     return _sample(email["count"] + payment["count"], oldest, success, now)
 
 
+def _archive(now: datetime) -> QueueSample:
+    ready = PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.QUEUED)
+    values = ready.aggregate(count=Count("pk"), oldest=Min("updated_at"))
+    success = (
+        PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.READY)
+        .order_by("-updated_at")
+        .values_list("updated_at", flat=True)
+        .first()
+    )
+    return _sample(values["count"], values["oldest"], success, now)
+
+
 def collect_queue_samples() -> dict[str, QueueSample]:
     """A failed queue omits only its own series; no failure becomes a healthy zero."""
     now = timezone.now()
@@ -212,6 +225,7 @@ def collect_queue_samples() -> dict[str, QueueSample]:
         ("photo", _photo),
         ("import", _import),
         ("commerce", _commerce),
+        ("photo_archive", _archive),
     ):
         try:
             with _observation_timeout():

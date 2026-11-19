@@ -58,7 +58,12 @@ class ArchiveJobTests(TestCase):
             ObjectMissing(),
         ]
 
-        call_command("run_archive_worker", once=True)
+        with (
+            patch("config.queue_events._notify") as notify,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            call_command("run_archive_worker", once=True)
+        notify.assert_not_called()
         job.refresh_from_db()
         assert job.status == PhotoArchiveJob.Status.FAILED
         storage.upload_archive.assert_not_called()
@@ -157,3 +162,63 @@ class ArchiveJobTests(TestCase):
         job.expires_at = timezone.now() + timedelta(hours=1)
         with self.assertRaisesMessage(StorageUnavailable, "Object storage is unavailable."):
             sign_archive_job(job)
+
+    @patch("picflow.archive_jobs.PrivateUploadStorage")
+    def test_success_reports_queue_segments_only_after_commit(self, storage_class) -> None:
+        job = self._job()
+        now = timezone.now()
+        PhotoArchiveJob.objects.filter(pk=job.pk).update(updated_at=now - timedelta(seconds=4))
+        storage_class.return_value.open_final.return_value = OpenedObject(
+            BytesIO(b"one"), 3, "image/jpeg"
+        )
+
+        with (
+            patch("config.queue_events._notify") as notify,
+            patch("picflow.archive_jobs.timezone.now", return_value=now),
+            patch(
+                "picflow.archive_jobs.monotonic_ns",
+                side_effect=[0, 2_000_000_000, 5_000_000_000],
+            ),
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                call_command("run_archive_worker", once=True)
+                job.refresh_from_db()
+                assert job.status == PhotoArchiveJob.Status.READY
+                notify.assert_not_called()
+
+            notify.assert_called_once_with(
+                "queue.task.completed",
+                {
+                    "queue": "photo_archive",
+                    "segments_ms": {
+                        "archive_wait": 4000,
+                        "zip_build": 2000,
+                        "storage_upload": 3000,
+                    },
+                },
+            )
+
+    def test_shared_queue_metrics_observe_only_claimable_work_and_latest_success(self) -> None:
+        from config.queue_metrics import collect_queue_samples
+
+        now = timezone.now()
+        oldest = self._job(scope="waiting:1")
+        self._job(scope="waiting:2")
+        running = self._job(scope="running")
+        failed = self._job(scope="failed")
+        ready = self._job(scope="ready")
+        PhotoArchiveJob.objects.filter(pk=oldest.pk).update(updated_at=now - timedelta(seconds=20))
+        PhotoArchiveJob.objects.filter(pk=running.pk).update(status=PhotoArchiveJob.Status.RUNNING)
+        PhotoArchiveJob.objects.filter(pk=failed.pk).update(status=PhotoArchiveJob.Status.FAILED)
+        PhotoArchiveJob.objects.filter(pk=ready.pk).update(
+            status=PhotoArchiveJob.Status.READY, updated_at=now
+        )
+
+        count, age, succeeded_at, observed_at = collect_queue_samples()["photo_archive"]
+        assert count == 2
+        assert age >= 20
+        assert succeeded_at == now.timestamp()
+        assert observed_at >= succeeded_at
+
+        PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.QUEUED).delete()
+        assert collect_queue_samples()["photo_archive"][:2] == (0, 0.0)

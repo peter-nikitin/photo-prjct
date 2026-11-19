@@ -8,9 +8,11 @@ from datetime import timedelta
 from functools import partial
 from hashlib import sha256
 from tempfile import TemporaryFile
+from time import monotonic_ns
 from uuid import UUID, uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
+from config.queue_events import notify_queue_completion
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -140,12 +142,14 @@ def process_next_archive() -> bool:
         )
         if job is None:
             return False
+        wait_ms = max(0, round((timezone.now() - job.updated_at).total_seconds() * 1000))
         job.status = PhotoArchiveJob.Status.RUNNING
         job.object_id = uuid4()
         job.save(update_fields=["status", "object_id", "updated_at"])
 
+    started_ns = monotonic_ns()
     try:
-        _build_and_upload(job)
+        built_ns = _build_and_upload(job)
     except (ArchiveSourceMissing, ArchiveSourceUnavailable, StorageUnavailable, OSError) as error:
         logger.warning(
             "archive preparation failed",
@@ -155,9 +159,18 @@ def process_next_archive() -> bool:
                 "archive_failure": type(error).__name__,
             },
         )
-        _finish(job, ready=False)
+        _finish(job)
     else:
-        _finish(job, ready=True)
+        built_ms = round((built_ns - started_ns) / 1_000_000)
+        elapsed_ms = round((monotonic_ns() - started_ns) / 1_000_000)
+        _finish(
+            job,
+            segments_ms={
+                "archive_wait": wait_ms,
+                "zip_build": built_ms,
+                "storage_upload": elapsed_ms - built_ms,
+            },
+        )
     return True
 
 
@@ -165,7 +178,7 @@ def _expired(job: PhotoArchiveJob) -> bool:
     return job.expires_at is not None and job.expires_at <= timezone.now()
 
 
-def _build_and_upload(job: PhotoArchiveJob) -> None:
+def _build_and_upload(job: PhotoArchiveJob) -> int:
     from commerce.original_delivery import record_archive_original_missing
 
     entries = []
@@ -194,7 +207,9 @@ def _build_and_upload(job: PhotoArchiveJob) -> None:
             for chunk in archive:
                 body.write(chunk)
         body.seek(0)
+        built_ns = monotonic_ns()
         storage.upload_archive(object_id=job.object_id, body=body, filename=job.filename)
+        return built_ns
 
 
 def _archive_storage() -> PrivateUploadStorage:
@@ -204,12 +219,19 @@ def _archive_storage() -> PrivateUploadStorage:
         raise StorageUnavailable() from None
 
 
-def _finish(job: PhotoArchiveJob, *, ready: bool) -> None:
+@transaction.atomic
+def _finish(job: PhotoArchiveJob, *, segments_ms: dict[str, int] | None = None) -> None:
+    ready = segments_ms is not None
     finished_at = timezone.now()
-    PhotoArchiveJob.objects.filter(
+    updated = PhotoArchiveJob.objects.filter(
         pk=job.pk, status=PhotoArchiveJob.Status.RUNNING, object_id=job.object_id
     ).update(
         status=PhotoArchiveJob.Status.READY if ready else PhotoArchiveJob.Status.FAILED,
         updated_at=finished_at,
         expires_at=finished_at + _RETENTION if ready else None,
     )
+    if updated and segments_ms is not None:
+        transaction.on_commit(
+            partial(notify_queue_completion, "photo_archive", segments_ms),
+            robust=True,
+        )

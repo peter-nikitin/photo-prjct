@@ -26,6 +26,7 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
     expressions = []
     idle_expressions = []
     for queue, segments in (
+        ("photo_archive", {"archive_wait": 6, "zip_build": 10, "storage_upload": 4}),
         ("gallery_search", {"matching_wait": 5, "matching_elapsed": 15}),
         (
             "photo_import_gallery",

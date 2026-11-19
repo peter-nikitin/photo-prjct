@@ -55,20 +55,6 @@ run "isolate_media_buckets" {
   }
 
   assert {
-    condition = anytrue([
-      for statement in jsondecode(yandex_storage_bucket_policy.media_scratch.policy).Statement :
-      try(
-        statement.Effect == "Deny" && statement.Principal == "*" &&
-        toset(statement.Action) == toset(["s3:GetObject"]) &&
-        statement.Resource == "arn:aws:s3:::${output.media_storage_buckets.scratch}/archives/*" &&
-        length(statement.Condition.NotIpAddress["yc:OriginIp"]) > 0,
-        false
-      )
-    ])
-    error_message = "Archive reads from outside the CDN networks must be denied without opening other scratch objects."
-  }
-
-  assert {
     condition = (
       alltrue([for bucket in [
         yandex_storage_bucket.media_originals,

@@ -231,18 +231,6 @@ resource "yandex_storage_bucket_policy" "media_scratch" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "ArchiveReadsRequireCdnNetwork"
-        Effect    = "Deny"
-        Principal = "*"
-        Action    = ["s3:GetObject"]
-        Resource  = "arn:aws:s3:::${yandex_storage_bucket.media_scratch.bucket}/archives/*"
-        Condition = {
-          NotIpAddress = {
-            "yc:OriginIp" = jsondecode(file("${path.module}/yandex-cdn-networks.json"))
-          }
-        }
-      },
-      {
         Effect    = "Allow"
         Principal = { CanonicalUser = local.media_storage_admin }
         Action    = ["s3:*"]

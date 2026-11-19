@@ -122,10 +122,10 @@ snapshots are `desktop-selfie-search-ready-single.png`, `mobile-selfie-search-re
 `desktop-order-paid-multi.png`, and `mobile-order-paid-multi.png`; the intentionally changed ready
 and paid Order baselines were refreshed.
 
-С 2026-11-19 кнопки архива отправляют форму POST. На существующем адресе скачивания
-сервер принимает только подготовку. Статус и действие скачивания открываются на отдельном
-случайном адресе. Шаблон статуса
-`src/backend/templates/ui/archive_status.html` используется для обоих сценариев.
+Кнопка архива показывает «Готовим архив, скоро начнётся скачивание» на исходном экране.
+Снимки `desktop-archive-preparing.png` и `mobile-archive-preparing.png` фиксируют это
+состояние после нажатия на кнопку в тестовой выдаче поиска. Браузерный тест затем
+подтверждает автоматическое скачивание и повторное использование готовой ссылки.
 
 On 2026-09-07, the production upload page added server-side Yandex Disk import. The deterministic
 desktop and 390px mobile `upload-imports` baselines cover empty, duplicates-only, active with the

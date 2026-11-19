@@ -1,6 +1,10 @@
 <form method="post" action="{{ action }}" data-archive-request>
   {% csrf_token %}
-  <button class="button" type="submit">{{ label }}</button>
-  <p role="alert" hidden>Не удалось начать подготовку архива. Попробуйте ещё раз.</p>
+  <button class="button" type="submit">
+    <span data-archive-label>{{ label }}</span>
+    <span class="archive-request-spinner" data-archive-spinner aria-hidden="true" hidden></span>
+    <span data-archive-pending hidden>Готовим архив, скоро начнётся скачивание</span>
+  </button>
+  <p role="alert" hidden>Не удалось подготовить архив. Попробуйте ещё раз.</p>
 </form>
 <noscript>Для подготовки архива включите JavaScript.</noscript>

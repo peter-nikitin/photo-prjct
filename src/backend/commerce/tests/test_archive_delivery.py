@@ -49,16 +49,16 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
 
     def test_paid_archive_audits_exact_items_when_accepting_request(self) -> None:
         created = self.client.post(self.archive_url())
-        self.assertEqual(created.status_code, 303)
-        status_url = created["Location"]
-        self.assertContains(self.client.get(status_url), "Готовим архив…")
+        self.assertEqual(created.status_code, 202)
+        status_url = created.json()["status_url"]
+        self.assertEqual(self.client.get(status_url).json(), {"status": "queued"})
         self.assertCountEqual(
             DownloadGrantAudit.objects.values_list("order_item_id", flat=True),
             self.order.items.values_list("pk", flat=True),
         )
 
         self.mark_ready()
-        self.assertContains(self.client.get(status_url), "Скачать архив")
+        self.assertEqual(self.client.get(status_url).json(), {"status": "ready"})
         download = f"{status_url}?download=1"
         with patch("picflow.archive_delivery.sign_archive_job", side_effect=StorageUnavailable):
             self.assertEqual(self.client.get(download).status_code, 503)
@@ -87,9 +87,9 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
         )
         self.client.cookies.pop("findme_purchase", None)
         response = self.client.post(grant_url)
-        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.status_code, 202)
         self.mark_ready()
-        download_url = f"{response['Location']}?download=1"
+        download_url = f"{response.json()['status_url']}?download=1"
         self.assertEqual(self.client.post(self.archive_url()).status_code, 404)
         revoke_order_access_grant(grant)
 
@@ -109,11 +109,11 @@ class PaidArchiveDeliveryTests(OrderViewFixture):
 
     def test_failed_archive_can_be_requested_again(self) -> None:
         created = self.client.post(self.archive_url())
-        self.assertEqual(created.status_code, 303)
+        self.assertEqual(created.status_code, 202)
         PhotoArchiveJob.objects.update(status=PhotoArchiveJob.Status.FAILED)
 
-        self.assertContains(self.client.get(created["Location"]), "Не удалось подготовить архив")
+        self.assertEqual(self.client.get(created.json()["status_url"]).json(), {"status": "failed"})
         retry = self.client.post(self.archive_url())
-        self.assertEqual(retry.status_code, 303)
-        self.assertNotEqual(retry["Location"], created["Location"])
-        self.assertContains(self.client.get(retry["Location"]), "Готовим архив…")
+        self.assertEqual(retry.status_code, 202)
+        self.assertNotEqual(retry.json()["status_url"], created.json()["status_url"])
+        self.assertEqual(self.client.get(retry.json()["status_url"]).json(), {"status": "queued"})

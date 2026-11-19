@@ -2,8 +2,7 @@ from collections.abc import Callable, Sequence
 from uuid import UUID
 
 from django.db import transaction
-from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
-from django.shortcuts import render
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.urls import reverse
 from django.views.decorators.http import require_GET
 from ingestion.storage import StorageUnavailable
@@ -36,9 +35,9 @@ def prepare_archive_response(
                 audit_request()
     except ValueError:
         return HttpResponse(status=503)
-    return HttpResponseRedirect(
-        reverse("photo_archive_status", kwargs={"public_id": job.public_id}),
-        status=303,
+    return JsonResponse(
+        {"status_url": reverse("photo_archive_status", kwargs={"public_id": job.public_id})},
+        status=202,
     )
 
 
@@ -53,19 +52,4 @@ def archive_status(request: HttpRequest, public_id: UUID) -> HttpResponse:
         except StorageUnavailable:
             return HttpResponse(status=503)
 
-    pending = job.status in (PhotoArchiveJob.Status.QUEUED, PhotoArchiveJob.Status.RUNNING)
-    status_url = reverse("photo_archive_status", kwargs={"public_id": public_id})
-    response = render(
-        request,
-        "ui/archive_status.html",
-        {
-            "pending": pending,
-            "ready": job.status == PhotoArchiveJob.Status.READY,
-            "status_url": status_url,
-            "yandex_metrika_counter_id": None,
-            "web_vitals_page": None,
-        },
-    )
-    if pending:
-        response["Refresh"] = "3"
-    return response
+    return JsonResponse({"status": job.status})

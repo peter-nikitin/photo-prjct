@@ -1196,11 +1196,11 @@ class PublicSelfieResultViewTests(TestCase):
             secure=True,
             HTTP_ORIGIN="https://testserver",
         )
-        self.assertEqual(response.status_code, 303)
-        status_url = response["Location"]
+        self.assertEqual(response.status_code, 202)
+        status_url = response.json()["status_url"]
         self.assertNotIn(token, status_url)
         pending = Client().get(status_url)
-        self.assertContains(pending, "Готовим архив…")
+        self.assertEqual(pending.json(), {"status": "queued"})
         self.assert_bearer_headers(pending)
 
         job = PhotoArchiveJob.objects.get()
@@ -1208,7 +1208,7 @@ class PublicSelfieResultViewTests(TestCase):
         job.expires_at = timezone.now() + timedelta(hours=1)
         job.save(update_fields=["status", "expires_at"])
         ready = self.client.get(status_url)
-        self.assertContains(ready, "Скачать архив")
+        self.assertEqual(ready.json(), {"status": "ready"})
 
         download_url = f"{status_url}?download=1"
         signed_url = "https://storage.example.test/archives/private.zip?signature=secret"
@@ -1234,7 +1234,7 @@ class PublicSelfieResultViewTests(TestCase):
         page = self.client.get(self.result_url(event=search.event, token=token), {"page": 2})
         self.assertContains(page, f'action="{archive_url}?page=2"')
         self.assertContains(page, "Скачать эту страницу")
-        self.assertEqual(self.client.post(f"{archive_url}?page=2").status_code, 303)
+        self.assertEqual(self.client.post(f"{archive_url}?page=2").status_code, 202)
         job = PhotoArchiveJob.objects.get()
         self.assertEqual(job.page, 2)
         self.assertEqual([entry["photo_id"] for entry in job.entries], [p.pk for p in photos[100:]])

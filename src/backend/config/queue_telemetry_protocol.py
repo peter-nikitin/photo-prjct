@@ -3,7 +3,8 @@
 CHANNEL = "queue_telemetry"
 COMPLETED_EVENT = "queue.task.completed"
 BACKLOG_CHANGED_EVENT = "queue.backlog.changed"
-VERSION = 1
+COMPLETION_VERSION = 1
+BACKLOG_VERSION = 2
 
 
 GALLERY_QUEUE = "photo_import_gallery"

@@ -5,12 +5,13 @@ cd "${DEPLOY_ROOT:-/opt/photo-prjct}"
 compose() { docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml "$@"; }
 if [ "$DEPLOY_WEB" = true ]; then
     printf '%s\n' 'DEPLOY_STAGE=pull-images'
-    compose pull db web gallery-search-worker nginx certbot-renew
+    compose pull db web gallery-search-worker archive-worker nginx certbot-renew
     printf '%s\n' 'DEPLOY_STAGE=commerce-check'
     compose run --rm --no-deps -T --entrypoint python web manage.py check --tag commerce_runtime
     printf '%s\n' 'DEPLOY_STAGE=database'
     compose up -d --wait db
     compose stop --timeout 0 gallery-search-worker
+    compose stop archive-worker
     compose stop web
     printf '%s\n' 'DEPLOY_STAGE=migrate'
     compose run --rm --no-deps -T --entrypoint python web manage.py migrate --noinput
@@ -21,6 +22,7 @@ if [ "$DEPLOY_WEB" = true ]; then
     printf '%s\n' 'DEPLOY_STAGE=web'
     compose up -d --wait web
     compose up -d --no-deps gallery-search-worker
+    compose up -d --no-deps archive-worker
     compose up -d --wait --force-recreate --no-deps nginx
     compose up -d certbot-renew
     if ! compose up -d --no-deps queue-telemetry; then

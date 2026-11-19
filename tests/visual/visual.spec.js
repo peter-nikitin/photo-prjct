@@ -961,11 +961,12 @@ test('archive actions preserve the page boundary and paid result denial', async 
     await page.goto(path);
     const action = page.locator('.selfie-search-archive-action, .order-archive-action');
     await expect(action).toHaveCount(1);
-    await expect(action.getByRole('link')).toHaveText(expected.label);
+    await expect(action.getByRole('button')).toHaveText(expected.label);
+    await expect(action.locator('form')).toHaveAttribute('method', 'post');
     if (expected.helper) {
-      await expect(action.locator('p')).toHaveText(expected.helper);
+      await expect(action.locator(':scope > p')).toHaveText(expected.helper);
     } else {
-      await expect(action.locator('p')).toHaveCount(0);
+      await expect(action.locator(':scope > p')).toHaveCount(0);
     }
     if (expected.pages) {
       await expect(page.locator('.gallery-pagination')).toHaveCount(1);
@@ -977,14 +978,39 @@ test('archive actions preserve the page boundary and paid result denial', async 
 
   await page.goto('/__visual__/event/selfie-search/ready/paid/');
   await expect(page.locator('.selfie-search-archive-action')).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Скачать все' })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Скачать эту страницу' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Скачать все' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Скачать эту страницу' })).toHaveCount(0);
 
   await page.goto('/__visual__/order/paid/multi/');
   await expect(page.locator('.order-summary dt').filter({ hasText: 'Фотографий' }).locator('..')).toHaveText(
     'Фотографий3',
   );
   await expect(page.locator('.order-summary-total')).toHaveText('Итого900 ₽');
+});
+
+test('archive form can submit from a bearer document without exposing its URL', async ({ page }) => {
+  const source = '/__visual__/event/selfie-search/ready/single/';
+  await page.route(`**${source}`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: { ...response.headers(), 'referrer-policy': 'no-referrer' },
+    });
+  });
+  await page.goto(source);
+  const form = page.locator('[data-archive-request]');
+  const action = await form.getAttribute('action');
+  const target = new URL(action, page.url());
+  const statusPath = '/__visual__/catalog/empty/';
+  await page.route(target.href, async (route) => {
+    const headers = await route.request().allHeaders();
+    expect(route.request().method()).toBe('POST');
+    expect(headers.origin).toBe(target.origin);
+    expect(headers.referer).toBe(`${target.origin}/`);
+    await route.fulfill({ status: 303, headers: { location: statusPath } });
+  });
+  await form.getByRole('button').click();
+  await expect(page).toHaveURL(new URL(statusPath, target.origin).href);
 });
 
 test('mobile archive action fills the result width and paid Order action hierarchy is explicit', async ({

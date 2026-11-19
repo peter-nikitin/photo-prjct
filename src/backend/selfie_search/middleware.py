@@ -12,9 +12,11 @@ from django.utils.cache import patch_vary_headers
 
 _PUBLIC_BEARER_PATH = re.compile(r"^/events/[^/]+/selfie-search/[^/]+(?:/|$)")
 _COMMERCE_ORDER_BEARER_PATH = re.compile(r"^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$)")
+_ARCHIVE_BEARER_PATH = re.compile(r"^/archives/")
 _READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
 _SANITIZED_BEARER_PATH = "/events/<event>/selfie-search/<bearer>/"
 _SANITIZED_COMMERCE_ORDER_BEARER_PATH = "/orders/<order>/access/<bearer>/"
+_SANITIZED_ARCHIVE_BEARER_PATH = "/archives/<bearer>/"
 
 
 class PublicSelfieBearerProtectionMiddleware:
@@ -26,7 +28,8 @@ class PublicSelfieBearerProtectionMiddleware:
     def __call__(self, request: HttpRequest) -> HttpResponseBase:
         is_selfie_bearer = _PUBLIC_BEARER_PATH.match(request.path_info) is not None
         is_commerce_bearer = _COMMERCE_ORDER_BEARER_PATH.match(request.path_info) is not None
-        if not is_selfie_bearer and not is_commerce_bearer:
+        is_archive_bearer = _ARCHIVE_BEARER_PATH.match(request.path_info) is not None
+        if not (is_selfie_bearer or is_commerce_bearer or is_archive_bearer):
             return self.get_response(request)
 
         original_path = request.path
@@ -34,13 +37,15 @@ class PublicSelfieBearerProtectionMiddleware:
         original_path_info_attribute = request.path_info
         # URL resolution uses path_info. BaseHandler and CsrfViewMiddleware log path,
         # so redact only the latter before an inner handler can turn an exception into a 4xx/5xx.
-        sanitized_path = (
-            _SANITIZED_BEARER_PATH if is_selfie_bearer else _SANITIZED_COMMERCE_ORDER_BEARER_PATH
-        )
         if is_selfie_bearer:
+            sanitized_path = _SANITIZED_BEARER_PATH
             request._is_public_selfie_bearer_request = True
-        else:
+        elif is_commerce_bearer:
+            sanitized_path = _SANITIZED_COMMERCE_ORDER_BEARER_PATH
             request._is_commerce_order_bearer_request = True
+        else:
+            sanitized_path = _SANITIZED_ARCHIVE_BEARER_PATH
+            request._is_archive_bearer_request = True
         is_allowed_post = _is_allowed_bearer_post(request)
         if request.method not in _READ_ONLY_METHODS and not is_allowed_post:
             request.path = sanitized_path
@@ -68,6 +73,8 @@ class PublicSelfieBearerProtectionMiddleware:
             request.path_info = _SANITIZED_BEARER_PATH
         elif getattr(request, "_is_commerce_order_bearer_request", False):
             request.path_info = _SANITIZED_COMMERCE_ORDER_BEARER_PATH
+        elif getattr(request, "_is_archive_bearer_request", False):
+            request.path_info = _SANITIZED_ARCHIVE_BEARER_PATH
 
     def process_exception(
         self, request: HttpRequest, _exception: Exception
@@ -75,6 +82,7 @@ class PublicSelfieBearerProtectionMiddleware:
         if not (
             getattr(request, "_is_public_selfie_bearer_request", False)
             or getattr(request, "_is_commerce_order_bearer_request", False)
+            or getattr(request, "_is_archive_bearer_request", False)
         ):
             return None
         return _protect_bearer_response(HttpResponse(status=500))
@@ -99,6 +107,8 @@ def _is_allowed_bearer_post(request: HttpRequest) -> bool:
         return resolve(request.path_info).view_name in {
             "selfie_search:feedback_selfie",
             "commerce:grant_order_resend",
+            "commerce:grant_order_archive",
+            "selfie_search:result_archive",
         }
     except Resolver404:
         return False

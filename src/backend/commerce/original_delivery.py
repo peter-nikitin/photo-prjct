@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from functools import partial
 from typing import Literal, cast
 
 from django.core.paginator import InvalidPage, Page
@@ -36,15 +35,17 @@ class PurchasedOriginalDownload:
 
 
 @dataclass(frozen=True)
-class PurchasedOrderArchive:
-    entries: tuple[ArchiveEntry, ...] = field(repr=False)
-    page: Page[OrderItem] = field(repr=False)
-
-
-@dataclass(frozen=True)
 class _Authorization:
     source: str
     access_grant: OrderAccessGrant | None
+
+
+@dataclass(frozen=True)
+class PurchasedOrderArchive:
+    entries: tuple[ArchiveEntry, ...] = field(repr=False)
+    page: Page[OrderItem] = field(repr=False)
+    authorization: _Authorization = field(repr=False)
+    order_id: int
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ def authorize_purchased_archive(
     order_access_signing_secret: str | bytes | None,
     now: datetime | None = None,
 ) -> PurchasedOrderArchive:
-    """Authorize and audit one paid Order page before any archive bytes begin."""
+    """Authorize one exact paid Order page without recording a delivery."""
     if order.pk is None:
         raise PurchasedOriginalDenied()
     current_time = now or timezone.now()
@@ -154,19 +155,7 @@ def authorize_purchased_archive(
             if len(page.object_list) < 2:
                 raise PurchasedOriginalDenied()
 
-            entries = tuple(
-                _archive_entry_for_item(order_item=item, now=current_time)
-                for item in page.object_list
-            )
-            for item in page.object_list:
-                DownloadGrantAudit.objects.create(
-                    order_item=item,
-                    authorization_source=authorization.source,
-                    access_grant=authorization.access_grant,
-                )
-            if current_order.first_customer_access_at is None:
-                current_order.first_customer_access_at = current_time
-                current_order.save(update_fields=["first_customer_access_at"])
+            entries = tuple(_archive_entry_for_item(order_item=item) for item in page.object_list)
     except _ExactOriginalMissing as failure:
         _record_missing_original(
             order_id=failure.order_id,
@@ -174,7 +163,32 @@ def authorize_purchased_archive(
             now=current_time,
         )
         raise PurchasedOriginalUnavailable() from None
-    return PurchasedOrderArchive(entries=entries, page=page)
+    return PurchasedOrderArchive(
+        entries=entries, page=page, authorization=authorization, order_id=current_order.pk
+    )
+
+
+@transaction.atomic
+def audit_purchased_archive_request(archive: PurchasedOrderArchive) -> None:
+    DownloadGrantAudit.objects.bulk_create(
+        [
+            DownloadGrantAudit(
+                order_item=item,
+                authorization_source=archive.authorization.source,
+                access_grant=archive.authorization.access_grant,
+            )
+            for item in archive.page.object_list
+        ]
+    )
+    Order.objects.filter(pk=archive.order_id, first_customer_access_at__isnull=True).update(
+        first_customer_access_at=timezone.now()
+    )
+
+
+def record_archive_original_missing(order_item_id: int) -> None:
+    item = OrderItem.objects.filter(pk=order_item_id).first()
+    if item is not None:
+        _record_missing_original(order_id=item.order_id, order_item_id=item.pk, now=timezone.now())
 
 
 def _authorize_order(
@@ -243,7 +257,7 @@ def _sign_exact_original(
     return signed_url
 
 
-def _archive_entry_for_item(*, order_item: OrderItem, now: datetime) -> ArchiveEntry:
+def _archive_entry_for_item(*, order_item: OrderItem) -> ArchiveEntry:
     photo = order_item.photo
     content_type = photo.original_content_type
     photo_id = photo.pk
@@ -268,12 +282,6 @@ def _archive_entry_for_item(*, order_item: OrderItem, now: datetime) -> ArchiveE
         original_key=photo.original_key,
         original_size=photo.original_size,
         original_content_type=cast(Literal["image/jpeg", "image/png"], content_type),
-        on_source_missing=partial(
-            _record_missing_original,
-            order_id=order_item.order_id,
-            order_item_id=order_item.pk,
-            now=now,
-        ),
     )
 
 

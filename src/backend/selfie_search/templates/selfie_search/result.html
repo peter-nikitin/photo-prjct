@@ -32,7 +32,7 @@
         <p class="selfie-search-count">Найдено фотографий: {{ search.matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
         {% if archive_action %}
           <div class="selfie-search-archive-action">
-            <a class="button" href="{{ archive_url }}">{{ archive_action.label }}</a>
+            {% include "ui/archive_form.html" with action=archive_url label=archive_action.label %}
             {% if archive_action.helper_text %}<p>{{ archive_action.helper_text }}</p>{% endif %}
           </div>
         {% endif %}
@@ -142,6 +142,7 @@
   </article>
 {% endblock %}
 {% block extra_js %}
+  {% if archive_action %}<script src="{% static 'ui/archive-download.js' %}" defer></script>{% endif %}
   <script src="{% static 'ui/glightbox.min.js' %}"></script>
   <script src="{% static 'ui/event-gallery.js' %}"></script>
   {% if gallery_result_items %}<script src="{% static 'ui/search-result-feedback.js' %}"></script>{% endif %}

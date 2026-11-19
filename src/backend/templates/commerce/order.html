@@ -62,7 +62,7 @@
         {% if order_presentation.status == 'paid' %}
           {% if archive_action %}
             <div class="order-archive-action">
-              <a class="button" href="{{ archive_url }}">{{ archive_action.label }}</a>
+              {% include "ui/archive_form.html" with action=archive_url label=archive_action.label %}
               {% if archive_action.helper_text %}<p>{{ archive_action.helper_text }}</p>{% endif %}
             </div>
           {% endif %}
@@ -99,5 +99,6 @@
   </article>
 {% endblock %}
 {% block extra_js %}
+  {% if archive_action %}<script src="{% static 'ui/archive-download.js' %}" defer></script>{% endif %}
   <script src="{% static 'ui/commerce-purchase.js' %}" defer></script>
 {% endblock %}

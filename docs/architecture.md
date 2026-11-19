@@ -215,6 +215,16 @@ Callback распознавания селфи сохраняет вектор �
 [0031](adr/0031-use-orders-and-adapters-for-paid-original-delivery.md) и
 [0047](adr/0047-separate-order-payment-from-new-cart-selection.md).
 
+По запросу покупателя или владельца ссылки на бесплатный результат Django ставит подготовку
+ZIP для открытой страницы в PostgreSQL. Отдельный `archive-worker` собирает архив и публикует
+его в закрытом временном бакете под префиксом `archives/`. Django проверяет доступ при приёме
+задания. Случайная ссылка на статус даёт возможность получить короткую подписанную ссылку CDN
+до истечения срока архива. При промахе кеша CDN читает ZIP из Object Storage. Готовые архивы
+доступны до 24 часов, исходные ZIP удаляются по lifecycle через один день.
+Для выпуска нужны права и lifecycle из Terraform, правило CDN и место на VM для одного
+временного ZIP объёмом до 5 ГиБ. Проверка и откат описаны в
+[ADR 0071](adr/0071-prepare-photo-archives-in-background.md).
+
 <a id="security-privacy-and-legal-boundaries"></a>
 <a id="accepted-constraints"></a>
 ## Границы доступа и данных

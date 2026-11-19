@@ -100,9 +100,13 @@ class Cloud:
 
 
 def rules(
-    bucket: str, storage_id: str, web_id: str, token: str, header: str
+    bucket: str, archive_bucket: str, storage_id: str, web_id: str, token: str, header: str
 ) -> list[dict[str, Any]]:
+    for name in (bucket, archive_bucket):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", name) or ".." in name:
+            raise ConfigurationError("invalid_bucket")
     bucket_path = bucket.replace(".", r"\.")
+    archive_bucket_path = archive_bucket.replace(".", r"\.")
     # The edge pattern must fit the provider's limit with the production bucket name.
     # Only the cover prefix is public; S3 also enforces each object's ACL.
     cover = rf"^/{bucket_path}/event-covers/[a-f0-9-]{{36}}(\.[a-z0-9]{{1,10}})?$"
@@ -110,7 +114,10 @@ def rules(
     original = (
         r"^/delivery/originals/[0-9a-f]{32}/(inline|findme-photo-[A-Za-z0-9_-]{1,32}\.(jpg|png))$"
     )
-    if len(cover) > 100 or len(preview) > 100:
+    archive = (
+        rf"^/{archive_bucket_path}/archives/[a-f0-9]{{8}}(-[a-f0-9]{{4}}){{3}}-[a-f0-9]{{12}}\.zip$"
+    )
+    if max(len(cover), len(preview), len(archive)) > 100:
         raise ConfigurationError("bucket_name_exceeds_rule_pattern_limit")
     cache = {
         "disableCache": {"enabled": True, "value": False},
@@ -156,6 +163,33 @@ def rules(
             },
         ),
         rule(
+            "private-archives",
+            archive,
+            "40",
+            storage_id,
+            {
+                **storage_options,
+                **private,
+                "edgeCacheSettings": {
+                    "enabled": True,
+                    "value": {"customValues": {"200": "600", "206": "600"}},
+                },
+                "slice": {"enabled": True, "value": True},
+                "cacheHttpHeaders": {
+                    "enabled": True,
+                    "value": [
+                        "Content-Disposition",
+                        "Content-Type",
+                        "Content-Length",
+                        "Content-Range",
+                        "Accept-Ranges",
+                        "ETag",
+                    ],
+                },
+                "staticHeaders": {"enabled": True, "value": {"Cache-Control": "private, no-store"}},
+            },
+        ),
+        rule(
             "deny-other-paths",
             "^/.*",
             "9999",
@@ -196,7 +230,7 @@ def wait(operation: dict[str, Any]) -> None:
 
 
 def configure(
-    cloud: Cloud, bucket: str, credentials: tuple[str, str] | None = None
+    cloud: Cloud, bucket: str, archive_bucket: str, credentials: tuple[str, str] | None = None
 ) -> dict[str, Any]:
     resource_path = f"/resources/{RESOURCE}"
     resource = cloud.request("GET", resource_path)
@@ -207,7 +241,7 @@ def configure(
         raise ConfigurationError("cdn_certificate_not_ready")
 
     existing = cloud.request("GET", f"/rules?{urlencode({'resourceId': RESOURCE})}")
-    placeholders = rules(bucket, "0", "0", "", "")
+    placeholders = rules(bucket, archive_bucket, "0", "0", "", "")
     managed = {rule["name"] for rule in placeholders}
     current: dict[str, str] = {}
     for rule_state in existing.get("rules", []):
@@ -241,6 +275,7 @@ def configure(
                         "public-covers": STORAGE,
                         "private-previews": STORAGE,
                         "private-originals": WEB,
+                        "private-archives": STORAGE,
                     }.get(item["name"]),
                     "signed": item["options"].get("secureKey", {}).get("enabled", False),
                     "action": "update" if item["name"] in current else "create",
@@ -249,7 +284,7 @@ def configure(
             ],
         }
 
-    cover, preview, original, denied = rules(bucket, storage_id, web_id, *credentials)
+    *delivery_rules, denied = rules(bucket, archive_bucket, storage_id, web_id, *credentials)
     put_rule(cloud, current, denied)
     root_options = {
         "secureKey": {"enabled": False},
@@ -277,7 +312,7 @@ def configure(
             },
         )
     )
-    for item in (cover, preview, original):
+    for item in delivery_rules:
         put_rule(cloud, current, item)
     return {"mode": "applied", "cdn": CNAME, "resource": RESOURCE}
 
@@ -315,13 +350,12 @@ def main() -> int:
         description="Configure direct media delivery on img.findme-photo.ru"
     )
     parser.add_argument("--bucket", required=True)
+    parser.add_argument("--archive-bucket", required=True)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
-        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", args.bucket):
-            raise ConfigurationError("invalid_bucket")
         credentials = projection() if args.apply else None
-        result = configure(Cloud(), args.bucket, credentials)
+        result = configure(Cloud(), args.bucket, args.archive_bucket, credentials)
     except ConfigurationError as error:
         print(f"configure-media-cdn: {error}", file=sys.stderr)
         return 2

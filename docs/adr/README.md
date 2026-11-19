@@ -58,7 +58,7 @@ ADR фиксирует долговременный выбор, причины, 
 | 0031 | [Use orders and adapters for paid original delivery](0031-use-orders-and-adapters-for-paid-original-delivery.md) | Accepted |
 | 0032 | [Reconcile code-owned feature flags at startup](0032-reconcile-code-owned-feature-flags-at-startup.md) | Accepted |
 | 0033 | [Keep durable knowledge and test executable contracts](0033-keep-durable-knowledge-test-executable-contracts.md) | Superseded |
-| 0034 | [Stream page-scoped photo archives through Django](0034-stream-page-scoped-photo-archives-through-django.md) | Accepted |
+| 0034 | [Stream page-scoped photo archives through Django](0034-stream-page-scoped-photo-archives-through-django.md) | Superseded |
 | 0035 | [Use Django-polled Yandex Disk import](0035-use-django-polled-yandex-disk-import.md) | Accepted |
 | 0036 | [Issue direct gallery small-preview capabilities](0036-issue-direct-gallery-small-preview-capabilities.md) | Superseded |
 | 0037 | [Use a gallery-media read projection](0037-use-gallery-media-read-projection.md) | Accepted |
@@ -91,3 +91,4 @@ ADR фиксирует долговременный выбор, причины, 
 | 0068 | [Разделить оригиналы, медиа мероприятий и временные файлы](0068-separate-originals-event-media-and-operational-storage.md) | Accepted |
 | 0069 | [Выдавать готовые файлы через CDN без imgproxy](0069-serve-media-through-cdn-without-imgproxy.md) | Accepted |
 | 0070 | [Расширять поиск по лицу от прямых совпадений](0070-expand-face-search-from-direct-matches.md) | Accepted |
+| 0071 | [Собирать архивы фотографий в фоне](0071-prepare-photo-archives-in-background.md) | Accepted |

@@ -32,12 +32,14 @@ def test_release_stops_old_search_owners_before_schema_and_starts_executor(tmp_p
     assert "manage.py check --tag commerce_runtime" in calls
     assert calls.index("manage.py check --tag commerce_runtime") < calls.index("up -d --wait db")
     assert "up -d --wait db" in calls
-    assert "pull db web gallery-search-worker nginx certbot-renew" in calls
+    assert "pull db web gallery-search-worker archive-worker nginx certbot-renew" in calls
     assert calls.index("stop --timeout 0 gallery-search-worker") < calls.index("stop web")
     assert calls.index("stop web") < calls.index("manage.py migrate")
     assert calls.index("manage.py migrate") < calls.index("manage.py sync_feature_flags")
     assert calls.index("manage.py sync_feature_flags") < calls.index("up -d --wait web")
     assert calls.index("up -d --wait web") < calls.index("up -d --no-deps gallery-search-worker")
+    assert calls.index("stop archive-worker") < calls.index("manage.py migrate")
+    assert calls.index("manage.py migrate") < calls.index("up -d --no-deps archive-worker")
     assert "--wait gallery-search-worker" not in calls
     assert "up -d --wait --force-recreate --no-deps nginx" in calls
     assert "photo-worker" not in calls

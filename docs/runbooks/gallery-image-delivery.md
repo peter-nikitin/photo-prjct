@@ -1,23 +1,27 @@
-# Выпуск CDN изображений
+# Выпуск CDN изображений и архивов
 
-Схема доставки описана в [ADR 0069](../adr/0069-serve-media-through-cdn-without-imgproxy.md).
+Схемы доставки описаны в [ADR 0069](../adr/0069-serve-media-through-cdn-without-imgproxy.md) и
+[ADR 0071](../adr/0071-prepare-photo-archives-in-background.md).
 Переключение выполняется отдельно от обычного Deploy.
 
 ## Подготовка
 
-1. В Django Admin установить `gallery-cdn-images` и `event-cover-cdn-images` в `off`.
+1. В Django Admin отключить флаги для изменяемых маршрутов. Для CDN изображений используются
+   `gallery-cdn-images` и `event-cover-cdn-images`, для архивов — `bulk-photo-download`.
 2. Выпустить проверенный коммит приложения через Deploy. Проверить обычную выдачу фото и статус
    приложения. Для web нужна проекция `IMAGE_ORIGIN_HEADER_SECRET` из Lockbox.
 3. Проверить каталог и профиль `yc`, ресурс `img.findme-photo.ru`, его CNAME и готовый
-   сертификат Certificate Manager. Взять точное имя бакета `EVENT_MEDIA_S3_BUCKET` из
-   настройки приложения.
+   сертификат Certificate Manager. Взять точные имена бакетов `EVENT_MEDIA_S3_BUCKET` и
+   `OPERATIONAL_S3_BUCKET` из настроек приложения. До проверки архива применить политику
+   закрытого операционного бакета и lifecycle префикса `archives/`.
 
 ## Применение конфигурации
 
 План без изменений:
 
 ```sh
-.venv/bin/python deploy/configure-media-cdn.py --bucket "$EVENT_MEDIA_S3_BUCKET"
+.venv/bin/python deploy/configure-media-cdn.py \
+  --bucket "$EVENT_MEDIA_S3_BUCKET" --archive-bucket "$OPERATIONAL_S3_BUCKET"
 ```
 
 После проверки плана применить конфигурацию с получением секретов из Lockbox:
@@ -25,7 +29,8 @@
 ```sh
 .venv/bin/python scripts/run-with-environment-secrets.py \
   --consumer media-cdn --identity yc -- \
-  .venv/bin/python deploy/configure-media-cdn.py --bucket "$EVENT_MEDIA_S3_BUCKET" --apply
+  .venv/bin/python deploy/configure-media-cdn.py \
+  --bucket "$EVENT_MEDIA_S3_BUCKET" --archive-bucket "$OPERATIONAL_S3_BUCKET" --apply
 ```
 
 Убедиться, что CDN продолжает обслуживать HTTPS на прежнем домене. Дождаться распространения
@@ -70,3 +75,30 @@ CDN задаёт годовой `max-age` публичным обложкам. �
 прогретой подписанной ссылке с подходящим `ETag` и отказ на прогретой копии при
 просроченной подписи. Для проверки `ETag` оригинала выберите файл, который CDN ещё не
 закешировал со старыми заголовками.
+
+
+## Проверка ZIP-архивов
+
+1. Включить `bulk-photo-download` для staff и подготовить тестовый архив размером более
+   10 МБ. Повторить для бесплатной выдачи и оплаченного заказа. Отдельно проверить, что
+   запрос без права доступа к исходной странице не создаёт задание.
+2. Выполнить подписанный `GET` через CDN. Проверить `200`, корректный ZIP, имя файла в
+   `Content-Disposition` и `Cache-Control: private, no-store`. Для проверки заголовков
+   сохранить их из ответа на `GET`, поскольку подпись запроса привязана к HTTP-методу.
+3. Получить новую подпись того же архива, повторить `GET` и проверить `Cache-Status: HIT`
+   с прежним `Content-Disposition`. Проверить `Range` на холодном и на прогретом кеше.
+   Ожидаются `206`, корректный `Content-Range` и запрошенные байты. Правило
+   `private-archives` кеширует ответы `200` и `206` на 600 секунд и включает загрузку
+   крупных объектов сегментами. Подпись URL не входит в ключ кеша.
+4. Проверить отказ без токена и с токеном по истечении срока, в том числе после прогрева
+   кеша. Для тестового объекта повторить запрос к Object Storage с параметрами
+   выданной подписи вне сети CDN. Политика бакета должна отклонить запрос.
+   Отдельно проверить, что соседний ключ под `uploads/` недоступен через CDN.
+5. После проверки включить `bulk-photo-download`. При откате перевести флаг в `off`.
+   Ранее выданные ссылки CDN сохраняют доступ до истечения подписи. Подписанные URL и
+   содержимое архивов не должны попадать в логи выпуска.
+
+Параметры правила и поведение токенов описаны в документации Yandex Cloud.
+[Параметры правила](https://yandex.cloud/en/docs/cdn/api-ref/ResourceRules/create),
+[кеширование](https://yandex.cloud/en/docs/cdn/concepts/caching),
+[токены доступа](https://yandex.cloud/en/docs/cdn/concepts/secure-tokens).

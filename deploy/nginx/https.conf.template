@@ -6,6 +6,7 @@ map $uri $selfie_search_access_client_address {
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
     ~^/orders/[^/]+/download/$ "-";
     ~^/delivery/originals/ "-";
+    ~^/archives/ "-";
 }
 
 map $uri $selfie_search_access_remote_user {
@@ -14,6 +15,7 @@ map $uri $selfie_search_access_remote_user {
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
     ~^/orders/[^/]+/download/$ "-";
     ~^/delivery/originals/ "-";
+    ~^/archives/ "-";
 }
 
 map $uri $selfie_search_access_request {
@@ -23,6 +25,7 @@ map $uri $selfie_search_access_request {
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "$request_method <order-access>";
     ~^/orders/[^/]+/download/$ "$request_method <order-archive>";
     ~^/delivery/originals/ "$request_method <media-original>";
+    ~^/archives/ "$request_method <photo-archive>";
 }
 
 map $uri $selfie_search_access_referrer {
@@ -31,6 +34,7 @@ map $uri $selfie_search_access_referrer {
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
     ~^/orders/[^/]+/download/$ "-";
     ~^/delivery/originals/ "-";
+    ~^/archives/ "-";
 }
 
 map $uri $selfie_search_access_user_agent {
@@ -39,6 +43,7 @@ map $uri $selfie_search_access_user_agent {
     ~^/orders/[^/]+/access/[^/]+/[^/]+(?:/|$) "-";
     ~^/orders/[^/]+/download/$ "-";
     ~^/delivery/originals/ "-";
+    ~^/archives/ "-";
 }
 
 log_format selfie_search_safe '$selfie_search_access_client_address - $selfie_search_access_remote_user [$time_local] '
@@ -81,7 +86,7 @@ server {
     }
 
     # Purchase-browser archive URLs contain a public Order number. Keep redirects private.
-    location ~ ^/orders/[^/]+/download/$ {
+    location ~ ^/(?:orders/[^/]+/download/$|archives/) {
         error_log /dev/null emerg;
 
         add_header Cache-Control "private, no-store" always;
@@ -211,7 +216,7 @@ server {
     }
 
     # Purchase-browser archives retain the same private boundary without changing other traffic.
-    location ~ ^/orders/[^/]+/download/$ {
+    location ~ ^/(?:orders/[^/]+/download/$|archives/) {
         error_log /dev/null emerg;
 
         proxy_hide_header Cache-Control;

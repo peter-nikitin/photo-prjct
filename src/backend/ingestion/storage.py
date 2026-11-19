@@ -3,13 +3,16 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Literal, Protocol, cast
+from typing import Any, BinaryIO, Literal, Protocol, cast
+from uuid import UUID
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from django.conf import settings
 from django.utils import timezone
+from django.utils.http import content_disposition_header
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _INCOMING_KEY = re.compile(rf"incoming/{_UUID}/{_UUID}")
@@ -23,6 +26,7 @@ _PREVIEW_FINAL_KEY = re.compile(
 _ETAG = re.compile(r'"([^"\r\n]+)"')
 _ATTACHMENT_FILENAME = re.compile(r"findme-photo-[A-Za-z0-9_-]{1,32}\.(?:jpg|png)")
 _ACCEPTED_PREVIEW_MAX_TTL_SECONDS = 21_600
+_ARCHIVE_FILENAME = re.compile(r"findme-photo-[\w-]+\.zip")
 
 
 class _S3Client(Protocol):
@@ -33,6 +37,8 @@ class _S3Client(Protocol):
     def head_object(self, **kwargs: Any) -> dict[str, Any]: ...
 
     def get_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def upload_fileobj(self, **kwargs: Any) -> None: ...
 
     def copy_object(self, **kwargs: Any) -> dict[str, Any]: ...
 
@@ -189,6 +195,22 @@ class PrivateUploadStorage:
         except (BotoCoreError, ClientError, TypeError):
             raise StorageUnavailable() from None
         return url
+
+    def upload_archive(self, *, object_id: UUID, body: BinaryIO, filename: str) -> None:
+        validate_archive_filename(filename)
+        try:
+            self._client.upload_fileobj(
+                Fileobj=body,
+                Bucket=self._operational_bucket,
+                Key=archive_object_key(object_id),
+                ExtraArgs={
+                    "ContentType": "application/zip",
+                    "ContentDisposition": content_disposition_header(True, filename),
+                },
+                Config=TransferConfig(use_threads=False, preferred_transfer_client="classic"),
+            )
+        except (BotoCoreError, ClientError):
+            raise StorageUnavailable() from None
 
     def sign_accepted_preview(self, *, key: str, expires_in: int) -> str:
         """Locally sign one page-authorized final preview derivative."""
@@ -412,6 +434,21 @@ def _validate_managed_key(key: str) -> None:
         _INCOMING_KEY.fullmatch(key) is None and _FINAL_KEY.fullmatch(key) is None
     ):
         raise ValueError("invalid managed object key")
+
+
+def archive_object_key(object_id: UUID) -> str:
+    if not isinstance(object_id, UUID):
+        raise ValueError("invalid archive object identifier")
+    return f"archives/{object_id}.zip"
+
+
+def validate_archive_filename(filename: str) -> None:
+    if (
+        not isinstance(filename, str)
+        or len(filename) > 300
+        or _ARCHIVE_FILENAME.fullmatch(filename) is None
+    ):
+        raise ValueError("invalid archive attachment filename")
 
 
 def validate_attachment_filename(filename: str) -> None:

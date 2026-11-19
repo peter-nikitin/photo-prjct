@@ -474,6 +474,10 @@
     margin-inline: -2px;
   }
 
+  .selfie-search-archive-action form {
+    justify-self: stretch;
+  }
+
   .selfie-search .button,
   .bib-search .button,
   .selfie-search-terminal-actions > .button,

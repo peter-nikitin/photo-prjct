@@ -3,6 +3,7 @@
 import json
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
 
@@ -10,9 +11,10 @@ from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metri
 
 from config.queue_telemetry_protocol import (
     BACKLOG_CHANGED_EVENT,
+    BACKLOG_VERSION,
     COMPLETED_EVENT,
+    COMPLETION_VERSION,
     PHOTO_IMPORT_QUEUES,
-    VERSION,
     PhotoImportBacklogs,
 )
 
@@ -21,6 +23,7 @@ MAX_QUEUES = 32
 MAX_SEGMENTS = 16
 MAX_SEGMENT_MS = 2**31 - 1
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+_PHOTO_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -37,17 +40,15 @@ def _decode(payload: str) -> dict[str, Any] | None:
         data = json.loads(payload, object_pairs_hook=_unique_object)
     except (ValueError, RecursionError):
         return None
-    if (
-        not isinstance(data, dict)
-        or type(data.get("version")) is not int
-        or data["version"] != VERSION
-    ):
+    if not isinstance(data, dict) or type(data.get("version")) is not int:
         return None
     return data
 
 
 def _parse_completion(data: dict[str, Any]) -> tuple[str, dict[str, int]] | None:
-    if data.keys() != {"event", "version", "queue", "segments_ms"}:
+    if data.keys() != {"event", "version", "queue", "segments_ms"} or (
+        data["version"] != COMPLETION_VERSION
+    ):
         return None
     queue, segments = data["queue"], data["segments_ms"]
     if (
@@ -65,11 +66,20 @@ def _parse_completion(data: dict[str, Any]) -> tuple[str, dict[str, int]] | None
     return queue, segments
 
 
-def _parse_backlog_delta(data: dict[str, Any]) -> PhotoImportBacklogs | None:
-    if data.keys() != {"event", "version", "deltas"}:
+def _parse_backlog_delta(data: dict[str, Any]) -> tuple[str, PhotoImportBacklogs] | None:
+    if (
+        data.keys() != {"event", "version", "photo_id", "deltas"}
+        or data["version"] != BACKLOG_VERSION
+    ):
         return None
-    deltas = data["deltas"]
-    if not isinstance(deltas, dict) or not deltas or not deltas.keys() <= PHOTO_IMPORT_QUEUES:
+    photo_id, deltas = data["photo_id"], data["deltas"]
+    if (
+        not isinstance(photo_id, str)
+        or not _PHOTO_ID.fullmatch(photo_id)
+        or not isinstance(deltas, dict)
+        or not deltas
+        or not deltas.keys() <= PHOTO_IMPORT_QUEUES
+    ):
         return None
     result = {}
     for queue, pair in deltas.items():
@@ -80,7 +90,33 @@ def _parse_backlog_delta(data: dict[str, Any]) -> PhotoImportBacklogs | None:
         ):
             return None
         result[queue] = (pair[0], pair[1])
-    return result
+    return photo_id, result
+
+
+def _empty_backlogs() -> PhotoImportBacklogs:
+    return dict.fromkeys(PHOTO_IMPORT_QUEUES, (0, 0))
+
+
+def _add_backlogs(totals: PhotoImportBacklogs, changes: PhotoImportBacklogs) -> None:
+    for queue, (pending_change, failed_change) in changes.items():
+        pending, failed = totals[queue]
+        totals[queue] = (pending + pending_change, failed + failed_change)
+
+
+@dataclass(slots=True)
+class _BacklogReconciliation:
+    totals: PhotoImportBacklogs = field(default_factory=_empty_backlogs)
+    upper_bound: str | None = None
+    after: str | None = None
+    upper_bound_loaded: bool = False
+
+    def misses_photo(self, photo_id: str) -> bool:
+        # PostgreSQL pattern-ops keyset order matches this comparison.
+        return self.upper_bound_loaded and (
+            self.upper_bound is None
+            or photo_id > self.upper_bound
+            or (self.after is not None and photo_id <= self.after)
+        )
 
 
 class QueueTelemetry:
@@ -89,37 +125,76 @@ class QueueTelemetry:
         self._listening = False
         self._counts: dict[str, int] = {}
         self._durations_ms: dict[str, dict[str, int]] = {}
-        self._backlogs: PhotoImportBacklogs = {}
+        self._backlogs = _empty_backlogs()
+        self._reconciliation: _BacklogReconciliation | None = None
         self._reconciled_at: float | None = None
 
     def set_listening(self, listening: bool) -> None:
         with self._lock:
             self._listening = listening
+            if not listening:
+                self._reconciliation = None
 
-    def set_backlog_snapshot(self, counts: PhotoImportBacklogs, *, reconciled_at: float) -> None:
+    def start_backlog_reconciliation(self) -> _BacklogReconciliation | None:
         with self._lock:
-            self._backlogs = counts.copy()
-            self._reconciled_at = reconciled_at
+            if not self._listening or self._reconciliation is not None:
+                return None
+            self._reconciliation = _BacklogReconciliation()
+            return self._reconciliation
+
+    def set_backlog_reconciliation_upper_bound(
+        self, reconciliation: _BacklogReconciliation, upper_bound: str | None
+    ) -> bool:
+        with self._lock:
+            if self._reconciliation is not reconciliation:
+                return False
+            reconciliation.upper_bound = upper_bound
+            reconciliation.upper_bound_loaded = True
+            return True
+
+    def add_backlog_reconciliation_page(
+        self, reconciliation: _BacklogReconciliation, *, after: str, counts: PhotoImportBacklogs
+    ) -> bool:
+        with self._lock:
+            if self._reconciliation is not reconciliation:
+                return False
+            _add_backlogs(reconciliation.totals, counts)
+            reconciliation.after = after
+            return True
+
+    def finish_backlog_reconciliation(
+        self, reconciliation: _BacklogReconciliation, *, reconciled_at: float
+    ) -> None:
+        with self._lock:
+            if self._reconciliation is reconciliation:
+                self._backlogs = reconciliation.totals
+                self._reconciled_at = reconciled_at
+                self._reconciliation = None
+
+    def discard_backlog_reconciliation(self, reconciliation: _BacklogReconciliation) -> None:
+        with self._lock:
+            if self._reconciliation is reconciliation:
+                self._reconciliation = None
 
     def record(self, payload: str) -> None:
         data = _decode(payload)
         if data is None:
             return
         if data.get("event") == BACKLOG_CHANGED_EVENT:
-            deltas = _parse_backlog_delta(data)
-            if deltas is not None:
-                self._record_backlog_delta(deltas)
+            delta = _parse_backlog_delta(data)
+            if delta is not None:
+                self._record_backlog_delta(*delta)
         elif data.get("event") == COMPLETED_EVENT:
             completion = _parse_completion(data)
             if completion is not None:
                 self._record_completion(*completion)
 
-    def _record_backlog_delta(self, deltas: PhotoImportBacklogs) -> None:
+    def _record_backlog_delta(self, photo_id: str, deltas: PhotoImportBacklogs) -> None:
         with self._lock:
-            for queue, (pending_change, failed_change) in deltas.items():
-                if queue in self._backlogs:
-                    pending, failed = self._backlogs[queue]
-                    self._backlogs[queue] = (pending + pending_change, failed + failed_change)
+            _add_backlogs(self._backlogs, deltas)
+            reconciliation = self._reconciliation
+            if reconciliation is not None and reconciliation.misses_photo(photo_id):
+                _add_backlogs(reconciliation.totals, deltas)
 
     def _record_completion(self, queue: str, segments_ms: dict[str, int]) -> None:
         with self._lock:

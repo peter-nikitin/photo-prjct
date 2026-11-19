@@ -1,12 +1,16 @@
 """Observe the publication and face-recognition paths of accepted originals."""
 
 import logging
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from typing import Any
 
 from config import queue_events
 from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE, PhotoImportBacklogs
 from django.db import connection, transaction
-from django.db.models import Count, F, Min, Q
+from django.db.backends.utils import CursorWrapper
+from django.db.models import F, Min, Q
 from picflow.gallery import gallery_media_policy_ready
 from picflow.models import GalleryMediaProjection, Photo
 
@@ -26,6 +30,7 @@ from processing.services.face_cohort import (
 logger = logging.getLogger(__name__)
 
 _MILLISECOND = timedelta(milliseconds=1)
+RECONCILIATION_PAGE_SIZE = 200
 
 _PREVIEW_POLICIES = (
     Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
@@ -33,19 +38,22 @@ _PREVIEW_POLICIES = (
 )
 
 
-def photo_import_backlogs(*, photo_id: str | None = None) -> PhotoImportBacklogs:
-    """Return (unfinished photos, photos blocked by permanent failure), from one SQL snapshot."""
-    # Non-null photo IDs let PostgreSQL hash each membership set once per observation.
+_BACKLOG_PROCESSORS = (
+    FACE_EMBEDDING_PROCESSOR,
+    GENERATE_PREVIEW_PROCESSOR,
+    GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+)
+
+
+def _point_photo_import_backlogs(photo_id: str) -> PhotoImportBacklogs:
+    """Observe a locked photo's membership with one scalar SELECT."""
     current_states = PhotoProcessingState.objects.filter(
+        photo_id=photo_id,
         current_job__photo_id=F("photo_id"),
         current_job__processor_type=F("processor_type"),
     )
-    photos = Photo.objects.filter(src="", original_key__gt="")
+    photos = Photo.objects.filter(pk=photo_id, src="", original_key__gt="")
     face_projections = accepted_face_projections(include_hidden=True)
-    if photo_id is not None:
-        photos = photos.filter(pk=photo_id)
-        current_states = current_states.filter(photo_id=photo_id)
-        face_projections = face_projections.filter(photo_id=photo_id)
     failed_states = current_states.filter(
         status=PhotoProcessingState.Status.FAILED,
         current_job__status=ProcessingJob.Status.FAILED,
@@ -77,6 +85,8 @@ def photo_import_backlogs(*, photo_id: str | None = None) -> PhotoImportBacklogs
     face_complete = Q(
         pk__in=face_projections.filter(
             current_accepted_face_result(),
+            photo_id=photo_id,
+            photo__processing_states__photo_id=photo_id,
             accepted_attempt__processor_type=FACE_EMBEDDING_PROCESSOR,
         ).values("photo_id"),
     )
@@ -95,31 +105,192 @@ def photo_import_backlogs(*, photo_id: str | None = None) -> PhotoImportBacklogs
         "face_pending": face_pending,
         "face_failed": (face_failed | preview_failed) & face_pending,
     }
-    if photo_id is None:
-        counts = photos.aggregate(
-            **{key: Count("pk", filter=predicate) for key, predicate in membership.items()}
-        )
-    else:
-        counts = photos.annotate(**membership).values(*membership).first() or dict.fromkeys(
-            membership, 0
-        )
+    counts = photos.annotate(**membership).values(*membership).first() or dict.fromkeys(
+        membership, 0
+    )
     return {
         GALLERY_QUEUE: (int(counts["publication_pending"]), int(counts["publication_failed"])),
         FACE_QUEUE: (int(counts["face_pending"]), int(counts["face_failed"])),
     }
 
 
-def read_photo_import_backlogs(*, photo_id: str | None = None) -> PhotoImportBacklogs | None:
+def _batch_accepted_face_ids(photo_ids: Sequence[str], states: list[dict[str, Any]]) -> set[str]:
+    current_results = {
+        (
+            state["photo_id"],
+            state["accepted_attempt_id"],
+            state["current_job_id"],
+            state["current_run_id"],
+        )
+        for state in states
+        if state["processor_type"] == FACE_EMBEDDING_PROCESSOR
+        and state["status"] == PhotoProcessingState.Status.SUCCEEDED
+        and state["accepted_attempt_id"] is not None
+        and state["accepted_attempt_id"] == state["current_attempt_id"]
+    }
+    projections = (
+        accepted_face_projections(include_hidden=True)
+        .filter(
+            photo_id__in=photo_ids,
+            accepted_attempt_id__in={result[1] for result in current_results},
+            accepted_attempt__processor_type=FACE_EMBEDDING_PROCESSOR,
+        )
+        .values_list(
+            "photo_id",
+            "accepted_attempt_id",
+            "accepted_attempt__job_id",
+            "accepted_attempt__run_id",
+        )
+    )
+    return {result[0] for result in projections if result in current_results}
+
+
+def photo_import_backlogs(photo_ids: Sequence[str]) -> PhotoImportBacklogs:
+    """Read only page photos and the identities referenced by their current states."""
+    if len(photo_ids) > RECONCILIATION_PAGE_SIZE:
+        raise ValueError("Photo import backlog reads require at most one page")
+    photos = list(
+        Photo.objects.filter(pk__in=photo_ids, src="", original_key__gt="")
+        .order_by()
+        .annotate(
+            gallery_ready=gallery_media_policy_ready(),
+            clean_ready=Q(gallery_media_projection__clean_preview_final_key__isnull=False),
+        )
+        .values(
+            "pk", "gallery_media_policy", "original_content_type", "gallery_ready", "clean_ready"
+        )
+    )
+    accepted_photo_ids = [photo["pk"] for photo in photos]
+    states = list(
+        PhotoProcessingState.objects.filter(
+            photo_id__in=accepted_photo_ids, processor_type__in=_BACKLOG_PROCESSORS
+        ).values(
+            "photo_id",
+            "processor_type",
+            "status",
+            "current_job_id",
+            "current_run_id",
+            "current_attempt_id",
+            "accepted_attempt_id",
+        )
+    )
+    accepted_faces = _batch_accepted_face_ids(accepted_photo_ids, states)
+    photos_requiring_enrollment_check = {
+        photo["pk"]
+        for photo in photos
+        if photo["original_content_type"] == "image/jpeg"
+        and photo["gallery_media_policy"] not in _PREVIEW_POLICIES
+        and photo["pk"] not in accepted_faces
+    }
+    current_job_ids = {
+        state["current_job_id"]
+        for state in states
+        if state["current_job_id"] is not None
+        and (
+            state["status"] == PhotoProcessingState.Status.FAILED
+            or (
+                state["processor_type"] == FACE_EMBEDDING_PROCESSOR
+                and state["photo_id"] in photos_requiring_enrollment_check
+                and state["status"] != PhotoProcessingState.Status.CANCELLED
+            )
+        )
+    }
+    jobs = {
+        job_id: (photo_id, processor, status)
+        for job_id, photo_id, processor, status in ProcessingJob.objects.filter(
+            pk__in=current_job_ids
+        ).values_list("pk", "photo_id", "processor_type", "status")
+    }
+    requested_faces: set[str] = set()
+    failed_stages: set[tuple[str, str]] = set()
+    for state in states:
+        photo_id, processor = state["photo_id"], state["processor_type"]
+        job = jobs.get(state["current_job_id"])
+        if job is None or (job[0], job[1]) != (photo_id, processor):
+            continue
+        if (
+            processor == FACE_EMBEDDING_PROCESSOR
+            and state["status"] != PhotoProcessingState.Status.CANCELLED
+        ):
+            requested_faces.add(photo_id)
+        if (
+            state["status"] == PhotoProcessingState.Status.FAILED
+            and job[2] == ProcessingJob.Status.FAILED
+        ):
+            failed_stages.add((photo_id, processor))
+    gallery_pending = gallery_failed = face_pending = face_failed = 0
+    for photo in photos:
+        photo_id = photo["pk"]
+        policy = photo["gallery_media_policy"]
+        preview_failed = (
+            not photo["clean_ready"] and (photo_id, GENERATE_PREVIEW_PROCESSOR) in failed_stages
+        )
+        if not photo["gallery_ready"]:
+            gallery_pending += 1
+            watermark_failed = (
+                photo["clean_ready"]
+                and policy == Photo.GalleryMediaPolicy.WATERMARKED_PREVIEW_REQUIRED
+                and (photo_id, GENERATE_WATERMARKED_PREVIEW_PROCESSOR) in failed_stages
+            )
+            gallery_failed += preview_failed or watermark_failed
+        if (
+            photo["original_content_type"] == "image/jpeg"
+            and (policy in _PREVIEW_POLICIES or photo_id in requested_faces)
+            and photo_id not in accepted_faces
+        ):
+            face_pending += 1
+            face_failed += preview_failed or (photo_id, FACE_EMBEDDING_PROCESSOR) in failed_stages
+    return {
+        GALLERY_QUEUE: (gallery_pending, gallery_failed),
+        FACE_QUEUE: (face_pending, face_failed),
+    }
+
+
+@contextmanager
+def _reconciliation_read() -> Iterator[CursorWrapper]:
+    with transaction.atomic(), connection.cursor() as cursor:
+        cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        cursor.execute("SET LOCAL statement_timeout = 250")
+        yield cursor
+
+
+def read_photo_import_backlog_upper_bound() -> str | None:
+    """Fence the pass at the largest photo ID visible at its start."""
+    # Pattern-ops comparisons keep the index and Python delta cursor in the same
+    # order, including legacy IDs such as LDN-1432 under a non-binary DB locale.
+    with _reconciliation_read() as cursor:
+        cursor.execute("SELECT id FROM picflow_photo ORDER BY id USING ~>~ LIMIT 1")
+        row = cursor.fetchone()
+    return row[0] if row is not None else None
+
+
+def read_photo_import_backlog_page(
+    *, after: str | None, upper_bound: str
+) -> tuple[str, PhotoImportBacklogs] | None:
+    """Read no more than one page of IDs and their bounded current memberships."""
+    sql = "SELECT id FROM picflow_photo WHERE id ~<=~ %s"
+    params: list[str | int] = [upper_bound]
+    if after is not None:
+        sql += " AND id ~>~ %s"
+        params.append(after)
+    sql += " ORDER BY id USING ~<~ LIMIT %s"
+    params.append(RECONCILIATION_PAGE_SIZE)
+    with _reconciliation_read() as cursor:
+        cursor.execute(sql, params)
+        photo_ids = [row[0] for row in cursor.fetchall()]
+        if not photo_ids:
+            return None
+        return photo_ids[-1], photo_import_backlogs(photo_ids)
+
+
+def _read_single_photo_backlogs(photo_id: str) -> PhotoImportBacklogs | None:
     """Isolate best-effort reads from the business transaction using a savepoint."""
     try:
         with transaction.atomic(), connection.cursor() as cursor:
             cursor.execute("SELECT current_setting('statement_timeout')")
             previous_timeout = cursor.fetchone()[0]
-            cursor.execute(
-                "SELECT set_config('statement_timeout', %s, true)",
-                ["2s" if photo_id is None else "100ms"],
-            )
-            counts = photo_import_backlogs(photo_id=photo_id)
+            cursor.execute("SET LOCAL statement_timeout = 100")
+            counts = _point_photo_import_backlogs(photo_id)
             cursor.execute("SELECT set_config('statement_timeout', %s, true)", [previous_timeout])
     except Exception:
         logger.warning("Could not observe photo import backlog")
@@ -133,23 +304,19 @@ def schedule_original_accepted(photo: Photo) -> None:
         deltas = {GALLERY_QUEUE: (1, 0)}
         if photo.original_content_type == "image/jpeg":
             deltas[FACE_QUEUE] = (1, 0)
-        _schedule_backlog_delta(deltas)
+        _schedule_backlog_delta(photo.pk, deltas)
 
 
 def capture_photo_import_backlog(photo_id: str, processor_type: str) -> PhotoImportBacklogs | None:
-    if processor_type not in (
-        FACE_EMBEDDING_PROCESSOR,
-        GENERATE_PREVIEW_PROCESSOR,
-        GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
-    ):
+    if processor_type not in _BACKLOG_PROCESSORS:
         return None
-    return read_photo_import_backlogs(photo_id=photo_id)
+    return _read_single_photo_backlogs(photo_id)
 
 
 def schedule_photo_import_backlog_delta(photo_id: str, before: PhotoImportBacklogs | None) -> None:
     if before is None:
         return
-    after = read_photo_import_backlogs(photo_id=photo_id)
+    after = _read_single_photo_backlogs(photo_id)
     if after is None:
         return
     deltas = {}
@@ -159,11 +326,13 @@ def schedule_photo_import_backlog_delta(photo_id: str, before: PhotoImportBacklo
         if delta != (0, 0):
             deltas[queue] = delta
     if deltas:
-        _schedule_backlog_delta(deltas)
+        _schedule_backlog_delta(photo_id, deltas)
 
 
-def _schedule_backlog_delta(deltas: PhotoImportBacklogs) -> None:
-    transaction.on_commit(lambda: queue_events.notify_queue_backlog_delta(deltas), robust=True)
+def _schedule_backlog_delta(photo_id: str, deltas: PhotoImportBacklogs) -> None:
+    transaction.on_commit(
+        lambda: queue_events.notify_queue_backlog_delta(photo_id, deltas), robust=True
+    )
 
 
 def schedule_photo_import_completion(photo: Photo, attempt: ProcessingAttempt) -> None:

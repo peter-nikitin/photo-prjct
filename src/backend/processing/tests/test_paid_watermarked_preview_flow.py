@@ -356,7 +356,9 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
         )
 
         photo = self.confirm_jpeg(event, filename="new-paid.jpg")
-        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
+        self.assertEqual(
+            photo_import_backlogs([photo.pk]), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)}
+        )
 
         self.assertEqual(
             (photo.processing_generation, photo.gallery_media_policy),
@@ -395,10 +397,14 @@ class PaidWatermarkedPreviewFlowTests(TestCase):
         with patch("config.queue_events.notify_queue_completion") as notify:
             with self.captureOnCommitCallbacks(execute=True):
                 detection = self.complete_face(photo)
-            self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (0, 0)})
+            self.assertEqual(
+                photo_import_backlogs([photo.pk]), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (0, 0)}
+            )
             with self.captureOnCommitCallbacks(execute=True):
                 watermarked = self.publish_watermark(photo, label="paid-watermarked")
-        self.assertEqual(photo_import_backlogs(), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)})
+        self.assertEqual(
+            photo_import_backlogs([photo.pk]), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)}
+        )
         calls = notify.call_args_list
         self.assertEqual([call.args[0] for call in calls], [FACE_QUEUE, GALLERY_QUEUE])
         face_segments, gallery_segments = (call.args[1] for call in calls)

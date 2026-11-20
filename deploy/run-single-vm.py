@@ -14,7 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_LOG_PATTERN = (
     r"DEPLOY_STAGE=(?:stop-workers|pull-images|commerce-check|database|migrate|"
-    r"sync-feature-flags|static|web|photo-worker)"
+    r"sync-feature-flags|static|web|photo-worker|image-prune)"
+    r"|DEPLOY_IMAGE_PRUNE_RESULT=(?:success|failure)"
     r"|QUEUE_TELEMETRY_START=failed"
     r"|PHOTO_WORKER_VERIFY=(?:ok|unavailable|container-mismatch|not-running|"
     r"image-mismatch|environment-mismatch)"

@@ -185,6 +185,10 @@ def test_worker_only_release_pulls_new_image_and_updates_only_active_photo_worke
         "manage.py" not in calls and "import-worker" not in calls and "commerce-worker" not in calls
     )
     assert "PHOTO_WORKER_VERIFY=ok" in result.stdout
+    assert calls.splitlines()[-1] == "image prune -a -f"
+    assert result.stdout.index("PHOTO_WORKER_VERIFY=ok") < result.stdout.index(
+        "DEPLOY_STAGE=image-prune"
+    )
 
 
 @pytest.mark.parametrize(("web", "worker"), [(True, False), (False, True)])
@@ -228,8 +232,9 @@ def test_standalone_package_runs_worker_verification_after_extraction(release):
 def test_release_fails_with_a_sanitized_status_when_worker_configuration_disagrees(
     release, corruption, status
 ):
-    result, _, _ = run_release(release, corruption=corruption)
+    result, calls, _ = run_release(release, corruption=corruption)
     assert result.returncode != 0
+    assert "image prune" not in calls
     output = result.stdout + result.stderr
     assert f"PHOTO_WORKER_VERIFY={status}" in result.stdout
     assert DESIRED_TOKEN not in output

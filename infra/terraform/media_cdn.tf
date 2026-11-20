@@ -3,8 +3,10 @@ module "media_cdn" {
 
   folder_id             = var.folder_id
   media_delivery_bucket = yandex_storage_bucket.media_delivery.bucket
-  secure_key            = var.cdn_secure_key
-  origin_auth           = var.cdn_origin_auth
+  media_scratch_bucket  = yandex_storage_bucket.media_scratch.bucket
+
+  secure_key  = var.cdn_secure_key
+  origin_auth = var.cdn_origin_auth
 }
 
 import {

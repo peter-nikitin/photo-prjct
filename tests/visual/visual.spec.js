@@ -967,6 +967,43 @@ test('continuation buttons submit the expected source without exposing the resul
   expect(submitted[1]).not.toContain('name="photo_id"');
 });
 
+test('an additional selfie uses the existing result link and reports upload errors', async ({ page }) => {
+  const path = '/__visual__/event/selfie-search/ready/';
+  await preloadCookieAcknowledgement(page);
+  await page.goto(path);
+  await page.getByText('Добавить селфи', { exact: true }).click();
+  const form = page.locator('[data-selfie-add-photo]');
+  const action = new URL(await form.getAttribute('action'), page.url());
+  const input = form.getByLabel('Селфи для нового прохода');
+  const submit = form.getByRole('button', { name: 'Найти по этому селфи' });
+  await expect(form).toContainText('Использовано 1 из 3 селфи');
+  await expect(page.locator('.gallery-card')).toHaveCount(3);
+  let requests = 0;
+  await page.route(action.href, async (route) => {
+    const request = route.request();
+    const headers = await request.allHeaders();
+    expect(request.method()).toBe('POST');
+    expect(headers.origin).toBe(action.origin);
+    expect(headers.referer).toBe(`${action.origin}/`);
+    expect(request.postData()).toContain('name="selfie"; filename="second.jpg"');
+    expect(request.postData()).toContain('name="upload_count"\r\n\r\n1\r\n');
+    requests++;
+    await route.fulfill(requests === 1
+      ? { status: 422, json: { error: 'Выберите другую фотографию.' } }
+      : { status: 202, json: { result_url: `${path}?uploaded=1` } });
+  });
+
+  await input.setInputFiles({
+    name: 'second.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from('selfie fixture'),
+  });
+  await submit.click();
+  await expect(form.getByRole('alert')).toHaveText('Выберите другую фотографию.');
+  await submit.click();
+  await expect(page).toHaveURL(/\?uploaded=1$/);
+});
+
 test('free search results show all passes and archive actions preserve order pagination', async ({ page }) => {
   for (const [path, expected] of [
     [
@@ -1328,7 +1365,7 @@ test('desktop feedback keeps gallery full width and terminal actions equal', asy
     activeTag: document.activeElement?.tagName,
     terminal: (() => {
       const actions = document.querySelector('.selfie-search-terminal-actions');
-      const newSearch = actions?.querySelector(':scope > .button');
+      const newSearch = actions?.querySelector(':scope > .button, :scope > .selfie-add-photo > summary');
       const feedback = actions?.querySelector(':scope > .selfie-search-terminal-feedback');
       const actionsRect = actions?.getBoundingClientRect();
       const newSearchRect = newSearch?.getBoundingClientRect();
@@ -1406,7 +1443,7 @@ test('mobile feedback stacks the new-search action before the form', async ({ pa
 
   const layout = await page.evaluate(() => {
     const actions = document.querySelector('.selfie-search-terminal-actions');
-    const newSearch = actions?.querySelector(':scope > .button');
+    const newSearch = actions?.querySelector(':scope > .button, :scope > .selfie-add-photo > summary');
     const feedback = actions?.querySelector(':scope > .selfie-search-terminal-feedback');
     const actionsRect = actions?.getBoundingClientRect();
     const newSearchRect = newSearch?.getBoundingClientRect();

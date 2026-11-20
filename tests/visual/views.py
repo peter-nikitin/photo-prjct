@@ -879,13 +879,25 @@ def selfie_search_processing_status(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"status": "processing"})
 
 
+def _selfie_upload_context(token: str) -> dict[str, Any]:
+    return {
+        "public_token": token,
+        "selfie_upload_form": SelfieSearchUploadForm(),
+        "upload_count": 1,
+        "upload_limit": 3,
+        "checked_photo_count": 46,
+    }
+
+
 def selfie_search_empty(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-empty"),
             "event": EVENTS[0],
             "gallery_photos": (),
+            "published_count": 0,
             "is_terminal": True,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46),
             "status_url": "",
@@ -898,6 +910,7 @@ def selfie_search_error(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-error"),
             "event": EVENTS[0],
             "gallery_photos": (),
             "is_terminal": True,
@@ -932,6 +945,7 @@ def _selfie_search_ready(
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-ready-result"),
             "event": event,
             "cart_presentation": cart_presentation,
             "archive_action": archive_action,
@@ -954,7 +968,6 @@ def _selfie_search_ready(
             "continuation_photo_ids": {photos[0].photo_id} if photos else set(),
             "gallery_photos": photos,
             "gallery_result_items": tuple(zip(results, photos, strict=True)),
-            "public_token": "visual-ready-result",
             "result_feedback_url": reverse("search_feedback_submit", args=(event.slug,)),
             "is_terminal": True,
             "search": FixtureSelfieSearch(
@@ -1177,6 +1190,7 @@ def selfie_search_feedback_problem(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-problem"),
             "event": EVENTS[0],
             "gallery_photos": (),
             "gallery_result_items": (),
@@ -1206,13 +1220,13 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-feedback"),
             "event": EVENTS[0],
             "gallery_photos": photos,
             "gallery_result_items": tuple(zip(results, photos, strict=True)),
             "reported_photo_ids": {photos[0].photo_id},
             "similar_feedback_photo_ids": {photos[1].photo_id},
             "published_count": len(photos),
-            "public_token": "visual-feedback",
             "result_feedback_url": reverse("search_feedback_submit", args=(EVENTS[0].slug,)),
             "is_terminal": True,
             "public_token_digest": "b" * 64,

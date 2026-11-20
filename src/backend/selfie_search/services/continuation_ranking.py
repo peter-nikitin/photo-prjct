@@ -7,14 +7,11 @@ from django.db.models import QuerySet
 from psycopg import Cursor
 
 from selfie_search.models import SelfieSearch
-from selfie_search.services.continuation import (
-    _SHOW_PAID_PREVIEWS_KEY,
-    Anchor,
-    _manual_source_photo_id,
-)
+from selfie_search.services.continuation import Anchor, _manual_source_photo_id
 from selfie_search.services.direct_ranking import DirectRankingOutcome
 from selfie_search.services.ranking import RankedPhoto, RankingError, _configuration
 from selfie_search.services.results import eligible_saved_result_rows
+from selfie_search.services.submission import CONTINUATION_PAID_PREVIEWS_KEY
 from selfie_search.services.vector_ranking import accepted_kept_faces
 
 _CENTROID_RANKING_SQL = """
@@ -70,7 +67,7 @@ def previous_matches(search: SelfieSearch) -> QuerySet:
         eligible_saved_result_rows(
             parent,
             paid_watermarked_previews_enabled=(
-                search.configuration.get(_SHOW_PAID_PREVIEWS_KEY) is True
+                search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True
             ),
         )
         .order_by()

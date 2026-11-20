@@ -34,6 +34,13 @@ def resolve_public_result(*, event_slug: str, public_token: str, user) -> Selfie
         raise PublicSearchNotFound from None
 
 
+def has_ready_search_pass(search: SelfieSearch) -> bool:
+    return (
+        search.status == SelfieSearch.Status.READY
+        or search.continuation_passes.filter(status=SelfieSearch.Status.READY).exists()
+    )
+
+
 def saved_ready_result_photos(
     search: SelfieSearch,
     *,
@@ -54,8 +61,6 @@ def saved_ready_result_rows(
     paid_watermarked_previews_enabled: bool = False,
 ) -> QuerySet[SelfieSearchResult]:
     """Return eligible members in pass and capture-time order, once per photo."""
-    if search.status != SelfieSearch.Status.READY:
-        return SelfieSearchResult.objects.none()
     return (
         eligible_saved_result_rows(
             search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled

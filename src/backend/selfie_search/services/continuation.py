@@ -18,6 +18,7 @@ from processing.models import FaceEmbeddingVector, PhotoFaceDetection, PhotoProc
 from psycopg import Cursor
 
 from selfie_search.models import (
+    _TERMINAL_SEARCH_STATUSES,
     ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY,
     FaceSearchTask,
     SelfieSearch,
@@ -26,8 +27,9 @@ from selfie_search.services.apparel_expansion import continuation_apparel_neighb
 from selfie_search.services.jobs import enqueue_face_search
 from selfie_search.services.negative_feedback import negative_feedback_state
 from selfie_search.services.ranking import RankingError
-from selfie_search.services.results import eligible_saved_result_rows
+from selfie_search.services.results import eligible_saved_result_rows, has_ready_search_pass
 from selfie_search.services.submission import (
+    CONTINUATION_PAID_PREVIEWS_KEY,
     GallerySearchUnavailable,
     _configuration_hash,
     _gallery_configuration,
@@ -43,7 +45,6 @@ _MAX_MEMBERS = 5
 _MAX_CANDIDATES = 60
 _STRONG_DISTANCE = 0.38
 _CONSISTENCY_DISTANCE = 0.35
-_SHOW_PAID_PREVIEWS_KEY = "continuation_paid_watermarked_previews"
 
 
 class ContinuationUnavailable(LookupError):
@@ -320,12 +321,12 @@ def submit_continuation(
         .filter(
             pk=search.pk,
             parent_search__isnull=True,
-            status=SelfieSearch.Status.READY,
+            status__in=_TERMINAL_SEARCH_STATUSES,
             event__in=Event.objects.site_visible_to(user),
         )
         .first()
     )
-    if root is None:
+    if root is None or not has_ready_search_pass(root):
         raise ContinuationUnavailable
     eligible = eligible_saved_result_rows(
         root, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
@@ -396,7 +397,7 @@ def submit_continuation(
         configuration["query_source"] = _auto_source(groups)
         payload = groups[0][0].detection_id
 
-    configuration[_SHOW_PAID_PREVIEWS_KEY] = paid_watermarked_previews_enabled
+    configuration[CONTINUATION_PAID_PREVIEWS_KEY] = paid_watermarked_previews_enabled
     configuration[ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY] = is_enabled_for_state(
         FEATURE_FLAG_STAFF, user
     )
@@ -434,7 +435,7 @@ def load_continuation_sources(
     parent = search.parent_search
     if parent is None:
         raise RankingError("continuation has no parent")
-    paid_previews_enabled = search.configuration.get(_SHOW_PAID_PREVIEWS_KEY) is True
+    paid_previews_enabled = search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True
     photo_ids = (
         eligible_saved_result_rows(
             parent,

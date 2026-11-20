@@ -762,13 +762,16 @@
 
   function bindSearchContinuation(form, window) {
     if (!form) return;
+    const error = form.querySelector('[role="alert"]');
+    const defaultError = error.textContent;
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       if (form.getAttribute('aria-busy') === 'true') return;
       const data = new FormData(form, event.submitter);
-      const error = form.querySelector('[role="alert"]');
       form.setAttribute('aria-busy', 'true');
       error.hidden = true;
+      error.textContent = defaultError;
+      if (event.submitter) event.submitter.disabled = true;
       try {
         // Send the origin needed by HTTPS CSRF without sending the private result URL.
         const response = await window.fetch(form.action, {
@@ -778,11 +781,15 @@
           headers: { Accept: 'application/json' },
           body: data,
         });
-        if (!response.ok) throw new Error('Search continuation failed');
-        const { result_url } = await response.json();
-        window.location.assign(result_url);
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.result_url) {
+          if (typeof payload?.error === 'string') error.textContent = payload.error;
+          throw new Error('Search continuation failed');
+        }
+        window.location.assign(payload.result_url);
       } catch {
         form.removeAttribute('aria-busy');
+        if (event.submitter) event.submitter.disabled = false;
         error.hidden = false;
       }
     });
@@ -800,7 +807,10 @@
     const form = document.querySelector('[data-selfie-search-form]');
     focusSelfieSearchError(document);
     const result = document.querySelector('[data-selfie-search-result]');
-    if (result) bindSearchContinuation(document.querySelector('#search-continuation'), window);
+    if (result) {
+      bindSearchContinuation(document.querySelector('#search-continuation'), window);
+      bindSearchContinuation(document.querySelector('[data-selfie-add-photo]'), window);
+    }
     const feedbackEnabled = (form || result)?.dataset?.selfieFeedbackEnabled === 'true';
     const galleryOrigin = result?.dataset?.galleryOrigin === 'true';
     bindSelfieSearchForm(form, { storage });

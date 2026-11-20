@@ -176,7 +176,9 @@ def process_face_search(task: FaceSearchTask) -> None:
             timeout_ms = min(timeout_ms, remaining_ms)
         _set_statement_timeout(timeout_ms)
         sources = (
-            load_continuation_sources(search, model=task.embedding_model) if is_continuation else ()
+            load_continuation_sources(search, model=task.embedding_model)
+            if is_continuation and task.source == FaceSearchTask.Source.GALLERY
+            else ()
         )
         if automatic:
             ranking = rank_continuation_centroids(search, sources)

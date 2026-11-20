@@ -19,17 +19,18 @@
       <p class="selfie-search-lead">Поиск показывает вероятные совпадения. Селфи удаляется после подготовки поиска, а результат увидит любой, у кого есть эта ссылка.</p>
     {% endif %}
 
-    {% if search.status == "queued" or search.status == "processing" %}
+    {% with result_status=display_status|default:search.status %}
+    {% if result_status == "queued" or result_status == "processing" %}
       <section class="selfie-search-state" aria-labelledby="selfie-search-state-title">
         <h2 id="selfie-search-state-title">Ищем фотографии…</h2>
         <p role="status" aria-live="polite">Страница обновится автоматически, когда результат будет готов.</p>
         <p role="status" data-selfie-search-connection hidden></p>
         <noscript><p>Поиск выполняется автоматически. Обновите страницу, чтобы увидеть результат.</p></noscript>
       </section>
-    {% elif search.status == "ready" %}
+    {% elif result_status == "ready" %}
       <section class="event-gallery selfie-search-results" data-event-gallery data-feedback-scope data-excluded-photo-count="{{ feedback_excluded_photo_count|default:0 }}" data-result-photo-count="{{ published_count|default:0 }}" aria-labelledby="selfie-search-matches-title">
         <h2 id="selfie-search-matches-title">Возможные совпадения</h2>
-        <p class="selfie-search-count">Найдено фотографий: {{ published_count|default_if_none:search.published_matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
+        <p class="selfie-search-count">Найдено фотографий: {{ published_count|default_if_none:search.published_matched_photo_count }}. Проверено фотографий: {{ checked_photo_count }}.</p>
         {% if archive_action %}
           <div class="selfie-search-archive-action"{% if all_results_marked %} hidden{% endif %}>
             {% include "ui/archive_form.html" with action=archive_url label=archive_action.label revalidate_archive=True %}
@@ -91,6 +92,7 @@
         {% else %}
           <p class="selfie-search-empty">Совпадений не найдено</p>
         {% endif %}
+        {% if selfie_pass_error %}<p role="alert">{{ selfie_pass_error }}</p>{% endif %}
         {% if continuation_pending %}
           <p role="status">Ищем ещё фотографии…</p>
           <p role="status" data-selfie-search-connection hidden></p>
@@ -106,21 +108,42 @@
           </form>
         {% endif %}
       </section>
-    {% elif search.status == "no_face" %}
+    {% elif result_status == "no_face" %}
       <p class="selfie-search-state" role="alert">На селфи не удалось найти подходящее лицо.</p>
-    {% elif search.status == "multiple_faces" %}
+    {% elif result_status == "multiple_faces" %}
       <p class="selfie-search-state" role="alert">На селфи должно быть только одно лицо.</p>
-    {% elif search.status == "quality_rejected" %}
+    {% elif result_status == "quality_rejected" %}
       <p class="selfie-search-state" role="alert">Не удалось получить надёжное совпадение.</p>
-    {% elif search.status == "search_unavailable" %}
+    {% elif result_status == "search_unavailable" %}
       <p class="selfie-search-state" role="alert">Для этого события пока нет подходящих фотографий.</p>
     {% else %}
       <p class="selfie-search-state" role="alert">{% if is_gallery_origin %}Поиск похожих фотографий сейчас недоступен. Попробуйте выбрать другую фотографию.{% else %}Поиск сейчас недоступен. Попробуйте другое селфи.{% endif %}</p>
     {% endif %}
+    {% endwith %}
 
     {% if is_terminal %}
       <div class="selfie-search-terminal-actions">
-        <a class="button" href="{% url 'event_detail' slug=event.slug %}">{% if is_gallery_origin %}Искать другие фотографии{% else %}Искать по другому селфи{% endif %}</a>
+        {% if selfie_upload_form %}
+          <details class="selfie-add-photo">
+            <summary class="button">Добавить селфи</summary>
+            <form class="selfie-add-photo-form" data-selfie-add-photo method="post" enctype="multipart/form-data" action="{% url 'selfie_search:add_selfie' event_slug=event.slug public_token=public_token %}">
+              {% csrf_token %}
+              <input type="hidden" name="upload_count" value="{{ upload_count }}">
+              <p>Использовано {{ upload_count }} из {{ upload_limit }} селфи</p>
+              <label for="{{ selfie_upload_form.selfie.id_for_label }}">Селфи для нового прохода</label>
+              {{ selfie_upload_form.selfie }}
+              <button class="button" type="submit" data-continuation-control disabled>Найти по этому селфи</button>
+              <p role="alert" hidden>Не удалось загрузить селфи. Попробуйте ещё раз.</p>
+            </form>
+          </details>
+        {% elif is_gallery_origin %}
+          <a class="button" href="{% url 'event_detail' slug=event.slug %}">Искать другие фотографии</a>
+        {% elif not continuation_pending %}
+          <div class="selfie-add-photo">
+            {% if upload_count %}<p>Использовано {{ upload_count }} из {{ upload_limit }} селфи</p>{% endif %}
+            <a class="button" href="{% url 'event_detail' slug=event.slug %}">Начать новый поиск</a>
+          </div>
+        {% endif %}
         {% if feedback or feedback_submitted %}
           <div class="selfie-search-terminal-feedback">
             {% if feedback %}
@@ -128,7 +151,7 @@
                 <form class="selfie-search-feedback-form" data-feedback-form novalidate>
                   {% csrf_token %}
                   <h2 id="selfie-search-feedback-title">{% if feedback.is_problem %}Сообщить о проблеме с поиском{% else %}Поделиться селфи для улучшения поиска{% endif %}</h2>
-                  <p class="selfie-search-feedback-disclosure">Приложим селфи, которое вы использовали для этого поиска. Повторно выбирать файл не нужно.</p>
+                  <p class="selfie-search-feedback-disclosure">Приложим первое селфи, загруженное для этого поиска. Повторно выбирать файл не нужно.</p>
                   <details class="selfie-search-feedback-contact">
                     <summary>Оставить контакт для связи — необязательно</summary>
                     <div class="selfie-search-feedback-contact-body">

@@ -254,7 +254,7 @@ class PublicSelfieSearchMarkupTests(TestCase):
         )
 
         self.assertEqual(response.context["search"].pk, search.pk)
-        self.assertContains(response, "Искать по другому селфи")
+        self.assertContains(response, "Начать новый поиск")
         self.assertContains(response, reverse("event_detail", kwargs={"slug": event.slug}))
 
     @override_settings(SELFIE_FEEDBACK_ENABLED=True)
@@ -1295,6 +1295,76 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual([entry["photo_id"] for entry in job.entries], [p.pk for p in photos])
         self.assertEqual(sum(entry["original_size"] for entry in job.entries), 102 * original_size)
 
+    def test_result_accepts_two_additional_selfies_on_the_same_link(self) -> None:
+        root, token = self.make_search(status=SelfieSearch.Status.NO_FACE)
+        root.configuration = {"processor": "selfie_query"}
+        root.save(update_fields=["configuration"])
+        root_url = self.result_url(event=root.event, token=token)
+        upload_url = reverse("selfie_search:add_selfie", args=(root.event.slug, token))
+        browser = Client(enforce_csrf_checks=True)
+        self.assertContains(browser.get(root_url, secure=True), "Использовано 1 из 3 селфи")
+        self.assertEqual(browser.post(upload_url, {"selfie": _view_jpeg_upload()}).status_code, 403)
+
+        def post(files, *, uploads=1):
+            return browser.post(
+                upload_url,
+                {
+                    "selfie": files,
+                    "upload_count": uploads,
+                    "csrfmiddlewaretoken": browser.cookies["csrftoken"].value,
+                },
+                secure=True,
+                HTTP_ORIGIN="https://testserver",
+            )
+
+        with patch("selfie_search.views.TemporarySelfieStorage") as factory:
+            store = factory.return_value
+            store.put.side_effect = lambda **kwargs: SimpleNamespace(
+                key=kwargs["key"],
+                size=len(kwargs["content"]),
+                content_type=kwargs["content_type"],
+            )
+            self.assertEqual(post([_view_jpeg_upload(), _view_jpeg_upload()]).status_code, 422)
+            self.assertEqual(post(SimpleUploadedFile("bad.gif", b"bad")).status_code, 422)
+            store.put.assert_not_called()
+
+            first = post(_view_jpeg_upload())
+            self.assertEqual(first.status_code, 202)
+            self.assertEqual(first.json(), {"result_url": root_url})
+            self.assert_bearer_headers(first)
+            self.assertContains(browser.get(root_url), "Ищем фотографии")
+            self.assertEqual(post(_view_jpeg_upload(), uploads=2).status_code, 409)
+
+            child = root.continuation_passes.get()
+            child.status = SelfieSearch.Status.READY
+            child.eligible_photo_count = 12
+            child.save(update_fields=["status", "eligible_photo_count"])
+            photo = self.make_private_photo(root.event, photo_id="additional-selfie-photo")
+            self.add_result(search=child, photo=photo, rank=1)
+            ready = browser.get(root_url)
+            self.assertContains(ready, 'data-photo-id="additional-selfie-photo"')
+            self.assertContains(ready, "Использовано 2 из 3 селфи")
+            self.assertContains(ready, "Проверено фотографий: 12.")
+            status_url = self.status_url(event=root.event, token=token)
+            status = browser.get(status_url, {"continuation": 1}).json()
+            self.assertEqual(status["status"], "ready")
+            self.assertEqual(status["eligible_photo_count"], 12)
+            self.assertEqual(post(_view_jpeg_upload()).json(), {"result_url": root_url})
+            self.assertEqual(store.put.call_count, 1)
+
+            self.assertEqual(post(_view_jpeg_upload(), uploads=2).status_code, 202)
+            second = root.continuation_passes.exclude(pk=child.pk).get()
+            second.status = SelfieSearch.Status.NO_FACE
+            second.save(update_fields=["status"])
+            self.assertEqual(post(_view_jpeg_upload(), uploads=3).status_code, 409)
+            self.assertEqual(store.put.call_count, 2)
+
+        page = browser.get(root_url)
+        self.assertContains(page, "Использовано 3 из 3 селфи")
+        self.assertNotContains(page, "data-selfie-add-photo")
+        self.assertContains(page, "На добавленном селфи не удалось найти подходящее лицо.")
+        self.assertContains(page, 'data-photo-id="additional-selfie-photo"')
+
     @override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON})
     def test_result_archive_follows_current_manual_marks_and_can_restore_the_original_set(self):
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -1951,7 +2021,7 @@ class PublicSelfieResultViewTests(TestCase):
 
         self.assertContains(response, 'class="selfie-search-terminal-actions"', count=1)
         body = response.content.decode()
-        self.assertLess(body.index("Искать по другому селфи"), body.index("data-feedback-cleanup"))
+        self.assertLess(body.index("Начать новый поиск"), body.index("data-feedback-cleanup"))
         self.assertNotContains(response, "Спасибо, селфи отправлено.")
         self.assertContains(response, "data-feedback-cleanup")
         self.assertNotContains(response, "data-feedback-cleanup-retry")

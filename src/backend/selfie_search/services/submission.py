@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 from uuid import uuid4
 
 from config.queue_work import SELFIE_RECOGNITION, schedule_transition
@@ -31,6 +33,7 @@ from processing.services.face_quality import active_face_embedding_generations
 
 from selfie_search.images import PreparedSelfie
 from selfie_search.models import (
+    _TERMINAL_SEARCH_STATUSES,
     ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY,
     FaceSearchTask,
     SelfieSearch,
@@ -38,6 +41,10 @@ from selfie_search.models import (
 )
 from selfie_search.services.jobs import enqueue_face_search
 from selfie_search.services.ranking import RankingError, validate_query_vector
+from selfie_search.storage import StoredTemporarySelfie
+
+MAX_SELFIE_UPLOADS = 3
+CONTINUATION_PAID_PREVIEWS_KEY = "continuation_paid_watermarked_previews"
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,31 @@ class GallerySearchFailed(RuntimeError):
     """A direct gallery search could not be atomically published."""
 
 
+class AdditionalSelfieUnavailable(LookupError):
+    """The result is unavailable or cannot accept another selfie now."""
+
+    def __init__(self, reason: Literal["pending", "limit", "stale", "unavailable"]) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def is_additional_selfie(search: SelfieSearch) -> bool:
+    return (
+        search.parent_search_id is not None
+        and search.configuration.get("processor") == "selfie_query"
+    )
+
+
+def selfie_upload_count(search: SelfieSearch) -> int:
+    """Count all accepted selfie uploads, including a recognition failure."""
+    if (
+        search.parent_search_id is not None
+        or search.configuration.get("processor") != "selfie_query"
+    ):
+        return 0
+    return 1 + search.continuation_passes.filter(configuration__processor="selfie_query").count()
+
+
 def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user) -> CreatedSearch:
     """Persist one validated selfie submission and its immutable current event cohort."""
     try:
@@ -61,41 +93,123 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user)
     except Event.DoesNotExist:
         raise ValueError("selfie search requires an event visible to the current user") from None
 
-    content = selfie.content
-    content_type = selfie.content_type
-    key = f"selfie-search/{uuid4().hex}"
-    stored = storage.put(key=key, content=content, content_type=content_type)
     public_token = secrets.token_urlsafe(32)
+    with _store_selfie(selfie, storage) as stored, transaction.atomic():
+        try:
+            event = Event.objects.site_visible_to(user).select_for_update().get(pk=event.pk)
+        except Event.DoesNotExist:
+            raise ValueError(
+                "selfie search requires an event visible to the current user"
+            ) from None
+        search = _enqueue_selfie(
+            event=event,
+            stored=stored,
+            user=user,
+            token_digest=_token_digest(public_token),
+        )
+    return CreatedSearch(search=search, public_token=public_token)
+
+
+def submit_additional_selfie(
+    *,
+    search: SelfieSearch,
+    selfie: PreparedSelfie,
+    storage,
+    user,
+    expected_upload_count: int,
+    paid_watermarked_previews_enabled: bool = False,
+) -> SelfieSearch:
+    """Add one recognition pass under the same stable public result link."""
+    _additional_selfie_root(search, user, expected_upload_count=expected_upload_count, lock=False)
+    with _store_selfie(selfie, storage) as stored, transaction.atomic():
+        root = _additional_selfie_root(
+            search, user, expected_upload_count=expected_upload_count, lock=True
+        )
+        return _enqueue_selfie(
+            event=root.event,
+            stored=stored,
+            user=user,
+            token_digest=_token_digest(secrets.token_urlsafe(32)),
+            parent=root,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+        )
+
+
+def _additional_selfie_root(
+    search: SelfieSearch, user, *, expected_upload_count: int, lock: bool
+) -> SelfieSearch:
+    roots = SelfieSearch.objects.select_related("event").filter(
+        pk=search.pk,
+        parent_search__isnull=True,
+        configuration__processor="selfie_query",
+        event__in=Event.objects.site_visible_to(user),
+    )
+    if lock:
+        roots = roots.select_for_update(of=("self",))
+    root = roots.first()
+    if root is None:
+        raise AdditionalSelfieUnavailable("unavailable")
+    upload_count = selfie_upload_count(root)
+    if expected_upload_count < upload_count:
+        raise AdditionalSelfieUnavailable("stale")
+    if expected_upload_count > upload_count:
+        raise AdditionalSelfieUnavailable("unavailable")
+    if (
+        root.status not in _TERMINAL_SEARCH_STATUSES
+        or root.continuation_passes.filter(
+            status__in=(SelfieSearch.Status.QUEUED, SelfieSearch.Status.PROCESSING)
+        ).exists()
+    ):
+        raise AdditionalSelfieUnavailable("pending")
+    if upload_count >= MAX_SELFIE_UPLOADS:
+        raise AdditionalSelfieUnavailable("limit")
+    return root
+
+
+@contextmanager
+@sensitive_variables("selfie")
+def _store_selfie(selfie: PreparedSelfie, storage) -> Iterator[StoredTemporarySelfie]:
+    stored = storage.put(
+        key=f"selfie-search/{uuid4().hex}", content=selfie.content, content_type=selfie.content_type
+    )
     try:
-        with transaction.atomic():
-            try:
-                event = Event.objects.site_visible_to(user).select_for_update().get(pk=event.pk)
-            except Event.DoesNotExist:
-                raise ValueError(
-                    "selfie search requires an event visible to the current user"
-                ) from None
-            configuration = _configuration(
-                event=event, content_type=content_type, content_size=len(content)
-            )
-            configuration[ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY] = is_enabled_for_state(
-                FEATURE_FLAG_STAFF, user
-            )
-            search = SelfieSearch.objects.create(
-                event=event,
-                public_token_digest=_token_digest(public_token),
-                temporary_object_key=stored.key,
-                configuration=configuration,
-                configuration_hash=_configuration_hash(configuration),
-            )
-            job = SelfieSearchJob.objects.create(search=search, configuration=configuration)
-            schedule_transition(SELFIE_RECOGNITION, None, job.status)
+        yield stored
     except Exception:
         try:
             storage.delete(key=stored.key)
         except Exception:
             pass
         raise
-    return CreatedSearch(search=search, public_token=public_token)
+
+
+def _enqueue_selfie(
+    *,
+    event: Event,
+    stored: StoredTemporarySelfie,
+    user,
+    token_digest: str,
+    parent: SelfieSearch | None = None,
+    paid_watermarked_previews_enabled: bool = False,
+) -> SelfieSearch:
+    configuration = _configuration(
+        event=event, content_type=stored.content_type, content_size=stored.size
+    )
+    configuration[ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY] = is_enabled_for_state(
+        FEATURE_FLAG_STAFF, user
+    )
+    if parent is not None:
+        configuration[CONTINUATION_PAID_PREVIEWS_KEY] = paid_watermarked_previews_enabled
+    search = SelfieSearch.objects.create(
+        event=event,
+        parent_search=parent,
+        public_token_digest=token_digest,
+        temporary_object_key=stored.key,
+        configuration=configuration,
+        configuration_hash=_configuration_hash(configuration),
+    )
+    job = SelfieSearchJob.objects.create(search=search, configuration=configuration)
+    schedule_transition(SELFIE_RECOGNITION, None, job.status)
+    return search
 
 
 def gallery_search_faces_by_photo(

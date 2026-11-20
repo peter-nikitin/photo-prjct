@@ -23,6 +23,7 @@ from processing.models import (
     PhotoDerivative,
     PhotoFaceDetection,
     PhotoFaceEmbeddingProjection,
+    PhotoImportCounter,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -1189,10 +1190,10 @@ class ProcessingJobServiceTests(TestCase):
             now=preview_terminal + timedelta(seconds=2),
         )
         self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 0))
-        with (
-            patch("config.queue_events.notify_queue_backlog_delta") as delta,
-            self.captureOnCommitCallbacks(execute=True),
-        ):
+        counter, _ = PhotoImportCounter.objects.update_or_create(
+            pk=FACE_QUEUE, defaults={"pending": 1, "failed": 0, "initialized": True}
+        )
+        with self.captureOnCommitCallbacks(execute=True):
             fail_attempt(
                 claimed.attempt.id,
                 error_code="network",
@@ -1200,7 +1201,8 @@ class ProcessingJobServiceTests(TestCase):
                 now=claimed.attempt.claimed_at + timedelta(seconds=1),
                 jitter=lambda _low, _high: 0,
             )
-        delta.assert_not_called()
+        counter.refresh_from_db()
+        self.assertEqual((counter.pending, counter.failed), (1, 0))
         self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 0))
         claimed.job.refresh_from_db()
         retry = claim_job(
@@ -1212,11 +1214,10 @@ class ProcessingJobServiceTests(TestCase):
         completed_at = claimed.job.available_at + timedelta(seconds=1)
         with (
             patch("config.queue_events.notify_queue_completion") as notify,
-            patch("config.queue_events.notify_queue_backlog_delta") as delta,
+            self.captureOnCommitCallbacks(execute=True),
         ):
-            with self.captureOnCommitCallbacks(execute=True):
-                complete_attempt(retry.attempt.id, result=self.quality_result([]), now=completed_at)
-                duplicate = complete_attempt(retry.attempt.id, result=self.quality_result([]))
+            complete_attempt(retry.attempt.id, result=self.quality_result([]), now=completed_at)
+            duplicate = complete_attempt(retry.attempt.id, result=self.quality_result([]))
         self.assertTrue(duplicate.idempotent)
         self.assertFalse(PhotoFaceDetection.objects.filter(attempt__photo=photo).exists())
         notify.assert_called_once()
@@ -1231,7 +1232,8 @@ class ProcessingJobServiceTests(TestCase):
         membership = photo_import_backlogs([photo.pk])
         self.assertEqual(membership, _point_photo_import_backlogs(photo.pk))
         self.assertEqual(membership[FACE_QUEUE], (0, 0))
-        delta.assert_called_once_with(photo.pk, {FACE_QUEUE: (-1, 0)})
+        counter.refresh_from_db()
+        self.assertEqual((counter.pending, counter.failed), (0, 0))
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_legacy_face_enrollment_and_replacement_of_failed_job_emits_changes(self) -> None:
@@ -1240,35 +1242,34 @@ class ProcessingJobServiceTests(TestCase):
         self.assertEqual(
             photo_import_backlogs([photo.pk]), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)}
         )
-        with patch("config.queue_events.notify_queue_backlog_delta") as delta:
-            with self.captureOnCommitCallbacks(execute=True):
-                request_face_embedding_enqueue(photo)
-            claimed = claim_job(
-                contract_version=3, processor_type="face_embedding", processor_version=5
-            )
-            with self.captureOnCommitCallbacks(execute=True):
-                fail_attempt(claimed.attempt.id, error_code="invalid_media", retryable=False)
-            self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 1))
-            with self.captureOnCommitCallbacks(execute=True):
-                request_processor(
-                    photo,
-                    processor_type="face_embedding",
-                    contract_version=3,
-                    processor_version=5,
-                    configuration=self.quality_configuration()
-                    | {"embedding_storage": "vector_only"},
-                    input_fingerprint=self.face_input_fingerprint(preview),
-                    replace_terminal_generation=True,
-                )
-        self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 0))
-        self.assertEqual(
-            [call.args for call in delta.call_args_list],
-            [
-                (photo.pk, {FACE_QUEUE: (1, 0)}),
-                (photo.pk, {FACE_QUEUE: (0, 1)}),
-                (photo.pk, {FACE_QUEUE: (0, -1)}),
-            ],
+        counter, _ = PhotoImportCounter.objects.update_or_create(
+            pk=FACE_QUEUE, defaults={"pending": 0, "failed": 0, "initialized": True}
         )
+        with self.captureOnCommitCallbacks(execute=True):
+            request_face_embedding_enqueue(photo)
+        counter.refresh_from_db()
+        self.assertEqual((counter.pending, counter.failed), (1, 0))
+        claimed = claim_job(
+            contract_version=3, processor_type="face_embedding", processor_version=5
+        )
+        with self.captureOnCommitCallbacks(execute=True):
+            fail_attempt(claimed.attempt.id, error_code="invalid_media", retryable=False)
+        counter.refresh_from_db()
+        self.assertEqual((counter.pending, counter.failed), (1, 1))
+        self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 1))
+        with self.captureOnCommitCallbacks(execute=True):
+            request_processor(
+                photo,
+                processor_type="face_embedding",
+                contract_version=3,
+                processor_version=5,
+                configuration=self.quality_configuration() | {"embedding_storage": "vector_only"},
+                input_fingerprint=self.face_input_fingerprint(preview),
+                replace_terminal_generation=True,
+            )
+        self.assertEqual(photo_import_backlogs([photo.pk])[FACE_QUEUE], (1, 0))
+        counter.refresh_from_db()
+        self.assertEqual((counter.pending, counter.failed), (1, 0))
 
     @override_settings(PHOTO_PROCESSING_FACE_ENABLED=True)
     def test_wrong_processor_success_has_no_capture_time_projection(self) -> None:

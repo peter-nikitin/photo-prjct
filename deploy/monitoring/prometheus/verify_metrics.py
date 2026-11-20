@@ -16,8 +16,7 @@ assert spec and spec.loader
 control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
 CONFIG = control.load_config()
-BACKLOG_RECONCILED = "findme_photo_import_last_reconciliation_timestamp_seconds"
-RECONCILIATION_MAX_AGE_SECONDS = 1800
+COUNTERS_READY = "findme_photo_import_counters_ready"
 SOURCES = {
     "vm": (
         {"__name__": "sys_memory_MemAvailable", "instance": "findme-photo-app"},
@@ -39,7 +38,7 @@ SOURCES = {
     ),
     "queue-telemetry": (
         {"__name__": "findme_queue_telemetry_listening", "job": "findme-queue-telemetry"},
-        {"__name__": BACKLOG_RECONCILED, "job": "findme-queue-telemetry"},
+        {"__name__": COUNTERS_READY, "job": "findme-queue-telemetry"},
         *(
             {
                 "__name__": f"findme_photo_import_{kind}_count",
@@ -75,10 +74,8 @@ def check(transport, scope: str, *, now: float | None = None) -> None:
                 raise control.ControlError("PostgreSQL exporter cannot connect")
             if selector["__name__"] == "findme_queue_telemetry_listening" and value != 1:
                 raise control.ControlError("Queue telemetry listener is disconnected")
-            if selector["__name__"] == BACKLOG_RECONCILED and (
-                value <= 0 or not 0 <= observed_at - value <= RECONCILIATION_MAX_AGE_SECONDS
-            ):
-                raise control.ControlError("Queue telemetry backlog reconciliation is stale")
+            if selector["__name__"] == COUNTERS_READY and value != 1:
+                raise control.ControlError("Photo import counters are uninitialized or unavailable")
 
 
 def main() -> int:
@@ -89,8 +86,7 @@ def main() -> int:
     try:
         mode = "github-oidc" if args.oidc_config else "yc"
         transport = control.CloudTransport(CONFIG, control.identity(mode, args.oidc_config))
-        timeout = 900 if args.scope == "queue-telemetry" else 300
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + 300
         while True:
             try:
                 check(transport, args.scope)
@@ -103,7 +99,6 @@ def main() -> int:
                             "sample stale/nonfinite:",
                             "PostgreSQL exporter",
                             "Queue telemetry listener",
-                            "Queue telemetry backlog reconciliation",
                         )
                     )
                     or time.monotonic() >= deadline

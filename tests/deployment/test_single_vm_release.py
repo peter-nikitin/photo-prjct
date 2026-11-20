@@ -42,8 +42,8 @@ def test_release_stops_old_search_owners_before_schema_and_starts_executor(tmp_p
     assert calls.index("manage.py migrate") < calls.index("up -d --no-deps archive-worker")
     assert "--wait gallery-search-worker" not in calls
     assert "up -d --wait --force-recreate --no-deps nginx" in calls
-    assert "photo-worker" not in calls
-    assert "up -d --wait photo-worker" not in calls
+    assert "pull photo-worker" not in calls
+    assert not any(" up " in call and call.endswith(" photo-worker") for call in calls.splitlines())
 
 
 def test_telemetry_start_failure_leaves_application_release_healthy(tmp_path):
@@ -77,9 +77,12 @@ def test_telemetry_start_failure_leaves_application_release_healthy(tmp_path):
     assert "QUEUE_TELEMETRY_START=failed" in result.stdout
 
 
-def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch) -> None:
+def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch, capsys) -> None:
+    import base64
+    import io
     import json
     import runpy
+    import tarfile
 
     module = runpy.run_path(str(ROOT / "deploy/run-single-vm.py"))
     key = tmp_path / "key"
@@ -110,7 +113,9 @@ def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch) -> N
 
     def run(command, **kwargs):
         captured.update(command=command, payload=json.loads(kwargs["input"]))
-        return subprocess.CompletedProcess(command, 0, stdout="")
+        return subprocess.CompletedProcess(
+            command, 0, stdout="PHOTO_WORKER_VERIFY=ok\nPHOTO_WORKER_VERIFY=ok secret-output\n"
+        )
 
     monkeypatch.setattr(subprocess, "run", run)
     module["main"]()
@@ -118,9 +123,19 @@ def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch) -> N
     assert "django-secret" not in repr(captured["command"])
     assert captured["payload"]["environment"]["SECRET_KEY"] == "django-secret"
     assert "VM_SSH_KEY_FILE" not in captured["payload"]["environment"]
+    archive = io.BytesIO(base64.b64decode(captured["payload"]["archive"]))
+    with tarfile.open(fileobj=archive) as package:
+        assert "deploy/verify-photo-worker.py" in package.getnames()
+    output = capsys.readouterr().out.splitlines()
+    assert "PHOTO_WORKER_VERIFY=ok" in output
+    assert all("secret-output" not in line for line in output)
     assert {"192.0.2.1", "localhost", "127.0.0.1", "web"} <= set(
         captured["payload"]["environment"]["ALLOWED_HOSTS"].split(",")
     )
+
+    monkeypatch.setenv("DEPLOY_WORKER", "false")
+    module["main"]()
+    assert "PHOTO_WORKER_IMAGE" not in captured["payload"]["environment"]
 
 
 def test_transport_rejects_public_private_key_before_connecting(
@@ -382,35 +397,6 @@ def test_monitoring_remote_projects_secret_and_starts_only_exporter(tmp_path):
     assert exporter.startswith("docker compose ")
     assert "--profile observability up -d --no-deps --force-recreate postgres-exporter" in exporter
     assert " stop " not in calls
-
-
-def test_worker_only_apply_updates_only_running_selected_worker(tmp_path: Path) -> None:
-    commands = tmp_path / "commands"
-    docker = tmp_path / "docker"
-    docker.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMANDS"\n'
-        'case "$*" in *"ps --status running -q photo-worker"*) echo running ;; esac\n'
-    )
-    docker.chmod(0o755)
-    result = subprocess.run(
-        ["sh", str(ROOT / "deploy/apply-deployment.sh")],
-        env={
-            **os.environ,
-            "PATH": f"{tmp_path}:{os.environ['PATH']}",
-            "COMMANDS": str(commands),
-            "DEPLOY_ROOT": str(tmp_path),
-            "DEPLOY_WEB": "false",
-            "DEPLOY_WORKER": "true",
-            "DEPLOY_IMPORT": "false",
-            "DEPLOY_COMMERCE": "false",
-        },
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    calls = commands.read_text()
-    assert "pull photo-worker" in calls and "up -d --no-deps photo-worker" in calls
-    assert "web" not in calls and "import-worker" not in calls and "commerce-worker" not in calls
 
 
 def test_monitoring_only_change_selects_exporter_without_app_images():

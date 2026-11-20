@@ -3,6 +3,11 @@ set -eu
 
 cd "${DEPLOY_ROOT:-/opt/photo-prjct}"
 compose() { docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml "$@"; }
+active_photo_worker=
+if [ "$DEPLOY_WEB" = true ] || [ "$DEPLOY_WORKER" = true ]; then
+    active_photo_worker="$(compose --profile photo-worker ps --status running -q photo-worker)"
+fi
+
 if [ "$DEPLOY_WEB" = true ]; then
     printf '%s\n' 'DEPLOY_STAGE=pull-images'
     compose pull db web gallery-search-worker archive-worker nginx certbot-renew
@@ -37,6 +42,13 @@ update_worker() {
         compose --profile "$profile" up -d --no-deps "$service"
     fi
 }
-[ "$DEPLOY_WORKER" = false ] || update_worker photo-worker photo-worker
+if [ -n "$active_photo_worker" ]; then
+    printf '%s\n' 'DEPLOY_STAGE=photo-worker'
+    if [ "$DEPLOY_WORKER" = true ]; then
+        compose --profile photo-worker pull photo-worker
+    fi
+    compose --profile photo-worker up -d --no-deps --pull never --timeout 180 photo-worker
+    python3 deploy/verify-photo-worker.py
+fi
 [ "$DEPLOY_IMPORT" = false ] || update_worker import import-worker
 [ "$DEPLOY_COMMERCE" = false ] || update_worker commerce commerce-worker

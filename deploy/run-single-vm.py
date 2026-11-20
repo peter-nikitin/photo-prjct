@@ -14,8 +14,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_LOG_PATTERN = (
     r"DEPLOY_STAGE=(?:stop-workers|pull-images|commerce-check|database|migrate|"
-    r"sync-feature-flags|static|web)"
+    r"sync-feature-flags|static|web|photo-worker)"
     r"|QUEUE_TELEMETRY_START=failed"
+    r"|PHOTO_WORKER_VERIFY=(?:ok|unavailable|container-mismatch|not-running|"
+    r"image-mismatch|environment-mismatch)"
     r"|Feature flags synchronized: created=[0-9]{1,9} updated=[0-9]{1,9} "
     r"preserved=[0-9]{1,9} deleted=[0-9]{1,9}\."
 )
@@ -163,6 +165,8 @@ def main() -> None:
     if any(value not in ("true", "false") for value in selection.values()):
         raise ValueError("invalid deployment selection")
     if not monitoring:
+        if selection["DEPLOY_WORKER"] == "false":
+            environment.pop("PHOTO_WORKER_IMAGE", None)
         for flag, name in (
             ("DEPLOY_WEB", "APP_IMAGE"),
             ("DEPLOY_COMMERCE", "APP_IMAGE"),
@@ -182,6 +186,7 @@ def main() -> None:
         for name in (
             "docker-compose.deployment.yml",
             "deploy/apply-deployment.sh",
+            "deploy/verify-photo-worker.py",
             "deploy/postgres-monitoring/prepare-role.py",
             "deploy/nginx/http.conf",
             "deploy/nginx/https.conf",

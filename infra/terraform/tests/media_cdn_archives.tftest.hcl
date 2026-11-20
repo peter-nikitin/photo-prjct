@@ -51,9 +51,9 @@ run "route_only_signed_archives_to_scratch" {
       jsondecode(findmecdn_rule.private_archives.options_json).slice.value &&
       jsondecode(findmecdn_rule.private_archives.options_json).edgeCacheSettings.value.customValues["200"] == "600" &&
       jsondecode(findmecdn_rule.private_archives.options_json).edgeCacheSettings.value.customValues["206"] == "600" &&
-      contains(jsondecode(findmecdn_rule.private_archives.options_json).cacheHttpHeaders.value, "Content-Disposition") &&
+      !contains(keys(jsondecode(findmecdn_rule.private_archives.options_json)), "cacheHttpHeaders") &&
       jsondecode(findmecdn_rule.private_archives.options_json).staticHeaders.value["Cache-Control"] == "private, no-store"
     )
-    error_message = "The ZIP route uses the existing signing key and caches attachment ranges at the edge."
+    error_message = "The ZIP route uses the existing signing key, caches ranges, and uses the default origin-header policy."
   }
 }

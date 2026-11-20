@@ -19,11 +19,7 @@ resource "findmecdn_rule" "private_archives" {
   options_json = jsonencode(merge(local.cdn_image_cache, local.cdn_storage_headers, local.cdn_private_image, {
     edgeCacheSettings = { enabled = true, value = { customValues = { "200" = "600", "206" = "600" } } }
     slice             = { enabled = true, value = true }
-    cacheHttpHeaders = {
-      enabled = true
-      value   = ["Content-Disposition", "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag"]
-    }
-    staticHeaders = { enabled = true, value = { "Cache-Control" = "private, no-store" } }
+    staticHeaders     = { enabled = true, value = { "Cache-Control" = "private, no-store" } }
   }))
 
   lifecycle {

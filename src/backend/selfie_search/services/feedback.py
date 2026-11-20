@@ -12,7 +12,7 @@ from selfie_search.models import (
     SelfieSearch,
     SelfieSearchFeedback,
 )
-from selfie_search.services.results import saved_ready_result_page
+from selfie_search.services.results import saved_ready_result_rows
 from selfie_search.storage import FeedbackSelfieStorage
 
 
@@ -32,11 +32,10 @@ def save_feedback_selfie(
     if SelfieSearchFeedback.objects.filter(search=search).exists():
         return False
 
-    visible_count = saved_ready_result_page(
+    visible_count = saved_ready_result_rows(
         search=search,
-        page_number=None,
         paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-    ).paginator.count
+    ).count()
     stored = storage.put(content=upload.content, content_type=upload.content_type)
     try:
         feedback = SelfieSearchFeedback(

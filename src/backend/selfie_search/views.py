@@ -12,7 +12,6 @@ from commerce.views import (
 from config.views import _paid_watermarked_previews_enabled, _public_media_resolver
 from django import forms
 from django.conf import settings
-from django.core.paginator import InvalidPage
 from django.http import (
     HttpResponse,
     HttpResponseBase,
@@ -51,9 +50,9 @@ from selfie_search.services.results import (
     PublicSearchNotFound,
     public_status_payload,
     resolve_public_result,
-    saved_ready_result_page,
     saved_ready_result_photo,
     saved_ready_result_photos,
+    saved_ready_result_rows,
 )
 from selfie_search.services.submission import (
     GallerySearchFailed,
@@ -225,20 +224,12 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     negative_feedback = negative_feedback_state(
         search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
     )
-    selfie_search_page = None
-    if search.status == SelfieSearch.Status.READY:
-        try:
-            selfie_search_page = saved_ready_result_page(
-                search=search,
-                page_number=request.GET.get("page"),
-                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-                excluded_photo_ids=negative_feedback.excluded_photo_ids,
-            )
-        except InvalidPage:
-            return _not_found_response()
-        photos = tuple(row.photo for row in selfie_search_page.object_list)
-    else:
-        photos = ()
+    result_rows = tuple(
+        saved_ready_result_rows(
+            search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+        ).exclude(photo_id__in=negative_feedback.excluded_photo_ids)
+    )
+    photos = tuple(row.photo for row in result_rows)
     gallery_photos = tuple(
         GalleryPhotoFactory.from_photo(
             photo=photo,
@@ -254,14 +245,10 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         )
         for photo in photos
     )
-    gallery_result_items = (
-        tuple(zip(selfie_search_page.object_list, gallery_photos, strict=True))
-        if selfie_search_page is not None
-        else ()
-    )
+    gallery_result_items = tuple(zip(result_rows, gallery_photos, strict=True))
     continuation_url = None
     usable_photo_ids: set[str] = set()
-    if selfie_search_page is not None and selfie_search_page.paginator.count:
+    if result_rows:
         continuation_url = reverse(
             "selfie_search:continue",
             kwargs={"event_slug": event_slug, "public_token": public_token},
@@ -292,14 +279,20 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         feedback_submitted = SelfieSearchFeedback.objects.filter(search=search).exists()
         if not feedback_submitted:
             feedback_context = {
-                "is_problem": selfie_search_page is None or not selfie_search_page.paginator.count,
+                "is_problem": not result_rows,
                 "url": reverse(
                     "selfie_search:feedback_selfie",
                     kwargs={"event_slug": search.event.slug, "public_token": public_token},
                 ),
             }
-    published_count = selfie_search_page.paginator.count if selfie_search_page else 0
-    archive_action = _result_archive_action(request=request, search=search, page=selfie_search_page)
+    published_count = len(result_rows)
+    archive_action = (
+        ArchivePageAction(label="Скачать все", helper_text=None)
+        if published_count >= 2
+        and search.event.access_type == Event.AccessType.FREE
+        and feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user)
+        else None
+    )
     continuation_empty = (
         last_pass is not None
         and last_pass.status == SelfieSearch.Status.READY
@@ -354,7 +347,6 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             ),
             "is_gallery_origin": is_gallery_origin,
             "selfie_feedback_correlation": feedback_correlation,
-            "selfie_search_page": selfie_search_page,
             "is_terminal": search.status in _TERMINAL_SEARCH_STATUSES,
             "public_token": public_token,
             "public_token_digest": search.public_token_digest,
@@ -495,9 +487,7 @@ def result_download(request, event_slug: str, public_token: str, photo_id: str) 
 
 @require_POST
 def result_archive(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
-    if "page" in request.GET or not feature_flag_services.is_enabled(
-        BULK_PHOTO_DOWNLOAD, request.user
-    ):
+    if not feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user):
         return _not_found_response()
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None or search.event.access_type != Event.AccessType.FREE:
@@ -523,20 +513,6 @@ def _event_page(request, event_slug: str, form: SelfieSearchUploadForm, *, statu
     response = event_detail(request, event_slug, selfie_search_form=form)
     response.status_code = status
     return response
-
-
-def _result_archive_action(*, request, search: SelfieSearch, page):
-    if (
-        page is None
-        or search.event.access_type != Event.AccessType.FREE
-        or not feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user)
-    ):
-        return None
-    return (
-        ArchivePageAction(label="Скачать все", helper_text=None)
-        if page.paginator.count >= 2
-        else None
-    )
 
 
 def _archive_entries(photos: tuple[Photo, ...]) -> tuple[ArchiveEntry, ...] | None:

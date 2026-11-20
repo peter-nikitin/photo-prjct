@@ -916,14 +916,12 @@ def _selfie_search_ready(
     archive_available: bool = True,
     include_pass: bool = False,
 ) -> HttpResponse:
-    selfie_search_page = Paginator(photos, 2).page(1)
-    visible_photos = tuple(selfie_search_page.object_list)
     results = tuple(
         FixtureSelfieSearchResult(
             f"00000000-0000-4000-8000-00000000001{index}",
-            search_id="next-pass" if include_pass and index == 2 else None,
+            search_id="next-pass" if include_pass and index >= 3 else None,
         )
-        for index in range(1, len(visible_photos) + 1)
+        for index in range(1, len(photos) + 1)
     )
     archive_action = (
         ArchivePageAction(label="Скачать все", helper_text=None)
@@ -953,12 +951,11 @@ def _selfie_search_ready(
                 "selfie_search:continue",
                 kwargs={"event_slug": event.slug, "public_token": "visual-ready-result"},
             ),
-            "continuation_photo_ids": {visible_photos[0].photo_id} if visible_photos else set(),
-            "gallery_photos": visible_photos,
-            "gallery_result_items": tuple(zip(results, visible_photos, strict=True)),
+            "continuation_photo_ids": {photos[0].photo_id} if photos else set(),
+            "gallery_photos": photos,
+            "gallery_result_items": tuple(zip(results, photos, strict=True)),
             "public_token": "visual-ready-result",
             "result_feedback_url": reverse("search_feedback_submit", args=(event.slug,)),
-            "selfie_search_page": selfie_search_page,
             "is_terminal": True,
             "search": FixtureSelfieSearch(
                 "ready", eligible_photo_count=46, published_matched_photo_count=3
@@ -1217,7 +1214,6 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
             "published_count": len(photos),
             "public_token": "visual-feedback",
             "result_feedback_url": reverse("search_feedback_submit", args=(EVENTS[0].slug,)),
-            "selfie_search_page": Paginator(photos, 2).page(1),
             "is_terminal": True,
             "public_token_digest": "b" * 64,
             "search": FixtureSelfieSearch(

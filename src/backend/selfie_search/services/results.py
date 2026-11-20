@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Final
 
-from django.core.paginator import Page, Paginator
 from django.db.models import F, Q, QuerySet, Window
 from django.db.models.functions import RowNumber
 from django.views.decorators.debug import sensitive_variables
@@ -17,9 +15,6 @@ from selfie_search.models import SelfieSearch, SelfieSearchResult
 
 class PublicSearchNotFound(LookupError):
     """A bearer token does not identify a currently public event result."""
-
-
-SELFIE_SEARCH_RESULT_PAGE_SIZE: Final = 100
 
 
 @sensitive_variables("public_token")
@@ -45,32 +40,41 @@ def saved_ready_result_photos(
     paid_watermarked_previews_enabled: bool = False,
 ) -> tuple[Photo, ...]:
     """Return eligible saved members in pass order, then capture-time order."""
-    if search.status != SelfieSearch.Status.READY:
-        return ()
-    rows = _eligible_saved_result_rows(
-        search,
-        paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+    return tuple(
+        row.photo
+        for row in saved_ready_result_rows(
+            search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+        )
     )
-    return tuple(row.photo for row in rows)
 
 
-def saved_ready_result_page(
-    *,
+def saved_ready_result_rows(
     search: SelfieSearch,
-    page_number: str | None,
+    *,
     paid_watermarked_previews_enabled: bool = False,
-    excluded_photo_ids: frozenset[str] = frozenset(),
-) -> Page:
-    """Return one page of eligible members in pass and capture-time order."""
-    rows = (
-        _eligible_saved_result_rows(
-            search,
-            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-        ).exclude(photo_id__in=excluded_photo_ids)
-        if search.status == SelfieSearch.Status.READY
-        else ()
+) -> QuerySet[SelfieSearchResult]:
+    """Return eligible members in pass and capture-time order, once per photo."""
+    if search.status != SelfieSearch.Status.READY:
+        return SelfieSearchResult.objects.none()
+    return (
+        eligible_saved_result_rows(
+            search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+        )
+        .alias(
+            first_pass=Window(
+                expression=RowNumber(),
+                partition_by=[F("photo_id")],
+                order_by=[F("search__created_at").asc(), F("search_id").asc()],
+            )
+        )
+        .filter(first_pass=1)
+        .order_by(
+            "search__created_at",
+            "search_id",
+            F("photo__capture_time").asc(nulls_last=True),
+            "photo_id",
+        )
     )
-    return Paginator(rows, SELFIE_SEARCH_RESULT_PAGE_SIZE).page(page_number or 1)
 
 
 def saved_ready_result_photo(
@@ -94,41 +98,13 @@ def saved_ready_result_row(
     photo_id: str,
     paid_watermarked_previews_enabled: bool,
 ) -> SelfieSearchResult | None:
-    if search.status != SelfieSearch.Status.READY:
-        return None
     return (
-        _eligible_saved_result_rows(
+        saved_ready_result_rows(
             search,
             paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
         )
         .filter(photo_id=photo_id)
         .first()
-    )
-
-
-def _eligible_saved_result_rows(
-    search: SelfieSearch,
-    *,
-    paid_watermarked_previews_enabled: bool,
-) -> QuerySet[SelfieSearchResult]:
-    return (
-        eligible_saved_result_rows(
-            search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
-        )
-        .alias(
-            first_pass=Window(
-                expression=RowNumber(),
-                partition_by=[F("photo_id")],
-                order_by=[F("search__created_at").asc(), F("search_id").asc()],
-            )
-        )
-        .filter(first_pass=1)
-        .order_by(
-            "search__created_at",
-            "search_id",
-            F("photo__capture_time").asc(nulls_last=True),
-            "photo_id",
-        )
     )
 
 

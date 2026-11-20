@@ -449,28 +449,17 @@ class FeedbackSubmissionTests(TestCase):
         result_url = reverse("selfie_search:result", args=(self.event.slug, token))
         first_photo = self.report_data(first.photo_id, public_token=token)
         url = self.report_url()
-        with patch("selfie_search.services.results.SELFIE_SEARCH_RESULT_PAGE_SIZE", 1):
-            first_page = self.client.get(result_url)
-            self.assertContains(
-                first_page, "data-result-feedback data-reversible-feedback", count=1
-            )
-            self.assertEqual(self.client.post(url, first_photo).status_code, 403)
-            self.assertEqual(self.csrf_post(url, first_photo).status_code, 201)
-            self.assertEqual(self.csrf_post(url, first_photo).status_code, 201)
-            second_page = self.client.get(result_url, {"page": 2})
-            self.assertContains(second_page, f'value="{second.photo_id}"')
-            self.assertEqual(
-                self.csrf_post(
-                    url, self.report_data(second.photo_id, public_token=token)
-                ).status_code,
-                201,
-            )
-            for page in (1, 2):
-                self.assertContains(
-                    self.client.get(result_url, {"page": page}),
-                    'aria-pressed="true">',
-                    count=1,
-                )
+        self.assertContains(
+            self.client.get(result_url), "data-result-feedback data-reversible-feedback", count=2
+        )
+        self.assertEqual(self.client.post(url, first_photo).status_code, 403)
+        self.assertEqual(self.csrf_post(url, first_photo).status_code, 201)
+        self.assertEqual(self.csrf_post(url, first_photo).status_code, 201)
+        self.assertEqual(
+            self.csrf_post(url, self.report_data(second.photo_id, public_token=token)).status_code,
+            201,
+        )
+        self.assertContains(self.client.get(result_url), 'aria-pressed="true">', count=2)
         self.assertEqual(
             SearchFeedback.objects.filter(search_context__search_id=str(search.pk)).count(), 2
         )

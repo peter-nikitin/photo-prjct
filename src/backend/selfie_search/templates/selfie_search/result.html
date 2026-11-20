@@ -88,9 +88,6 @@
             {% endfor %}
           </div>
           {% endfor %}
-          {% if selfie_search_page.paginator.num_pages > 1 %}
-            {% include "ui/gallery_pagination.html" with pagination_page=selfie_search_page pagination_label="Страницы результатов поиска" %}
-          {% endif %}
         {% else %}
           <p class="selfie-search-empty">Совпадений не найдено</p>
         {% endif %}

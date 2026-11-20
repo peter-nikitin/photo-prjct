@@ -967,7 +967,7 @@ test('continuation buttons submit the expected source without exposing the resul
   expect(submitted[1]).not.toContain('name="photo_id"');
 });
 
-test('archive actions cover all free search photos, order pages, and paid result denial', async ({ page }) => {
+test('free search results show all passes and archive actions preserve order pagination', async ({ page }) => {
   for (const [path, expected] of [
     [
       '/__visual__/event/selfie-search/ready/single/',
@@ -975,7 +975,7 @@ test('archive actions cover all free search photos, order pages, and paid result
     ],
     [
       '/__visual__/event/selfie-search/ready/',
-      { label: 'Скачать все', helper: null, pages: true },
+      { label: 'Скачать все', helper: null, pages: false },
     ],
     [
       '/__visual__/order/paid/',
@@ -1007,6 +1007,12 @@ test('archive actions cover all free search photos, order pages, and paid result
       await expect(page.locator('.gallery-pagination')).toHaveCount(0);
     }
   }
+
+  await page.goto('/__visual__/event/selfie-search/ready/');
+  const groups = page.locator('.selfie-search-results .event-gallery-grid');
+  await expect(groups).toHaveCount(2);
+  await expect(groups.nth(0).locator('.gallery-card')).toHaveCount(2);
+  await expect(groups.nth(1).locator('.gallery-card')).toHaveCount(1);
 
   await page.goto('/__visual__/event/selfie-search/ready/paid/');
   await expect(page.locator('.selfie-search-archive-action')).toHaveCount(0);

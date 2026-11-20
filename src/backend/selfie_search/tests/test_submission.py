@@ -60,7 +60,7 @@ from selfie_search.services.jobs import (
 )
 from selfie_search.services.ranking import RankingError
 from selfie_search.services.read_selection import rank_selected_direct
-from selfie_search.services.results import saved_ready_result_page
+from selfie_search.services.results import saved_ready_result_rows
 from selfie_search.services.submission import (
     GallerySearchUnavailable,
     gallery_search_faces_by_photo,
@@ -1146,11 +1146,10 @@ class GalleryPhotoSubmissionTests(TestCase):
         self.assertEqual(list(processed.results.values_list("photo_id", flat=True)), [photo.pk])
         self.assertEqual(
             tuple(
-                saved_ready_result_page(
+                saved_ready_result_rows(
                     search=processed,
-                    page_number=None,
                     paid_watermarked_previews_enabled=True,
-                ).object_list
+                )
             ),
             (),
         )
@@ -1658,8 +1657,7 @@ class GalleryCompletionConcurrencyTests(TransactionTestCase):
         if change == "hide_source":
             self.assertEqual(search.status, SelfieSearch.Status.READY)
             self.assertEqual(search.results.count(), 1)
-            page = saved_ready_result_page(search=search, page_number=None)
-            self.assertEqual(list(page.object_list), [])
+            self.assertEqual(list(saved_ready_result_rows(search)), [])
         elif change:
             self.assertEqual(search.status, SelfieSearch.Status.FAILED)
             self.assertEqual(search.results.count(), 0)

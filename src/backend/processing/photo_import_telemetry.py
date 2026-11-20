@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from config import queue_events
-from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE, PhotoImportBacklogs
+from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE
 from django.db import connection, transaction
 from django.db.backends.utils import CursorWrapper
 from django.db.models import F, Min, Q
@@ -18,6 +18,7 @@ from processing.models import (
     FACE_EMBEDDING_PROCESSOR,
     GENERATE_PREVIEW_PROCESSOR,
     GENERATE_WATERMARKED_PREVIEW_PROCESSOR,
+    PhotoImportCounter,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -30,7 +31,9 @@ from processing.services.face_cohort import (
 logger = logging.getLogger(__name__)
 
 _MILLISECOND = timedelta(milliseconds=1)
-RECONCILIATION_PAGE_SIZE = 200
+REBUILD_PAGE_SIZE = 25
+
+type PhotoImportBacklogs = dict[str, tuple[int, int]]
 
 _PREVIEW_POLICIES = (
     Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
@@ -147,7 +150,7 @@ def _batch_accepted_face_ids(photo_ids: Sequence[str], states: list[dict[str, An
 
 def photo_import_backlogs(photo_ids: Sequence[str]) -> PhotoImportBacklogs:
     """Read only page photos and the identities referenced by their current states."""
-    if len(photo_ids) > RECONCILIATION_PAGE_SIZE:
+    if len(photo_ids) > REBUILD_PAGE_SIZE:
         raise ValueError("Photo import backlog reads require at most one page")
     photos = list(
         Photo.objects.filter(pk__in=photo_ids, src="", original_key__gt="")
@@ -247,7 +250,7 @@ def photo_import_backlogs(photo_ids: Sequence[str]) -> PhotoImportBacklogs:
 
 
 @contextmanager
-def _reconciliation_read() -> Iterator[CursorWrapper]:
+def _rebuild_read() -> Iterator[CursorWrapper]:
     with transaction.atomic(), connection.cursor() as cursor:
         cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         cursor.execute("SET LOCAL statement_timeout = 250")
@@ -256,9 +259,8 @@ def _reconciliation_read() -> Iterator[CursorWrapper]:
 
 def read_photo_import_backlog_upper_bound() -> str | None:
     """Fence the pass at the largest photo ID visible at its start."""
-    # Pattern-ops comparisons keep the index and Python delta cursor in the same
-    # order, including legacy IDs such as LDN-1432 under a non-binary DB locale.
-    with _reconciliation_read() as cursor:
+    # Pattern-ops comparisons use the character PK index even under a non-binary locale.
+    with _rebuild_read() as cursor:
         cursor.execute("SELECT id FROM picflow_photo ORDER BY id USING ~>~ LIMIT 1")
         row = cursor.fetchone()
     return row[0] if row is not None else None
@@ -274,8 +276,8 @@ def read_photo_import_backlog_page(
         sql += " AND id ~>~ %s"
         params.append(after)
     sql += " ORDER BY id USING ~<~ LIMIT %s"
-    params.append(RECONCILIATION_PAGE_SIZE)
-    with _reconciliation_read() as cursor:
+    params.append(REBUILD_PAGE_SIZE)
+    with _rebuild_read() as cursor:
         cursor.execute(sql, params)
         photo_ids = [row[0] for row in cursor.fetchall()]
         if not photo_ids:
@@ -304,7 +306,7 @@ def schedule_original_accepted(photo: Photo) -> None:
         deltas = {GALLERY_QUEUE: (1, 0)}
         if photo.original_content_type == "image/jpeg":
             deltas[FACE_QUEUE] = (1, 0)
-        _schedule_backlog_delta(photo.pk, deltas)
+        _schedule_backlog_delta(deltas)
 
 
 def capture_photo_import_backlog(photo_id: str, processor_type: str) -> PhotoImportBacklogs | None:
@@ -326,13 +328,21 @@ def schedule_photo_import_backlog_delta(photo_id: str, before: PhotoImportBacklo
         if delta != (0, 0):
             deltas[queue] = delta
     if deltas:
-        _schedule_backlog_delta(photo_id, deltas)
+        _schedule_backlog_delta(deltas)
 
 
-def _schedule_backlog_delta(photo_id: str, deltas: PhotoImportBacklogs) -> None:
-    transaction.on_commit(
-        lambda: queue_events.notify_queue_backlog_delta(photo_id, deltas), robust=True
-    )
+def _schedule_backlog_delta(deltas: PhotoImportBacklogs) -> None:
+    transaction.on_commit(lambda: _apply_backlog_delta(deltas), robust=True)
+
+
+def _apply_backlog_delta(deltas: PhotoImportBacklogs) -> None:
+    with transaction.atomic(), connection.cursor() as cursor:
+        cursor.execute("SET LOCAL statement_timeout = 100")
+        cursor.execute("SET LOCAL lock_timeout = 10")
+        for queue, (pending, failed) in sorted(deltas.items()):
+            PhotoImportCounter.objects.filter(pk=queue).update(
+                pending=F("pending") + pending, failed=F("failed") + failed
+            )
 
 
 def schedule_photo_import_completion(photo: Photo, attempt: ProcessingAttempt) -> None:

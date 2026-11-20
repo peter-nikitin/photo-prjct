@@ -25,6 +25,15 @@ BIB_RECOGNITION_PROCESSOR = "bib_recognition"
 _TERMINAL_ATTEMPT_STATUSES = ("succeeded", "failed", "expired", "stale")
 
 
+class PhotoImportCounter(models.Model):  # noqa: DJ008
+    """Best-effort backlog counts for one photo import queue."""
+
+    queue = models.CharField(max_length=32, primary_key=True)
+    pending = models.BigIntegerField(default=0)
+    failed = models.BigIntegerField(default=0)
+    initialized = models.BooleanField(default=False)
+
+
 class WorkerPool(models.Model):  # noqa: DJ008
     """Canonical infrastructure coordination; never an execution lease authority."""
 

@@ -77,7 +77,8 @@ PostgreSQL, готовую работу очередей и Web Vitals. Сбор
 Linux ────────────────────┐
 Django /metrics/ ─────────┤
 PostgreSQL → exporter ────┼→ Unified Agent → Remote Write → управляемый Prometheus → дашборд
-NOTIFY → queue-telemetry ─┘
+PostgreSQL → queue-telemetry ┘
+  NOTIFY: длительности, две строки БД: остатки импорта
 Внешний HTTPS probe ──────→ Remote Write → правила Prometheus → Alertmanager → email / Telegram
 ```
 
@@ -104,6 +105,10 @@ NOTIFY → queue-telemetry ─┘
   Мотивы решения — в
   [ADR 0067](adr/0067-aggregate-queue-telemetry-from-completion-events.md), протокол и выпуск —
   в [инструкции мониторинга](../deploy/monitoring/prometheus/README.md#queue-telemetry).
+- **Остатки импорта фото хранятся в двух строках PostgreSQL.** После коммита продукта
+  Django прибавляет дельты к счётчикам публикации галереи и распознавания лиц.
+  Коллектор читает их при опросе. Первичное заполнение и исправление погрешности
+  выполняет оператор. [ADR 0072](adr/0072-store-approximate-photo-import-counters.md)
 - **Клиентские замеры поступают с публичных HTML-страниц.** Сбор охватывает каталог,
   страницы мероприятий, документы, вход фотографа, корзину и список заказов. При скрытии страницы
   браузер отправляет доступные LCP, INP, CLS и TTFB на тот же домен. Nginx ограничивает размер и
@@ -183,7 +188,7 @@ Selfie feedback и Terraform state используют отдельные ба�
 Группы источников, CDN-ресурс и правила путей описаны в Terraform. Infrastructure применяет
 сохранённый план. При записи правил провайдер переиспользует действующие ключи CDN,
 а приложение получает ключи из Lockbox.
-[ADR 0072](adr/0072-manage-media-cdn-with-terraform.md)
+[ADR 0073](adr/0073-manage-media-cdn-with-terraform.md)
 
 <a id="search"></a>
 ## Поиск

@@ -2,7 +2,6 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from threading import Barrier
-from unittest.mock import patch
 
 from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE
 from django.contrib.auth import get_user_model
@@ -27,7 +26,7 @@ from ingestion.services.imports import (
 )
 from ingestion.storage import ObjectIdentity, ObjectMissing, UploadGrant
 from picflow.models import Event, Photo
-from processing.models import PhotoProcessingState
+from processing.models import PhotoImportCounter, PhotoProcessingState
 from processing.photo_import_telemetry import photo_import_backlogs
 from prometheus_client import REGISTRY
 
@@ -200,16 +199,19 @@ class ImportPublicationTests(TestCase):
         self.assertEqual(
             photo_import_backlogs([item.id.hex]), {GALLERY_QUEUE: (0, 0), FACE_QUEUE: (0, 0)}
         )
-        with (
-            override_feature_flags(self.flags),
-            patch("config.queue_events.notify_queue_backlog_delta") as delta,
-            self.captureOnCommitCallbacks(execute=True),
-        ):
+        for queue in (FACE_QUEUE, GALLERY_QUEUE):
+            PhotoImportCounter.objects.update_or_create(
+                pk=queue, defaults={"pending": 0, "failed": 0, "initialized": True}
+            )
+        with override_feature_flags(self.flags), self.captureOnCommitCallbacks(execute=True):
             for _ in range(2):
                 complete_import_item(
                     attempt_id=claim.attempt_id, item_id=item.id, storage=self.storage
                 )
-        delta.assert_called_once_with(item.id.hex, {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)})
+        self.assertEqual(
+            set(PhotoImportCounter.objects.values_list("queue", "pending", "failed")),
+            {(GALLERY_QUEUE, 1, 0), (FACE_QUEUE, 1, 0)},
+        )
         self.assertEqual(
             photo_import_backlogs([item.id.hex]), {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)}
         )

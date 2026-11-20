@@ -1,4 +1,4 @@
-# 0072 Управлять медиа CDN через Terraform
+# 0073 Управлять медиа CDN через Terraform
 
 - Status: Accepted
 - Дата: 2026-11-20

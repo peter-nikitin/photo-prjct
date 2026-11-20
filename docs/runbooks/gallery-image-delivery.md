@@ -3,7 +3,7 @@
 Схемы доставки описаны в [ADR 0069](../adr/0069-serve-media-through-cdn-without-imgproxy.md) и
 [ADR 0071](../adr/0071-prepare-photo-archives-in-background.md).
 Маршрутизация, группы источников и HTTPS управляются Terraform через
-[Infrastructure по ADR 0072](../adr/0072-manage-media-cdn-with-terraform.md).
+[Infrastructure по ADR 0073](../adr/0073-manage-media-cdn-with-terraform.md).
 
 ## Инфраструктурный выпуск
 

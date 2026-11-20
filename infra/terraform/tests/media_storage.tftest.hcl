@@ -1,5 +1,11 @@
 mock_provider "yandex" {}
 
+override_module {
+  target = module.media_cdn
+}
+mock_provider "findmecdn" {}
+
+
 override_resource {
   target = yandex_vpc_address.edge
   values = { external_ipv4_address = { address = "111.88.151.64" } }
@@ -9,6 +15,7 @@ run "isolate_media_buckets" {
   command = plan
 
   variables {
+    import_existing_cdn  = false
     cloud_id             = "b1gmcsmr51o5kvp86l55"
     folder_id            = "b1g2qttgfhb4gdunvlge"
     zone                 = "ru-central1-d"

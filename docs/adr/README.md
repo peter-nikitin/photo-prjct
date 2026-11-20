@@ -94,3 +94,4 @@ ADR фиксирует долговременный архитектурный �
 | 0070 | [Расширять поиск по лицу от прямых совпадений](0070-expand-face-search-from-direct-matches.md) | Accepted |
 | 0071 | [Собирать архивы фотографий в фоне](0071-prepare-photo-archives-in-background.md) | Accepted |
 | 0072 | [Хранить приблизительные счётчики импорта фото в PostgreSQL](0072-store-approximate-photo-import-counters.md) | Accepted |
+| 0073 | [Управлять медиа CDN через Terraform](0073-manage-media-cdn-with-terraform.md) | Accepted |

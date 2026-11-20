@@ -22,3 +22,12 @@ provider "registry.terraform.io/yandex-cloud/yandex" {
     "zh:f732c5b64205227122d286834ce00e10815f4c22dd1b14cff7b52b54ce212147",
   ]
 }
+
+provider "terraform.findme-photo.ru/findme/findmecdn" {
+  version     = "0.1.0"
+  constraints = "0.1.0"
+  hashes = [
+    "h1:55OO8CKt9i1YvcpGbbpHA8g/KDVlCSWtNqlg4MQZkQg=",
+    "h1:X4EKtJXhoAhEaKPAliXrh3BRINTSDbb82VO4KHRLTtw=",
+  ]
+}

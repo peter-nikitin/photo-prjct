@@ -94,9 +94,17 @@ def classify(paths):
             path.startswith("deploy/postgres-monitoring/") and not path.endswith(".md")
         ):
             exporter = True
-        if path.startswith(("infra/terraform/", "infra/ci/")) or path in {
+        if path.startswith(
+            (
+                "infra/terraform/",
+                "infra/ci/",
+                "infra/providers/",
+                ".github/actions/install-cdn-provider/",
+            )
+        ) or path in {
             ".github/workflows/infrastructure.yml",
             "deploy/classify-release.py",
+            "deploy/configure-media-cdn.py",
         }:
             terraform = True
             continue

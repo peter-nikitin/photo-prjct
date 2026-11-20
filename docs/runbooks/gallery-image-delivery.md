@@ -2,39 +2,30 @@
 
 Схемы доставки описаны в [ADR 0069](../adr/0069-serve-media-through-cdn-without-imgproxy.md) и
 [ADR 0071](../adr/0071-prepare-photo-archives-in-background.md).
-Переключение выполняется отдельно от обычного Deploy.
+Маршрутизация, группы источников и HTTPS управляются Terraform через
+[Infrastructure по ADR 0073](../adr/0073-manage-media-cdn-with-terraform.md).
 
-## Подготовка
+## Инфраструктурный выпуск
 
-1. В Django Admin отключить флаги для изменяемых маршрутов. Для CDN изображений используются
-   `gallery-cdn-images` и `event-cover-cdn-images`, для архивов — `bulk-photo-download`.
-2. Выпустить проверенный коммит приложения через Deploy. Проверить обычную выдачу фото и статус
-   приложения. Для web нужна проекция `IMAGE_ORIGIN_HEADER_SECRET` из Lockbox.
-3. Проверить каталог и профиль `yc`, ресурс `img.findme-photo.ru`, его CNAME и готовый
-   сертификат Certificate Manager. Взять точные имена бакетов `EVENT_MEDIA_S3_BUCKET` и
-   `OPERATIONAL_S3_BUCKET` из настроек приложения. До проверки архива применить политику
-   закрытого операционного бакета и lifecycle префикса `archives/`.
+1. Проверить сохранённый план в PR. Для первоначального переноса ожидаются только
+   импорты действующих ресурсов. Для первого выпуска ZIP ожидается создание одного
+   правила `module.media_cdn.findmecdn_rule.private_archives`.
+2. Подтвердить конкретный запуск `/infra approve <run-id>`. После слияния Infrastructure
+   применяет этот план. При создании ZIP провайдер читает действующий ключ подписи
+   правила превью. При изменении существующих правил он сохраняет используемые секреты.
+3. Проверить успешный apply, HTTPS на `img.findme-photo.ru` и выдачу существующих фото.
+   До включения флага архивов проверить закрытый бакет и суточный lifecycle префикса `archives/`.
 
-## Применение конфигурации
+Если меняется исходный код провайдера, пересобрать пакеты Go на `darwin_arm64` и
+`linux_amd64` командой `infra/ci/install-cdn-provider.sh <каталог>`. Для второй
+платформы задать `GOOS` и `GOARCH`. Обновить запись провайдера в lock-файле командой
+`terraform providers lock -fs-mirror=<каталог>/mirror -platform=darwin_arm64 -platform=linux_amd64 terraform.findme-photo.ru/findme/findmecdn`
+из `infra/terraform`. Локальный Terraform использует `TF_CLI_CONFIG_FILE=<каталог>/terraform.rc`.
 
-План без изменений:
-
-```sh
-.venv/bin/python deploy/configure-media-cdn.py \
-  --bucket "$EVENT_MEDIA_S3_BUCKET" --archive-bucket "$OPERATIONAL_S3_BUCKET"
-```
-
-После проверки плана применить конфигурацию с получением секретов из Lockbox:
-
-```sh
-.venv/bin/python scripts/run-with-environment-secrets.py \
-  --consumer media-cdn --identity yc -- \
-  .venv/bin/python deploy/configure-media-cdn.py \
-  --bucket "$EVENT_MEDIA_S3_BUCKET" --archive-bucket "$OPERATIONAL_S3_BUCKET" --apply
-```
-
-Убедиться, что CDN продолжает обслуживать HTTPS на прежнем домене. Дождаться распространения
-правил, прежде чем выпускать публичные клиентские ссылки.
+Для первичной установки ключей задать `TF_VAR_cdn_secure_key` и
+`TF_VAR_cdn_origin_auth` из закрытой проекции Lockbox при планировании и применении.
+Terraform передаёт значения только на запись. При согласованной ротации существующего
+правила задать новую несекретную `credentials_revision`, чтобы план содержал обновление.
 
 ## Проверка и включение
 
@@ -93,7 +84,8 @@ CDN задаёт годовой `max-age` публичным обложкам. �
 4. Проверить отказ без токена и с токеном по истечении срока, в том числе после прогрева
    кеша. Убедиться, что приложение отправляет браузер на адрес CDN.
    Отдельно проверить, что соседний ключ под `uploads/` недоступен через CDN.
-5. После проверки включить `bulk-photo-download`. При откате перевести флаг в `off`.
+5. После проверки включить `bulk-photo-download`. При откате перевести флаг в `off`. Если нужно прекратить выдачу по действующим ссылкам,
+   удалить правило ZIP следующим согласованным планом Terraform.
    Ранее выданные ссылки CDN сохраняют доступ до истечения подписи. Подписанные URL и
    содержимое архивов не должны попадать в логи выпуска.
 

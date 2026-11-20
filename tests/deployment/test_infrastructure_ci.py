@@ -58,6 +58,9 @@ def test_release_classifier_keeps_docs_app_and_os_paths_separate() -> None:
     for path in (
         "infra/ci/release.py",
         "infra/ci/cost_estimation.py",
+        "infra/providers/findmecdn/rule.go",
+        "infra/ci/install-cdn-provider/action.yml",
+        "deploy/configure-media-cdn.py",
         ".github/workflows/infrastructure.yml",
         "deploy/classify-release.py",
     ):
@@ -524,3 +527,36 @@ app yandex_compute_instance postgres boot yandex_compute_disk
         ] == [{"size": 30, "type": "network-hdd"}]
         postgres = by_address["yandex_compute_disk.postgres"]["values"]
         assert postgres["size"] == 10 and postgres["type"] == "network-hdd"
+
+
+def test_import_plan_rejects_mutations_and_reports_imports() -> None:
+    summary = load_helper("plan_summary")
+    endpoint = {
+        "address": "findmecdn_endpoint.media",
+        "type": "findmecdn_endpoint",
+        "change": {"actions": ["no-op"], "importing": {"id": "cdn"}},
+    }
+    assert summary.summarize({"resource_changes": [endpoint]}) == [
+        "import: findmecdn_endpoint.media"
+    ]
+    assert summary.cdn_only({"resource_changes": [endpoint]}) is True
+
+    for mutation in (
+        {**endpoint, "change": {**endpoint["change"], "actions": ["update"]}},
+        {
+            "address": "yandex_compute_instance.app",
+            "type": "yandex_compute_instance",
+            "change": {"actions": ["update"]},
+        },
+    ):
+        with pytest.raises(ValueError, match="CDN import must only record existing resources"):
+            summary.summarize({"resource_changes": [endpoint, mutation]})
+
+
+def test_only_cdn_changes_can_skip_host_reconfiguration() -> None:
+    summary = load_helper("plan_summary")
+    archive = {"type": "findmecdn_rule", "change": {"actions": ["create"]}}
+    host = {"type": "yandex_compute_instance", "change": {"actions": ["update"]}}
+    assert summary.cdn_only({"resource_changes": [archive]})
+    assert not summary.cdn_only({"resource_changes": [archive, host]})
+    assert not summary.cdn_only({"resource_changes": []})

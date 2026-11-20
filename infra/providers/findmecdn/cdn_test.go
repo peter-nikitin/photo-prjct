@@ -129,9 +129,11 @@ func TestCloudErrorsDoNotContainResponseBody(t *testing.T) {
 	for _, failed := range []struct {
 		status int
 		body   string
+		want   string
 	}{
-		{403, `{"message":"secret-value"}`},
-		{200, `{"done":true,"error":{"code":3,"message":"secret-value"}}`},
+		{403, `{"message":"secret-value"}`, "Yandex Cloud CDN returned HTTP 403"},
+		{200, `{"id":"operation-test-id","done":true,"error":{"code":3,"message":"secret-value"}}`, "CDN operation operation-test-id failed with code 3"},
+		{200, `{"id":"malformed ID","done":true,"error":{"code":3,"message":"secret-value"}}`, "CDN operation failed with code 3"},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(failed.status)
@@ -140,8 +142,8 @@ func TestCloudErrorsDoNotContainResponseBody(t *testing.T) {
 		client := cdnClient{apiURL: server.URL, http: server.Client(), token: "test-token"}
 		_, err := client.create(context.Background(), apiRule{})
 		server.Close()
-		if err == nil || strings.Contains(err.Error(), "secret-value") {
-			t.Fatal("API failures must produce errors without response bodies")
+		if err == nil || err.Error() != failed.want {
+			t.Fatal("API failure diagnostics must identify the operation without exposing its response body")
 		}
 	}
 }

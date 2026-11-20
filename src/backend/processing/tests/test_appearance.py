@@ -2,6 +2,7 @@ import json
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.db import connection
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -113,9 +114,23 @@ class AppearanceContractTests(test_previews._PreviewPublicationFixture, TestCase
         malformed = result | {"head_count": 0}
         rejection = self.worker_post(attempt_url, payload | {"result": malformed})
         assert rejection.status_code == 400, rejection.json()
-        response = self.worker_post(attempt_url, payload)
-        assert response.status_code == 200, response.json()
-        assert self.worker_post(attempt_url, payload).json()["idempotent"]
+        events = []
+
+        def observe_notifications(execute, sql, params, many, context):
+            if "pg_notify" in sql:
+                events.append(json.loads(params[1]))
+            return execute(sql, params, many, context)
+
+        with (
+            connection.execute_wrapper(observe_notifications),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            response = self.worker_post(attempt_url, payload)
+            assert response.status_code == 200, response.json()
+            assert self.worker_post(attempt_url, payload).json()["idempotent"]
+        [completed] = events
+        assert completed["queue"] == "processing_person_appearance"
+        assert set(completed["segments_ms"]) == {"waiting", "processing"}
         state = photo.processing_states.get(processor_type="person_appearance")
         assert state.accepted_attempt_id is not None
         assert state.accepted_attempt.result == appearance_metadata(result)

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from functools import partial
 
 from config.queue_events import notify_queue_completion
+from config.queue_work import MATCHING_QUEUES, schedule_transition
 from django.db import DatabaseError, connection, transaction
 from django.db.models import Q, Subquery
 from django.utils import timezone
@@ -45,7 +46,28 @@ def recover_processing() -> int:
         SelfieSearch.objects.filter(matching_task__in=tasks).update(
             status=SelfieSearch.Status.QUEUED, state_changed_at=now
         )
-        return tasks.update(status=FaceSearchTask.Status.QUEUED, available_at=now, attempt_count=0)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH recovered AS (
+                    UPDATE selfie_search_facesearchtask
+                    SET status = 'queued', available_at = %s, attempt_count = 0
+                    WHERE status = 'processing'
+                    RETURNING source
+                )
+                SELECT source, count(*) FROM recovered GROUP BY source
+                """,
+                [now],
+            )
+            recovered = cursor.fetchall()
+        for source, count in recovered:
+            schedule_transition(
+                MATCHING_QUEUES.get(source),
+                str(FaceSearchTask.Status.PROCESSING),
+                str(FaceSearchTask.Status.QUEUED),
+                amount=count,
+            )
+        return sum(count for _, count in recovered)
 
 
 def recover_missing_payloads() -> None:
@@ -90,6 +112,9 @@ def claim() -> FaceSearchTask | None:
         task.status = FaceSearchTask.Status.PROCESSING
         task.attempt_count += 1
         task.save(update_fields=["status", "attempt_count"])
+        schedule_transition(
+            MATCHING_QUEUES.get(task.source), str(FaceSearchTask.Status.QUEUED), task.status
+        )
         search = task.search
         search.status = SelfieSearch.Status.PROCESSING
         search.state_changed_at = now
@@ -283,8 +308,10 @@ def _publish_completion(search: SelfieSearch, source: str) -> None:
 
 
 def _terminal(task: FaceSearchTask) -> None:
+    previous_status = task.status
     task.status = FaceSearchTask.Status.TERMINAL
     task.save(update_fields=["status"])
+    schedule_transition(MATCHING_QUEUES.get(task.source), previous_status, task.status)
 
 
 def _fail(task: FaceSearchTask, *, code: str) -> None:
@@ -312,9 +339,11 @@ def retry(task: FaceSearchTask) -> None:
             SelfieSearch.objects.filter(pk=task.search_id).update(
                 status=SelfieSearch.Status.QUEUED, state_changed_at=now
             )
+            previous_status = task.status
             task.status = FaceSearchTask.Status.QUEUED
             task.available_at = now + RETRY_DELAY
             task.save(update_fields=["status", "available_at"])
+            schedule_transition(MATCHING_QUEUES.get(task.source), previous_status, task.status)
 
 
 def run_once() -> bool:

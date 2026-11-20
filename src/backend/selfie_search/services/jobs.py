@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
+from config.queue_work import MATCHING_QUEUES, SELFIE_RECOGNITION, schedule_transition
 from django.conf import settings
 from django.db import DatabaseError, connection, transaction
 from django.utils import timezone
@@ -160,9 +161,11 @@ def claim_search_job(
             heartbeat_at=now,
             lease_expires_at=now + timedelta(seconds=lease_seconds),
         )
+        previous_status = job.status
         job.status = SelfieSearchJob.Status.PROCESSING
         job.claimed_at = now
         job.save(update_fields=["status", "claimed_at"])
+        schedule_transition(SELFIE_RECOGNITION, previous_status, job.status)
         search = job.search
         search.status = SelfieSearch.Status.PROCESSING
         search.state_changed_at = now
@@ -231,6 +234,7 @@ def enqueue_face_search(
                 expires_at,
             ),
         )
+    schedule_transition(MATCHING_QUEUES.get(source), None, str(FaceSearchTask.Status.QUEUED))
     search.stage = SelfieSearch.Stage.MATCHING
     search.status = SelfieSearch.Status.QUEUED
     search.matching_enqueued_at = now
@@ -295,6 +299,7 @@ def complete_search_attempt(
         job.status = SelfieSearchJob.Status.SUCCEEDED
         job.completed_at = now
         job.save(update_fields=["status", "completed_at"])
+        schedule_transition(SELFIE_RECOGNITION, str(SelfieSearchJob.Status.PROCESSING), job.status)
         return SearchAttemptCompletion(attempt=attempt)
 
 
@@ -353,6 +358,9 @@ def fail_search_attempt(
                 job.status = SelfieSearchJob.Status.FAILED
                 job.completed_at = now
                 job.save(update_fields=["status", "completed_at"])
+                schedule_transition(
+                    SELFIE_RECOGNITION, str(SelfieSearchJob.Status.PROCESSING), job.status
+                )
                 intended_status, failure_code = _terminal_failure_status(error_code)
                 prepare_search_result(
                     search,
@@ -994,12 +1002,14 @@ def _retry_or_finish(
     now: timezone.datetime,
     jitter: Callable[[int, int], int] | None,
 ) -> None:
+    previous_status = job.status
     attempts_used = SelfieSearchAttempt.objects.filter(job=job).count()
     if attempts_used < _RETRY_POLICY["max_attempts"]:
         retry_at = now + timedelta(seconds=_backoff_seconds(attempts_used, jitter))
         job.status = SelfieSearchJob.Status.RETRY_WAIT
         job.available_at = retry_at
         job.save(update_fields=["status", "available_at"])
+        schedule_transition(SELFIE_RECOGNITION, previous_status, job.status)
         search.status = SelfieSearch.Status.QUEUED
         search.state_changed_at = now
         search.save(update_fields=["status", "state_changed_at"])
@@ -1007,6 +1017,7 @@ def _retry_or_finish(
     job.status = SelfieSearchJob.Status.FAILED
     job.completed_at = now
     job.save(update_fields=["status", "completed_at"])
+    schedule_transition(SELFIE_RECOGNITION, previous_status, job.status)
     prepare_search_result(
         search,
         intended_status=str(SelfieSearch.Status.FAILED),

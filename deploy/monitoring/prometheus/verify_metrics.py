@@ -17,6 +17,17 @@ control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
 CONFIG = control.load_config()
 COUNTERS_READY = "findme_photo_import_counters_ready"
+WORK_AVAILABLE = "findme_queue_work_available"
+WORK_QUEUES = (
+    "gallery-search",
+    "selfie",
+    "selfie_face_search",
+    "photo",
+    "import",
+    "commerce",
+    "photo_archive",
+)
+WORK_STATES = ("waiting", "processing", "retry_wait", "paused")
 SOURCES = {
     "vm": (
         {"__name__": "sys_memory_MemAvailable", "instance": "findme-photo-app"},
@@ -49,6 +60,22 @@ SOURCES = {
             for queue in ("photo_import_gallery", "photo_import_face")
         ),
     ),
+    "queue-work": (
+        *(
+            {"__name__": WORK_AVAILABLE, "job": "findme-queue-telemetry", "queue": queue}
+            for queue in WORK_QUEUES
+        ),
+        *(
+            {
+                "__name__": "findme_queue_work_count",
+                "job": "findme-queue-telemetry",
+                "queue": queue,
+                "state": state,
+            }
+            for queue in WORK_QUEUES
+            for state in WORK_STATES
+        ),
+    ),
 }
 
 
@@ -76,6 +103,8 @@ def check(transport, scope: str, *, now: float | None = None) -> None:
                 raise control.ControlError("Queue telemetry listener is disconnected")
             if selector["__name__"] == COUNTERS_READY and value != 1:
                 raise control.ControlError("Photo import counters are uninitialized or unavailable")
+            if selector["__name__"] == WORK_AVAILABLE and value != 1:
+                raise control.ControlError(f"Queue work counter unavailable: {selector['queue']}")
 
 
 def main() -> int:

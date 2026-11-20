@@ -1185,6 +1185,9 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
     def test_gallery_completion_reaches_the_postgres_listener_after_commit(self) -> None:
         photo, claim = self._claim("import-gallery-notification")
         first_start = claim.attempt.claimed_at
+        ProcessingJob.objects.filter(pk=claim.job.pk).update(
+            created_at=first_start - timedelta(seconds=1)
+        )
         Photo.objects.filter(pk=photo.pk).update(
             processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
             gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
@@ -1206,13 +1209,19 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
                 counter.refresh_from_db()
                 self.assertEqual(counter.pending, 0)
                 self.assertEqual(list(listener.notifies(timeout=0.01)), [])
-            notifications = list(listener.notifies(timeout=2, stop_after=1))
+            notifications = list(listener.notifies(timeout=2, stop_after=2))
             self.assertEqual(list(listener.notifies(timeout=0.01)), [])
         counter.refresh_from_db()
         self.assertEqual(counter.pending, -1)
-        self.assertEqual(
+        self.assertCountEqual(
             [json.loads(note.payload) for note in notifications],
             [
+                {
+                    "event": "queue.task.completed",
+                    "version": 1,
+                    "queue": "processing_generate_preview",
+                    "segments_ms": {"waiting": 1000, "processing": 3000},
+                },
                 {
                     "event": "queue.task.completed",
                     "version": 1,

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
+from config.queue_work import SELFIE_RECOGNITION, schedule_transition
 from django.db import DatabaseError, transaction
 from django.db.models import QuerySet
 from django.utils import timezone
@@ -86,7 +87,8 @@ def submit_selfie_search(*, event: Event, selfie: PreparedSelfie, storage, user)
                 configuration=configuration,
                 configuration_hash=_configuration_hash(configuration),
             )
-            SelfieSearchJob.objects.create(search=search, configuration=configuration)
+            job = SelfieSearchJob.objects.create(search=search, configuration=configuration)
+            schedule_transition(SELFIE_RECOGNITION, None, job.status)
     except Exception:
         try:
             storage.delete(key=stored.key)

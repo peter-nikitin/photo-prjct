@@ -13,8 +13,8 @@ from uuid import UUID, uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
 from config.queue_events import notify_queue_completion
-from django.db import transaction
-from django.db.models import Q
+from config.queue_work import ARCHIVE, schedule_transition
+from django.db import connection, transaction
 from django.utils import timezone
 from ingestion.storage import (
     PrivateUploadStorage,
@@ -79,7 +79,7 @@ def enqueue_archive_job(
     request_key = sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
     with transaction.atomic():
-        job, _ = PhotoArchiveJob.objects.select_for_update().get_or_create(
+        job, created = PhotoArchiveJob.objects.select_for_update().get_or_create(
             request_key=request_key,
             defaults={
                 "entries": payload,
@@ -88,11 +88,13 @@ def enqueue_archive_job(
                 "page": observation.page,
             },
         )
+        previous_status = None if created else job.status
         if job.status == PhotoArchiveJob.Status.FAILED or _expired(job):
             job.status = PhotoArchiveJob.Status.QUEUED
             job.public_id = uuid4()
             job.expires_at = None
             job.save(update_fields=["status", "public_id", "expires_at", "updated_at"])
+        schedule_transition(ARCHIVE, previous_status, job.status)
     return job
 
 
@@ -115,21 +117,36 @@ def sign_archive_job(job: PhotoArchiveJob) -> str:
 
 def recover_interrupted_archives() -> None:
     """Requeue work abandoned by the previous holder of the worker lock."""
-    PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.RUNNING).update(
+    updated = PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.RUNNING).update(
         status=PhotoArchiveJob.Status.QUEUED,
         updated_at=timezone.now(),
+    )
+    schedule_transition(
+        ARCHIVE,
+        str(PhotoArchiveJob.Status.RUNNING),
+        str(PhotoArchiveJob.Status.QUEUED),
+        amount=updated,
     )
 
 
 def prune_archive_jobs() -> None:
     now = timezone.now()
-    PhotoArchiveJob.objects.filter(
-        Q(status=PhotoArchiveJob.Status.READY, expires_at__lte=now)
-        | Q(
-            status__in=[PhotoArchiveJob.Status.FAILED, PhotoArchiveJob.Status.QUEUED],
-            updated_at__lte=now - _RETENTION,
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            WITH pruned AS (
+                DELETE FROM picflow_photoarchivejob
+                WHERE (status = 'ready' AND expires_at <= %s)
+                   OR (status IN ('failed', 'queued') AND updated_at <= %s)
+                RETURNING status
+            )
+            SELECT count(*) FROM pruned WHERE status = 'queued'
+            """,
+            [now, now - _RETENTION],
         )
-    ).delete()
+        removed = cursor.fetchone()
+    if removed is not None:
+        schedule_transition(ARCHIVE, str(PhotoArchiveJob.Status.QUEUED), None, amount=removed[0])
 
 
 def process_next_archive() -> bool:
@@ -146,6 +163,7 @@ def process_next_archive() -> bool:
         job.status = PhotoArchiveJob.Status.RUNNING
         job.object_id = uuid4()
         job.save(update_fields=["status", "object_id", "updated_at"])
+        schedule_transition(ARCHIVE, str(PhotoArchiveJob.Status.QUEUED), job.status)
 
     started_ns = monotonic_ns()
     try:
@@ -230,6 +248,8 @@ def _finish(job: PhotoArchiveJob, *, segments_ms: dict[str, int] | None = None) 
         updated_at=finished_at,
         expires_at=finished_at + _RETENTION if ready else None,
     )
+    if updated:
+        schedule_transition(ARCHIVE, str(PhotoArchiveJob.Status.RUNNING), None, amount=updated)
     if updated and segments_ms is not None:
         transaction.on_commit(
             partial(notify_queue_completion, "photo_archive", segments_ms),

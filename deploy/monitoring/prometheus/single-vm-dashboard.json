@@ -2599,6 +2599,370 @@
           }
         ]
       }
+    },
+    {
+      "position": {
+        "y": "232",
+        "w": "24",
+        "h": "16"
+      },
+      "group": {
+        "id": "720bef0f-0844-5d56-8f5d-3d88d1e36bd4",
+        "title": "Все очереди",
+        "widgets": [
+          {
+            "id": "36ca2cf2-4737-55f6-8100-2b2c0c987fe1",
+            "multiSourceChart": {
+              "id": "36ca2cf2-4737-55f6-8100-2b2c0c987fe1",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "f972c825-78d3-53dc-84b7-f43c6e16f08a",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (queue) (findme_queue_work_count{job=\"findme-queue-telemetry\"}) and on (queue) (min by (queue) (findme_queue_work_available{job=\"findme-queue-telemetry\"}) == 1)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "f972c825-78d3-53dc-84b7-f43c6e16f08a",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Незавершённые задачи по очередям",
+              "description": "Все ожидающие, обрабатываемые, отложенные и приостановленные задачи.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "0db97114-53ee-58a3-8be8-c9f23ad1014e",
+            "multiSourceChart": {
+              "id": "0db97114-53ee-58a3-8be8-c9f23ad1014e",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "d166f9b0-a1d2-52f9-839f-fa03028b812e",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "min by (queue) (findme_queue_work_available{job=\"findme-queue-telemetry\"})",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "d166f9b0-a1d2-52f9-839f-fa03028b812e",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Доступность счётчиков очередей",
+              "description": "1 — счётчик доступен, 0 — наблюдение недоступно.",
+              "displayLegend": true
+            },
+            "position": {
+              "x": "12",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "1873757a-2311-58ba-a4dc-7c2d33576327",
+            "multiSourceChart": {
+              "id": "1873757a-2311-58ba-a4dc-7c2d33576327",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "9167714b-1168-5abf-be45-acb683b7c9b3",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (queue, state) (findme_queue_work_count{job=\"findme-queue-telemetry\"}) and on (queue) (min by (queue) (findme_queue_work_available{job=\"findme-queue-telemetry\"}) == 1)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "9167714b-1168-5abf-be45-acb683b7c9b3",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Состояния задач по очередям",
+              "description": "Количество задач в каждом незавершённом состоянии.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "8",
+              "w": "24",
+              "h": "8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "position": {
+        "y": "248",
+        "w": "24",
+        "h": "24"
+      },
+      "group": {
+        "id": "2bdd0c99-bdad-528f-8a73-8c93bb57068a",
+        "title": "Обработка фотографий",
+        "widgets": [
+          {
+            "id": "2cdf7bc6-1c1c-5a09-acdb-b0cc61519e77",
+            "multiSourceChart": {
+              "id": "2cdf7bc6-1c1c-5a09-acdb-b0cc61519e77",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "72d8bb15-e653-591b-b459-e48d6310b8c8",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (processor, state) (findme_processing_queue_work_count{job=\"findme-queue-telemetry\"}) and on () (min(findme_queue_work_available{job=\"findme-queue-telemetry\",queue=\"photo\"}) == 1)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "72d8bb15-e653-591b-b459-e48d6310b8c8",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Незавершённые задачи по обработчикам фото",
+              "description": "Остатки по всем типам обработчиков и состояниям задач.",
+              "displayLegend": true
+            },
+            "position": {
+              "w": "24",
+              "h": "8"
+            }
+          },
+          {
+            "id": "9c6c2232-9552-5290-b400-ba2f72e83201",
+            "multiSourceChart": {
+              "id": "9c6c2232-9552-5290-b400-ba2f72e83201",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "e777ddc5-6ca9-5ba4-acd6-d06f144fea2c",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "e777ddc5-6ca9-5ba4-acd6-d06f144fea2c",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "Секунды"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Длительность этапов обработки фото, с",
+              "description": "Среднее время этапов на успешную задачу выбранного обработчика за 5 минут.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "8",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "634970e3-ad44-5a26-9e3b-1774b40d901a",
+            "multiSourceChart": {
+              "id": "634970e3-ad44-5a26-9e3b-1774b40d901a",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "329cbfb7-bab8-5163-a1f6-a2430d35f8c2",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m] @ end())) and on () (sum(increase(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m] @ end())) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "329cbfb7-bab8-5163-a1f6-a2430d35f8c2",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "type": "VISUALIZATION_TYPE_PIE"
+              },
+              "title": "Пирог этапов обработки фото",
+              "description": "Распределение времени выбранного обработчика за 5 минут к концу периода.",
+              "displayLegend": true
+            },
+            "position": {
+              "x": "12",
+              "y": "8",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "5d68be5d-21a4-5f57-8e9d-b0a6f9bdd8fb",
+            "multiSourceChart": {
+              "id": "5d68be5d-21a4-5f57-8e9d-b0a6f9bdd8fb",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "25233049-cb2b-5b49-af14-8b3d438b9fa9",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "25233049-cb2b-5b49-af14-8b3d438b9fa9",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "%",
+                    "min": "0",
+                    "max": "100"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Доли этапов обработки фото, %",
+              "description": "Доли ожидания первого захвата и времени от захвата до результата за 5 минут.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "16",
+              "w": "24",
+              "h": "8"
+            }
+          }
+        ]
+      }
     }
-  ]
+  ],
+  "parametrization": {
+    "parameters": [
+      {
+        "name": "processor",
+        "title": "Обработчик фото",
+        "query": {
+          "defaultValues": ["person_appearance"],
+          "prometheus": {
+            "match": [
+              "findme_processing_queue_work_count{job=\"findme-queue-telemetry\"}"
+            ],
+            "labelKey": "processor",
+            "workspaceId": "{{workspace_id}}"
+          }
+        }
+      }
+    ]
+  }
 }

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import random
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
 from uuid import UUID
 
-from django.db import IntegrityError, transaction
+from config.queue_events import notify_queue_completion
+from config.queue_work import PHOTO, schedule_transition
+from django.db import DatabaseError, IntegrityError, connection, transaction
+from django.db.models import Min
 from django.utils import timezone
 from picflow.models import Event, Photo
 
@@ -54,6 +59,9 @@ DEFAULT_RETRY_POLICY = {
     "jitter_seconds": 5,
     "lease_max_seconds": 300,
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 class PreviewPublicationRequired(ValueError):
@@ -126,6 +134,7 @@ def claim_job(
             )
             if state.current_job_id != job.id:
                 continue
+            previous_status = job.status
             if job.processor_type == PERSON_APPEARANCE_PROCESSOR:
                 from processing.services.person_appearance import current_appearance_input
 
@@ -133,6 +142,9 @@ def claim_job(
                     job.status = ProcessingJob.Status.CANCELLED
                     job.completed_at = now
                     job.save(update_fields=["status", "completed_at"])
+                    schedule_transition(
+                        PHOTO, previous_status, job.status, processor=job.processor_type
+                    )
                     _set_state(
                         state,
                         status=PhotoProcessingState.Status.CANCELLED,
@@ -159,6 +171,7 @@ def claim_job(
             job.status = ProcessingJob.Status.PROCESSING
             job.claimed_at = now
             job.save(update_fields=["status", "claimed_at"])
+            schedule_transition(PHOTO, previous_status, job.status, processor=job.processor_type)
             _set_state(
                 state,
                 status=PhotoProcessingState.Status.PROCESSING,
@@ -313,6 +326,7 @@ def _terminal_submission(
                 return _record_late_receipt(attempt, payload, payload_hash, now)
             _terminal_stale(attempt, payload, payload_hash, now)
             return AttemptCompletion(attempt=attempt, stale=True)
+        previous_status = job.status
         if (
             payload["outcome"] == "success"
             and attempt.processor_type == PERSON_APPEARANCE_PROCESSOR
@@ -327,6 +341,9 @@ def _terminal_submission(
                 job.status = ProcessingJob.Status.FAILED
                 job.completed_at = now
                 job.save(update_fields=["status", "completed_at"])
+                schedule_transition(
+                    PHOTO, previous_status, job.status, processor=job.processor_type
+                )
                 _set_state(
                     state,
                     status=PhotoProcessingState.Status.FAILED,
@@ -347,6 +364,8 @@ def _terminal_submission(
             job.status = ProcessingJob.Status.SUCCEEDED
             job.completed_at = now
             job.save(update_fields=["status", "completed_at"])
+            schedule_transition(PHOTO, previous_status, job.status, processor=job.processor_type)
+            schedule_processing_completion(job, now)
             _set_state(
                 state,
                 status=PhotoProcessingState.Status.SUCCEEDED,
@@ -371,6 +390,41 @@ def _terminal_submission(
                 transition_capture_time_projection(photo=photo, state=state, accepted_attempt=None)
         _close_locked_run_if_terminal(run, now)
         return AttemptCompletion(attempt=attempt)
+
+
+def schedule_processing_completion(job: ProcessingJob, completed_at: datetime) -> None:
+    transaction.on_commit(
+        partial(
+            _publish_processing_completion,
+            job.pk,
+            job.processor_type,
+            job.created_at,
+            completed_at,
+        ),
+        robust=True,
+    )
+
+
+def _publish_processing_completion(
+    job_id: UUID, processor: str, created_at: datetime, completed_at: datetime
+) -> None:
+    try:
+        with transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute("SET LOCAL statement_timeout = 100")
+            first_claim = ProcessingAttempt.objects.filter(job_id=job_id).aggregate(
+                first=Min("claimed_at")
+            )["first"]
+    except DatabaseError:
+        logger.warning("Could not read the first claim for processing completion telemetry")
+        return
+    if first_claim is not None:
+        millisecond = timedelta(milliseconds=1)
+        waiting = max(0, round((first_claim - created_at) / millisecond))
+        elapsed = round((completed_at - created_at) / millisecond)
+        notify_queue_completion(
+            f"processing_{processor}",
+            {"waiting": waiting, "processing": max(0, elapsed - waiting)},
+        )
 
 
 def _locked_context(
@@ -454,6 +508,7 @@ def _transition_failure(
     now: timezone.datetime,
     jitter: Callable[[int, int], int] | None,
 ) -> None:
+    previous_status = job.status
     attempts_used = ProcessingAttempt.objects.filter(job=job).count()
     retryable = bool(attempt.result.get("retryable"))
     if retryable and attempts_used < _policy(job.configuration)["max_attempts"]:
@@ -463,6 +518,7 @@ def _transition_failure(
         job.status = ProcessingJob.Status.RETRY_WAIT
         job.available_at = retry_at
         job.save(update_fields=["status", "available_at"])
+        schedule_transition(PHOTO, previous_status, job.status, processor=job.processor_type)
         _set_state(
             state,
             status=PhotoProcessingState.Status.RETRY_WAIT,
@@ -474,6 +530,7 @@ def _transition_failure(
     job.status = ProcessingJob.Status.FAILED
     job.completed_at = now
     job.save(update_fields=["status", "completed_at"])
+    schedule_transition(PHOTO, previous_status, job.status, processor=job.processor_type)
     _set_state(
         state,
         status=PhotoProcessingState.Status.FAILED,

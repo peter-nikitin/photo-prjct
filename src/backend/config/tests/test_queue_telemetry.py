@@ -62,7 +62,7 @@ def test_learns_new_queue_and_preserves_first_segment_set():
         event(version=1.0),
         event(result_id="private"),
         event(queue="queue name"),
-        event(queue="q" * 33),
+        event(queue="q" * 97),
         event(queue=["not-a-string"]),
         event(segments={}),
         event(segments=["wait"]),

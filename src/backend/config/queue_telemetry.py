@@ -15,6 +15,7 @@ MAX_QUEUES = 32
 MAX_SEGMENTS = 16
 MAX_SEGMENT_MS = 2**31 - 1
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+_QUEUE_NAME = re.compile(r"[a-z][a-z0-9_]{0,95}")
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -44,7 +45,7 @@ def _parse_completion(data: dict[str, Any]) -> tuple[str, dict[str, int]] | None
     queue, segments = data["queue"], data["segments_ms"]
     if (
         not isinstance(queue, str)
-        or not _NAME.fullmatch(queue)
+        or not _QUEUE_NAME.fullmatch(queue)
         or not isinstance(segments, dict)
         or not 1 <= len(segments) <= MAX_SEGMENTS
     ):

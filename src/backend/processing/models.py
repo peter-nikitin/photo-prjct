@@ -1343,3 +1343,18 @@ class PhotoProcessingState(models.Model):  # noqa: DJ008
                 errors[field_name] = "The attempt must match the state identity."
         if errors:
             raise ValidationError(errors)
+
+
+class QueueWorkCounter(models.Model):  # noqa: DJ008
+    queue = models.CharField(max_length=32)
+    processor = models.CharField(max_length=64, blank=True, default="")
+    waiting = models.BigIntegerField(default=0)
+    processing = models.BigIntegerField(default=0)
+    retry_wait = models.BigIntegerField(default=0)
+    paused = models.BigIntegerField(default=0)
+    initialized = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["queue", "processor"], name="queue_work_key_uniq"),
+        ]

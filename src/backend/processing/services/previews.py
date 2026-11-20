@@ -10,6 +10,7 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from config.metrics import observe_accepted_preview
+from config.queue_work import PHOTO, schedule_transition
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
@@ -287,9 +288,12 @@ def _publish_after_verification(
                 submitted_hash=payload_hash,
             )
         jobs._terminal_success(attempt, payload, now)
+        previous_status = job.status
         job.status = ProcessingJob.Status.SUCCEEDED
         job.completed_at = now
         job.save(update_fields=["status", "completed_at"])
+        schedule_transition(PHOTO, previous_status, job.status, processor=job.processor_type)
+        jobs.schedule_processing_completion(job, now)
         jobs._set_state(
             state,
             status=PhotoProcessingState.Status.SUCCEEDED,

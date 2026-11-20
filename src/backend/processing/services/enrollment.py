@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TypedDict, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from config.queue_work import PHOTO, schedule_transition
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
@@ -435,6 +436,13 @@ def enroll_event_capture_time_reprocessing(
                 )
                 transition_capture_time_projection(photo=photo, state=state, accepted_attempt=None)
 
+        schedule_transition(
+            PHOTO,
+            None,
+            str(ProcessingJob.Status.QUEUED),
+            processor=CAPTURE_METADATA_PROCESSOR,
+            amount=created_job_count,
+        )
         return CaptureTimeReprocessingEnrollment(
             photo_count=locked_photo_count,
             created_job_count=created_job_count,
@@ -717,6 +725,8 @@ def request_processor(
                 input_fingerprint=input_fingerprint,
                 status=ProcessingJob.Status.QUEUED,
             )
+
+            schedule_transition(PHOTO, None, job.status, processor=processor_type)
 
         # The preview-first path already includes photos awaiting first face enrollment.
         changes_backlog = replacing_terminal_generation or (

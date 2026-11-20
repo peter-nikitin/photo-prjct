@@ -43,21 +43,18 @@ def test_application_check_succeeds_without_completion_traffic():
 
 
 @pytest.mark.parametrize(
-    ("listening", "reconciled_at", "valid"),
+    ("listening", "ready", "counts", "valid"),
     [
-        (1, 1990, True),
-        (0, 1990, False),
-        (None, 1990, False),
-        (1, None, False),
-        (1, 700, True),
-        (1, 200, True),
-        (1, 199, False),
-        (1, 2001, False),
+        (1, 0, None, False),
+        (1, 1, 0, True),
+        (0, 0, None, False),
+        (None, 0, None, False),
+        (1, None, None, False),
+        (1, 2, None, False),
+        (1, 1, None, False),
     ],
 )
-def test_queue_telemetry_requires_live_listener_and_recent_snapshot(
-    listening, reconciled_at, valid
-):
+def test_queue_telemetry_requires_initialized_counter_series(listening, ready, counts, valid):
     checker = load("release_queue_telemetry", "deploy/monitoring/prometheus/verify_metrics.py")
 
     class Transport:
@@ -67,9 +64,9 @@ def test_queue_telemetry_requires_live_listener_and_recent_snapshot(
                 assert selector["job"] == "findme-queue-telemetry"
                 value = {
                     "findme_queue_telemetry_listening": listening,
-                    "findme_photo_import_last_reconciliation_timestamp_seconds": reconciled_at,
-                    "findme_photo_import_pending_count": 0,
-                    "findme_photo_import_failed_count": 0,
+                    "findme_photo_import_counters_ready": ready,
+                    "findme_photo_import_pending_count": counts,
+                    "findme_photo_import_failed_count": counts,
                 }[selector["__name__"]]
                 rows.append([[(1995, value)]] if value is not None else [])
             return rows
@@ -177,13 +174,13 @@ def test_cli_stops_at_deadline_and_reports_source(monkeypatch, capsys):
 @pytest.mark.parametrize(
     ("scope", "available_at", "result", "elapsed_expected"),
     [
-        ("queue-telemetry", 330, 0, 330),
-        ("queue-telemetry", 910, 1, 900),
+        ("queue-telemetry", 30, 0, 30),
+        ("queue-telemetry", 310, 1, 300),
         ("application", 330, 1, 300),
         ("vm", 330, 1, 300),
     ],
 )
-def test_cli_waits_for_first_snapshot_with_scope_specific_budget(
+def test_cli_waits_for_fresh_samples_with_a_bounded_retry(
     monkeypatch, scope, available_at, result, elapsed_expected
 ):
     import sys
@@ -206,12 +203,7 @@ def test_cli_waits_for_first_snapshot_with_scope_specific_budget(
                     rows.append([])
                     continue
                 timestamp = 2000 + elapsed
-                value = (
-                    timestamp
-                    if name == "findme_photo_import_last_reconciliation_timestamp_seconds"
-                    else 1
-                )
-                rows.append([[(timestamp, value)]])
+                rows.append([[(timestamp, 1)]])
             return rows
 
     monkeypatch.setattr(sys, "argv", ["verify_metrics.py", scope])

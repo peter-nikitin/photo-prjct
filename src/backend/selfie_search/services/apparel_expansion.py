@@ -16,15 +16,18 @@ from selfie_search.services.cluster_expansion import ExpandedRankedPhoto, Ranked
 from selfie_search.services.ranking import RankedPhoto
 
 POLICY: dict[str, int | float] = {
-    "version": 2,
+    "version": 3,
     "anchor_distance": 0.38,
     "anchor_consistency_distance": 0.35,
     "max_anchors": 5,
     "max_anchor_candidates": 20,
     "reid_cosine_similarity_min": 0.70,
+    "addition_color_cosine_similarity_min": 0.70,
     "color_cosine_similarity_min": 0.80,
     "helmet_cosine_similarity_min": 0.68,
     "exclusion_reid_cosine_similarity_below": 0.55,
+    "ignored_background_area_ratio_max": 0.10,
+    "ignored_background_height_ratio_max": 0.35,
     "face_cosine_distance_max": 0.55,
     "reid_rank_weight": 0.8,
     "max_candidates": 200,
@@ -33,11 +36,15 @@ POLICY: dict[str, int | float] = {
 }
 
 
-def candidate_veto(*, face_distance: float | None, helmet_similarity: float | None) -> str:
+def candidate_veto(
+    *, face_distance: float | None, helmet_similarity: float | None, color_similarity: float
+) -> str:
     if face_distance is not None and face_distance > POLICY["face_cosine_distance_max"]:
         return "face_veto"
     if helmet_similarity is not None and helmet_similarity < POLICY["helmet_cosine_similarity_min"]:
         return "helmet_veto"
+    if color_similarity < POLICY["addition_color_cosine_similarity_min"]:
+        return "color_below_threshold"
     return ""
 
 
@@ -75,7 +82,8 @@ appearance_inputs AS MATERIALIZED (
         )
 ),
 people AS MATERIALIZED (
-    SELECT appearance.id AS person_id, input.photo_id, appearance.head, appearance.reason,
+    SELECT appearance.id AS person_id, input.photo_id, appearance.bbox, appearance.head,
+        appearance.reason,
         appearance.reid, appearance.color, appearance.helmet, input.head_count,
         input.person_count, input.people_incomplete, input.face_attempt, input.fingerprint
     FROM appearance_inputs input
@@ -112,7 +120,7 @@ head_matches AS (
     ) AS matched ON person.head IS NOT NULL
 ),
 resolved_people AS (
-    SELECT person_id, photo_id, reason, reid, color, helmet, head_count, face_attempt,
+    SELECT person_id, photo_id, bbox, reason, reid, color, helmet, head_count, face_attempt,
         person_count, people_incomplete, head IS NOT NULL AS has_assigned_head,
         faces_per_person > 1 OR (matched_face_id IS NOT NULL AND people_per_face > 1)
             AS ambiguous_face,
@@ -237,15 +245,21 @@ assessments AS (
     FROM nearest
 ),
 person_assessments AS MATERIALIZED (
-    SELECT person.photo_id, person.person_id, person.face_id, person.reason,
+    SELECT person.photo_id, person.person_id, person.face_id, person.reason, person.bbox,
+        dimensions.width * dimensions.height AS area, dimensions.height,
         person.head_count, person.has_assigned_head, person.people_incomplete,
         person.ambiguous_face, person.vector IS NOT NULL AS face_verified,
+        person.reid IS NOT NULL AND person.color IS NOT NULL AS has_descriptors,
         coalesce(c.agrees, false) AS agrees, c.comparisons,
         coalesce(person.reason = ''
             AND c.highest_reid < %(exclusion_reid_cosine_similarity_below)s
             AND c.highest_color < %(color_cosine_similarity_min)s
             AND c.torso_disagrees, false) AS confident_mismatch
     FROM linked person
+    CROSS JOIN LATERAL (
+        SELECT (person.bbox->>2)::float8 - (person.bbox->>0)::float8 AS width,
+            (person.bbox->>3)::float8 - (person.bbox->>1)::float8 AS height
+    ) dimensions
     CROSS JOIN LATERAL (
         SELECT subvector(person.color, 1, 192) AS head_color,
             subvector(person.color, 193, 192) AS torso_color
@@ -300,18 +314,45 @@ face_assessments AS MATERIALIZED (
         ON p.photo_id = found.photo_id AND p.face_id = found.detection_id
     WHERE found.photo_id IS DISTINCT FROM %(source_photo)s
 ),
+background_references AS (
+    SELECT DISTINCT ON (f.photo_id) f.photo_id, p.person_id, f.detection_id, p.bbox,
+        p.area, p.height
+    FROM face_assessments f
+    JOIN person_assessments p USING (person_id)
+    WHERE p.reason = '' AND p.face_verified AND p.has_descriptors
+    ORDER BY f.photo_id, p.area DESC, p.person_id
+),
 group_assessments AS (
     SELECT p.photo_id,
         CASE WHEN bool_or(p.agrees) THEN 'agreeing_figure'
              WHEN max(p.head_count) > count(*) FILTER (WHERE p.has_assigned_head)
-                OR bool_or(p.people_incomplete OR p.ambiguous_face OR NOT p.confident_mismatch)
+                OR bool_or(p.people_incomplete OR p.ambiguous_face
+                    OR (NOT p.confident_mismatch AND NOT background.ignored))
                  THEN 'uncertain_figure'
-             ELSE '' END AS protection
+             ELSE '' END AS protection,
+        coalesce(jsonb_agg(jsonb_build_object(
+            'person_id', p.person_id, 'reason', p.reason, 'bbox', p.bbox,
+            'area_ratio', ratios.area, 'height_ratio', ratios.height,
+            'reference_person_id', ref.person_id,
+            'reference_detection_id', ref.detection_id, 'reference_bbox', ref.bbox,
+            'decision_reason', 'small_headless_quality_rejection'
+        ) ORDER BY p.person_id) FILTER (WHERE background.ignored), '[]'::jsonb)
+            AS ignored_background_people
     FROM person_assessments p
+    LEFT JOIN background_references ref USING (photo_id)
+    CROSS JOIN LATERAL (
+        SELECT p.area / ref.area AS area, p.height / ref.height AS height
+    ) ratios
+    CROSS JOIN LATERAL (
+        SELECT coalesce(p.reason IN ('lack_details', 'strong_blur') AND NOT p.has_assigned_head
+            AND NOT p.ambiguous_face
+            AND ratios.area <= %(ignored_background_area_ratio_max)s
+            AND ratios.height <= %(ignored_background_height_ratio_max)s, false) AS ignored
+    ) background
     GROUP BY p.photo_id
 ),
 recommendations AS (
-    SELECT f.*, g.protection,
+    SELECT f.*, g.protection, g.ignored_background_people,
         f.comparisons->0->>'photo_id' AS source_photo_id,
         f.comparisons->0->'person_id' AS source_person_id,
         f.comparisons->0->>'detection_id' AS source_detection_id,
@@ -326,10 +367,10 @@ exclusions AS (
     SELECT f.photo_id, f.result_rank, 'all_matched_figures_disagree' AS reason,
         jsonb_agg(jsonb_build_object(
             'detection_id', f.detection_id, 'person_id', f.person_id, 'comparisons', f.comparisons
-        ) ORDER BY f.detection_id) AS matches
+        ) ORDER BY f.detection_id) AS matches, g.ignored_background_people
     FROM face_assessments f JOIN group_assessments g USING (photo_id)
     WHERE g.protection = ''
-    GROUP BY f.photo_id, f.result_rank
+    GROUP BY f.photo_id, f.result_rank, g.ignored_background_people
     HAVING bool_and(f.confident_mismatch)
 )
 SELECT
@@ -586,6 +627,7 @@ def expand_apparel(
         candidate["veto"] = candidate_veto(
             face_distance=candidate["face_cosine_distance"],
             helmet_similarity=candidate["helmet_cosine_similarity"],
+            color_similarity=candidate["color_cosine_similarity"],
         )
         if not candidate["veto"]:
             valid.append(candidate)

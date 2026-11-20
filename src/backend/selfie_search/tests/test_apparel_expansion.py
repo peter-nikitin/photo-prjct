@@ -9,11 +9,22 @@ from django.db import DatabaseError, connection
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from face_cluster_contract import POLICY_ID, cluster_expansion_policy_hash
 from feature_flags.models import FeatureFlag
 from picflow.gallery_media_projection import publish_gallery_media
 from picflow.models import Event
 from processing.contracts import ClaimedJob
-from processing.models import PhotoFaceDetection, PhotoProcessingState, QueueWorkCounter
+from processing.models import (
+    EventFaceClusterActivation,
+    FaceCluster,
+    FaceClusterCorpus,
+    FaceClusterMember,
+    FaceEmbeddingVector,
+    PersonAppearanceDetection,
+    PhotoFaceDetection,
+    PhotoProcessingState,
+    QueueWorkCounter,
+)
 from processing.services.enrollment import _derivative_fingerprint
 from processing.services.jobs import claim_job, complete_attempt
 from processing.services.person_appearance import request_person_appearance
@@ -41,12 +52,30 @@ def _regional_color_vector(head: float, torso: float | None) -> list[float]:
     return vector + [torso * scale, sqrt(1 - torso**2) * scale] + [0.0] * 190
 
 
+def _rejected_person(bbox, *, reason="strong_blur", head=None):
+    return {
+        "bbox": bbox,
+        "confidence": 0.8,
+        "reason": reason,
+        "focus": [50, 50, 12, 12],
+        "head": head,
+    }
+
+
 class ApparelPolicyTests(SimpleTestCase):
     def test_face_distance_and_helmet_similarity_use_distinct_units(self):
-        assert candidate_veto(face_distance=0.55, helmet_similarity=0.68) == ""
-        assert candidate_veto(face_distance=0.551, helmet_similarity=None) == "face_veto"
-        assert candidate_veto(face_distance=None, helmet_similarity=0.679) == "helmet_veto"
-        assert candidate_veto(face_distance=None, helmet_similarity=None) == ""
+        assert (
+            candidate_veto(face_distance=0.55, helmet_similarity=0.68, color_similarity=0.7) == ""
+        )
+        assert (
+            candidate_veto(face_distance=0.551, helmet_similarity=None, color_similarity=0.6)
+            == "face_veto"
+        )
+        assert (
+            candidate_veto(face_distance=None, helmet_similarity=0.679, color_similarity=0.6)
+            == "helmet_veto"
+        )
+        assert candidate_veto(face_distance=None, helmet_similarity=None, color_similarity=1) == ""
 
 
 class ApparelQueueTests(TestCase):
@@ -73,9 +102,11 @@ class ApparelQueueTests(TestCase):
         color_similarity=1.0,
         head_color_similarity=None,
         zero_torso=False,
+        color_vector=None,
         headless_bystander_matches=None,
         unassigned_head=False,
         helmet_similarity=None,
+        extra_people=(),
     ):
         event = event or self.event
         photo = self.make_photo(event=event, photo_id=identifier)
@@ -117,7 +148,8 @@ class ApparelQueueTests(TestCase):
         if not reason:
             row.update(
                 reid=[reid_similarity, sqrt(1 - reid_similarity**2)] + [0] * 254,
-                color=_regional_color_vector(
+                color=color_vector
+                or _regional_color_vector(
                     color_similarity if head_color_similarity is None else head_color_similarity,
                     None if zero_torso else color_similarity,
                 ),
@@ -141,7 +173,7 @@ class ApparelQueueTests(TestCase):
         if headless_bystander_matches is not None:
             rows.append(
                 {
-                    "bbox": [150, 0, 250, 300],
+                    "bbox": [150, 0, 450, 300],
                     "confidence": 0.8,
                     "reason": "",
                     "focus": [450, 450, 12, 12],
@@ -155,7 +187,9 @@ class ApparelQueueTests(TestCase):
                     "helmet": None,
                 }
             )
+        rows.extend(extra_people)
         head_count = int(face is not None) + int(second_head) + int(unassigned_head)
+        head_count += sum(person["head"] is not None for person in extra_people)
         complete_attempt(claim.attempt.pk, result=appearance_result(*rows, head_count=head_count))
         return photo, face
 
@@ -184,6 +218,61 @@ class ApparelQueueTests(TestCase):
             "good-no-face": "",
             "veto-face": "face_veto",
         }
+
+    def test_addition_requires_color_agreement_with_the_best_reid_anchor(self):
+        _, source = self.index_source_with_processing_enabled()
+        self.index_appearance(
+            "other-anchor", face_similarity=0.9, reid_similarity=0.94, color_similarity=0.9
+        )
+        self.index_appearance("closer-color-to-other-anchor", color_similarity=0.65)
+        self.index_appearance("addition-color-above-minimum", color_similarity=0.72)
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert self.result_photos(search) == [
+            "apparel-source",
+            "other-anchor",
+            "addition-color-above-minimum",
+        ]
+        decisions = search.apparel_evidence.decisions
+        assert [row["photo_id"] for row in decisions["anchors"]] == [
+            "apparel-source",
+            "other-anchor",
+        ]
+        candidate = next(
+            row
+            for row in decisions["candidates"]
+            if row["photo_id"] == "closer-color-to-other-anchor"
+        )
+        assert candidate["veto"] == "color_below_threshold"
+        assert candidate["source_person_id"] == decisions["anchors"][0]["person_id"]
+        assert candidate["color_cosine_similarity"] == 0.65
+        assert candidate["face_cosine_distance"] is None
+        assert candidate["helmet_cosine_similarity"] is None
+        assert decisions["policy"]["addition_color_cosine_similarity_min"] == 0.70
+        assert decisions["policy"]["color_cosine_similarity_min"] == 0.80
+
+    def test_addition_accepts_color_agreement_at_the_minimum(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        source_region = [0.5, 0.5] + [0.0] * 190
+        _, source = self.index_appearance(
+            "apparel-source", face_similarity=1.0, color_vector=source_region * 2
+        )
+        # Dyadic inputs keep 1 - cosine distance equal to 0.70 after float32 storage.
+        scale = 205 / 2048
+        shared = [3.5 * scale] * 2
+        boundary_color = shared + [7 * scale, scale] + [0.0] * 188
+        boundary_color += shared + [scale] + [0.0] * 189
+        self.index_appearance("boundary-color", color_vector=boundary_color)
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert self.result_photos(search) == ["apparel-source", "boundary-color"]
+        candidate = search.apparel_evidence.decisions["candidates"][0]
+        assert candidate["color_cosine_similarity"] == 0.70
+        assert candidate["veto"] == ""
 
     def test_centroid_face_result_stays_in_baseline_with_quality_recommendation(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
@@ -370,6 +459,189 @@ class ApparelQueueTests(TestCase):
             for row in search.apparel_evidence.decisions["recommendations"]
         }
         assert recommendations["incomplete-group"] == "uncertain_figure"
+
+    def test_small_headless_quality_rejections_do_not_protect_a_mismatching_face(self):
+        _, source = self.index_source_with_processing_enabled()
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        area_boundary = [150, 0, 180, 100]
+        height_boundary = [200, 0, 220, 105]
+        photo, matched = self.index_appearance(
+            "small-background",
+            face_similarity=0.83,
+            reid_similarity=0.42,
+            color_similarity=0.72,
+            extra_people=(
+                _rejected_person(area_boundary, reason="lack_details"),
+                _rejected_person(height_boundary),
+            ),
+        )
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert self.result_photos(search) == ["apparel-source", "small-background"]
+        assert search.results.get(photo=photo).excluded_by_apparel
+        assert search.published_matched_photo_count == 1
+        people = list(
+            PersonAppearanceDetection.objects.filter(attempt__photo=photo).order_by("ordinal")
+        )
+        decisions = search.apparel_evidence.decisions
+        assert decisions["policy"]["version"] == 3
+        excluded = decisions["exclusions"][0]
+        assert excluded["photo_id"] == photo.pk
+        expected_background = [
+            {
+                "person_id": person.pk,
+                "reason": person.reason,
+                "bbox": person.bbox,
+                "area_ratio": area_ratio,
+                "height_ratio": height_ratio,
+                "reference_person_id": people[0].pk,
+                "reference_detection_id": str(matched.detection_id),
+                "reference_bbox": [0, 0, 100, 300],
+                "decision_reason": "small_headless_quality_rejection",
+            }
+            for person, area_ratio, height_ratio in (
+                (people[1], 0.10, 1 / 3),
+                (people[2], 0.07, 0.35),
+            )
+        ]
+        assert excluded["ignored_background_people"] == expected_background
+        assert decisions["recommendations"][0]["ignored_background_people"] == expected_background
+
+    def test_small_background_rule_keeps_other_group_protection(self):
+        _, source = self.index_source_with_processing_enabled()
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        small_background = _rejected_person([150, 0, 170, 70])
+        for photo_id, other_people in (
+            ("assigned-head", (_rejected_person([150, 0, 170, 70], head=[153, 0, 165, 15]),)),
+            ("unassigned-head", (small_background,)),
+            ("large-area", (_rejected_person([150, 0, 190, 90]),)),
+            ("too-tall", (_rejected_person([150, 0, 167, 106]),)),
+            ("different-reason", (_rejected_person([150, 0, 170, 70], reason="mixed_sharpness"),)),
+            (
+                "larger-unrelated-figure",
+                (_rejected_person([460, 0, 500, 90]),),
+            ),
+        ):
+            self.index_appearance(
+                photo_id,
+                face_similarity=0.83,
+                reid_similarity=0.42,
+                color_similarity=0.72,
+                extra_people=other_people,
+                unassigned_head=photo_id == "unassigned-head",
+                headless_bystander_matches=False if photo_id == "larger-unrelated-figure" else None,
+            )
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert len(self.result_photos(search)) == 7
+        assert search.published_matched_photo_count == 7
+        decisions = search.apparel_evidence.decisions
+        assert decisions["exclusions"] == []
+        recommendations = {row["photo_id"]: row for row in decisions["recommendations"]}
+        assert all(row["protection"] == "uncertain_figure" for row in recommendations.values())
+        assert {p for p, row in recommendations.items() if row["ignored_background_people"]} == {
+            "unassigned-head"
+        }
+
+    @override_settings(SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED=True)
+    def test_every_matched_face_must_disagree_after_ignoring_small_background(self):
+        _, source = self.index_source_with_processing_enabled()
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        _, anchor = self.index_appearance("cluster-anchor", face_similarity=0.92)
+        photo, matched = self.index_appearance(
+            "group-with-cluster-member",
+            face_similarity=0.83,
+            reid_similarity=0.42,
+            color_similarity=0.72,
+            extra_people=(_rejected_person([150, 0, 170, 70]),),
+        )
+        unlinked = PhotoFaceDetection.objects.create(
+            artifact=matched.detection.artifact,
+            attempt=matched.detection.attempt,
+            face_index=1,
+            status=PhotoFaceDetection.Status.KEPT,
+            geometry=matched.detection.geometry | {"bbox": [70, 20, 20, 20]},
+        )
+        FaceEmbeddingVector.objects.create(
+            detection=unlinked,
+            model_version=source.model_version,
+            vector=[0.55, sqrt(1 - 0.55**2)] + [0] * 510,
+        )
+        search = self.submit_gallery(source)
+        corpus = FaceClusterCorpus.objects.create(
+            event=self.event,
+            version=1,
+            algorithm_version="guarded-graph-v1",
+            configuration={
+                "face_embedding_generations": search.configuration[
+                    "gallery_face_embedding_generations"
+                ]
+            },
+            configuration_hash="b" * 64,
+            contract_version=1,
+            processor_type="face_embedding",
+            processor_version=1,
+            model_version=source.model_version,
+            embedding_dimensions=512,
+            edge_threshold=0.2,
+            representative_threshold=0.2,
+            distance_block_size=1,
+            max_candidate_edges=1,
+        )
+        cluster = FaceCluster.objects.create(
+            event=self.event,
+            corpus=corpus,
+            cluster_key="retained-group",
+            representative_detection=anchor.detection,
+            member_count=2,
+        )
+        for index, (detection, distance) in enumerate(((anchor.detection, 0.0), (unlinked, 0.17))):
+            FaceClusterMember.objects.create(
+                event=self.event,
+                corpus=corpus,
+                cluster=cluster,
+                detection=detection,
+                member_index=index,
+                distance_to_representative=distance,
+            )
+        FaceClusterCorpus.objects.filter(pk=corpus.pk).update(
+            status=FaceClusterCorpus.Status.PUBLISHED, published_at=timezone.now()
+        )
+        threshold = search.configuration["cosine_distance_threshold"]
+        EventFaceClusterActivation.objects.create(
+            event=self.event,
+            corpus=corpus,
+            anchor_threshold=0.2,
+            configuration={
+                "policy_id": POLICY_ID,
+                "corpus_configuration_hash": corpus.configuration_hash,
+                "direct_threshold": threshold,
+                "anchor_threshold": 0.2,
+            },
+            configuration_hash=cluster_expansion_policy_hash(
+                corpus.configuration_hash, threshold, 0.2
+            ),
+            approved_evaluation_report_hash="d" * 64,
+        )
+
+        assert run_once()
+        assert self.result_photos(search) == [
+            "apparel-source",
+            "cluster-anchor",
+            "group-with-cluster-member",
+        ]
+        result = search.results.get(photo=photo)
+        assert result.direct_evidence.detection_id == matched.detection_id
+        assert result.cluster_evidence.get().member_detection_id == unlinked.pk
+        assert not result.excluded_by_apparel
+        decisions = search.apparel_evidence.decisions
+        assert decisions["exclusions"] == []
+        recommendation = decisions["recommendations"][0]
+        assert recommendation["photo_id"] == photo.pk
+        assert recommendation["protection"] == ""
+        assert len(recommendation["ignored_background_people"]) == 1
 
     def test_publication_keeps_excluded_face_results_and_original_anchor_sources(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")

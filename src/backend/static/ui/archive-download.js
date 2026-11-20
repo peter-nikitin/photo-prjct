@@ -2,6 +2,18 @@
   const readyDownloads = new WeakMap();
   const pollIntervalMs = 2000;
 
+  let downloadFrame;
+
+  function startDownload(url) {
+    downloadFrame?.remove();
+    downloadFrame = document.createElement('iframe');
+    downloadFrame.hidden = true;
+    downloadFrame.referrerPolicy = 'no-referrer';
+    downloadFrame.sandbox = 'allow-downloads';
+    downloadFrame.src = url;
+    document.body.append(downloadFrame);
+  }
+
   async function getJson(url, options = {}) {
     const response = await fetch(url, { mode: 'same-origin', ...options });
     if (!response.ok) throw new Error('Archive request failed');
@@ -26,7 +38,7 @@
     if (button.disabled) return;
     const readyDownload = readyDownloads.get(form);
     if (readyDownload) {
-      window.location.assign(readyDownload);
+      startDownload(readyDownload);
       return;
     }
 
@@ -50,7 +62,7 @@
       const downloadUrl = new URL(statusUrl, window.location.origin);
       downloadUrl.searchParams.set('download', '1');
       readyDownloads.set(form, downloadUrl.href);
-      window.location.assign(downloadUrl.href);
+      startDownload(downloadUrl.href);
     } catch {
       error.hidden = false;
     } finally {

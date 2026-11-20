@@ -348,7 +348,12 @@ def _publish_after_verification(
                 request_generate_watermarked_preview(photo, clean_preview)
         jobs._close_locked_run_if_terminal(run, now)
         if profile.variant == "preview-small-v1":
+            from processing.services.person_appearance import request_person_appearance
+
             transaction.on_commit(observe_accepted_preview, robust=True)
+            transaction.on_commit(
+                lambda: request_person_appearance(photo.pk, derivative.final_key), robust=True
+            )
         schedule_photo_import_completion(photo, attempt)
         return AttemptCompletion(attempt=attempt)
 

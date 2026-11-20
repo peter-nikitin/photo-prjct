@@ -15,6 +15,7 @@ IDENTITIES = {
     "2/generate_watermarked_preview/1",
     "3/face_embedding/5",
     "1/bib_recognition/1",
+    "2/person_appearance/1",
     "1/selfie_query/2",
 }
 IDENTITY_LIST = ",".join(sorted(IDENTITIES))

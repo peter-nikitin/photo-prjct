@@ -14,6 +14,7 @@ from django.db.models import Q
 from django.utils import timezone
 from picflow.models import Event, Photo
 
+from processing.appearance import PERSON_APPEARANCE_PROCESSOR
 from processing.contracts import BIB_RECOGNITION_CONTRACT, FACE_EMBEDDING_CONTRACT
 from processing.models import (
     BIB_RECOGNITION_PROCESSOR,
@@ -671,6 +672,10 @@ def request_processor(
                 current_job.contract_version == contract_version
                 and current_job.processor_version == processor_version
                 and current_job.configuration_hash == configuration_hash
+                and (
+                    processor_type != PERSON_APPEARANCE_PROCESSOR
+                    or current_job.input_fingerprint == input_fingerprint
+                )
             ):
                 if processor_type == CAPTURE_METADATA_PROCESSOR and state.status in {
                     PhotoProcessingState.Status.QUEUED,

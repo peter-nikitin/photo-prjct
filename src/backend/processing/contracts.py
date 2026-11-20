@@ -40,6 +40,11 @@ BIB_RECOGNITION_CONTRACT = ProcessorContract(
     contract_version=1,
     processor_version=1,
 )
+PERSON_APPEARANCE_CONTRACT = ProcessorContract(
+    processor_type="person_appearance",
+    contract_version=2,
+    processor_version=1,
+)
 SELFIE_QUERY_CONTRACT = ProcessorContract(
     processor_type="selfie_query",
     contract_version=1,

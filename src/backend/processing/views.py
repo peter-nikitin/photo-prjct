@@ -17,6 +17,8 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.debug import sensitive_variables
+from feature_flags.registry import PERSON_APPEARANCE_PROCESSING
+from feature_flags.services import is_server_enabled
 from ingestion.storage import ObjectMissing, StorageUnavailable
 from selfie_search.models import SelfieSearch, SelfieSearchAttempt
 from selfie_search.services.jobs import (
@@ -36,6 +38,11 @@ from selfie_search.services.jobs import (
 from selfie_search.services.ranking import QueryVectorError, RankingError, validate_query_vector
 from selfie_search.storage import StoredTemporarySelfie, TemporarySelfieStorage
 
+from processing.appearance import (
+    APPEARANCE_CONFIGURATION,
+    PERSON_APPEARANCE_PROCESSOR,
+    valid_appearance_result,
+)
 from processing.auth import has_worker_token
 from processing.bib_validation import BibResultError, validate_bib_result
 from processing.contracts import (
@@ -44,6 +51,7 @@ from processing.contracts import (
     FACE_EMBEDDING_CONTRACT,
     GENERATE_PREVIEW_CONTRACT,
     GENERATE_WATERMARKED_PREVIEW_CONTRACT,
+    PERSON_APPEARANCE_CONTRACT,
     SELFIE_QUERY_CONTRACT,
     AttemptReference,
     ClaimedJob,
@@ -161,6 +169,11 @@ _SELFIE_QUERY_FAILURES = {
 _PROCESSOR_FAILURES = {
     "capture_metadata": _CAPTURE_METADATA_FAILURES,
     "face_embedding": _FACE_EMBEDDING_FAILURES,
+    PERSON_APPEARANCE_PROCESSOR: _CAPTURE_METADATA_FAILURES
+    | {
+        "model_inference_error": (False, "Appearance inference failed."),
+        "output_contract_violation": (False, "Appearance evidence violated its bounds."),
+    },
     "generate_preview": _GENERATE_PREVIEW_FAILURES,
     "generate_watermarked_preview": _GENERATE_WATERMARKED_PREVIEW_FAILURES,
     "selfie_query": _SELFIE_QUERY_FAILURES,
@@ -247,6 +260,10 @@ def claim(request: HttpRequest) -> JsonResponse:
         member = worker_pool_lifecycle.MemberIdentity.parse(data) if remote else None
     except worker_pool_lifecycle.AdmissionDenied:
         return _invalid_request()
+    if data["processor_type"] == PERSON_APPEARANCE_PROCESSOR and not is_server_enabled(
+        PERSON_APPEARANCE_PROCESSING
+    ):
+        return JsonResponse({"empty": True, "suggested_delay_seconds": 5})
     if data["processor_type"] == SELFIE_QUERY_CONTRACT.processor_type:
         recover_expired_search_attempts()
     else:
@@ -616,7 +633,7 @@ def _claim_with_grant(
             processor_type=claimed.job.processor_type,
             processor_version=claimed.job.processor_version,
         )
-        _require_accepted_watermark_input(claimed.job, fingerprint)
+        _require_accepted_clean_input(claimed.job, fingerprint)
         quality_input_geometry = _quality_claim_input_geometry(claimed.job)
         grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
@@ -656,7 +673,7 @@ def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:
             processor_type=attempt.processor_type,
             processor_version=attempt.processor_version,
         )
-        _require_accepted_watermark_input(attempt, fingerprint)
+        _require_accepted_clean_input(attempt, fingerprint)
         _quality_claim_input_geometry(attempt)
         grant = _download_storage(fingerprint).create_download_grant(
             final_key=_fingerprint_key(fingerprint),
@@ -738,7 +755,10 @@ def _input_fingerprint(
         )
         if processor_type == GENERATE_PREVIEW_CONTRACT.processor_type:
             valid = valid and value["media_kind"] == "original" and key.startswith("originals/")
-        elif processor_type == GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type:
+        elif processor_type in {
+            GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
+            PERSON_APPEARANCE_PROCESSOR,
+        }:
             valid = (
                 valid
                 and value["media_kind"] == "preview-small-v1"
@@ -875,11 +895,17 @@ def _download_storage(
     return ExactObjectDownloadStorage()
 
 
-def _require_accepted_watermark_input(
+def _require_accepted_clean_input(
     job: ProcessingJob | ProcessingAttempt,
     fingerprint: dict[str, int | str | None],
 ) -> None:
-    """Bind each watermark grant to the photo's currently accepted clean derivative."""
+    """Bind each derivative grant to the photo's currently accepted clean preview."""
+    if job.processor_type == PERSON_APPEARANCE_PROCESSOR:
+        from processing.services.person_appearance import current_appearance_input
+
+        if job.configuration != APPEARANCE_CONFIGURATION or current_appearance_input(job) is None:
+            raise FingerprintInvariant()
+        return
     if job.processor_type != GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type:
         return
     derivative_evidence = (
@@ -1142,6 +1168,11 @@ def _attempt_kind(reference: AttemptReference) -> str | None:
 def _processor_contract(processor_type: str, contract_version: int, processor_version: int) -> bool:
     return (contract_version, processor_type, processor_version) in {
         (
+            PERSON_APPEARANCE_CONTRACT.contract_version,
+            PERSON_APPEARANCE_CONTRACT.processor_type,
+            PERSON_APPEARANCE_CONTRACT.processor_version,
+        ),
+        (
             BIB_RECOGNITION_CONTRACT.contract_version,
             BIB_RECOGNITION_CONTRACT.processor_type,
             BIB_RECOGNITION_CONTRACT.processor_version,
@@ -1231,6 +1262,12 @@ def _valid_envelope(data: dict[str, Any], attempt_id: UUID, *, outcome: str) -> 
     ):
         return False
     if outcome == "success":
+        if attempt.processor_type == PERSON_APPEARANCE_PROCESSOR:
+            return attempt.configuration == APPEARANCE_CONFIGURATION and valid_appearance_result(
+                data["result"],
+                width=attempt.input_fingerprint["pixel_width"],
+                height=attempt.input_fingerprint["pixel_height"],
+            )
         if attempt.processor_type == BIB_RECOGNITION_CONTRACT.processor_type:
             try:
                 bib = attempt.configuration["bib_recognition"]

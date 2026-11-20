@@ -24,8 +24,8 @@ EVENT_NAMES = {
 EVENT_SCHEMA_VERSIONS = {
     "selfie_submission_finished": frozenset({1}),
     "selfie_worker_attempt_finished": frozenset({1}),
-    "selfie_ranking_finished": frozenset({1, 2, 3, 4, 5}),
-    "selfie_search_terminal": frozenset({1, 2, 3}),
+    "selfie_ranking_finished": frozenset({1, 2, 3, 4, 5, 6}),
+    "selfie_search_terminal": frozenset({1, 2, 3, 4}),
 }
 PROBE_EVENT = "selfie_observability_probe"
 OBSERVABILITY_FAILURE_MARKER = "selfie_observability_emit_failed"
@@ -151,6 +151,7 @@ _TERMINAL_FIELDS_V2 = _TERMINAL_FIELDS_V1 | {
     "cluster_configuration_hash",
 }
 _ANCHOR_COUNT_FIELD = "anchor_expanded_photo_count"
+_APPAREL_COUNT_FIELD = "apparel_expanded_photo_count"
 EVENT_FIELDS_BY_VERSION = {
     "selfie_submission_finished": {1: COMMON_FIELDS | _SUBMISSION_FIELDS},
     "selfie_worker_attempt_finished": {1: COMMON_FIELDS | _WORKER_FIELDS},
@@ -160,11 +161,13 @@ EVENT_FIELDS_BY_VERSION = {
         3: COMMON_FIELDS | _RANKING_FIELDS_V3,
         4: COMMON_FIELDS | _RANKING_FIELDS_V4,
         5: COMMON_FIELDS | _RANKING_FIELDS_V4 | {_ANCHOR_COUNT_FIELD},
+        6: COMMON_FIELDS | _RANKING_FIELDS_V4 | {_ANCHOR_COUNT_FIELD, _APPAREL_COUNT_FIELD},
     },
     "selfie_search_terminal": {
         1: COMMON_FIELDS | _TERMINAL_FIELDS_V1,
         2: COMMON_FIELDS | _TERMINAL_FIELDS_V2,
         3: COMMON_FIELDS | _TERMINAL_FIELDS_V2 | {_ANCHOR_COUNT_FIELD},
+        4: COMMON_FIELDS | _TERMINAL_FIELDS_V2 | {_ANCHOR_COUNT_FIELD, _APPAREL_COUNT_FIELD},
     },
 }
 # Kept as a descriptive alias for operators/tests that inspect the parser contract directly.
@@ -337,6 +340,7 @@ class _State:
                 or terminal["cluster_expanded_photo_count"]
                 != ranking["cluster_expanded_photo_count"]
                 or terminal[_ANCHOR_COUNT_FIELD] != ranking[_ANCHOR_COUNT_FIELD]
+                or terminal[_APPAREL_COUNT_FIELD] != ranking[_APPAREL_COUNT_FIELD]
                 or terminal["cluster_corpus_version"] != ranking["cluster_corpus_version"]
                 or terminal["cluster_configuration_hash"] != ranking["cluster_configuration_hash"]
             ):
@@ -609,10 +613,10 @@ def _validate_ranking_v4(value: dict[str, Any]) -> None:
         raise ValueError("failed native ranking cannot have SQL timing")
 
 
-def _anchor_expanded_count(value: dict[str, Any]) -> int:
-    if _ANCHOR_COUNT_FIELD not in value:
+def _optional_expansion_count(value: dict[str, Any], field: str) -> int:
+    if field not in value:
         return 0
-    count = _duration(value, _ANCHOR_COUNT_FIELD)
+    count = _duration(value, field)
     assert count is not None
     return count
 
@@ -620,7 +624,8 @@ def _anchor_expanded_count(value: dict[str, Any]) -> int:
 def _validate_ranking_v2(value: dict[str, Any]) -> None:
     direct = _duration(value, "direct_matched_photo_count")
     expanded = _duration(value, "cluster_expanded_photo_count")
-    anchor_expanded = _anchor_expanded_count(value)
+    anchor_expanded = _optional_expansion_count(value, _ANCHOR_COUNT_FIELD)
+    apparel_expanded = _optional_expansion_count(value, _APPAREL_COUNT_FIELD)
     final = _duration(value, "final_matched_photo_count")
     strong_anchors = _duration(value, "strong_anchor_count")
     expanded_clusters = _duration(value, "expanded_cluster_count")
@@ -628,10 +633,21 @@ def _validate_ranking_v2(value: dict[str, Any]) -> None:
     assert strong_anchors is not None and expanded_clusters is not None
     if value["outcome"] == "incompatible":
         if value["matched_photo_count"] != 0 or any(
-            (direct, expanded, anchor_expanded, final, strong_anchors, expanded_clusters)
+            (
+                direct,
+                expanded,
+                anchor_expanded,
+                apparel_expanded,
+                final,
+                strong_anchors,
+                expanded_clusters,
+            )
         ):
             raise ValueError("incompatible ranking has source counts")
-    elif final != direct + expanded + anchor_expanded or value["matched_photo_count"] != final:
+    elif (
+        final != direct + expanded + anchor_expanded + apparel_expanded
+        or value["matched_photo_count"] != final
+    ):
         raise ValueError("ranking count identity mismatch")
     outcome = _choice(value, "cluster_expansion_outcome", EXPANSION_OUTCOMES)
     if expanded > 0 and outcome != "expanded":
@@ -675,12 +691,13 @@ def _validate_ranking_v2(value: dict[str, Any]) -> None:
 def _validate_terminal_v2(value: dict[str, Any]) -> None:
     direct = _duration(value, "direct_matched_photo_count")
     expanded = _duration(value, "cluster_expanded_photo_count")
-    anchor_expanded = _anchor_expanded_count(value)
+    anchor_expanded = _optional_expansion_count(value, _ANCHOR_COUNT_FIELD)
+    apparel_expanded = _optional_expansion_count(value, _APPAREL_COUNT_FIELD)
     assert direct is not None and expanded is not None
     if value["status"] == "ready":
-        if value["matched_photo_count"] != direct + expanded + anchor_expanded:
+        if value["matched_photo_count"] != direct + expanded + anchor_expanded + apparel_expanded:
             raise ValueError("terminal count identity mismatch")
-    elif any((value["matched_photo_count"], direct, expanded, anchor_expanded)):
+    elif any((value["matched_photo_count"], direct, expanded, anchor_expanded, apparel_expanded)):
         raise ValueError("non-ready terminal has source counts")
     version = _positive_version(value.get("cluster_corpus_version"))
     configuration_hash = _nullable_hash(value.get("cluster_configuration_hash"))
@@ -770,6 +787,7 @@ def _ranking_event(value: dict[str, Any], state: _State) -> None:
         "direct_matched_photo_count": value["direct_matched_photo_count"],
         "cluster_expanded_photo_count": value["cluster_expanded_photo_count"],
         _ANCHOR_COUNT_FIELD: value.get(_ANCHOR_COUNT_FIELD, 0),
+        _APPAREL_COUNT_FIELD: value.get(_APPAREL_COUNT_FIELD, 0),
         "final_matched_photo_count": value["final_matched_photo_count"],
         "strong_anchor_count": value["strong_anchor_count"],
         "expanded_cluster_count": value["expanded_cluster_count"],
@@ -803,6 +821,7 @@ def _terminal_event(value: dict[str, Any], state: _State) -> None:
         "direct_matched_photo_count": value["direct_matched_photo_count"],
         "cluster_expanded_photo_count": value["cluster_expanded_photo_count"],
         _ANCHOR_COUNT_FIELD: value.get(_ANCHOR_COUNT_FIELD, 0),
+        _APPAREL_COUNT_FIELD: value.get(_APPAREL_COUNT_FIELD, 0),
         "cluster_corpus_version": value["cluster_corpus_version"],
         "cluster_configuration_hash": (
             value["cluster_configuration_hash"].lower()

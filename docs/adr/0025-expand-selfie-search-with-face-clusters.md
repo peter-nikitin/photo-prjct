@@ -4,7 +4,7 @@
 - Date: 2026-08-05
 - Deciders: project maintainers
 - Supersedes: none
-- Superseded by: [ADR 0066](0066-store-vectors-in-face-search-queue.md) for the prohibition on temporary query vector storage only
+- Superseded by: [ADR 0066](0066-store-vectors-in-face-search-queue.md) for the prohibition on temporary query vector storage only; [ADR 0076](0076-expand-face-results-with-person-appearance.md) for deferring clothing and helmet evidence only
 
 ## Context
 

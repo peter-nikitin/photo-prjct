@@ -21,12 +21,14 @@ from photo_worker.client import ApiError, CallbackResult, DownloadError, HttpCli
 from photo_worker.contracts import (
     CAPTURE_METADATA_PROCESSOR_VERSION,
     FAILURE_RETRYABLE,
+    PERSON_APPEARANCE_IDENTITY,
     PREVIEW_CONTRACT_VERSION,
     PROCESSOR_TYPE,
     PROCESSOR_TYPE_BIB_RECOGNITION,
     PROCESSOR_TYPE_FACE_EMBEDDING,
     PROCESSOR_TYPE_GENERATE_PREVIEW,
     PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
+    PROCESSOR_TYPE_PERSON_APPEARANCE,
     PROCESSOR_TYPE_SELFIE_QUERY,
     PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
     PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW,
@@ -35,6 +37,8 @@ from photo_worker.contracts import (
     Claim,
     ClaimedJob,
     FaceEmbeddingResult,
+    InputFingerprint,
+    PersonAppearanceError,
     SelfieEmbeddingResult,
     redact,
 )
@@ -75,6 +79,7 @@ _SUPPORTED_IDENTITIES = {
     (3, PROCESSOR_TYPE_FACE_EMBEDDING, PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY),
     (1, PROCESSOR_TYPE_SELFIE_QUERY, PROCESSOR_VERSION_SELFIE_QUERY),
     (1, PROCESSOR_TYPE_BIB_RECOGNITION, 1),
+    PERSON_APPEARANCE_IDENTITY,
 }
 
 
@@ -152,6 +157,7 @@ class WorkerConfig:
             PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW,
             PROCESSOR_TYPE_SELFIE_QUERY,
             PROCESSOR_TYPE_BIB_RECOGNITION,
+            PROCESSOR_TYPE_PERSON_APPEARANCE,
         }
         if self.processor_type is not None and self.processor_type not in supported:
             raise ValueError("unsupported processor type")
@@ -615,6 +621,7 @@ class Worker:
                     secrets=self._config.log_secrets,
                 )
         except (
+            PersonAppearanceError,
             BibExecutionError,
             DownloadError,
             InputTooLarge,
@@ -761,6 +768,19 @@ class Worker:
                 slot=job.output_slots[0],
                 asset_sha256s=asset_sha256s,
             )
+        if job.processor_type == PROCESSOR_TYPE_PERSON_APPEARANCE:
+            from photo_worker.person_appearance import extract_person_appearance
+
+            fingerprint = job.input_fingerprint
+            assert isinstance(fingerprint, InputFingerprint)
+            key = fingerprint.object_key
+            assert key is not None
+            return extract_person_appearance(
+                input_path,
+                max_pixels=job.configuration.max_pixels,
+                sha256=key.rsplit("-", 1)[-1].removesuffix(".jpg"),
+                size=(fingerprint.pixel_width, fingerprint.pixel_height),
+            )
         if job.processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
             return extract_selfie_embedding(
                 input_path,
@@ -902,6 +922,8 @@ def _default_processor_identity(processor_type: str) -> tuple[int, str, int]:
         identity = (3, processor_type, PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY)
     elif processor_type == PROCESSOR_TYPE_SELFIE_QUERY:
         identity = (1, processor_type, PROCESSOR_VERSION_SELFIE_QUERY)
+    elif processor_type == PROCESSOR_TYPE_PERSON_APPEARANCE:
+        identity = PERSON_APPEARANCE_IDENTITY
     elif processor_type == PROCESSOR_TYPE_GENERATE_WATERMARKED_PREVIEW:
         identity = (2, processor_type, PROCESSOR_VERSION_GENERATE_WATERMARKED_PREVIEW)
     else:

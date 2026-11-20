@@ -36,6 +36,7 @@ KINDS = {
         "generate_watermarked_preview",
         "face_embedding",
         "bib_recognition",
+        "person_appearance",
     },
 }
 OUTCOMES = {"callback_delivered", "execution_failed", "transport_failed", "lease_lost"}

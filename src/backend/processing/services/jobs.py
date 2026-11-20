@@ -14,6 +14,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from picflow.models import Event, Photo
 
+from processing.appearance import PERSON_APPEARANCE_PROCESSOR, appearance_metadata
 from processing.contracts import AttemptCompletion, ClaimedJob, CompletionConflict, EmptyClaim
 from processing.models import (
     CAPTURE_METADATA_PROCESSOR,
@@ -125,6 +126,22 @@ def claim_job(
             )
             if state.current_job_id != job.id:
                 continue
+            if job.processor_type == PERSON_APPEARANCE_PROCESSOR:
+                from processing.services.person_appearance import current_appearance_input
+
+                if current_appearance_input(job) is None:
+                    job.status = ProcessingJob.Status.CANCELLED
+                    job.completed_at = now
+                    job.save(update_fields=["status", "completed_at"])
+                    _set_state(
+                        state,
+                        status=PhotoProcessingState.Status.CANCELLED,
+                        current_attempt=None,
+                        cancelled_at=now,
+                        next_attempt_at=None,
+                    )
+                    _close_locked_run_if_terminal(run, now)
+                    continue
             attempt = ProcessingAttempt.objects.create(
                 event_id=job.event_id,
                 run=run,
@@ -296,6 +313,30 @@ def _terminal_submission(
                 return _record_late_receipt(attempt, payload, payload_hash, now)
             _terminal_stale(attempt, payload, payload_hash, now)
             return AttemptCompletion(attempt=attempt, stale=True)
+        if (
+            payload["outcome"] == "success"
+            and attempt.processor_type == PERSON_APPEARANCE_PROCESSOR
+        ):
+            from processing.services.person_appearance import (
+                current_appearance_input,
+                persist_appearance,
+            )
+
+            if current_appearance_input(attempt) is None:
+                _terminal_stale(attempt, payload, payload_hash, now)
+                job.status = ProcessingJob.Status.FAILED
+                job.completed_at = now
+                job.save(update_fields=["status", "completed_at"])
+                _set_state(
+                    state,
+                    status=PhotoProcessingState.Status.FAILED,
+                    current_attempt=attempt,
+                    failed_at=now,
+                    next_attempt_at=None,
+                )
+                _close_locked_run_if_terminal(run, now)
+                return AttemptCompletion(attempt=attempt, stale=True)
+            persist_appearance(attempt, payload["result"])
         if payload["outcome"] == "success":
             backlog_before = (
                 capture_photo_import_backlog(photo.pk, attempt.processor_type)
@@ -463,7 +504,7 @@ def _record_late_receipt(
             ProcessingLateReceipt.objects.create(
                 attempt=attempt,
                 received_at=now,
-                payload=_durable_payload(payload),
+                payload=_durable_payload(payload, processor_type=attempt.processor_type),
                 payload_hash=payload_hash,
             )
     except IntegrityError:
@@ -497,6 +538,7 @@ def _set_state(
     processing_at: timezone.datetime | None | object = ...,
     succeeded_at: timezone.datetime | None | object = ...,
     failed_at: timezone.datetime | None | object = ...,
+    cancelled_at: timezone.datetime | None | object = ...,
     next_attempt_at: timezone.datetime | None | object = ...,
 ) -> None:
     values: dict[str, object] = {"status": status, "current_attempt": current_attempt}
@@ -505,6 +547,7 @@ def _set_state(
         "processing_at": processing_at,
         "succeeded_at": succeeded_at,
         "failed_at": failed_at,
+        "cancelled_at": cancelled_at,
         "next_attempt_at": next_attempt_at,
     }.items():
         if value is not ...:
@@ -557,7 +600,11 @@ def _terminal_success(
 ) -> None:
     attempt.status = ProcessingAttempt.Status.SUCCEEDED
     attempt.terminal_at = now
-    attempt.result = payload["result"]
+    attempt.result = (
+        appearance_metadata(payload["result"])
+        if attempt.processor_type == PERSON_APPEARANCE_PROCESSOR
+        else payload["result"]
+    )
     attempt.result_hash = _canonical_hash(payload)
     attempt.download_duration_ms = payload["download_duration_ms"]
     attempt.compute_duration_ms = payload["compute_duration_ms"]
@@ -699,7 +746,7 @@ def _terminal_stale(
 ) -> None:
     attempt.status = ProcessingAttempt.Status.STALE
     attempt.terminal_at = now
-    attempt.result = _durable_payload(payload)
+    attempt.result = _durable_payload(payload, processor_type=attempt.processor_type)
     attempt.result_hash = payload_hash
     attempt.accepted = False
     attempt.save(update_fields=["status", "terminal_at", "result", "result_hash", "accepted"])
@@ -758,8 +805,11 @@ def _canonical_hash(payload: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _durable_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if key != "canonical_error_detail"}
+def _durable_payload(payload: dict[str, Any], *, processor_type: str = "") -> dict[str, Any]:
+    result = {key: value for key, value in payload.items() if key != "canonical_error_detail"}
+    if processor_type == PERSON_APPEARANCE_PROCESSOR and "result" in result:
+        result["result"] = appearance_metadata(result["result"])
+    return result
 
 
 def _close_locked_run_if_terminal(run: EventProcessingRun, now: timezone.datetime) -> None:

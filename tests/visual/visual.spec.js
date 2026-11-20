@@ -1052,6 +1052,30 @@ for (const [device, viewport] of [
   });
 }
 
+test('an archive download error keeps the results page open', async ({ page }) => {
+  await page.goto('/__visual__/event/selfie-search/ready/single/');
+  const pageUrl = page.url();
+  const form = page.locator('[data-archive-request]');
+  const action = new URL(await form.getAttribute('action'), pageUrl).href;
+  const statusPath = '/archives/d06ed5fe-142b-427b-b15b-a966f47fbfa9/';
+  const downloadUrl = new URL(`${statusPath}?download=1`, pageUrl).href;
+  await page.route(action, (route) => route.fulfill({ status: 202, json: { status_url: statusPath } }));
+  await page.route(new URL(statusPath, pageUrl).href, (route) =>
+    route.fulfill({ json: { status: 'ready' } }),
+  );
+  await page.route(downloadUrl, (route) =>
+    route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Archive unavailable</h1>' }),
+  );
+
+  const failedDownload = page.waitForResponse((response) => response.url() === downloadUrl);
+  await form.getByRole('button').click();
+  const response = await failedDownload;
+  expect(response.status()).toBe(404);
+  expect(response.frame()).not.toBe(page.mainFrame());
+  await expect(page).toHaveURL(pageUrl);
+  await expect(form.getByRole('button')).toBeEnabled();
+});
+
 test('mobile archive action fills the result width and paid Order action hierarchy is explicit', async ({
   page,
 }) => {

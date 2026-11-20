@@ -1276,21 +1276,75 @@ class PublicSelfieResultViewTests(TestCase):
             self.assertEqual(Client().get(f"{unknown}?download=1").status_code, 404)
 
     @override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON})
-    def test_page_two_archive_creates_only_its_exact_members(self) -> None:
+    def test_result_archive_includes_all_pages(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         photos = []
         for rank in range(1, 103):
             photo = self.make_private_photo(search.event, photo_id=f"archive-page-{rank:03d}")
             self.add_result(search=search, photo=photo, rank=rank)
             photos.append(photo)
+        original_size = 50 * 1024 * 1024
+        Photo.objects.filter(event=search.event).update(original_size=original_size)
         archive_url = self.result_archive_url(event=search.event, token=token)
         page = self.client.get(self.result_url(event=search.event, token=token), {"page": 2})
-        self.assertContains(page, f'action="{archive_url}?page=2"')
-        self.assertContains(page, "Скачать эту страницу")
-        self.assertEqual(self.client.post(f"{archive_url}?page=2").status_code, 202)
+        self.assertContains(page, f'action="{archive_url}"')
+        self.assertContains(page, "Скачать все")
+        self.assertEqual(self.client.post(archive_url).status_code, 202)
         job = PhotoArchiveJob.objects.get()
-        self.assertEqual(job.page, 2)
-        self.assertEqual([entry["photo_id"] for entry in job.entries], [p.pk for p in photos[100:]])
+        self.assertEqual(job.page, 1)
+        self.assertEqual([entry["photo_id"] for entry in job.entries], [p.pk for p in photos])
+        self.assertEqual(sum(entry["original_size"] for entry in job.entries), 102 * original_size)
+
+    @override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON})
+    def test_completed_pass_adds_a_distinct_floor_and_a_new_archive(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY, matched_photo_count=2)
+        child, child_token = self.make_search(status=SelfieSearch.Status.PROCESSING)
+        child.parent_search = search
+        child.save(update_fields=["parent_search"])
+        first, second, new = (
+            self.make_private_photo(search.event, photo_id=pid)
+            for pid in ("pass-first", "pass-second", "pass-new")
+        )
+        for rank, photo in enumerate((first, second), 1):
+            self.add_result(search=search, photo=photo, rank=rank)
+        for rank, photo in enumerate((first, new), 1):
+            self.add_result(search=child, photo=photo, rank=rank)
+        page_url = self.result_url(event=search.event, token=token)
+        archive_url = self.result_archive_url(event=search.event, token=token)
+        self.assertNotContains(self.client.get(page_url), 'data-photo-id="pass-new"')
+        self.assertContains(self.client.get(page_url), "Ищем ещё фотографии")
+        self.assertEqual(
+            self.client.get(
+                self.status_url(event=search.event, token=token), {"continuation": 1}
+            ).json(),
+            {"status": "processing"},
+        )
+        original = self.client.post(archive_url)
+        self.assertEqual(original.status_code, 202)
+
+        child.status = SelfieSearch.Status.READY
+        child.matched_photo_count = 2
+        child.save(update_fields=["status", "matched_photo_count"])
+        page = self.client.get(page_url)
+        self.assertContains(page, "Новые фото", count=1)
+        self.assertContains(page, 'data-photo-id="pass-first"', count=1)
+        self.assertContains(page, 'data-photo-id="pass-new"', count=1)
+        self.assertContains(page, "Найдено фотографий: 3.")
+        self.assertContains(page, "Найти ещё")
+        self.assertEqual(
+            self.client.get(self.result_url(event=search.event, token=child_token)).status_code, 404
+        )
+        refreshed = self.client.post(archive_url)
+        self.assertEqual(refreshed.status_code, 202)
+        self.assertNotEqual(refreshed.json(), original.json())
+        self.assertEqual(self.client.post(archive_url).json(), refreshed.json())
+        self.assertEqual(
+            {
+                tuple(entry["photo_id"] for entry in job.entries)
+                for job in PhotoArchiveJob.objects.all()
+            },
+            {("pass-first", "pass-second"), ("pass-first", "pass-second", "pass-new")},
+        )
 
     def test_free_archive_rejects_ineligible_requests_before_creating_any_job(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
@@ -1591,7 +1645,7 @@ class PublicSelfieResultViewTests(TestCase):
             response, 'data-cart-price data-photo-id="cart-result-watermarked"', count=2
         )
         self.assertContains(response, 'aria-label="Удалить из корзины"', count=2)
-        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=4)
+        self.assertContains(response, 'name="csrfmiddlewaretoken"', count=5)
         self.assertContains(
             response,
             'name="return_to" value="/events/%3Cevent%3E/selfie-search/%3Cbearer%3E/"',

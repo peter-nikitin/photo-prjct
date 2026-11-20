@@ -94,6 +94,7 @@ class ApparelQueueTests(TestCase):
         identifier,
         *,
         face_similarity=None,
+        face_axis=1,
         reason="",
         event=None,
         associate_face=True,
@@ -126,11 +127,14 @@ class ApparelQueueTests(TestCase):
         publish_gallery_media(preview)
         face = None
         if face_similarity is not None:
+            vector = [0.0] * 512
+            vector[0] = face_similarity
+            vector[face_axis] = sqrt(1 - face_similarity**2)
             face = self.make_eligible_embedding(
                 event=event,
                 photo_id=photo.pk,
                 photo=photo,
-                vector=[face_similarity, sqrt(1 - face_similarity**2)] + [0] * 510,
+                vector=vector,
                 input_fingerprint=_derivative_fingerprint(preview),
             )
         assert request_person_appearance(photo.pk, preview.final_key)
@@ -707,12 +711,21 @@ class ApparelQueueTests(TestCase):
             self.index_appearance(f"other-person-{index}", face_similarity=0.1)
         search = self.submit_gallery(source)
         rows_per_operation = []
+        association_keys = {
+            "processing_processingattempt": "id",
+            "processing_photofacedetection": "attempt_id",
+            "processing_faceembeddingvector": "detection_id",
+        }
 
         def collect_association_work(node):
             loops = node["Actual Loops"]
             if node["Node Type"] == "WindowAgg":
                 rows_per_operation.append(node["Actual Rows"] * loops)
             rows_per_operation.append(node.get("Rows Removed by Join Filter", 0) * loops)
+            key = association_keys.get(node.get("Relation Name"))
+            if key is not None and loops > 1:
+                condition = node.get("Index Cond", node.get("Recheck Cond", ""))
+                assert f"{key} =" in condition, node["Node Type"]
             for child in node.get("Plans", []):
                 collect_association_work(child)
 
@@ -723,12 +736,19 @@ class ApparelQueueTests(TestCase):
                     explained = self.fetchone()
                     assert explained is not None
                     plan = explained[0][0]["Plan"]
-                    association = next(
-                        node for node in plan["Plans"] if node.get("Subplan Name") == "CTE linked"
-                    )
-                    collect_association_work(association)
+                    associations = [
+                        node
+                        for node in plan["Plans"]
+                        if node.get("Subplan Name") in {"CTE linked", "CTE resolved_people"}
+                    ]
+                    assert associations
+                    for association in associations:
+                        collect_association_work(association)
                 return super().execute(query, params, **kwargs)
 
+        # A higher page cost exposes repeated scans even with this small fixture.
+        with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL random_page_cost = 40")
         with patch("selfie_search.services.apparel_expansion.Cursor", PlanRecordingCursor):
             assert run_once()
         assert len(search.apparel_evidence.decisions["candidates"]) == candidate_count
@@ -828,6 +848,63 @@ class ApparelQueueTests(TestCase):
         decisions = search.apparel_evidence.decisions
         assert decisions["anchor_outcome"] == "ambiguous_agreement"
         assert decisions["anchors"] == decisions["exclusions"] == []
+
+    def test_unassessable_apparel_groups_do_not_hide_later_continuation_anchors(self):
+        from selfie_search.services.continuation import (
+            consumed_anchor_photo_ids,
+            submit_continuation,
+        )
+
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        _, seed = self.index_appearance("gallery-seed", face_similarity=1.0)
+        for axis in range(1, 4):
+            self.index_appearance(
+                f"unassessable-{axis}",
+                face_similarity=0.73,
+                face_axis=axis,
+                second_head=True,
+            )
+        self.index_appearance("usable-reference", face_similarity=0.65, face_axis=4)
+        self.index_appearance("appearance-only-result")
+        root = self.submit_gallery(seed)
+        assert run_once()
+        root.refresh_from_db()
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+
+        child = submit_continuation(search=root, user=self.user, photo_id=None)
+        assert run_once()
+        assert self.result_photos(child) == ["appearance-only-result"]
+        assert consumed_anchor_photo_ids(root) == {"gallery-seed", "usable-reference"}
+
+    def test_automatic_continuation_keeps_incompatible_apparel_anchors_for_later_pass(self):
+        from selfie_search.services.continuation import (
+            consumed_anchor_photo_ids,
+            submit_continuation,
+        )
+
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        _, seed = self.index_appearance("initial-gallery-seed", face_similarity=1.0)
+        self.index_appearance("grey-reference", face_similarity=0.7)
+        self.index_appearance(
+            "pink-reference", face_similarity=0.8, reid_similarity=0.0, color_similarity=0.0
+        )
+        self.index_appearance("grey-addition")
+        self.index_appearance("pink-addition", reid_similarity=0.0, color_similarity=0.0)
+        root = self.submit_gallery(seed)
+        assert run_once()
+        root.refresh_from_db()
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+
+        first = submit_continuation(search=root, user=self.user, photo_id=None)
+        assert run_once()
+        assert self.result_photos(first) == ["pink-addition"]
+        assert first.apparel_evidence.decisions["centroid_anchor_outcomes"] == ["verified"]
+        assert consumed_anchor_photo_ids(root) == {"initial-gallery-seed", "pink-reference"}
+
+        second = submit_continuation(search=root, user=self.user, photo_id=None)
+        assert run_once()
+        assert self.result_photos(second) == ["grey-addition"]
+        assert second.apparel_evidence.decisions["centroid_anchor_outcomes"] == ["verified"]
 
     def test_apparel_statement_timeout_requeues_and_preserves_vector_for_successful_retry(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")

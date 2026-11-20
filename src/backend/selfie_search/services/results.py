@@ -6,7 +6,8 @@ import hashlib
 from typing import Final
 
 from django.core.paginator import Page, Paginator
-from django.db.models import F, QuerySet
+from django.db.models import F, Q, QuerySet, Window
+from django.db.models.functions import RowNumber
 from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import saved_result_photo_queryset
 from picflow.models import Event, Photo
@@ -32,6 +33,7 @@ def resolve_public_result(*, event_slug: str, public_token: str, user) -> Selfie
         return SelfieSearch.objects.select_related("event").get(
             event__in=Event.objects.site_visible_to(user).filter(slug=event_slug),
             public_token_digest=public_token_digest,
+            parent_search__isnull=True,
         )
     except SelfieSearch.DoesNotExist:
         raise PublicSearchNotFound from None
@@ -42,7 +44,7 @@ def saved_ready_result_photos(
     *,
     paid_watermarked_previews_enabled: bool = False,
 ) -> tuple[Photo, ...]:
-    """Return eligible saved members in capture-time order."""
+    """Return eligible saved members in pass order, then capture-time order."""
     if search.status != SelfieSearch.Status.READY:
         return ()
     rows = _eligible_saved_result_rows(
@@ -58,7 +60,7 @@ def saved_ready_result_page(
     page_number: str | None,
     paid_watermarked_previews_enabled: bool = False,
 ) -> Page:
-    """Return one capture-time-ordered page of eligible saved members."""
+    """Return one page of eligible members in pass and capture-time order."""
     rows = (
         _eligible_saved_result_rows(
             search,
@@ -109,8 +111,38 @@ def _eligible_saved_result_rows(
     paid_watermarked_previews_enabled: bool,
 ) -> QuerySet[SelfieSearchResult]:
     return (
+        eligible_saved_result_rows(
+            search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+        )
+        .alias(
+            first_pass=Window(
+                expression=RowNumber(),
+                partition_by=[F("photo_id")],
+                order_by=[F("search__created_at").asc(), F("search_id").asc()],
+            )
+        )
+        .filter(first_pass=1)
+        .order_by(
+            "search__created_at",
+            "search_id",
+            F("photo__capture_time").asc(nulls_last=True),
+            "photo_id",
+        )
+    )
+
+
+def eligible_saved_result_rows(
+    search: SelfieSearch,
+    *,
+    paid_watermarked_previews_enabled: bool = False,
+) -> QuerySet[SelfieSearchResult]:
+    """Return visible rows in the root and committed passes, including provenance duplicates."""
+    ready_searches = SelfieSearch.objects.filter(
+        Q(pk=search.pk) | Q(parent_search=search), status=SelfieSearch.Status.READY
+    ).values("pk")
+    return (
         SelfieSearchResult.objects.filter(
-            search=search,
+            search_id__in=ready_searches,
             excluded_by_apparel=False,
             photo__event_id=search.event_id,
             photo__src="",

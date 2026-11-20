@@ -48,8 +48,8 @@ def enqueue_archive_job(
     observation: ArchiveObservation,
     order_item_ids: Sequence[int] = (),
 ) -> PhotoArchiveJob:
-    """Enqueue or reuse work for a freshly authorized, exact page of originals."""
-    if len(entries) > _MAX_PAGE_ENTRIES:
+    """Enqueue or reuse work for a freshly authorized collection of originals."""
+    if observation.context != "free_result" and len(entries) > _MAX_PAGE_ENTRIES:
         raise ValueError("archive exceeds the page limit")
     validate_archive_entries(tuple(entries))
     validate_archive_filename(filename)

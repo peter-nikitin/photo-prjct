@@ -20,7 +20,7 @@ from django.urls import reverse
 from feature_flags.registry import PAID_PHOTO_PURCHASE
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
-from picflow.archive_presentation import archive_page_action
+from picflow.archive_presentation import ArchivePageAction, archive_page_action
 from picflow.forms import BibSearchForm, EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from selfie_search.forms import SelfieSearchUploadForm
 
@@ -188,6 +188,7 @@ class FixtureSelfieSearch:
 @dataclass(frozen=True)
 class FixtureSelfieSearchResult:
     pk: str
+    search_id: str | None = None
 
 
 EVENTS = (
@@ -913,20 +914,20 @@ def _selfie_search_ready(
     photos: tuple[FixtureGalleryPhoto, ...] = SELFIE_RESULT_PHOTOS,
     cart_presentation: FixtureCartPresentation | None = None,
     archive_available: bool = True,
+    include_pass: bool = False,
 ) -> HttpResponse:
     selfie_search_page = Paginator(photos, 2).page(1)
     visible_photos = tuple(selfie_search_page.object_list)
     results = tuple(
-        FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
+        FixtureSelfieSearchResult(
+            f"00000000-0000-4000-8000-00000000001{index}",
+            search_id="next-pass" if include_pass and index == 2 else None,
+        )
         for index in range(1, len(visible_photos) + 1)
     )
     archive_action = (
-        archive_page_action(
-            item_count=len(visible_photos),
-            page_number=selfie_search_page.number,
-            page_count=selfie_search_page.paginator.num_pages,
-        )
-        if archive_available
+        ArchivePageAction(label="Скачать все", helper_text=None)
+        if archive_available and len(photos) >= 2
         else None
     )
     return _render(
@@ -947,6 +948,12 @@ def _selfie_search_ready(
                 if archive_action is not None
                 else None
             ),
+            "published_count": len(photos),
+            "continuation_url": reverse(
+                "selfie_search:continue",
+                kwargs={"event_slug": event.slug, "public_token": "visual-ready-result"},
+            ),
+            "continuation_photo_ids": {visible_photos[0].photo_id} if visible_photos else set(),
             "gallery_photos": visible_photos,
             "gallery_result_items": tuple(zip(results, visible_photos, strict=True)),
             "public_token": "visual-ready-result",
@@ -962,7 +969,7 @@ def _selfie_search_ready(
 
 
 def selfie_search_ready(request: HttpRequest) -> HttpResponse:
-    return _selfie_search_ready(request, event=EVENTS[0])
+    return _selfie_search_ready(request, event=EVENTS[0], include_pass=True)
 
 
 def selfie_search_ready_single(request: HttpRequest) -> HttpResponse:

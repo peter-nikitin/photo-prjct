@@ -4,6 +4,7 @@
 - Дата: 2026-11-20
 - Авторы решения: владелец проекта
 - Заменяет: [ADR 0034](0034-stream-page-scoped-photo-archives-through-django.md)
+- Заменено: [ADR 0084](0084-continue-search-under-one-result-link.md) в части состава бесплатного архива поиска
 
 ## Контекст
 

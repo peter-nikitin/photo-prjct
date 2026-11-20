@@ -272,6 +272,7 @@ def resolve_public_search(event_slug: str, public_token: str) -> SelfieSearch:
     return SelfieSearch.objects.get(
         event__slug=event_slug,
         public_token_digest=_token_digest(public_token),
+        parent_search__isnull=True,
     )
 
 

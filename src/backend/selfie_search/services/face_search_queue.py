@@ -23,6 +23,13 @@ from selfie_search.models import (
 from selfie_search.observability import emit_selfie_observability_failure
 from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
 from selfie_search.services.apparel_expansion import expand_apparel, verify_apparel_anchors
+from selfie_search.services.cluster_expansion import direct_only_ranked_photos
+from selfie_search.services.continuation import is_automatic_continuation, load_continuation_sources
+from selfie_search.services.continuation_ranking import (
+    original_gallery_seed,
+    previous_matches,
+    rank_continuation_centroids,
+)
 from selfie_search.services.jobs import (
     emit_ranking_finished,
     expand_direct_ranking,
@@ -151,6 +158,10 @@ def process_face_search(task: FaceSearchTask) -> None:
 
     # Resolve the vector inside PostgreSQL so it is never included in the SQL text or worker logs.
     query = Subquery(FaceSearchTask.objects.filter(pk=task.pk).values("vector"))
+    is_continuation = search.parent_search_id is not None
+    automatic = is_continuation and is_automatic_continuation(search)
+    previous = previous_matches(search) if is_continuation else None
+    gallery_seed = original_gallery_seed(search) if is_continuation else None
     anchor_matches: tuple[AnchorMatch, ...] = ()
     verification = None
     apparel_spent_ms = 0
@@ -164,7 +175,20 @@ def process_face_search(task: FaceSearchTask) -> None:
                 return
             timeout_ms = min(timeout_ms, remaining_ms)
         _set_statement_timeout(timeout_ms)
-        ranking = rank_selected_direct(search, query)
+        sources = (
+            load_continuation_sources(search, model=task.embedding_model) if is_continuation else ()
+        )
+        if automatic:
+            ranking = rank_continuation_centroids(search, sources)
+        elif is_continuation:
+            ranking = rank_selected_direct(
+                search,
+                query,
+                exclude_photo_ids=previous,
+                original_gallery_seed=gallery_seed,
+            )
+        else:
+            ranking = rank_selected_direct(search, query)
         staff_eligible = search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True
         apparel_enabled = ranking.has_vectors and is_enabled_for_background_task(
             APPAREL_SEARCH_EXPANSION, staff_eligible=staff_eligible
@@ -185,17 +209,29 @@ def process_face_search(task: FaceSearchTask) -> None:
                     search,
                     ranking.photos,
                     embedding_model=task.embedding_model,
-                    gallery=task.source == FaceSearchTask.Source.GALLERY,
+                    gallery=task.source == FaceSearchTask.Source.GALLERY and not automatic,
+                    continuation_groups=sources if automatic else (),
                 )
+                if automatic:
+                    accepted = {row["photo_id"] for row in verification.anchors}
+                    if any(
+                        outcome != "no_compatible_appearance"
+                        and any(anchor.photo_id not in accepted for anchor in group)
+                        for group, outcome in zip(sources, verification.group_outcomes, strict=True)
+                    ):
+                        raise ValueError("continuation appearance anchors changed")
             except (DatabaseError, ValueError):
                 logger.warning("apparel_expansion_unavailable")
                 raise _ApparelSearchUnavailable from None
             apparel_spent_ms = ceil((perf_counter() - verification_started) * 1000)
 
-        expand_from_anchors = is_enabled_for_background_task(
-            FACE_SEARCH_ANCHOR_EXPANSION, staff_eligible=staff_eligible
-        )
-        if ranking.photos and expand_from_anchors:
+        if (
+            ranking.photos
+            and not is_continuation
+            and is_enabled_for_background_task(
+                FACE_SEARCH_ANCHOR_EXPANSION, staff_eligible=staff_eligible
+            )
+        ):
             source = search.configuration.get("query_source")
             source_photo_id = source.get("photo_id") if isinstance(source, dict) else None
             if task.source != FaceSearchTask.Source.GALLERY or isinstance(source_photo_id, str):
@@ -217,7 +253,11 @@ def process_face_search(task: FaceSearchTask) -> None:
                         verification.centroid_detection_ids if verification is not None else None
                     ),
                 )
-    expansion = expand_direct_ranking(search=search, ranked=ranking.photos, query=query)
+    expansion = (
+        direct_only_ranked_photos(ranking.photos, outcome="disabled")
+        if is_continuation
+        else expand_direct_ranking(search=search, ranked=ranking.photos, query=query)
+    )
     if anchor_matches:
         expansion = append_anchor_matches(expansion, anchor_matches)
     if verification is not None:
@@ -239,6 +279,13 @@ def process_face_search(task: FaceSearchTask) -> None:
                     expansion,
                     embedding_model=task.embedding_model,
                     verification=verification,
+                    continuation_groups=sources if automatic else (),
+                    prior_photo_ids=(
+                        tuple(previous.values_list("photo_id", flat=True))
+                        if previous is not None
+                        else ()
+                    )
+                    + ((gallery_seed,) if gallery_seed is not None else ()),
                 )
                 if expansion.apparel_evidence is None:
                     raise ValueError("apparel expansion did not supply evidence")

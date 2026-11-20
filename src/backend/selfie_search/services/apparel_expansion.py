@@ -1,8 +1,10 @@
 """Bounded appearance retrieval using individual accepted person descriptors."""
 
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from django.db import connection
@@ -14,6 +16,9 @@ from psycopg import Cursor
 from selfie_search.models import SelfieSearch, SelfieSearchResult
 from selfie_search.services.cluster_expansion import ExpandedRankedPhoto, RankedPhotoExpansion
 from selfie_search.services.ranking import RankedPhoto
+
+if TYPE_CHECKING:
+    from selfie_search.services.continuation import Anchor
 
 POLICY: dict[str, int | float] = {
     "version": 3,
@@ -89,16 +94,32 @@ people AS MATERIALIZED (
     FROM appearance_inputs input
     JOIN processing_personappearancedetection appearance ON appearance.attempt_id = input.id
 ),
+-- Batch the optional key lookups. The full joins with a subquery boundary prevent
+-- a bad row estimate from making PostgreSQL compare every person against the table.
+face_attempts AS (
+    SELECT id, input_fingerprint
+    FROM processing_processingattempt
+    WHERE accepted AND status = 'succeeded'
+      AND id = ANY(ARRAY(SELECT face_attempt FROM people WHERE face_attempt IS NOT NULL))
+),
+people_with_attempt AS (
+    SELECT mapped.*
+    FROM (
+        SELECT person.*, CASE WHEN attempt.input_fingerprint = person.fingerprint
+            THEN attempt.id END AS matched_attempt_id
+        FROM people person
+        FULL JOIN face_attempts attempt ON attempt.id = person.face_attempt
+        OFFSET 0
+    ) mapped
+    WHERE person_id IS NOT NULL
+),
 -- Keep unmatched people in the windowed pass to avoid joining all people back to their matches.
 head_matches AS (
     SELECT person.*, matched.id AS matched_face_id, matched.status AS matched_face_status,
         count(*) OVER (PARTITION BY person.person_id) AS faces_per_person,
         row_number() OVER (PARTITION BY person.person_id) AS person_row,
         count(*) OVER (PARTITION BY matched.id) AS people_per_face
-    FROM people person
-    LEFT JOIN processing_processingattempt attempt ON attempt.id = person.face_attempt
-        AND attempt.input_fingerprint = person.fingerprint AND attempt.accepted
-        AND attempt.status = 'succeeded'
+    FROM people_with_attempt person
     LEFT JOIN LATERAL (
         SELECT face.id, face.status
         FROM processing_photofacedetection face
@@ -114,12 +135,12 @@ head_matches AS (
             SELECT greatest(0, least(box.x + box.w, box.r) - greatest(box.x, box.l)) *
                    greatest(0, least(box.y + box.h, box.b) - greatest(box.y, box.t)) AS area
         ) AS overlap
-        WHERE face.attempt_id = attempt.id AND box.w > 0 AND box.h > 0
+        WHERE face.attempt_id = person.matched_attempt_id AND box.w > 0 AND box.h > 0
             AND overlap.area >= 0.85 * box.w * box.h
             AND overlap.area >= 0.85 * (box.r - box.l) * (box.b - box.t)
     ) AS matched ON person.head IS NOT NULL
 ),
-resolved_people AS (
+resolved_people AS MATERIALIZED (
     SELECT person_id, photo_id, bbox, reason, reid, color, helmet, head_count, face_attempt,
         person_count, people_incomplete, head IS NOT NULL AS has_assigned_head,
         faces_per_person > 1 OR (matched_face_id IS NOT NULL AND people_per_face > 1)
@@ -129,11 +150,26 @@ resolved_people AS (
     FROM head_matches
     WHERE person_row = 1
 ),
+face_vectors AS (
+    SELECT detection_id, vector
+    FROM processing_faceembeddingvector
+    WHERE model_version = %(model)s
+      AND detection_id = ANY(ARRAY(
+          SELECT face_id FROM resolved_people
+          WHERE face_id IS NOT NULL AND matched_face_status = 'kept'
+      ))
+),
 linked AS MATERIALIZED (
-    SELECT person.*, embedding.vector
-    FROM resolved_people person
-    LEFT JOIN processing_faceembeddingvector embedding ON embedding.detection_id = person.face_id
-        AND person.matched_face_status = 'kept' AND embedding.model_version = %(model)s
+    SELECT mapped.*
+    FROM (
+        SELECT person.*, embedding.vector
+        FROM resolved_people person
+        FULL JOIN face_vectors embedding ON embedding.detection_id = (
+            CASE WHEN person.matched_face_status = 'kept' THEN person.face_id END
+        )
+        OFFSET 0
+    ) mapped
+    WHERE person_id IS NOT NULL
 )
 """
 
@@ -193,19 +229,34 @@ SELECT
 
 _QUERY = (
     """
-WITH found_faces AS (
+WITH face_queries AS (
+    SELECT vector FROM selfie_search_facesearchtask WHERE id = %(task)s
+        AND cardinality(%(query_detection_ids)s::uuid[]) = 0
+    UNION ALL
+    SELECT l2_normalize(avg(l2_normalize(embedding.vector))) AS vector
+    FROM unnest(%(query_detection_ids)s::uuid[], %(query_cen_indices)s::smallint[])
+        AS source(detection_id, centroid_index)
+    JOIN processing_faceembeddingvector embedding USING (detection_id)
+    GROUP BY source.centroid_index
+),
+found_faces AS (
     SELECT * FROM unnest(%(found_photos)s::varchar[], %(found_detections)s::uuid[],
-        %(found_ranks)s::int[]) AS found(photo_id, detection_id, result_rank)
+        %(found_ranks)s::int[], %(found_centroid_indices)s::smallint[])
+        AS found(photo_id, detection_id, result_rank, centroid_index)
+),
+found_centroids AS (
+    SELECT DISTINCT photo_id, centroid_index FROM found_faces WHERE centroid_index IS NOT NULL
 ),
 """
     + _PEOPLE_CTES
     + """,
 anchors AS MATERIALIZED (
-    SELECT person.*, selected.ordinality AS position,
+    SELECT person.*, selected.ordinality AS position, selected.centroid_index,
         subvector(person.color, 1, 192) AS head_color,
         subvector(person.color, 193, 192) AS torso_color
-    FROM unnest(%(anchor_person_ids)s::bigint[], %(anchor_detection_ids)s::uuid[])
-        WITH ORDINALITY AS selected(person_id, detection_id, ordinality)
+    FROM unnest(%(anchor_person_ids)s::bigint[], %(anchor_detection_ids)s::uuid[],
+        %(anchor_centroid_indices)s::smallint[])
+        WITH ORDINALITY AS selected(person_id, detection_id, centroid_index, ordinality)
     JOIN linked person ON person.person_id = selected.person_id
         AND person.face_id = selected.detection_id
     WHERE person.vector IS NOT NULL AND person.reid IS NOT NULL AND person.color IS NOT NULL
@@ -230,6 +281,7 @@ nearest AS MATERIALIZED (
     WHERE candidate.reason = '' AND candidate.reid IS NOT NULL AND candidate.color IS NOT NULL
         AND candidate.photo_id IS DISTINCT FROM %(source_photo)s
         AND NOT (candidate.photo_id = ANY(%(baseline)s::varchar[]))
+        AND NOT (candidate.photo_id = ANY(%(prior_photos)s::varchar[]))
     ORDER BY best.reid_cosine_similarity DESC, candidate.photo_id, candidate.person_id
     LIMIT %(candidate_probe)s
 ),
@@ -237,9 +289,7 @@ assessments AS (
     SELECT person_id, photo_id, source_person_id, source_photo_id, source_detection_id,
         reid_cosine_similarity, color_cosine_similarity, helmet_cosine_similarity,
         CASE WHEN nearest.vector IS NOT NULL THEN greatest(0, least(
-            nearest.vector <=> (
-                SELECT vector FROM selfie_search_facesearchtask WHERE id = %(task)s
-            ),
+            (SELECT min(nearest.vector <=> vector) FROM face_queries),
             (SELECT min(nearest.vector <=> anchor.vector) FROM anchors anchor)
         )) END AS face_cosine_distance
     FROM nearest
@@ -256,6 +306,7 @@ person_assessments AS MATERIALIZED (
             AND c.highest_color < %(color_cosine_similarity_min)s
             AND c.torso_disagrees, false) AS confident_mismatch
     FROM linked person
+    LEFT JOIN found_centroids centroid USING (photo_id)
     CROSS JOIN LATERAL (
         SELECT (person.bbox->>2)::float8 - (person.bbox->>0)::float8 AS width,
             (person.bbox->>3)::float8 - (person.bbox->>1)::float8 AS height
@@ -295,12 +346,13 @@ person_assessments AS MATERIALIZED (
                     THEN 1 - (regions.torso_color <=> anchor.torso_color) END AS torso_color,
                 1 - (person.helmet <=> anchor.helmet) AS helmet
         ) sim
+        WHERE centroid.centroid_index IS NULL OR anchor.centroid_index = centroid.centroid_index
     ) c
     WHERE person.photo_id = ANY(%(baseline)s::varchar[])
         AND person.photo_id IS DISTINCT FROM %(source_photo)s
 ),
 face_assessments AS MATERIALIZED (
-    SELECT found.*, p.person_id,
+    SELECT found.photo_id, found.detection_id, found.result_rank, p.person_id,
         coalesce(p.confident_mismatch AND p.face_verified, false) AS confident_mismatch,
         p.comparisons,
         CASE WHEN p.reason <> '' AND p.reason <> 'descriptor_limit' THEN p.reason
@@ -394,6 +446,7 @@ class ApparelAnchorVerification:
     checks: list[dict[str, Any]]
     comparisons: list[dict[str, Any]]
     truncated: bool
+    group_outcomes: tuple[str, ...] = ()
 
     @property
     def centroid_detection_ids(self) -> tuple[UUID, ...] | None:
@@ -491,12 +544,75 @@ def _select_anchors(
     return "verified", leaders[0][:limit]
 
 
+def _read_anchor_checks(
+    search: SelfieSearch, proposed: list[tuple[str, UUID, float]], model: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    checks, comparisons = _read_appearance_sql(
+        search,
+        _VERIFY_QUERY,
+        {
+            "event": search.event_id,
+            "model": model,
+            "config": _configuration_hash(APPEARANCE_CONFIGURATION),
+            "ids": [row[0] for row in proposed],
+            "detections": [row[1] for row in proposed],
+            "distances": [row[2] for row in proposed],
+        },
+        photo_scope="AND state.photo_id IN (SELECT photo_id FROM anchor_input)",
+    )
+    return json.loads(checks), json.loads(comparisons)
+
+
+def continuation_apparel_neighbors(
+    search: SelfieSearch, candidates: tuple[Anchor, ...], model: str
+) -> dict[str, set[str]]:
+    """Identify eligible proposals and their compatible neighbors before limiting the groups."""
+    checks, comparisons = _read_anchor_checks(
+        search, [(anchor.photo_id, anchor.detection_id, 0.0) for anchor in candidates], model
+    )
+    unindexed = {row["photo_id"] for row in checks if row["reason"] == "no_compatible_appearance"}
+    neighbors: dict[str, set[str]] = {photo_id: unindexed - {photo_id} for photo_id in unindexed}
+    neighbors.update({row["photo_id"]: set() for row in checks if not row["reason"]})
+    for comparison in comparisons:
+        if _compatible(comparison):
+            left, right = comparison["left_photo_id"], comparison["right_photo_id"]
+            neighbors[left].add(right)
+            neighbors[right].add(left)
+    return neighbors
+
+
+def _select_continuation_anchors(
+    groups: tuple[tuple[Anchor, ...], ...],
+    checks: list[dict[str, Any]],
+    comparisons: list[dict[str, Any]],
+) -> tuple[tuple[str, ...], dict[str, int]]:
+    by_photo = {row["photo_id"]: row for row in checks}
+    outcomes = []
+    selected = {}
+    for position, group in enumerate(groups, start=1):
+        group_checks = [by_photo[anchor.photo_id] for anchor in group]
+        reference = next((row["photo_id"] for row in group_checks if not row["reason"]), None)
+        if reference is None:
+            outcome = (
+                "no_compatible_appearance"
+                if all(row["reason"] == "no_compatible_appearance" for row in group_checks)
+                else "reference_unassessable"
+            )
+            outcomes.append(outcome)
+            continue
+        outcome, photo_ids = _select_anchors(group_checks, comparisons, reference)
+        outcomes.append(outcome)
+        selected.update(dict.fromkeys(photo_ids, position))
+    return tuple(outcomes), selected
+
+
 def verify_apparel_anchors(
     search: SelfieSearch,
     direct: tuple[RankedPhoto, ...],
     *,
     embedding_model: str,
     gallery: bool,
+    continuation_groups: tuple[tuple[Anchor, ...], ...] = (),
 ) -> ApparelAnchorVerification:
     source = search.configuration.get("query_source")
     source_photo_id = None
@@ -508,32 +624,40 @@ def verify_apparel_anchors(
             raise ValueError("gallery appearance search requires a source detection")
         source_photo_id = source_photo
         proposed.append((source_photo, UUID(source_detection), 0.0))
+    if continuation_groups:
+        proposed = [
+            (anchor.photo_id, anchor.detection_id, 0.0)
+            for group in continuation_groups
+            for anchor in group
+        ]
     candidates = [
         row
         for row in direct
-        if row.cosine_distance <= POLICY["anchor_distance"] and row.photo_id != source_photo_id
+        if not continuation_groups
+        and row.cosine_distance <= POLICY["anchor_distance"]
+        and row.photo_id != source_photo_id
     ]
     limit = int(POLICY["max_anchor_candidates"])
     proposed.extend(
         (row.photo_id, row.detection_id, row.cosine_distance) for row in candidates[:limit]
     )
-    checks, comparisons = map(
-        json.loads,
-        _read_appearance_sql(
-            search,
-            _VERIFY_QUERY,
-            {
-                "event": search.event_id,
-                "model": embedding_model,
-                "config": _configuration_hash(APPEARANCE_CONFIGURATION),
-                "ids": [row[0] for row in proposed],
-                "detections": [row[1] for row in proposed],
-                "distances": [row[2] for row in proposed],
-            },
-            photo_scope="AND state.photo_id IN (SELECT photo_id FROM anchor_input)",
-        ),
-    )
-    outcome, selected_photo_ids = _select_anchors(checks, comparisons, source_photo_id)
+    checks, comparisons = _read_anchor_checks(search, proposed, embedding_model)
+    group_outcomes: tuple[str, ...] = ()
+    centroid_by_photo: dict[str, int] = {}
+    if continuation_groups:
+        group_outcomes, centroid_by_photo = _select_continuation_anchors(
+            continuation_groups, checks, comparisons
+        )
+        outcome = (
+            "reference_unassessable"
+            if "reference_unassessable" in group_outcomes
+            else "verified"
+            if centroid_by_photo
+            else "no_compatible_appearance"
+        )
+        selected_photo_ids = tuple(centroid_by_photo)
+    else:
+        outcome, selected_photo_ids = _select_anchors(checks, comparisons, source_photo_id)
     selected = set(selected_photo_ids)
     by_photo = {row["photo_id"]: row for row in checks}
     result_rank = {row.photo_id: rank for rank, row in enumerate(direct, start=1)}
@@ -567,10 +691,17 @@ def verify_apparel_anchors(
             if key not in ("decision", "reason")
         }
         | {"anchor_position": position}
+        | ({"centroid_index": centroid_by_photo[photo_id]} if continuation_groups else {})
         for position, photo_id in enumerate(selected_photo_ids, start=1)
     )
     return ApparelAnchorVerification(
-        source_photo_id, outcome, anchors, checks, comparisons, len(candidates) > limit
+        source_photo_id,
+        outcome,
+        anchors,
+        checks,
+        comparisons,
+        len(candidates) > limit,
+        group_outcomes,
     )
 
 
@@ -581,11 +712,13 @@ def expand_apparel(
     *,
     embedding_model: str,
     verification: ApparelAnchorVerification,
+    continuation_groups: tuple[tuple[Anchor, ...], ...] = (),
+    prior_photo_ids: tuple[str, ...] = (),
 ) -> RankedPhotoExpansion:
     config_hash = _configuration_hash(APPEARANCE_CONFIGURATION)
     candidates, recommendations, exclusions = [], [], []
     if verification.anchors:
-        found_faces: list[tuple[str, UUID, int]] = []
+        found_faces: list[tuple[str, UUID, int, int | None]] = []
         for rank, row in enumerate(expansion.results, start=1):
             detections = {
                 *(evidence.member_detection_id for evidence in row.cluster_evidence),
@@ -595,7 +728,15 @@ def expand_apparel(
                     if match is not None
                 ),
             }
-            found_faces.extend((row.photo_id, detection, rank) for detection in sorted(detections))
+            centroid_index = row.direct.centroid_index if row.direct is not None else None
+            found_faces.extend(
+                (row.photo_id, detection, rank, centroid_index) for detection in sorted(detections)
+            )
+        query_members = [
+            (anchor.detection_id, index)
+            for index, group in enumerate(continuation_groups, start=1)
+            for anchor in group
+        ]
         *payload, anchors_count = _read_appearance_sql(
             search,
             _QUERY,
@@ -604,14 +745,21 @@ def expand_apparel(
                 "event": search.event_id,
                 "model": embedding_model,
                 "task": task_id,
+                "query_detection_ids": [member[0] for member in query_members],
+                "query_cen_indices": [member[1] for member in query_members],
                 "config": config_hash,
                 "found_photos": [row[0] for row in found_faces],
                 "found_detections": [row[1] for row in found_faces],
                 "found_ranks": [row[2] for row in found_faces],
+                "found_centroid_indices": [row[3] for row in found_faces],
                 "source_photo": verification.source_photo_id,
                 "anchor_person_ids": [row["person_id"] for row in verification.anchors],
                 "anchor_detection_ids": [UUID(row["detection_id"]) for row in verification.anchors],
+                "anchor_centroid_indices": [
+                    row.get("centroid_index") for row in verification.anchors
+                ],
                 "baseline": [row.photo_id for row in expansion.results],
+                "prior_photos": list(prior_photo_ids),
                 "candidate_probe": int(POLICY["max_candidates"]) + 1,
                 "recommendation_probe": int(POLICY["max_recommendations"]) + 1,
             },
@@ -677,6 +825,8 @@ def expand_apparel(
         "additions_truncated": len(additions) > addition_limit,
         "added_people": {row.photo_id: additions[row.photo_id] for row in found},
     }
+    if continuation_groups:
+        evidence["centroid_anchor_outcomes"] = verification.group_outcomes
     return replace(
         expansion,
         results=expansion.results + tuple(found),

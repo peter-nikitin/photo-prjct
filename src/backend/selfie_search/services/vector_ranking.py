@@ -32,7 +32,13 @@ def accepted_kept_faces(search: SelfieSearch, model: str) -> QuerySet[PhotoProce
     ).order_by()
 
 
-def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRankingOutcome:
+def rank_vector_direct(
+    search: SelfieSearch,
+    query_vector: object,
+    *,
+    exclude_photo_ids: QuerySet | None = None,
+    original_gallery_seed: str | None = None,
+) -> DirectRankingOutcome:
     """Rank current vectors; fresh matches and emptiness share one database snapshot."""
     configuration = _configuration(search)
     query = (
@@ -53,8 +59,13 @@ def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRank
             ),
         ),
     )
+    candidates = states
+    if exclude_photo_ids is not None:
+        candidates = candidates.exclude(photo_id__in=Subquery(exclude_photo_ids))
+    if original_gallery_seed is not None:
+        candidates = candidates.exclude(photo_id=original_gallery_seed)
     matches = (
-        states.annotate(
+        candidates.annotate(
             photo_rank=Window(
                 RowNumber(),
                 partition_by=[F("photo_id")],

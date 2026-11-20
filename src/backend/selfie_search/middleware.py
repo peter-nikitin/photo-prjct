@@ -105,6 +105,7 @@ def _is_allowed_bearer_post(request: HttpRequest) -> bool:
         return False
     try:
         return resolve(request.path_info).view_name in {
+            "selfie_search:continue",
             "selfie_search:feedback_selfie",
             "commerce:grant_order_resend",
             "commerce:grant_order_archive",

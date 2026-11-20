@@ -17,6 +17,11 @@ urlpatterns = [
         name="result",
     ),
     path(
+        "events/<str:event_slug>/selfie-search/<str:public_token>/continue/",
+        views.continue_search,
+        name="continue",
+    ),
+    path(
         "events/<str:event_slug>/selfie-search/<str:public_token>/download/",
         views.result_archive,
         name="result_archive",

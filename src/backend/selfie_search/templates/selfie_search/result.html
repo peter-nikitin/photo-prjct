@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block content %}
-  <article class="selfie-search-result" aria-labelledby="selfie-search-result-title" data-selfie-search-result data-event-slug="{{ event.slug }}" data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" data-gallery-origin="{{ is_gallery_origin|yesno:'true,false' }}" data-result-digest="{{ public_token_digest }}"{% if selfie_feedback_correlation %} data-feedback-correlation="{{ selfie_feedback_correlation }}"{% endif %}{% if not is_terminal %} data-status-url="{{ status_url }}"{% endif %}>
+  <article class="selfie-search-result" aria-labelledby="selfie-search-result-title" data-selfie-search-result data-event-slug="{{ event.slug }}" data-selfie-feedback-enabled="{{ selfie_feedback_enabled|yesno:'true,false' }}" data-gallery-origin="{{ is_gallery_origin|yesno:'true,false' }}" data-result-digest="{{ public_token_digest }}"{% if selfie_feedback_correlation %} data-feedback-correlation="{{ selfie_feedback_correlation }}"{% endif %}{% if not is_terminal or continuation_pending %} data-status-url="{{ status_url }}"{% endif %}>
     {% include "ui/event_detail_header.html" with event=event heading_id="selfie-search-result-title" %}
     {% if event.publication_status == "draft" %}<p class="event-draft-warning">Черновик — виден только администраторам</p>{% endif %}
     {% if is_gallery_origin %}
@@ -29,7 +29,7 @@
     {% elif search.status == "ready" %}
       <section class="event-gallery selfie-search-results" data-event-gallery aria-labelledby="selfie-search-matches-title">
         <h2 id="selfie-search-matches-title">Возможные совпадения</h2>
-        <p class="selfie-search-count">Найдено фотографий: {{ search.published_matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
+        <p class="selfie-search-count">Найдено фотографий: {{ published_count|default_if_none:search.published_matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
         {% if archive_action %}
           <div class="selfie-search-archive-action">
             {% include "ui/archive_form.html" with action=archive_url label=archive_action.label %}
@@ -37,8 +37,13 @@
           </div>
         {% endif %}
         {% if gallery_photos %}
+          {% regroup gallery_result_items by 0.search_id as result_groups %}
+          {% for group in result_groups %}
+          {% if group.grouper and group.grouper != search.pk %}
+            <h3>Новые фото</h3>
+          {% endif %}
           <div class="event-gallery-grid">
-            {% for result, photo in gallery_result_items %}
+            {% for result, photo in group.list %}
               <figure class="gallery-card" data-photo-id="{{ photo.photo_id }}">
                 <a class="gallery-card-link glightbox" href="{{ photo.preview_media_large.url }}" data-gallery="selfie-search-results" data-type="image"{% if cart_presentation %}{% for cart_photo in cart_presentation.photos %}{% if cart_photo.photo.photo_id == photo.photo_id %} data-description='<form class="gallery-lightbox-cart-form cart-action-form" data-cart-form data-photo-id="{{ photo.photo_id }}" method="post" action="{% url "commerce:set_photo_state" event_slug=event.slug %}"><span class="gallery-lightbox-price" data-cart-price data-photo-id="{{ photo.photo_id }}">{{ cart_photo.unit_price_display }}</span>{% csrf_token %}<input type="hidden" name="photo_id" value="{{ photo.photo_id }}"><input type="hidden" name="selected" value="{% if cart_photo.selected %}0{% else %}1{% endif %}"><input type="hidden" name="return_to" value="{{ request.get_full_path }}"><button class="gallery-cart-button{% if cart_photo.selected %} is-selected{% endif %}" type="submit" data-cart-button aria-pressed="{{ cart_photo.selected|yesno:"true,false" }}" aria-label="{% if cart_photo.selected %}Удалить из корзины{% else %}Добавить в корзину{% endif %}" title="{% if cart_photo.selected %}Удалить из корзины{% else %}Добавить в корзину{% endif %}"><svg class="icon" data-cart-icon aria-hidden="true"><use href="{{ ui_icons }}#{% if cart_photo.selected %}cart-check{% else %}cart-plus{% endif %}"></use></svg></button></form>'{% endif %}{% endfor %}{% elif photo.download_url %} data-description='<a class="gallery-lightbox-download" href="{{ photo.download_url }}" aria-label="Скачать оригинал" title="Скачать оригинал"><svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#download"></use></svg></a>'{% endif %} aria-label="Открыть: {{ photo.alt }}">
                   <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
@@ -74,14 +79,34 @@
                     {% endif %}
                   </div>
                 </div>
+                {% if continuation_url %}
+                  <div class="selfie-search-photo-continuation">
+                    <button class="button" form="search-continuation" name="photo_id" value="{{ photo.photo_id }}" type="submit" disabled{% if photo.photo_id in continuation_photo_ids %} data-continuation-control{% endif %}>Найти по этому фото</button>
+                  </div>
+                {% endif %}
               </figure>
             {% endfor %}
           </div>
+          {% endfor %}
           {% if selfie_search_page.paginator.num_pages > 1 %}
             {% include "ui/gallery_pagination.html" with pagination_page=selfie_search_page pagination_label="Страницы результатов поиска" %}
           {% endif %}
         {% else %}
           <p class="selfie-search-empty">Совпадений не найдено</p>
+        {% endif %}
+        {% if continuation_pending %}
+          <p role="status">Ищем ещё фотографии…</p>
+          <p role="status" data-selfie-search-connection hidden></p>
+          <noscript><p>Обновите страницу, чтобы увидеть новые фото.</p></noscript>
+        {% elif continuation_url %}
+          {% if continuation_unavailable %}<p role="status">Подходящих новых опор не найдено.</p>{% endif %}
+          {% if continuation_failed %}<p role="status">Не удалось продолжить поиск. Попробуйте ещё раз.</p>{% endif %}
+          {% if continuation_empty %}<p role="status">Новых фотографий в этом проходе не найдено.</p>{% endif %}
+          <form id="search-continuation" class="selfie-search-more" method="post" action="{{ continuation_url }}">
+            {% csrf_token %}
+            <button class="button" type="submit" data-continuation-control disabled>Найти ещё</button>
+            <p role="alert" hidden>Не удалось продолжить поиск. Попробуйте ещё раз.</p>
+          </form>
         {% endif %}
       </section>
     {% elif search.status == "no_face" %}

@@ -931,7 +931,43 @@ test('upload sources stack before local folder targets collapse at tablet width'
   expect(localTargetCopy.width).toBeGreaterThan(100);
 });
 
-test('archive actions preserve the page boundary and paid result denial', async ({ page }) => {
+test('continuation buttons submit the expected source without exposing the result URL as a referrer', async ({ page }) => {
+  const path = '/__visual__/event/selfie-search/ready/';
+  await page.route(`**${path}*`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: { ...response.headers(), 'referrer-policy': 'no-referrer' },
+    });
+  });
+  await page.goto(path);
+  await page.locator('[data-cookie-notice-accept]').click();
+  const manual = page.getByRole('button', { name: 'Найти по этому фото' }).first();
+  const source = await manual.getAttribute('value');
+  const target = new URL(await page.locator('#search-continuation').getAttribute('action'), page.url());
+  const submitted = [];
+  await page.route(target.href, async (route) => {
+    const request = route.request();
+    const headers = await request.allHeaders();
+    expect(request.method()).toBe('POST');
+    expect(headers.origin).toBe(target.origin);
+    expect(headers.referer).toBe(`${target.origin}/`);
+    expect(headers.accept).toBe('application/json');
+    const data = request.postData();
+    expect(data).toContain('name="csrfmiddlewaretoken"');
+    submitted.push(data);
+    await route.fulfill({ json: { result_url: `${path}?submitted=${submitted.length}` } });
+  });
+
+  await manual.click();
+  await expect(page).toHaveURL(/\?submitted=1$/);
+  expect(submitted[0]).toContain(`name="photo_id"\r\n\r\n${source}\r\n`);
+  await page.getByRole('button', { name: 'Найти ещё' }).click();
+  await expect(page).toHaveURL(/\?submitted=2$/);
+  expect(submitted[1]).not.toContain('name="photo_id"');
+});
+
+test('archive actions cover all free search photos, order pages, and paid result denial', async ({ page }) => {
   for (const [path, expected] of [
     [
       '/__visual__/event/selfie-search/ready/single/',
@@ -939,11 +975,7 @@ test('archive actions preserve the page boundary and paid result denial', async 
     ],
     [
       '/__visual__/event/selfie-search/ready/',
-      {
-        label: 'Скачать эту страницу',
-        helper: 'В архив попадут 2 фотографии со страницы 1 из 2. Остальные страницы можно скачать отдельно.',
-        pages: true,
-      },
+      { label: 'Скачать все', helper: null, pages: true },
     ],
     [
       '/__visual__/order/paid/',

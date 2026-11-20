@@ -512,3 +512,15 @@
     border-top: 0;
   }
 }
+
+.selfie-search-photo-continuation {
+  padding: 0.5rem;
+}
+
+.selfie-search-photo-continuation .button {
+  width: 100%;
+}
+
+.selfie-search-more {
+  margin-top: 1rem;
+}

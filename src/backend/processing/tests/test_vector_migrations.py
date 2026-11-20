@@ -203,6 +203,8 @@ def test_previous_processing_and_search_rows_survive_vector_schema_expansion():
         for name, values in saved.items():
             if name == "SelfieSearchResult":
                 values = [row | {"excluded_by_apparel": False} for row in values]
+            elif name == "SelfieSearchDirectEvidence":
+                values = [row | {"centroid_index": None} for row in values]
             assert (
                 list(current.get_model("selfie_search", name).objects.order_by("pk").values())
                 == values

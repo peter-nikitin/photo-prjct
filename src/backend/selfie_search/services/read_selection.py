@@ -2,6 +2,8 @@
 
 import logging
 
+from django.db.models import QuerySet
+
 from selfie_search.models import SelfieSearch
 from selfie_search.observability import MAX_BOUNDED_INTEGER, SelfieEventName, emit_selfie_event
 from selfie_search.services.direct_ranking import DirectRankingOutcome
@@ -11,9 +13,20 @@ from selfie_search.services.vector_ranking import rank_vector_direct
 logger = logging.getLogger(__name__)
 
 
-def rank_selected_direct(search: SelfieSearch, query: object) -> DirectRankingOutcome:
+def rank_selected_direct(
+    search: SelfieSearch,
+    query: object,
+    *,
+    exclude_photo_ids: QuerySet | None = None,
+    original_gallery_seed: str | None = None,
+) -> DirectRankingOutcome:
     try:
-        outcome = rank_vector_direct(search, query)
+        outcome = rank_vector_direct(
+            search,
+            query,
+            exclude_photo_ids=exclude_photo_ids,
+            original_gallery_seed=original_gallery_seed,
+        )
     except RankingError:
         raise
     except (MemoryError, ValueError) as error:

@@ -27,6 +27,7 @@ class RankedPhoto:
     photo_id: str
     detection_id: UUID
     cosine_distance: float
+    centroid_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

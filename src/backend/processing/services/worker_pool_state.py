@@ -38,6 +38,7 @@ BULK_IDENTITIES: tuple[Identity, ...] = (
     (2, "face_embedding", 3),
     (3, "face_embedding", 5),
     (1, "bib_recognition", 1),
+    (2, "person_appearance", 1),
 )
 SELFIE_IDENTITIES: tuple[Identity, ...] = ((1, "selfie_query", 2),)
 

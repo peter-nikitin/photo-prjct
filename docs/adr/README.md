@@ -94,3 +94,7 @@ ADR фиксирует долговременный архитектурный �
 | 0070 | [Расширять поиск по лицу от прямых совпадений](0070-expand-face-search-from-direct-matches.md) | Accepted |
 | 0071 | [Собирать архивы фотографий в фоне](0071-prepare-photo-archives-in-background.md) | Accepted |
 | 0072 | [Хранить приблизительные счётчики импорта фото в PostgreSQL](0072-store-approximate-photo-import-counters.md) | Accepted |
+| 0073 | [Вычислять признаки внешности на принятом превью](0073-precompute-person-appearance-on-canonical-previews.md) | Accepted |
+| 0074 | [Отсеивать непригодную фигуру до вычисления дескрипторов](0074-filter-person-appearance-by-figure-quality.md) | Accepted |
+| 0075 | [Расширять выдачу по лицу свидетельствами внешности](0075-expand-face-results-with-person-appearance.md) | Accepted |
+| 0076 | [Раздельно включать вычисление внешности и расширение поиска](0076-separate-appearance-processing-and-search-rollout.md) | Accepted |

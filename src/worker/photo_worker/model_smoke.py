@@ -34,6 +34,7 @@ def main() -> None:
         _assert_selfie_query_no_face(path)
         _assert_preview_paths(path)
         _assert_bib_models(path)
+        _assert_appearance_models(path)
         decoded = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
 
     if decoded is None:
@@ -125,6 +126,30 @@ def _assert_preview_paths(path: Path) -> None:
                 asset_sha256s=WATERMARK_ASSET_SHA256S,
             )
     print("preview-model-smoke-ok")
+
+
+def _assert_appearance_models(path: Path) -> None:
+    import hashlib
+
+    from PIL import Image
+
+    from photo_worker.person_appearance import _encode, _models, extract_person_appearance
+
+    result = extract_person_appearance(
+        path,
+        max_pixels=320 * 320,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        size=(320, 320),
+    )
+    if result["people"] != [] or result["head_count"] != 0:
+        raise RuntimeError("appearance_model_smoke_expected_empty_people")
+    _, encoder, _ = _models()
+    vector = _encode(encoder, Image.new("RGB", (128, 256), (35, 80, 120)))
+    if len(vector) != 256 or not math.isclose(
+        sum(value * value for value in vector), 1.0, rel_tol=1e-5
+    ):
+        raise RuntimeError("appearance_model_smoke_invalid_vector")
+    print("appearance-model-smoke-ok")
 
 
 def _assert_bib_models(path: Path) -> None:

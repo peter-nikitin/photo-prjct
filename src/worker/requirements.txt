@@ -7,3 +7,4 @@ fvcore==0.1.5.post20221221
 safetensors==0.6.2
 rapidocr==3.9.2
 prometheus-client==0.25.0
+openvino==2025.4.0

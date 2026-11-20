@@ -1,0 +1,56 @@
+{
+  "date": "2026-11-20",
+  "scope": "Native Mac CPU pilot, not a Linux VM benchmark or full import rehearsal",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "python": "3.12.13",
+  "openvino": "2025.4.0",
+  "sampling": "random.Random(20261120).sample(sorted(previews.glob(\"*.jpg\")),20) independently for each event",
+  "cpu_threads": 1,
+  "sample_photos": 60,
+  "valid_results": 60,
+  "warm_p50_ms": 186.8848749436438,
+  "warm_p95_ms": 229.7905583633109,
+  "first_including_model_load_ms": 643.192125018686,
+  "mean_warm_ms": 191.448105270264,
+  "live_metadata_checked": 60,
+  "live_metadata_mismatches": 0,
+  "live_face_input_matches_preview": 60,
+  "maximum_sample_result_json_bytes": 165656,
+  "estimated_all_events_serial_compute_hours": 2.7439670143126005,
+  "estimated_all_events_result_json_bytes": 2155617533,
+  "events": [
+    {
+      "slug": "cycling-russian-amateur-championship-290826",
+      "photos": 12390,
+      "preview_bytes": 3002857413,
+      "archived_person_vectors": 15183,
+      "sample_photos": 20,
+      "sample_people": 27,
+      "sample_descriptors": 20,
+      "warm_mean_ms": 186.55173697410837,
+      "mean_result_json_bytes": 19503.85
+    },
+    {
+      "slug": "cyclingrace-moscow-2026",
+      "photos": 22196,
+      "preview_bytes": 6563053527,
+      "archived_person_vectors": 89095,
+      "sample_photos": 20,
+      "sample_people": 75,
+      "sample_descriptors": 38,
+      "warm_mean_ms": 186.6735395975411,
+      "mean_result_json_bytes": 38394.9
+    },
+    {
+      "slug": "cyclingrace-vechernee-sadovoe",
+      "photos": 17043,
+      "preview_bytes": 5259302429,
+      "archived_person_vectors": 81647,
+      "sample_photos": 20,
+      "sample_people": 156,
+      "sample_descriptors": 66,
+      "warm_mean_ms": 200.87422082433477,
+      "mean_result_json_bytes": 62298.4
+    }
+  ]
+}

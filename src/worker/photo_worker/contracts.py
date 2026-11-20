@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
+from typing import TypedDict, cast
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -134,6 +134,67 @@ V2_GENERATE_WATERMARKED_PREVIEW_CONFIGURATION: dict[str, object] = {
         "terminal_result_max_bytes": 8_192,
     },
 }
+PROCESSOR_TYPE_PERSON_APPEARANCE = "person_appearance"
+
+
+class AppearanceProfile(TypedDict):
+    input_variant: str
+    detector_sha256: str
+    encoder_sha256: str
+    encoder_xml_sha256: str
+    head_detector_sha256: str
+    max_detections: int
+    max_descriptors: int
+    feature_version: int
+    focus_target_height: int
+    focus_min_height: int
+    focus_min_width: int
+    focus_min_luminance_std: int
+    focus_min_laplacian_energy: int
+    head_detection_threshold: float
+
+
+APPEARANCE_PROFILE: AppearanceProfile = {
+    "input_variant": "preview-small-v1",
+    "detector_sha256": "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+    "encoder_sha256": "70c3a02efef82911fad69997894e978eea1a842792f9e2182ad36cb0cb1f01e6",
+    "encoder_xml_sha256": "d9669dabfa73717a78da9e3b78374571e346cf1c9edf6cb5ff01ed296c878c30",
+    "head_detector_sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+    "max_detections": 32,
+    "max_descriptors": 8,
+    "feature_version": 1,
+    "focus_target_height": 192,
+    "focus_min_height": 192,
+    "focus_min_width": 48,
+    "focus_min_luminance_std": 8,
+    "focus_min_laplacian_energy": 400,
+    "head_detection_threshold": 0.50,
+}
+
+APPEARANCE_CONFIGURATION: dict[str, object] = {
+    "retry_policy": {
+        "max_attempts": 3,
+        "base_backoff_seconds": 30,
+        "max_backoff_seconds": 300,
+        "jitter_seconds": 5,
+        "lease_max_seconds": 300,
+    },
+    "max_cohort_size": 16,
+    "report_max_bytes": 262144,
+    "report_row_limits": {"max_warnings": 8, "max_warning_chars": 32},
+    "person_appearance": APPEARANCE_PROFILE,
+    "worker": {
+        "api_response_max_bytes": 384 * 1024,
+        "concurrency": 1,
+        "heartbeat_interval_seconds": 30,
+        "lease_duration_seconds": 120,
+        "max_input_bytes": 10_485_760,
+        "max_pixels": 2_560_000,
+        "poll_min_delay_seconds": 5,
+        "terminal_result_max_bytes": 384 * 1024,
+    },
+}
+PERSON_APPEARANCE_IDENTITY = (2, PROCESSOR_TYPE_PERSON_APPEARANCE, 1)
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _SELFIE_KEY = re.compile(r"selfie-search/[0-9a-f]{32}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -160,6 +221,12 @@ FAILURE_RETRYABLE = {
     "unsupported_input": False,
     "output_contract_violation": False,
 }
+
+
+class PersonAppearanceError(ValueError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 class ContractError(ValueError):
@@ -348,6 +415,19 @@ class ProcessorConfiguration:
 
     @classmethod
     def from_value(cls, value: object) -> ProcessorConfiguration:
+        if value == APPEARANCE_CONFIGURATION:
+            return cls(
+                configuration_kind=PROCESSOR_TYPE_PERSON_APPEARANCE,
+                date_field_precedence=(),
+                normalization="",
+                max_input_bytes=10_485_760,
+                max_pixels=2_560_000,
+                heartbeat_interval_seconds=30,
+                lease_duration_seconds=120,
+                poll_min_delay_seconds=5,
+                api_response_max_bytes=384 * 1024,
+                terminal_result_max_bytes=384 * 1024,
+            )
         max_faces: object = 1
         face_threshold: object = DEFAULT_FACE_DETECTION_THRESHOLD
         model: object = ADAFACE_MODEL_NAME
@@ -904,6 +984,7 @@ class ClaimedJob:
                 else photo_fingerprint.original_content_type
             )
             supported_identity = identity in {
+                PERSON_APPEARANCE_IDENTITY,
                 (CONTRACT_VERSION, PROCESSOR_TYPE, PROCESSOR_VERSION),
                 (
                     3,
@@ -977,6 +1058,13 @@ class ClaimedJob:
                     and output_slots[0].variant == "preview-watermarked-v1"
                 )
             )
+            if identity == PERSON_APPEARANCE_IDENTITY:
+                identity_matches_contract = (
+                    configuration.configuration_kind == PROCESSOR_TYPE_PERSON_APPEARANCE
+                    and photo_fingerprint.media_kind == "preview-small-v1"
+                    and photo_fingerprint.object_etag is None
+                    and _preview_key_matches_photo(photo_fingerprint, value["photo_id"])
+                )
             expects_output_slot = preview or watermarked_preview
             valid = (
                 supported_identity
@@ -1280,6 +1368,7 @@ def _valid_event_timezone(value: object) -> bool:
 
 def _processor_version(processor_type: str, contract_version: int = CONTRACT_VERSION) -> int:
     versions = {
+        (2, PROCESSOR_TYPE_PERSON_APPEARANCE): 1,
         (CONTRACT_VERSION, PROCESSOR_TYPE): PROCESSOR_VERSION,
         (3, PROCESSOR_TYPE_FACE_EMBEDDING): PROCESSOR_VERSION_FACE_EMBEDDING_ADAFACE_QUALITY,
         (

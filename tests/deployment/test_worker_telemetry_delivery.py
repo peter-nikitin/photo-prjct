@@ -384,7 +384,7 @@ def test_local_tls_container_to_receiver_reset_freshness_and_lease_renewal(
 
 @pytest.mark.django_db
 @override_settings(PHOTO_WORKER_POOL_COORDINATOR_ENABLED=True)
-@pytest.mark.parametrize("pool,pairs", [("bulk", 20), ("selfie", 4)])
+@pytest.mark.parametrize("pool,pairs", [("bulk", 24), ("selfie", 4)])
 def test_maximum_snapshot_and_emitted_scalar_cost_inputs(pool, pairs):
     probe = probe_module()
     identity, generation = registered_source(pool, "n" * 64)

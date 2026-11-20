@@ -58,6 +58,7 @@ KINDS = {
     "generate_watermarked_preview",
     "face_embedding",
     "bib_recognition",
+    "person_appearance",
 }
 OUTCOMES = {"callback_delivered", "execution_failed", "transport_failed", "lease_lost"}
 BUCKETS = ("1", "5", "15", "60", "300", "900", "1800", "+Inf")

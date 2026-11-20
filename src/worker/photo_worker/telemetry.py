@@ -29,6 +29,7 @@ KINDS = frozenset(
         "face_embedding",
         "selfie_query",
         "bib_recognition",
+        "person_appearance",
     }
 )
 Outcome = Literal["callback_delivered", "execution_failed", "transport_failed", "lease_lost"]

@@ -7,6 +7,7 @@ from ingestion.storage import ObjectMissing, StorageUnavailable
 from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAnchorEvidence,
+    SelfieSearchApparelEvidence,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
     SelfieSearchFeedback,
@@ -52,6 +53,35 @@ class ProvenanceReadOnlyAdmin(admin.ModelAdmin):
         return False
 
 
+class ApparelEvidenceInline(ReadOnlyInline):
+    model = SelfieSearchApparelEvidence
+    fields = ("decision_summary",)
+    readonly_fields = fields
+
+    @admin.display(description="Решения поиска по внешности")
+    def decision_summary(self, obj: SelfieSearchApparelEvidence) -> str:
+        import json
+
+        from django.utils.html import format_html
+
+        decisions = obj.decisions
+        summary = {
+            "policy": decisions["policy"],
+            "candidates_truncated": decisions["candidates_truncated"],
+            "additions_truncated": decisions["additions_truncated"],
+            "anchor_count": len(decisions["anchors"]),
+            "candidates": [
+                {k: v for k, v in row.items() if not k.endswith("_id")}
+                for row in decisions["candidates"]
+            ],
+            "recommendations": [
+                {k: v for k, v in row.items() if not k.endswith("_id")}
+                for row in decisions["recommendations"]
+            ],
+        }
+        return format_html("<pre>{}</pre>", json.dumps(summary, ensure_ascii=False, indent=2))
+
+
 @admin.register(SelfieSearch)
 class SelfieSearchAdmin(ProvenanceReadOnlyAdmin):
     list_display = (
@@ -61,10 +91,12 @@ class SelfieSearchAdmin(ProvenanceReadOnlyAdmin):
         "direct_matched_photo_count",
         "cluster_expanded_photo_count",
         "anchor_expanded_photo_count",
+        "apparel_expanded_photo_count",
         "cluster_expansion_outcome",
         "created_at",
     )
     list_filter = ("status", "cluster_expansion_outcome")
+    inlines = (ApparelEvidenceInline,)
     readonly_fields = list_display
     fields = readonly_fields
 

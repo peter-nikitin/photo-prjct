@@ -127,7 +127,10 @@ class WorkerPoolStateCommandTests(TestCase):
     def test_empty_report_is_explicit_and_bounded(self):
         report = self.report()
         self.assertTrue(report["empty"])
-        self.assertEqual(len(report["pools"]["bulk"]["identities"]), 6)
+        bulk = {row["identity"]: row for row in report["pools"]["bulk"]["identities"]}
+        self.assertEqual(len(bulk), 7)
+        self.assertEqual(bulk["2/person_appearance/1"]["jobs"]["queued"], 0)
+        self.assertEqual(bulk["2/person_appearance/1"]["claimable"], 0)
         self.assertEqual(len(report["pools"]["selfie"]["identities"]), 1)
         self.assertEqual(report["pools"]["bulk"]["jobs"]["queued"], 0)
         self.assertEqual(report["pools"]["selfie"]["claimable"], 0)

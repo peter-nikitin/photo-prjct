@@ -1024,7 +1024,7 @@ for (const [device, viewport] of [
   ['desktop', DESKTOP_VIEWPORT],
   ['mobile', MOBILE_VIEWPORT],
 ]) {
-  test(`archive prepares on the existing page and uses the same download link again - ${device}`, async ({ page }) => {
+  test(`search archive revalidates the result set on each download - ${device}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.route('**/__visual__/event/selfie-search/ready/single/', async (route) => {
@@ -1078,8 +1078,8 @@ for (const [device, viewport] of [
     const second = page.waitForEvent('download');
     await button.click();
     expect((await second).suggestedFilename()).toBe('photos.zip');
-    expect(submissions).toBe(1);
-    expect(statusPolls).toBe(pollsAtReady);
+    expect(submissions).toBe(2);
+    expect(statusPolls).toBe(pollsAtReady + 1);
     await expect(page).toHaveURL(pageUrl);
   });
 }
@@ -1427,15 +1427,22 @@ for (const viewport of [
   test(`paid result feedback reserves the price and right actions at ${viewport.width}px`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await preloadCookieAcknowledgement(page);
+    await page.goto('/__visual__/event/selfie-search/ready/paid/');
+    const card = page.locator('.gallery-card').first();
+    const photoId = await card.getAttribute('data-photo-id');
     let calls = 0;
     await page.route('**/search-feedback/', (route) => {
       calls += 1;
       return route.fulfill({
         status: calls === 1 ? 503 : 201,
-        json: { status: calls === 1 ? 'unavailable' : 'saved' },
+        json: {
+          status: calls === 1 ? 'unavailable' : 'saved',
+          manual_photo_ids: [photoId],
+          similar_photo_ids: [],
+          excluded_photo_count: 0,
+        },
       });
     });
-    await page.goto('/__visual__/event/selfie-search/ready/paid/');
     await settlePage(page);
 
     const row = page.locator('.gallery-card-actions').first();
@@ -1480,7 +1487,8 @@ for (const viewport of [
     await expect(row.getByRole('alert')).toBeVisible();
     await checkRightSlots();
     await report.click();
-    await expect(row.getByRole('status')).toHaveText('Отметка сохранена');
+    await expect(report).toHaveAttribute('aria-pressed', 'true');
+    await expect(card).toHaveAttribute('data-negative-feedback', 'manual');
     await checkRightSlots();
 
     const price = row.locator('.gallery-card-price');
@@ -1524,28 +1532,45 @@ test('bib and selfie forms use the same feedback URL and the bib gallery keeps i
   await expect(card.locator('[data-face-choice]')).toHaveCount(2);
 });
 
-test('result feedback retries a failed request and leaves other photos usable without a selfie', async ({ page }) => {
+test('result feedback toggles manual and similar dimming after a successful retry', async ({ page }) => {
+  await page.goto('/__visual__/event/selfie-search/ready/');
+  const first = page.locator('.gallery-card').first();
+  const second = page.locator('.gallery-card').nth(1);
+  const firstId = await first.getAttribute('data-photo-id');
+  const secondId = await second.getAttribute('data-photo-id');
   let calls = 0;
   await page.route('**/search-feedback/', async (route) => {
     calls += 1;
+    const request = route.request();
+    expect(request.postData()).toContain(calls <= 2 ? '\r\n\r\nmark\r\n' : '\r\n\r\nunmark\r\n');
     await route.fulfill({
-      status: calls === 1 ? 503 : 201,
-      json: { status: calls === 1 ? 'unavailable' : 'saved' },
+      status: calls === 1 ? 503 : 200,
+      json: {
+        status: calls === 1 ? 'unavailable' : 'saved',
+        manual_photo_ids: calls === 2 ? [firstId] : [],
+        similar_photo_ids: calls === 2 ? [secondId] : [],
+        excluded_photo_count: 0,
+      },
     });
   });
-  await page.goto('/__visual__/event/selfie-search/ready/');
-  const first = page.locator('.gallery-card').first();
   const button = first.getByRole('button', { name: 'Это не я' });
   await expect(page.locator('[data-feedback-form]')).toHaveCount(0);
-  await expect(first.locator('[data-feedback-saved]')).toBeHidden();
+  await expect(button).toHaveAttribute('aria-pressed', 'false');
   await button.click();
   await expect(first.getByRole('alert')).toBeVisible();
-  await expect(first.locator('[data-feedback-saved]')).toBeHidden();
+  await expect(first).not.toHaveAttribute('data-negative-feedback');
   await button.click();
-  await expect(first.getByRole('status')).toHaveText('Отметка сохранена');
-  await expect(button).toBeHidden();
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+  await expect(first).toHaveAttribute('data-negative-feedback', 'manual');
+  await expect(second).toHaveAttribute('data-negative-feedback', 'similar');
+  await expect(first.locator('img')).toHaveCSS('opacity', '0.45');
+  await expect(second.locator('img')).toHaveCSS('opacity', '0.45');
   await expect(first.locator('.gallery-card-link')).toBeVisible();
-  await expect(page.locator('.gallery-card').nth(1).getByRole('button', { name: 'Это не я' })).toBeVisible();
+  await expect(second.getByRole('button', { name: 'Это не я' })).toHaveAttribute('aria-pressed', 'false');
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'false');
+  await expect(first).not.toHaveAttribute('data-negative-feedback');
+  await expect(second).not.toHaveAttribute('data-negative-feedback');
 });
 
 test('cookie notice is visible and usable on a fresh desktop profile', async ({ page }) => {

@@ -1,5 +1,11 @@
 from uuid import UUID
 
+from django.db import transaction
+from django.db.models import QuerySet
+from django.db.models.fields.json import KeyTextTransform
+from django.utils import timezone
+from selfie_search.models import SelfieSearch
+
 from search_feedback.models import SearchFeedback
 
 
@@ -18,4 +24,51 @@ def record_result_report(
         search_type=search_type,
         value=SearchFeedback.Value.ABSENT,
         search_context=search_context,
+    )
+
+
+def face_result_reports(search: SelfieSearch) -> QuerySet[SearchFeedback]:
+    return SearchFeedback.objects.alias(
+        root_search_id=KeyTextTransform("search_id", "search_context")
+    ).filter(
+        event_id=search.event_id,
+        search_type__in=(SearchFeedback.SearchType.SELFIE, SearchFeedback.SearchType.GALLERY),
+        root_search_id=str(search.pk),
+    )
+
+
+def active_negative_reports(search: SelfieSearch) -> QuerySet[SearchFeedback]:
+    return face_result_reports(search).filter(
+        value=SearchFeedback.Value.ABSENT, withdrawn_at__isnull=True
+    )
+
+
+@transaction.atomic
+def set_result_report(
+    *,
+    search: SelfieSearch,
+    photo_id: str,
+    submission_id: UUID,
+    search_type: SearchFeedback.SearchType,
+    search_context: dict[str, str],
+    mark: bool,
+) -> None:
+    """Journal each authorized action so retried no-ops cannot change a later decision."""
+    SelfieSearch.objects.select_for_update().only("pk").get(pk=search.pk)
+    if face_result_reports(search).filter(submission_id=submission_id).exists():
+        return
+
+    active = active_negative_reports(search).filter(photo_id=photo_id)
+    now = timezone.now()
+    closed = not mark or active.exists()
+    if not mark:
+        active.update(withdrawn_at=now)
+    SearchFeedback.objects.create(
+        submission_id=submission_id,
+        event_id=search.event_id,
+        photo_id=photo_id,
+        search_type=search_type,
+        value=SearchFeedback.Value.ABSENT if mark else SearchFeedback.Value.UNMARK,
+        search_context=search_context,
+        withdrawn_at=now if closed else None,
     )

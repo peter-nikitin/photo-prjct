@@ -222,6 +222,8 @@ class FeedbackSubmissionTests(TestCase):
 
     @staticmethod
     def report_data(photo_id: str, **context: str) -> dict[str, str]:
+        if context.get("public_token"):
+            context.setdefault("action", "mark")
         return {"photo_id": photo_id, "submission_id": str(uuid4()), **context}
 
     def csrf_post(self, url: str, data: dict) -> Any:
@@ -449,7 +451,9 @@ class FeedbackSubmissionTests(TestCase):
         url = self.report_url()
         with patch("selfie_search.services.results.SELFIE_SEARCH_RESULT_PAGE_SIZE", 1):
             first_page = self.client.get(result_url)
-            self.assertContains(first_page, "data-result-feedback", count=1)
+            self.assertContains(
+                first_page, "data-result-feedback data-reversible-feedback", count=1
+            )
             self.assertEqual(self.client.post(url, first_photo).status_code, 403)
             self.assertEqual(self.csrf_post(url, first_photo).status_code, 201)
             self.assertEqual(self.csrf_post(url, first_photo).status_code, 201)
@@ -464,11 +468,11 @@ class FeedbackSubmissionTests(TestCase):
             for page in (1, 2):
                 self.assertContains(
                     self.client.get(result_url, {"page": page}),
-                    'data-feedback-saved role="status">',
+                    'aria-pressed="true">',
                     count=1,
                 )
         self.assertEqual(
-            SearchFeedback.objects.filter(search_context__search_id=str(search.pk)).count(), 3
+            SearchFeedback.objects.filter(search_context__search_id=str(search.pk)).count(), 2
         )
         self.assertFalse(SelfieSearchFeedback.objects.exists())
 
@@ -578,6 +582,7 @@ class FeedbackSubmissionTests(TestCase):
         data = {
             "photo_id": result.photo_id,
             "public_token": token,
+            "action": "mark",
             "submission_id": "3e72a744-2ebc-4dd9-a40f-a83b319f1eb2",
         }
         self.assertEqual(self.csrf_post(url, data).status_code, 201)
@@ -594,7 +599,7 @@ class FeedbackSubmissionTests(TestCase):
                     "event_id", "search_type", "photo_id", "value", "search_context"
                 )
             ),
-            [(self.event.pk, "selfie", result.photo_id, "absent", expected_context)] * 2,
+            [(self.event.pk, "selfie", result.photo_id, "absent", expected_context)],
         )
         self.assertEqual(
             set(SearchFeedback.objects.values_list("submission_id", flat=True)),
@@ -603,11 +608,12 @@ class FeedbackSubmissionTests(TestCase):
         for invalid in (
             {**data, "submission_id": ""},
             {**data, "submission_id": "invalid"},
+            {**data, "action": ""},
             {**data, "bib": "007"},
             {**data, "public_token": ""},
         ):
             self.assertEqual(self.csrf_post(url, invalid).status_code, 422)
-        self.assertEqual(SearchFeedback.objects.count(), 2)
+        self.assertEqual(SearchFeedback.objects.count(), 1)
 
     def test_journal_write_executes_one_insert(self) -> None:
         with self.assertNumQueries(1):

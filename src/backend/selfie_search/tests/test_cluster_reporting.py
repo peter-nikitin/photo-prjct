@@ -289,6 +289,16 @@ class ClusterExpansionReportTests(TestCase):
                 search_context={"result_id": str(dual.pk)},
             )
 
+        SearchFeedback.objects.create(
+            submission_id=uuid4(),
+            event_id=search.event_id,
+            photo_id=expanded.photo_id,
+            search_type=SearchFeedback.SearchType.SELFIE,
+            value=SearchFeedback.Value.ABSENT,
+            search_context={"result_id": str(expanded.pk)},
+            withdrawn_at=timezone.now(),
+        )
+
         report = build_cluster_expansion_report(start=date(2026, 8, 5), end=date(2026, 8, 6))
 
         self.assertEqual(report["results"], {"direct": 2, "expanded": 1, "dual_evidence": 1})
@@ -303,6 +313,7 @@ class ClusterExpansionReportTests(TestCase):
             {"numerator": 1, "denominator": 2, "rate": 0.5},
         )
         self.assertEqual(report["feedback"]["expanded"]["present"], 1)
+        self.assertEqual(report["feedback"]["expanded"]["absent"], 0)
         self.assertEqual(report["feedback"]["direct"]["volume"], 2)
         self.assertEqual(report["feedback"]["dual_evidence"]["volume"], 1)
         self.assertEqual(report["feedback"]["expanded"]["coverage"]["numerator"], 1)

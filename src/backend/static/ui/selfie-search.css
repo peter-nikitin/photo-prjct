@@ -524,3 +524,18 @@
 .selfie-search-more {
   margin-top: 1rem;
 }
+
+.selfie-search-results [data-negative-feedback] .gallery-card-link img {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+
+.selfie-search-results .gallery-feedback-button[aria-pressed="true"] {
+  border-color: var(--color-action);
+  background: var(--color-action);
+  color: var(--color-on-action);
+}
+
+.selfie-search-archive-action[hidden] {
+  display: none;
+}

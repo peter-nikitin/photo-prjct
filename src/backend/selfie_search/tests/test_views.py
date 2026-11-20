@@ -1296,6 +1296,44 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(sum(entry["original_size"] for entry in job.entries), 102 * original_size)
 
     @override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON})
+    def test_result_archive_follows_current_manual_marks_and_can_restore_the_original_set(self):
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        for rank, photo_id in enumerate(("archive-keep", "archive-miss"), 1):
+            photo = self.make_private_photo(search.event, photo_id=photo_id)
+            self.add_result(search=search, photo=photo, rank=rank)
+        archive_url = self.result_archive_url(event=search.event, token=token)
+        report_url = reverse("search_feedback_submit", args=(search.event.slug,))
+        page_url = self.result_url(event=search.event, token=token)
+
+        def mark(action):
+            response = self.client.post(
+                report_url,
+                {
+                    "action": action,
+                    "public_token": token,
+                    "photo_id": "archive-miss",
+                    "submission_id": str(uuid4()),
+                },
+            )
+            self.assertEqual(response.json()["status"], "saved")
+
+        original = self.client.post(archive_url).json()["status_url"]
+        mark("mark")
+        self.assertContains(self.client.get(page_url), 'data-negative-feedback="manual"')
+        filtered = self.client.post(archive_url).json()["status_url"]
+        self.assertNotEqual(filtered, original)
+        self.assertEqual(
+            {
+                tuple(entry["photo_id"] for entry in job.entries)
+                for job in PhotoArchiveJob.objects.all()
+            },
+            {("archive-keep", "archive-miss"), ("archive-keep",)},
+        )
+        mark("unmark")
+        self.assertNotContains(self.client.get(page_url), 'data-negative-feedback="manual"')
+        self.assertEqual(self.client.post(archive_url).json()["status_url"], original)
+
+    @override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON})
     def test_completed_pass_adds_a_distinct_floor_and_a_new_archive(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY, matched_photo_count=2)
         child, child_token = self.make_search(status=SelfieSearch.Status.PROCESSING)

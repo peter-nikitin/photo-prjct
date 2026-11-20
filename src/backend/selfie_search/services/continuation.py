@@ -16,7 +16,6 @@ from picflow.gallery import retrieval_gallery_photo_queryset
 from picflow.models import Event
 from processing.models import FaceEmbeddingVector, PhotoFaceDetection, PhotoProcessingState
 from psycopg import Cursor
-from search_feedback.models import SearchFeedback
 
 from selfie_search.models import (
     ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY,
@@ -25,6 +24,7 @@ from selfie_search.models import (
 )
 from selfie_search.services.apparel_expansion import continuation_apparel_neighbors
 from selfie_search.services.jobs import enqueue_face_search
+from selfie_search.services.negative_feedback import negative_feedback_state
 from selfie_search.services.ranking import RankingError
 from selfie_search.services.results import eligible_saved_result_rows
 from selfie_search.services.submission import (
@@ -294,17 +294,15 @@ def _auto_source(groups: tuple[tuple[Anchor, ...], ...]) -> dict[str, Any]:
     }
 
 
-def _absent_photo_ids(root: SelfieSearch) -> QuerySet[SearchFeedback]:
-    return (
-        SearchFeedback.objects.filter(
-            event_id=root.event_id,
-            search_type__in=(SearchFeedback.SearchType.SELFIE, SearchFeedback.SearchType.GALLERY),
-            search_context__search_id=str(root.pk),
-            value=SearchFeedback.Value.ABSENT,
-        )
-        .order_by()
-        .values("photo_id")
+def _negative_anchor_photo_ids(
+    root: SelfieSearch, *, paid_watermarked_previews_enabled: bool, automatic: bool
+) -> frozenset[str]:
+    state = negative_feedback_state(
+        root, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
     )
+    if automatic:
+        return state.manual_photo_ids | state.similar_photo_ids | state.excluded_photo_ids
+    return state.excluded_photo_ids
 
 
 @transaction.atomic
@@ -332,7 +330,15 @@ def submit_continuation(
     eligible = eligible_saved_result_rows(
         root, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
     )
-    if photo_id is not None and not eligible.filter(photo_id=photo_id).exists():
+    if photo_id is not None and (
+        not eligible.filter(photo_id=photo_id).exists()
+        or photo_id
+        in _negative_anchor_photo_ids(
+            root,
+            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+            automatic=False,
+        )
+    ):
         raise ContinuationUnavailable
     ongoing = root.continuation_passes.filter(
         status__in=(SelfieSearch.Status.QUEUED, SelfieSearch.Status.PROCESSING),
@@ -368,7 +374,13 @@ def submit_continuation(
             raise ContinuationUnavailable from None
         payload: tuple[float, ...] | UUID = query
     else:
-        eligible = eligible.exclude(photo_id__in=Subquery(_absent_photo_ids(root)))
+        eligible = eligible.exclude(
+            photo_id__in=_negative_anchor_photo_ids(
+                root,
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+                automatic=True,
+            )
+        )
         model = configuration["embedding_model"]
         assert isinstance(model, str)
         groups = _select_centroids(
@@ -422,18 +434,21 @@ def load_continuation_sources(
     parent = search.parent_search
     if parent is None:
         raise RankingError("continuation has no parent")
+    paid_previews_enabled = search.configuration.get(_SHOW_PAID_PREVIEWS_KEY) is True
     photo_ids = (
         eligible_saved_result_rows(
             parent,
-            paid_watermarked_previews_enabled=search.configuration.get(_SHOW_PAID_PREVIEWS_KEY)
-            is True,
+            paid_watermarked_previews_enabled=paid_previews_enabled,
         )
         .filter(photo_id__in=[anchor.photo_id for anchor in selected])
         .order_by()
         .values("photo_id")
     )
-    if automatic:
-        photo_ids = photo_ids.exclude(photo_id__in=Subquery(_absent_photo_ids(parent)))
+    photo_ids = photo_ids.exclude(
+        photo_id__in=_negative_anchor_photo_ids(
+            parent, paid_watermarked_previews_enabled=paid_previews_enabled, automatic=automatic
+        )
+    )
     current = _current_single_faces(event=search.event, photo_ids=photo_ids, model=model)
     if set(current.values_list("detection__attempt__photo_id", "detection_id")) != {
         (anchor.photo_id, anchor.detection_id) for anchor in selected

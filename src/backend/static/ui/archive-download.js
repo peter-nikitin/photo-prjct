@@ -24,7 +24,8 @@
     event.preventDefault();
     const button = form.querySelector('button[type="submit"]');
     if (button.disabled) return;
-    const readyDownload = readyDownloads.get(form);
+    const revalidate = form.hasAttribute('data-archive-revalidate');
+    const readyDownload = revalidate ? null : readyDownloads.get(form);
     if (readyDownload) {
       window.location.assign(readyDownload);
       return;
@@ -49,7 +50,7 @@
       await waitForArchive(statusUrl);
       const downloadUrl = new URL(statusUrl, window.location.origin);
       downloadUrl.searchParams.set('download', '1');
-      readyDownloads.set(form, downloadUrl.href);
+      if (!revalidate) readyDownloads.set(form, downloadUrl.href);
       window.location.assign(downloadUrl.href);
     } catch {
       error.hidden = false;

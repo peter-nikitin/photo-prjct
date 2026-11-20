@@ -1,4 +1,4 @@
-<form method="post" action="{{ action }}" data-archive-request>
+<form method="post" action="{{ action }}" data-archive-request{% if revalidate_archive %} data-archive-revalidate{% endif %}>
   {% csrf_token %}
   <button class="button" type="submit">
     <span data-archive-label>{{ label }}</span>

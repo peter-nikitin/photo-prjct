@@ -149,7 +149,8 @@ def _result_volume(results) -> dict[str, int]:  # noqa: ANN001
 
 def _feedback_aggregates(*, results) -> dict[str, dict[str, Any]]:  # noqa: ANN001
     first_submissions = (
-        SearchFeedback.objects.order_by("submission_id", "id")
+        SearchFeedback.objects.filter(withdrawn_at__isnull=True)
+        .order_by("submission_id", "id")
         .distinct("submission_id")
         .values("id")
     )

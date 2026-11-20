@@ -36,7 +36,6 @@ from picflow.gallery import (
     gallery_photo_queryset,
 )
 from picflow.models import Event, Photo
-from search_feedback.models import SearchFeedback
 
 from selfie_search.forms import FeedbackSelfieForm, SelfieSearchUploadForm
 from selfie_search.models import SelfieSearch, SelfieSearchFeedback
@@ -47,6 +46,7 @@ from selfie_search.services.continuation import (
     submit_continuation,
 )
 from selfie_search.services.feedback import save_feedback_selfie
+from selfie_search.services.negative_feedback import negative_feedback_state
 from selfie_search.services.results import (
     PublicSearchNotFound,
     public_status_payload,
@@ -222,6 +222,9 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         SelfieSearch.Status.PROCESSING,
     )
     is_gallery_origin = search.configuration.get("processor") == "gallery_photo_query"
+    negative_feedback = negative_feedback_state(
+        search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+    )
     selfie_search_page = None
     if search.status == SelfieSearch.Status.READY:
         try:
@@ -229,6 +232,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
                 search=search,
                 page_number=request.GET.get("page"),
                 paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+                excluded_photo_ids=negative_feedback.excluded_photo_ids,
             )
         except InvalidPage:
             return _not_found_response()
@@ -294,21 +298,21 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
                     kwargs={"event_slug": search.event.slug, "public_token": public_token},
                 ),
             }
-    reported_photo_ids = (
-        set(
-            SearchFeedback.objects.filter(
-                event_id=search.event_id,
-                search_context__search_id=str(search.pk),
-                photo_id__in=[photo.photo_id for photo in gallery_photos],
-                value=SearchFeedback.Value.ABSENT,
-            )
-            .values_list("photo_id", flat=True)
-            .distinct()
-        )
-        if gallery_result_items
-        else set()
-    )
+    published_count = selfie_search_page.paginator.count if selfie_search_page else 0
     archive_action = _result_archive_action(request=request, search=search, page=selfie_search_page)
+    continuation_empty = (
+        last_pass is not None
+        and last_pass.status == SelfieSearch.Status.READY
+        and (
+            last_pass.published_matched_photo_count == 0
+            or (
+                bool(negative_feedback.excluded_photo_ids)
+                and not last_pass.results.filter(excluded_by_apparel=False)
+                .exclude(photo_id__in=negative_feedback.excluded_photo_ids)
+                .exists()
+            )
+        )
+    )
     response = render(
         request,
         "selfie_search/result.html",
@@ -322,15 +326,13 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             )
             if archive_action is not None
             else None,
-            "published_count": selfie_search_page.paginator.count if selfie_search_page else 0,
+            "published_count": published_count,
+            "all_results_marked": published_count == len(negative_feedback.manual_photo_ids),
+            "feedback_excluded_photo_count": len(negative_feedback.excluded_photo_ids),
             "continuation_url": continuation_url,
             "continuation_pending": pending,
             "continuation_unavailable": request.GET.get("more") == "unavailable",
-            "continuation_empty": (
-                last_pass is not None
-                and last_pass.status == SelfieSearch.Status.READY
-                and last_pass.published_matched_photo_count == 0
-            ),
+            "continuation_empty": continuation_empty,
             "continuation_failed": last_pass is not None
             and last_pass.status
             in (
@@ -344,7 +346,8 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "result_feedback_url": reverse(
                 "search_feedback_submit", kwargs={"event_slug": search.event.slug}
             ),
-            "reported_photo_ids": reported_photo_ids,
+            "reported_photo_ids": negative_feedback.manual_photo_ids,
+            "similar_feedback_photo_ids": negative_feedback.similar_photo_ids,
             "feedback_submitted": feedback_submitted,
             "selfie_feedback_enabled": bool(
                 settings.SELFIE_FEEDBACK_ENABLED and not is_gallery_origin
@@ -499,12 +502,12 @@ def result_archive(request, event_slug: str, public_token: str) -> HttpResponseB
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None or search.event.access_type != Event.AccessType.FREE:
         return _not_found_response()
-    entries = _archive_entries(
-        saved_ready_result_photos(
-            search, paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request)
-        )
-    )
-    if entries is None or len(entries) < 2:
+    paid_previews = _paid_watermarked_previews_enabled(request)
+    feedback = negative_feedback_state(search, paid_watermarked_previews_enabled=paid_previews)
+    photos = saved_ready_result_photos(search, paid_watermarked_previews_enabled=paid_previews)
+    omitted = feedback.manual_photo_ids | feedback.excluded_photo_ids
+    entries = _archive_entries(tuple(photo for photo in photos if photo.pk not in omitted))
+    if not entries or len(photos) - len(feedback.excluded_photo_ids) < 2:
         return _not_found_response()
     return prepare_archive_response(
         scope=f"search:{search.pk}",

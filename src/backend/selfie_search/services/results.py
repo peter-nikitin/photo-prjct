@@ -59,13 +59,14 @@ def saved_ready_result_page(
     search: SelfieSearch,
     page_number: str | None,
     paid_watermarked_previews_enabled: bool = False,
+    excluded_photo_ids: frozenset[str] = frozenset(),
 ) -> Page:
     """Return one page of eligible members in pass and capture-time order."""
     rows = (
         _eligible_saved_result_rows(
             search,
             paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-        )
+        ).exclude(photo_id__in=excluded_photo_ids)
         if search.status == SelfieSearch.Status.READY
         else ()
     )

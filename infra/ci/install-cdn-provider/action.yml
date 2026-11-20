@@ -1,0 +1,15 @@
+name: Install FindMe CDN Terraform provider
+description: Build the locked local Terraform provider and configure its filesystem mirror
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v6
+      with:
+        go-version-file: infra/providers/findmecdn/go.mod
+        cache-dependency-path: infra/providers/findmecdn/go.sum
+    - shell: bash
+      run: |
+        set -euo pipefail
+        directory="$(mktemp -d "$RUNNER_TEMP/findme-cdn-provider.XXXXXX")"
+        infra/ci/install-cdn-provider.sh "$directory"
+        printf 'TF_CLI_CONFIG_FILE=%s/terraform.rc\n' "$directory" >> "$GITHUB_ENV"

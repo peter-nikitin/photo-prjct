@@ -59,11 +59,15 @@ jobs:
         with:
           terraform_version: 1.17.0
           terraform_wrapper: false
+      - uses: ./infra/ci/install-cdn-provider
       - name: Build the public probe source archive
         run: |
           python -m venv /tmp/public-probe-build
           /tmp/public-probe-build/bin/pip install --no-deps -r deploy/public-probe/build-requirements.txt
           /tmp/public-probe-build/bin/python deploy/public-probe/package.py
+      - name: Test the FindMe CDN provider
+        working-directory: infra/providers/findmecdn
+        run: go test -mod=readonly ./...
       - name: Validate Terraform without backend or cloud identity
         run: |
           set -euo pipefail
@@ -110,6 +114,7 @@ jobs:
         with:
           terraform_version: 1.17.0
           terraform_wrapper: false
+      - uses: ./infra/ci/install-cdn-provider
       - name: Build the public probe source archive
         run: |
           python -m venv /tmp/public-probe-build
@@ -254,19 +259,26 @@ jobs:
         with:
           terraform_version: 1.17.0
           terraform_wrapper: false
+      - uses: ./infra/ci/install-cdn-provider
       - name: Open locked state and apply approved saved plan only
+        id: terraform_apply
         env:
           TERRAFORM_CHANGED: ${{ needs.classify.outputs.terraform_changed }}
         run: |
           set -euo pipefail
           terraform -chdir=infra/terraform init -input=false -lockfile=readonly
           if [ "$TERRAFORM_CHANGED" = true ]; then
+            cdn_only="$(terraform -chdir=infra/terraform show -json plan.tfplan |
+              python infra/ci/plan_summary.py /dev/stdin --cdn-only)"
+            printf 'cdn_only=%s\n' "$cdn_only" >> "$GITHUB_OUTPUT"
             terraform -chdir=infra/terraform apply -input=false -auto-approve plan.tfplan
           fi
           terraform -chdir=infra/terraform output -json > /tmp/findme-outputs.json
       - name: Install Ansible 2.19.3
+        if: steps.terraform_apply.outputs.cdn_only != 'true' || needs.classify.outputs.ansible_changed == 'true'
         run: python -m pip install ansible-core==2.19.3
       - name: Inspect VM SSH registration
+        if: steps.terraform_apply.outputs.cdn_only != 'true' || needs.classify.outputs.ansible_changed == 'true'
         id: host_metadata
         run: |
           set -euo pipefail
@@ -290,6 +302,7 @@ jobs:
         if: steps.host_metadata.outputs.registration_required == 'true'
         run: python infra/ci/register_vm_ssh.py "$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["vm_id"]["value"])')"
       - name: Load VM SSH host key
+        if: steps.terraform_apply.outputs.cdn_only != 'true' || needs.classify.outputs.ansible_changed == 'true'
         run: |
           set -euo pipefail
           vm="$(python -c 'import json; print(json.load(open("/tmp/findme-outputs.json"))["vm_id"]["value"])')"
@@ -306,6 +319,7 @@ jobs:
           printf '%s %s\n' "$host" "$key" > /tmp/findme-known-hosts
           printf '%s\n' "$host" > /tmp/findme-host
       - name: Configure host OS with Ansible only
+        if: steps.terraform_apply.outputs.cdn_only != 'true' || needs.classify.outputs.ansible_changed == 'true'
         env:
           VM_USER: ${{ vars.VM_USER }}
           FINDME_DEPLOY_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}

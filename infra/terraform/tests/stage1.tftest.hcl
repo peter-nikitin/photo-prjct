@@ -1,5 +1,11 @@
 mock_provider "yandex" {}
 
+override_module {
+  target = module.media_cdn
+}
+mock_provider "findmecdn" {}
+
+
 variables {
   media_storage_principals = {
     private_media = "aje00000000000000001"
@@ -18,6 +24,7 @@ run "one_recovery_host" {
   command = apply
 
   variables {
+    import_existing_cdn  = false
     cloud_id             = "b1gmcsmr51o5kvp86l55"
     folder_id            = "b1g2qttgfhb4gdunvlge"
     zone                 = "ru-central1-d"

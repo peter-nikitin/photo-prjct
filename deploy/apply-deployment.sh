@@ -52,3 +52,9 @@ if [ -n "$active_photo_worker" ]; then
 fi
 [ "$DEPLOY_IMPORT" = false ] || update_worker import import-worker
 [ "$DEPLOY_COMMERCE" = false ] || update_worker commerce commerce-worker
+printf '%s\n' 'DEPLOY_STAGE=image-prune'
+if docker image prune -a -f >/dev/null; then
+    printf '%s\n' 'DEPLOY_IMAGE_PRUNE_RESULT=success'
+else
+    printf '%s\n' 'DEPLOY_IMAGE_PRUNE_RESULT=failure'
+fi

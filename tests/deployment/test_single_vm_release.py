@@ -2,6 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -44,6 +46,45 @@ def test_release_stops_old_search_owners_before_schema_and_starts_executor(tmp_p
     assert "up -d --wait --force-recreate --no-deps nginx" in calls
     assert "pull photo-worker" not in calls
     assert not any(" up " in call and call.endswith(" photo-worker") for call in calls.splitlines())
+    assert calls.splitlines()[-1] == "image prune -a -f"
+    assert "DEPLOY_IMAGE_PRUNE_RESULT=success" in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize("failure", ["manage.py migrate", "image prune"])
+def test_release_reports_cleanup_failure_and_skips_cleanup_after_deployment_failure(
+    tmp_path: Path, failure: str
+) -> None:
+    commands = tmp_path / "commands"
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$COMMANDS"\ncase "$*" in *"$FAILURE"*) exit 1 ;; esac\n'
+    )
+    docker.chmod(0o755)
+    result = subprocess.run(
+        ["sh", str(ROOT / "deploy/apply-deployment.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "COMMANDS": str(commands),
+            "FAILURE": failure,
+            "DEPLOY_ROOT": str(tmp_path),
+            "DEPLOY_WEB": "true",
+            "DEPLOY_WORKER": "false",
+            "DEPLOY_IMPORT": "false",
+            "DEPLOY_COMMERCE": "false",
+        },
+        capture_output=True,
+        text=True,
+    )
+    calls = commands.read_text()
+    if failure == "image prune":
+        assert result.returncode == 0, result.stderr
+        assert calls.splitlines()[-1] == "image prune -a -f"
+        assert "up -d --wait --force-recreate --no-deps nginx" in calls
+        assert "DEPLOY_IMAGE_PRUNE_RESULT=failure" in result.stdout.splitlines()
+    else:
+        assert result.returncode != 0
+        assert "image prune" not in calls
 
 
 def test_telemetry_start_failure_leaves_application_release_healthy(tmp_path):
@@ -187,6 +228,10 @@ os.execv(sys.executable, [sys.executable, '-c', program])
     sync_summary = "Feature flags synchronized: created=1 updated=0 preserved=9 deleted=0."
     docker.write_text(f"""#!/bin/sh
 case "$*" in
+    "image prune -a -f")
+        [ "${{FAIL_PRUNE:-false}}" != true ]
+        exit
+        ;;
     *"manage.py sync_feature_flags")
         printf '%s\n' '{sync_summary}' '{sync_summary} unsafe-output'
         ;;
@@ -221,6 +266,17 @@ esac
     assert value not in result.stdout + result.stderr
     assert sync_summary in result.stdout.splitlines()
     assert "unsafe-output" not in result.stdout + result.stderr
+    assert "DEPLOY_STAGE=image-prune" in result.stdout.splitlines()
+    assert "DEPLOY_IMAGE_PRUNE_RESULT=success" in result.stdout.splitlines()
+    failed_prune = subprocess.run(
+        ["python3", str(ROOT / "deploy/run-single-vm.py")],
+        env={**os.environ, **values, "FAIL_PRUNE": "true"},
+        capture_output=True,
+        text=True,
+    )
+    assert failed_prune.returncode == 0, failed_prune.stderr
+    assert "DEPLOY_IMAGE_PRUNE_RESULT=failure" in failed_prune.stdout.splitlines()
+    assert "[remote] stage=deploy status=ok" in failed_prune.stdout.splitlines()
     values.update(
         {
             "DEPLOY_WEB": "false",

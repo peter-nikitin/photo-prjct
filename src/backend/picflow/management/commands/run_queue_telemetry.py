@@ -6,6 +6,7 @@ import psycopg
 from config.photo_import_metrics import PhotoImportCounters
 from config.queue_telemetry import QueueTelemetry
 from config.queue_telemetry_protocol import CHANNEL
+from config.queue_work_metrics import QueueWorkCounters
 from django.core.management.base import BaseCommand, CommandParser
 from django.db import connection
 from prometheus_client import CollectorRegistry, start_http_server
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = "Export queue completion counters and approximate photo import backlogs."
+    help = "Export queue completion and work metrics."
     requires_system_checks: list[str] = []
 
     def add_arguments(self, parser: CommandParser) -> None:
@@ -27,6 +28,7 @@ class Command(BaseCommand):
         registry = CollectorRegistry()
         registry.register(telemetry)
         registry.register(PhotoImportCounters())
+        registry.register(QueueWorkCounters())
         connection.settings_dict["OPTIONS"] |= {"connect_timeout": 2}
         params = connection.get_connection_params() | {
             "autocommit": True,

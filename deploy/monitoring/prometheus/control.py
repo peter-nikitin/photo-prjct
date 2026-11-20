@@ -249,8 +249,35 @@ def _dashboard_charts(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
     return charts
 
 
+def dashboard_parameter_defaults(dashboard: dict[str, Any]) -> dict[str, list[str]]:
+    defaults: dict[str, list[str]] = {}
+    for parameter in dashboard.get("parametrization", {}).get("parameters", []):
+        name = parameter.get("name", "")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name) or name in defaults:
+            raise ControlError("dashboard parameter name invalid or duplicated")
+        defaults[name] = parameter.get("query", {}).get("defaultValues", [])
+    return defaults
+
+
+def dashboard_validation_query(query: str, defaults: dict[str, list[str]]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        name = match[1]
+        if name not in defaults:
+            raise ControlError("dashboard query references an unknown parameter")
+        values = defaults[name]
+        if len(values) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]+", values[0]):
+            raise ControlError("dashboard query parameter needs one safe default label value")
+        return values[0]
+
+    rendered = re.sub(r"\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}", replace, query)
+    if "{{" in rendered or "}}" in rendered:
+        raise ControlError("dashboard query parameter invalid")
+    return rendered
+
+
 def _validate_dashboard(package: dict[str, str], config: dict[str, Any]) -> None:
     dashboard = json.loads(package["dashboard.json"])
+    defaults = dashboard_parameter_defaults(dashboard)
     for chart in _dashboard_charts(dashboard):
         sources = {}
         for item in chart["dataSources"]:
@@ -279,7 +306,7 @@ def _validate_dashboard(package: dict[str, str], config: dict[str, Any]) -> None
             if (
                 sources.get(target.get("dataSourceId")) != kind
                 or not query
-                or "{{" in query
                 or (kind == "prometheus" and not target.get("workspaceId"))
             ):
                 raise ControlError("dashboard target reference/workspace/query invalid")
+            dashboard_validation_query(query, defaults)

@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
+from config.queue_work import COMMERCE, schedule_transition
 from django import forms
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import purchasable_paid_photo_queryset
@@ -168,17 +169,27 @@ def initiate_payment(
     except ValueError:
         if adapter_key == TBANK_ADAPTER_KEY:
             # The bank adapter uses ValueError only for validation before any network request.
-            PaymentAttempt.objects.filter(
-                pk=attempt_id,
-                status=PaymentAttempt.Status.PENDING,
-            ).update(
-                status=PaymentAttempt.Status.FAILED,
-                terminal_at=timezone.now(),
-                reconciliation_state=PaymentAttempt.ReconciliationState.PENDING,
-                reconciliation_lease_id=None,
-                reconciliation_lease_expires_at=None,
-                reconciliation_next_attempt_at=None,
-            )
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    WITH previous AS (
+                        SELECT id, reconciliation_state FROM commerce_paymentattempt
+                        WHERE id = %s AND status = 'pending'
+                        FOR UPDATE
+                    )
+                    UPDATE commerce_paymentattempt AS attempt
+                    SET status = 'failed', terminal_at = %s, reconciliation_state = 'pending',
+                        reconciliation_lease_id = NULL, reconciliation_lease_expires_at = NULL,
+                        reconciliation_next_attempt_at = NULL
+                    FROM previous
+                    WHERE attempt.id = previous.id
+                    RETURNING previous.reconciliation_state
+                    """,
+                    [attempt_id, timezone.now()],
+                )
+                previous = cursor.fetchone()
+            if previous is not None:
+                schedule_transition(COMMERCE, previous[0], None)
         raise CheckoutPaymentUnavailable() from None
     except PaymentGatewayError:
         raise CheckoutPaymentUnavailable() from None
@@ -374,13 +385,15 @@ def _create_order_and_attempt(
 
 
 def _create_attempt(*, order: Order, adapter_key: str) -> PaymentAttempt:
-    return PaymentAttempt.objects.create(
+    attempt = PaymentAttempt.objects.create(
         order=order,
         amount_kopecks=order.total_kopecks,
         currency=order.currency,
         adapter_key=adapter_key,
         idempotency_key=secrets.token_urlsafe(32),
     )
+    schedule_transition(COMMERCE, None, attempt.reconciliation_state)
+    return attempt
 
 
 def _payment_request(

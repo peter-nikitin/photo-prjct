@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
+from config.queue_work import COMMERCE, schedule_transition
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
 from django.utils import timezone
@@ -354,6 +355,11 @@ def claim_due_payment_reconciliations(
                     "updated_at",
                 ]
             )
+            schedule_transition(
+                COMMERCE,
+                str(PaymentAttempt.ReconciliationState.PENDING),
+                attempt.reconciliation_state,
+            )
             claims.append(PaymentReconciliationClaim(attempt_id=attempt.pk, lease_id=lease_id))
     return tuple(claims)
 
@@ -381,6 +387,11 @@ def _recover_expired_payment_reconciliation_leases(*, now: datetime, limit: int)
                 "reconciliation_next_attempt_at",
                 "updated_at",
             ]
+        )
+        schedule_transition(
+            COMMERCE,
+            str(PaymentAttempt.ReconciliationState.PROCESSING),
+            attempt.reconciliation_state,
         )
 
 
@@ -427,6 +438,11 @@ def _release_payment_reconciliation_claim(
                 "reconciliation_next_attempt_at",
                 "updated_at",
             ]
+        )
+        schedule_transition(
+            COMMERCE,
+            str(PaymentAttempt.ReconciliationState.PROCESSING),
+            attempt.reconciliation_state,
         )
     return True
 

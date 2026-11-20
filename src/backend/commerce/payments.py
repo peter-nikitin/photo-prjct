@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from typing import cast
 from uuid import UUID
 
+from config.queue_work import COMMERCE, schedule_transition
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -645,6 +646,9 @@ def _set_attempt_terminal(
 ) -> None:
     if attempt.status == status:
         return
+    previous_state = (
+        attempt.reconciliation_state if attempt.status == PaymentAttempt.Status.PENDING else None
+    )
     attempt.status = status
     attempt.terminal_at = terminal_at
     attempt.reconciliation_state = PaymentAttempt.ReconciliationState.PENDING
@@ -662,6 +666,7 @@ def _set_attempt_terminal(
             "updated_at",
         ]
     )
+    schedule_transition(COMMERCE, previous_state, None)
 
 
 def _fulfill_paid_order(*, order: Order, paid_at: datetime) -> None:
@@ -687,13 +692,14 @@ def _create_initial_delivery(*, order: Order, now: datetime) -> None:
     )
     if grant is None:
         raise PaymentTransitionRejected("Paid Order is missing its initial access grant.")
-    EmailDelivery.objects.create(
+    delivery = EmailDelivery.objects.create(
         order=order,
         message_kind=EmailDelivery.MessageKind.ORDER_ACCESS,
         recipient_email=order.delivery_email,
         access_grant=grant,
         next_attempt_at=now,
     )
+    schedule_transition(COMMERCE, None, delivery.state)
 
 
 def _expire_after_current_fetch(
@@ -721,6 +727,7 @@ def _expire_after_current_fetch(
         ):
             raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
         if attempt.adapter_key == TBANK_ADAPTER_KEY:
+            previous_state = attempt.reconciliation_state
             attempt.reconciliation_state = PaymentAttempt.ReconciliationState.PENDING
             attempt.reconciliation_lease_id = None
             attempt.reconciliation_lease_expires_at = None
@@ -734,6 +741,7 @@ def _expire_after_current_fetch(
                     "updated_at",
                 ]
             )
+            schedule_transition(COMMERCE, previous_state, attempt.reconciliation_state)
             return
         due_at = attempt.expires_at or attempt.created_at + timedelta(hours=24)
         if now < due_at:

@@ -2,6 +2,7 @@ from datetime import date
 from typing import cast
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from picflow.models import Event, Photo
@@ -14,6 +15,7 @@ from processing.models import (
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
+    QueueWorkCounter,
 )
 from processing.services.bibs import bib_configuration
 from processing.services.enrollment import (
@@ -581,6 +583,42 @@ class CaptureMetadataEnrollmentTests(TestCase):
         self.assertNotEqual(state.current_job_id, old_job.id)
         self.assertIsNone(photo.capture_time)
         self.assertIsNone(photo.capture_time_source_attempt_id)
+
+    def test_capture_reprocessing_records_one_counter_write_for_new_jobs_only(self) -> None:
+        self.event.publication_status = Event.PublicationStatus.PUBLISHED
+        self.event.save(update_fields=["publication_status"])
+        for number in range(3):
+            self.private_photo(f"bulk-{number}")
+        target = CaptureTimeReprocessingTarget(
+            event_id=self.event.pk,
+            event_name=self.event.name,
+            timezone_name="Europe/Moscow",
+            photo_count=3,
+            configuration=capture_metadata_configuration(self.event.timezone_name),
+        )
+        writes = []
+
+        def observe_writes(execute, sql, params, many, context):
+            if "INSERT INTO processing_queueworkcounter" in sql:
+                writes.append(sql)
+            return execute(sql, params, many, context)
+
+        with (
+            connection.execute_wrapper(observe_writes),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            assert (
+                enroll_event_capture_time_reprocessing(self.event, target=target).created_job_count
+                == 3
+            )
+            assert (
+                enroll_event_capture_time_reprocessing(self.event, target=target).created_job_count
+                == 0
+            )
+        assert len(writes) == 1
+        assert (
+            QueueWorkCounter.objects.get(queue="photo", processor="capture_metadata").waiting == 3
+        )
 
     def test_capture_enrollment_clears_a_stale_projection_before_new_work(self) -> None:
         """Catch re-enrollment exposing an old time while the replacement is queued."""

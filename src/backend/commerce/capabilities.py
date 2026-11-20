@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from config.queue_work import COMMERCE, schedule_transition
 from django.db import transaction
 from django.db.models import Max, QuerySet
 from django.utils import timezone
@@ -193,6 +194,7 @@ def revoke_order_access_grant(
             if delivery.state == EmailDelivery.State.PROCESSING:
                 # The worker has the only safe pre-I/O cancellation point for a live claim.
                 continue
+            previous_state = delivery.state
             delivery.state = EmailDelivery.State.CANCELED
             delivery.lease_id = None
             delivery.lease_expires_at = None
@@ -206,6 +208,7 @@ def revoke_order_access_grant(
                     "updated_at",
                 ]
             )
+            schedule_transition(COMMERCE, previous_state, delivery.state)
     return locked_grant
 
 

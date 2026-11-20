@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
+from config.queue_work import IMPORT, schedule_transition
 from django.contrib.auth import get_user_model
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
@@ -119,6 +120,8 @@ def create_import(
                 "submitted_source_key": submitted_source_key,
             },
         )
+        if created:
+            schedule_transition(IMPORT, None, batch.status)
         if not created and (
             batch.event_id != event.pk
             or batch.folder_id != (folder.pk if folder is not None else None)
@@ -262,6 +265,7 @@ def _finish_manifest(
         batch.unsupported_count = sum(page.unsupported_count for page in pages)
         batch.error_code = ""
         batch.last_activity_at = now
+        previous_status = batch.status
         batch.status = (
             ImportBatch.Status.TRANSFERRING if batch.jpeg_count else ImportBatch.Status.COMPLETED
         )
@@ -279,6 +283,7 @@ def _finish_manifest(
                 "completed_at",
             ]
         )
+        schedule_transition(IMPORT, previous_status, batch.status)
         _finish_attempt(attempt, "succeeded", now=now)
         _derive_batch(batch, now=now)
         return _result(batch)
@@ -325,22 +330,26 @@ def claim_import_work(*, lease_seconds: int = 120, now: datetime | None = None) 
             )
             if batch is None or _has_live_attempt(batch, now):
                 continue
+            previous_status = batch.status
             if not _owner_is_eligible(batch.owner_id):
                 if batch.status != ImportBatch.Status.PAUSED:
                     batch.status = ImportBatch.Status.PAUSED
                     batch.last_activity_at = now
                     batch.save(update_fields=["status", "last_activity_at"])
+                    schedule_transition(IMPORT, previous_status, batch.status)
                 continue
             if not batch.manifest_complete:
                 if batch.manifest_attempts >= MAX_OPERATION_ATTEMPTS:
                     batch.status = ImportBatch.Status.FAILED
                     batch.completed_at = now
                     batch.save(update_fields=["status", "completed_at"])
+                    schedule_transition(IMPORT, previous_status, batch.status)
                     continue
                 batch.manifest_attempts += 1
                 batch.status = ImportBatch.Status.ENUMERATING
                 batch.last_activity_at = now
                 batch.save(update_fields=["manifest_attempts", "status", "last_activity_at"])
+                schedule_transition(IMPORT, previous_status, batch.status)
                 return _create_claim(
                     batch=batch,
                     item=None,
@@ -371,6 +380,7 @@ def claim_import_work(*, lease_seconds: int = 120, now: datetime | None = None) 
             batch.status = ImportBatch.Status.TRANSFERRING
             batch.last_activity_at = now
             batch.save(update_fields=["status", "last_activity_at"])
+            schedule_transition(IMPORT, previous_status, batch.status)
             return _create_claim(
                 batch=batch,
                 item=item,
@@ -561,6 +571,7 @@ def _record_import_failure(
             batch.items.all().delete()
             batch.jpeg_count = batch.directory_count = batch.unsupported_count = 0
             batch.error_code = code
+            previous_status = batch.status
             batch.status = (
                 ImportBatch.Status.QUEUED
                 if retryable and batch.manifest_attempts < MAX_OPERATION_ATTEMPTS
@@ -579,6 +590,7 @@ def _record_import_failure(
                     "last_activity_at",
                 ]
             )
+            schedule_transition(IMPORT, previous_status, batch.status)
         else:
             if attempt.kind != ImportAttempt.Kind.FILE or attempt.item is None:
                 raise ImportConflict("attempt_kind_mismatch", "This is not a file attempt.")
@@ -627,6 +639,7 @@ def retry_import_errors(
     owner = _fresh_eligible_owner(actor.pk)
     with transaction.atomic():
         batch = ImportBatch.objects.select_for_update().get(pk=batch_id, owner=owner)
+        previous_status = batch.status
         if not batch.manifest_complete:
             if batch.status != ImportBatch.Status.FAILED:
                 raise ImportConflict("nothing_to_retry", "The import has no manifest error.")
@@ -668,6 +681,7 @@ def retry_import_errors(
                 "last_activity_at",
             ]
         )
+        schedule_transition(IMPORT, previous_status, batch.status)
         return _result(batch)
 
 
@@ -764,9 +778,11 @@ def _persist_paused_batch(*, attempt_id: UUID, now: datetime) -> None:
         batch = ImportBatch.objects.select_for_update().get(pk=attempt_ref.batch_id)
         attempt = ImportAttempt.objects.select_for_update().get(pk=attempt_id, batch=batch)
         if attempt.status == ImportAttempt.Status.ACTIVE:
+            previous_status = batch.status
             batch.status = ImportBatch.Status.PAUSED
             batch.last_activity_at = now
             batch.save(update_fields=["status", "last_activity_at"])
+            schedule_transition(IMPORT, previous_status, batch.status)
 
 
 def _persist_expired_attempt(*, attempt_id: UUID, now: datetime) -> None:
@@ -893,6 +909,7 @@ def _fail_item(item: ImportItem, attempt: ImportAttempt, *, code: str, now: date
 def _derive_batch(batch: ImportBatch, *, now: datetime) -> None:
     if not batch.manifest_complete:
         return
+    previous_status = batch.status
     statuses = list(batch.items.values_list("status", flat=True))
     if not statuses:
         batch.status = ImportBatch.Status.COMPLETED
@@ -911,6 +928,7 @@ def _derive_batch(batch: ImportBatch, *, now: datetime) -> None:
     )
     batch.last_activity_at = now
     batch.save(update_fields=["status", "completed_at", "last_activity_at"])
+    schedule_transition(IMPORT, previous_status, batch.status)
 
 
 def _result(batch: ImportBatch) -> ImportResult:

@@ -216,3 +216,51 @@ def test_cli_waits_for_fresh_samples_with_a_bounded_retry(
     )
     assert checker.main() == result
     assert elapsed == elapsed_expected
+
+
+@pytest.mark.parametrize("failure", [None, "unavailable", "missing", "stale"])
+def test_queue_work_requires_a_fresh_series_for_every_queue_and_state(failure):
+    checker = load("release_queue_work", "deploy/monitoring/prometheus/verify_metrics.py")
+    queues = {
+        "gallery-search",
+        "selfie",
+        "selfie_face_search",
+        "photo",
+        "import",
+        "commerce",
+        "photo_archive",
+    }
+    states = {"waiting", "processing", "retry_wait", "paused"}
+
+    class Transport:
+        def read_samples(self, selectors, *, now):
+            assert {selector["job"] for selector in selectors} == {"findme-queue-telemetry"}
+            assert {
+                selector["queue"]
+                for selector in selectors
+                if selector["__name__"] == "findme_queue_work_available"
+            } == queues
+            assert {
+                (selector["queue"], selector["state"])
+                for selector in selectors
+                if selector["__name__"] == "findme_queue_work_count"
+            } == {(queue, state) for queue in queues for state in states}
+            results = []
+            for selector in selectors:
+                availability = selector["__name__"] == "findme_queue_work_available"
+                if availability and selector["queue"] == "photo" and failure == "unavailable":
+                    results.append([[(1995, 0)]])
+                elif selector.get("state") == "processing" and selector["queue"] == "commerce":
+                    if failure == "missing":
+                        results.append([])
+                    else:
+                        results.append([[(1600 if failure == "stale" else 1995, 1)]])
+                else:
+                    results.append([[(1995, 1 if availability else 0)]])
+            return results
+
+    if failure is None:
+        checker.check(Transport(), "queue-work", now=2000)
+    else:
+        with pytest.raises(checker.control.ControlError):
+            checker.check(Transport(), "queue-work", now=2000)

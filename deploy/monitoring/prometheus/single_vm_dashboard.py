@@ -64,15 +64,27 @@ def main() -> int:
                 import yaml
 
                 charts = control._dashboard_charts(desired)
+                defaults = control.dashboard_parameter_defaults(desired)
                 rules = [
                     {
                         "record": f"findme_dashboard_query_{i}_{j}",
-                        "expr": target["prometheusTarget"]["query"],
+                        "expr": control.dashboard_validation_query(
+                            target["prometheusTarget"]["query"], defaults
+                        ),
                     }
                     for i, chart in enumerate(charts)
                     for j, target in enumerate(chart["targets"])
                     if "prometheusTarget" in target
                 ]
+                for parameter in desired.get("parametrization", {}).get("parameters", []):
+                    matches = parameter.get("query", {}).get("prometheus", {}).get("match", [])
+                    for i, match in enumerate(matches):
+                        rules.append(
+                            {
+                                "record": f"findme_dashboard_parameter_{parameter['name']}_{i}",
+                                "expr": match,
+                            }
+                        )
                 with tempfile.TemporaryDirectory(
                     prefix=".monitoring-queries-", dir=Path.cwd()
                 ) as directory:

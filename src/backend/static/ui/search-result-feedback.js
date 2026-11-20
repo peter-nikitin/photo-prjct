@@ -14,6 +14,8 @@
       const id = card.dataset.photoId;
       const mark = card.querySelector('[data-reversible-feedback] button');
       if (mark) mark.setAttribute('aria-pressed', String(manual.has(id)));
+      const search = card.querySelector('button[name="photo_id"][data-continuation-control]');
+      if (search) search.disabled = manual.has(id);
       if (manual.has(id)) card.dataset.negativeFeedback = 'manual';
       else if (similar.has(id)) card.dataset.negativeFeedback = 'similar';
       else delete card.dataset.negativeFeedback;
@@ -30,9 +32,14 @@
     const scope = form.hasAttribute?.('data-reversible-feedback')
       ? form.closest('[data-feedback-scope]') : null;
     if (scope && pendingScopes.has(scope)) return;
+    const search = scope && form.closest('.gallery-card')
+      ?.querySelector('button[name="photo_id"][data-continuation-control]');
+    const wasSearchDisabled = search?.disabled;
     if (scope) {
       pendingScopes.add(scope);
-      body.set('action', button.getAttribute('aria-pressed') === 'true' ? 'unmark' : 'mark');
+      const marking = button.getAttribute('aria-pressed') !== 'true';
+      body.set('action', marking ? 'mark' : 'unmark');
+      if (search && marking) search.disabled = true;
     }
 
     const submissionId = form.querySelector('[name="submission_id"]');
@@ -58,6 +65,7 @@
         button.hidden = true;
       }
     } catch (_error) {
+      if (search) search.disabled = wasSearchDisabled;
       error.hidden = false;
     } finally {
       button.disabled = false;

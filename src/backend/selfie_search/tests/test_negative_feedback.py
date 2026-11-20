@@ -239,7 +239,7 @@ class NegativeFeedbackTests(TestCase):
         self.assertEqual(self.report(token, "wrong", "unmark").json()["excluded_photo_count"], 0)
         self.assertTrue(SelfieSearchDirectEvidence.objects.filter(result=row).exists())
 
-    def test_marked_or_dimmed_results_cannot_seed_automatic_continuation(self):
+    def test_marked_results_cannot_seed_manual_or_automatic_continuation(self):
         from selfie_search.services.continuation import ContinuationUnavailable, submit_continuation
 
         search, token = self.root()
@@ -249,9 +249,11 @@ class NegativeFeedbackTests(TestCase):
 
         with self.assertRaises(ContinuationUnavailable):
             submit_continuation(search=search, user=self.user, photo_id=None)
+        with self.assertRaises(ContinuationUnavailable):
+            submit_continuation(search=search, user=self.user, photo_id="wrong")
 
         self.assertEqual(self.report(token, "wrong", "unmark").status_code, 200)
         self.assertEqual(
-            submit_continuation(search=search, user=self.user, photo_id=None).parent_search_id,
+            submit_continuation(search=search, user=self.user, photo_id="wrong").parent_search_id,
             search.pk,
         )

@@ -50,9 +50,6 @@
                   <img src="{{ photo.preview_media_small.url }}" loading="lazy" alt="{{ photo.alt }}">
                 </a>
                 <div class="gallery-card-actions">
-                  {% if result_feedback_url %}
-                    {% include "ui/search_result_feedback.html" with feedback_url=result_feedback_url photo_id=photo.photo_id reversible_feedback=True %}
-                  {% endif %}
                   {% if cart_presentation %}
                     {% for cart_photo in cart_presentation.photos %}
                       {% if cart_photo.photo.photo_id == photo.photo_id %}
@@ -80,9 +77,12 @@
                     {% endif %}
                   </div>
                 </div>
-                {% if continuation_url %}
-                  <div class="selfie-search-photo-continuation">
-                    <button class="button" form="search-continuation" name="photo_id" value="{{ photo.photo_id }}" type="submit" disabled{% if photo.photo_id in continuation_photo_ids %} data-continuation-control{% endif %}>Найти по этому фото</button>
+                {% if result_feedback_url or continuation_url %}
+                  <div class="selfie-search-photo-actions">
+                  {% if result_feedback_url %}
+                    {% include "ui/search_result_feedback.html" with feedback_url=result_feedback_url photo_id=photo.photo_id reversible_feedback=True %}
+                  {% endif %}
+                    <button class="button" form="search-continuation" name="photo_id" value="{{ photo.photo_id }}" type="submit" disabled{% if continuation_url and photo.photo_id in continuation_photo_ids %} data-continuation-control{% endif %}>Найти по этому фото</button>
                   </div>
                 {% endif %}
               </figure>

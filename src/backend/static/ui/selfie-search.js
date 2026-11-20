@@ -789,12 +789,16 @@
         window.location.assign(payload.result_url);
       } catch {
         form.removeAttribute('aria-busy');
-        if (event.submitter) event.submitter.disabled = false;
+        if (event.submitter) {
+          event.submitter.disabled = Boolean(event.submitter.closest('[data-negative-feedback="manual"]'));
+        }
         error.hidden = false;
       }
     });
     for (const control of form.elements) {
-      if (control.hasAttribute('data-continuation-control')) control.disabled = false;
+      if (control.hasAttribute('data-continuation-control')) {
+        control.disabled = Boolean(control.closest('[data-negative-feedback="manual"]'));
+      }
     }
   }
 

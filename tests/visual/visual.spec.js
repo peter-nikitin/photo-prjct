@@ -1381,13 +1381,13 @@ test('desktop feedback keeps gallery full width and terminal actions equal', asy
       };
     })(),
     cards: Array.from(document.querySelectorAll('.gallery-card-actions')).map((actions) => {
-      const controls = actions.querySelector('[data-result-feedback]');
+      const controls = actions.nextElementSibling?.querySelector('[data-result-feedback]');
       const download = actions.querySelector('.gallery-download');
       const controlRect = controls?.getBoundingClientRect();
       const downloadRect = download?.getBoundingClientRect();
       return {
         controlsVisible: Boolean(controls && !controls.hidden),
-        controlsBeforeDownload: Boolean(controlRect && downloadRect && controlRect.right <= downloadRect.left),
+        controlsBelowDownload: Boolean(controlRect && downloadRect && controlRect.top >= downloadRect.bottom),
       };
     }),
   }));
@@ -1403,7 +1403,7 @@ test('desktop feedback keeps gallery full width and terminal actions equal', asy
   await expect(page.getByRole('checkbox', { name: /Я согласен/ })).not.toBeChecked();
   expect(layout.cards).toHaveLength(3);
   expect(layout.cards.every(({ controlsVisible }) => controlsVisible)).toBe(true);
-  expect(layout.cards.every(({ controlsBeforeDownload }) => controlsBeforeDownload)).toBe(true);
+  expect(layout.cards.every(({ controlsBelowDownload }) => controlsBelowDownload)).toBe(true);
   await page.addStyleTag({
     content: '.topbar { position: static !important; } .skip-link { display: none !important; }',
   });
@@ -1488,17 +1488,15 @@ for (const viewport of [
     });
     await settlePage(page);
 
-    const row = page.locator('.gallery-card-actions').first();
-    const boxes = () => row.evaluate((element) => {
+    const row = card.locator('.gallery-card-actions');
+    const boxes = () => card.evaluate((element) => {
       const box = (selector) => element.querySelector(selector).getBoundingClientRect().toJSON();
       const price = element.querySelector('.gallery-card-price');
-      const text = document.createRange();
-      text.selectNodeContents(price);
       return {
-        row: element.getBoundingClientRect().toJSON(),
-        feedback: box('[data-result-feedback]'),
+        row: box('.gallery-card-actions'),
+        feedback: box('[data-result-feedback] button'),
+        search: box('.selfie-search-photo-actions button[name="photo_id"]'),
         price: price.getBoundingClientRect().toJSON(),
-        priceText: text.getBoundingClientRect().toJSON(),
         priceFits: price.scrollWidth <= price.clientWidth,
         time: box('.gallery-card-time'),
         cart: box('.gallery-cart-button'),
@@ -1507,16 +1505,14 @@ for (const viewport of [
 
     const before = await boxes();
     expect(before.priceFits, JSON.stringify(before)).toBe(true);
-    expect(before.feedback.left, JSON.stringify(before)).toBeCloseTo(before.row.left, 0);
-    expect(before.feedback.right).toBeLessThanOrEqual(before.priceText.left);
-    expect(before.priceText.right).toBeLessThanOrEqual(before.time.left);
-    expect(before.priceText.right).toBeLessThanOrEqual(before.price.right);
+    expect(before.price.right).toBeLessThanOrEqual(before.time.left);
     expect(before.time.right).toBeLessThanOrEqual(before.cart.left);
     expect(before.cart.right).toBeCloseTo(before.row.right, 0);
-    expect(Math.abs(
-      (before.priceText.left + before.priceText.right) / 2
-      - (before.feedback.right + before.time.left) / 2
-    )).toBeLessThan(2);
+    expect(before.feedback.left).toBeCloseTo(before.row.left, 0);
+    expect(before.search.right).toBeCloseTo(before.row.right, 0);
+    expect(before.feedback.width).toBeCloseTo(before.search.width, 0);
+    expect(before.feedback.top).toBeCloseTo(before.search.top, 0);
+    expect(before.feedback.top).toBeGreaterThanOrEqual(before.row.bottom);
 
     const checkRightSlots = async () => {
       const current = await boxes();
@@ -1525,9 +1521,9 @@ for (const viewport of [
       expect(current.cart.left).toBeCloseTo(before.cart.left, 0);
       expect(current.cart.top - current.row.top).toBeCloseTo(before.cart.top - before.row.top, 0);
     };
-    const report = row.getByRole('button', { name: 'Это не я' });
+    const report = card.getByRole('button', { name: 'Это не я' });
     await report.click();
-    await expect(row.getByRole('alert')).toBeVisible();
+    await expect(card.getByRole('alert')).toBeVisible();
     await checkRightSlots();
     await report.click();
     await expect(report).toHaveAttribute('aria-pressed', 'true');
@@ -1597,14 +1593,20 @@ test('result feedback toggles manual and similar dimming after a successful retr
     });
   });
   const button = first.getByRole('button', { name: 'Это не я' });
+  const firstSearch = first.getByRole('button', { name: 'Найти по этому фото' });
+  const secondSearch = second.getByRole('button', { name: 'Найти по этому фото' });
+  await expect(firstSearch).toBeEnabled();
+  await expect(secondSearch).toBeDisabled();
   await expect(page.locator('[data-feedback-form]')).toHaveCount(0);
   await expect(button).toHaveAttribute('aria-pressed', 'false');
   await button.click();
   await expect(first.getByRole('alert')).toBeVisible();
   await expect(first).not.toHaveAttribute('data-negative-feedback');
+  await expect(firstSearch).toBeEnabled();
   await button.click();
   await expect(button).toHaveAttribute('aria-pressed', 'true');
   await expect(first).toHaveAttribute('data-negative-feedback', 'manual');
+  await expect(firstSearch).toBeDisabled();
   await expect(second).toHaveAttribute('data-negative-feedback', 'similar');
   await expect(first.locator('img')).toHaveCSS('opacity', '0.45');
   await expect(second.locator('img')).toHaveCSS('opacity', '0.45');
@@ -1614,6 +1616,8 @@ test('result feedback toggles manual and similar dimming after a successful retr
   await expect(button).toHaveAttribute('aria-pressed', 'false');
   await expect(first).not.toHaveAttribute('data-negative-feedback');
   await expect(second).not.toHaveAttribute('data-negative-feedback');
+  await expect(firstSearch).toBeEnabled();
+  await expect(secondSearch).toBeDisabled();
 });
 
 test('cookie notice is visible and usable on a fresh desktop profile', async ({ page }) => {

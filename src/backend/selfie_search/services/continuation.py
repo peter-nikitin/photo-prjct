@@ -303,7 +303,7 @@ def _negative_anchor_photo_ids(
     )
     if automatic:
         return state.manual_photo_ids | state.similar_photo_ids | state.excluded_photo_ids
-    return state.excluded_photo_ids
+    return state.manual_photo_ids | state.excluded_photo_ids
 
 
 @transaction.atomic

@@ -534,12 +534,45 @@
   }
 }
 
-.selfie-search-photo-continuation {
-  padding: 0.5rem;
+.selfie-search-results .gallery-card-actions:has(.gallery-card-cart) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 3rem 44px;
+  column-gap: 4px;
+
+  .gallery-card-price {
+    grid-area: 1 / 1;
+  }
+
+  .gallery-card-download {
+    grid-area: 1 / 2;
+    text-align: end;
+  }
+
+  .cart-action-form {
+    grid-area: 1 / 3;
+  }
 }
 
-.selfie-search-photo-continuation .button {
+.selfie-search-photo-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.selfie-search-photo-actions .gallery-result-feedback {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.selfie-search-photo-actions button {
   width: 100%;
+  min-height: 44px;
+  padding: 6px;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  white-space: normal;
 }
 
 .selfie-search-more {

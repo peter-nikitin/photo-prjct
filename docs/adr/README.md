@@ -93,3 +93,4 @@ ADR фиксирует долговременный архитектурный �
 | 0069 | [Выдавать готовые файлы через CDN без imgproxy](0069-serve-media-through-cdn-without-imgproxy.md) | Accepted |
 | 0070 | [Расширять поиск по лицу от прямых совпадений](0070-expand-face-search-from-direct-matches.md) | Accepted |
 | 0071 | [Собирать архивы фотографий в фоне](0071-prepare-photo-archives-in-background.md) | Accepted |
+| 0072 | [Хранить приблизительные счётчики импорта фото в PostgreSQL](0072-store-approximate-photo-import-counters.md) | Accepted |

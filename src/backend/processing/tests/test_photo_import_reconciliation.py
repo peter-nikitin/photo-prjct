@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -11,6 +12,7 @@ from picflow.models import Event, GalleryMediaProjection, Photo
 from processing.models import (
     EventProcessingRun,
     PhotoFaceEmbeddingProjection,
+    PhotoImportCounter,
     PhotoProcessingState,
     ProcessingAttempt,
     ProcessingJob,
@@ -24,7 +26,7 @@ from processing.photo_import_telemetry import (
 
 
 @pytest.mark.django_db(transaction=True)
-def test_keyset_reconciliation_restricts_the_snapshot_to_its_upper_bound():
+def test_manual_rebuild_counts_current_membership_in_keyset_pages(monkeypatch):
     user = get_user_model().objects.create_user(username="reconciliation")
     event = Event.objects.create(
         name="Reconciliation", slug="reconciliation", start_date=date.today(), end_date=date.today()
@@ -46,8 +48,8 @@ def test_keyset_reconciliation_restricts_the_snapshot_to_its_upper_bound():
             gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
         )
 
-    photos = Photo.objects.bulk_create([photo(index) for index in range(402)])
-    ready = [item for index, item in enumerate(photos) if index not in {0, 199, 200, 401}]
+    photos = Photo.objects.bulk_create([photo(index) for index in range(52)])
+    ready = [item for index, item in enumerate(photos) if index not in {0, 24, 25, 51}]
     for processor, contract, version in (
         ("generate_preview", 2, 1),
         ("face_embedding", 3, 5),
@@ -131,7 +133,7 @@ def test_keyset_reconciliation_restricts_the_snapshot_to_its_upper_bound():
             )
 
     # A durable older face projection can remain while a new job is current.
-    rotated = photos[399]
+    rotated = photos[49]
     PhotoProcessingState.objects.filter(photo=rotated, processor_type="face_embedding").update(
         status=PhotoProcessingState.Status.QUEUED,
         current_attempt=None,
@@ -162,3 +164,15 @@ def test_keyset_reconciliation_restricts_the_snapshot_to_its_upper_bound():
         {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (2, 0)},
         {GALLERY_QUEUE: (1, 0), FACE_QUEUE: (1, 0)},
     ]
+
+    for queue in (FACE_QUEUE, GALLERY_QUEUE):
+        PhotoImportCounter.objects.get_or_create(pk=queue)
+    pauses: list[float] = []
+    monkeypatch.setattr(
+        "picflow.management.commands.rebuild_photo_import_counters.time.sleep", pauses.append
+    )
+    call_command("rebuild_photo_import_counters")
+    assert pauses == [0.1, 0.1]
+    assert set(
+        PhotoImportCounter.objects.values_list("queue", "pending", "failed", "initialized")
+    ) == {(GALLERY_QUEUE, 5, 0, True), (FACE_QUEUE, 6, 0, True)}

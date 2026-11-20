@@ -571,6 +571,29 @@ class PhotoDerivative(models.Model):  # noqa: DJ008
             )
 
 
+class PersonAppearanceDetection(models.Model):  # noqa: DJ008
+    """Versioned person geometry and descriptors for an accepted appearance attempt."""
+
+    attempt = models.ForeignKey(
+        ProcessingAttempt, on_delete=models.CASCADE, related_name="appearance_people"
+    )
+    ordinal = models.PositiveSmallIntegerField()
+    bbox = models.JSONField()
+    head = models.JSONField(null=True)
+    confidence = models.FloatField()
+    reason = models.CharField(max_length=24, blank=True)
+    reid = VectorField(dimensions=256, null=True)
+    color = VectorField(dimensions=384, null=True)
+    helmet = VectorField(dimensions=1764, null=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["attempt", "ordinal"], name="person_appearance_attempt_order_uniq"
+            ),
+        ]
+
+
 class FaceProcessingAttemptArtifact(models.Model):  # noqa: DJ008
     class Status(models.TextChoices):
         COMPLETE = "complete", "Complete"

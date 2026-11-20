@@ -807,7 +807,7 @@ def test_v2_reconciliation_mismatch_duplicate_and_malformed_event_make_summary_i
     assert "SECRET-SENTINEL" not in json.dumps(summary.to_dict(), sort_keys=True)
 
 
-def test_native_anchor_expansion_reconciles_without_inflating_cluster_summary() -> None:
+def test_native_anchor_and_apparel_expansions_do_not_inflate_cluster_summary() -> None:
     summarize = _load_module()
     search_id = _search_id(721)
     corpus_hash = "a" * 64
@@ -847,6 +847,20 @@ def test_native_anchor_expansion_reconciles_without_inflating_cluster_summary() 
     )
     terminal.update(schema_version=3, anchor_expanded_photo_count=3)
 
+    # Keep accepting the previously emitted anchor-only log schema.
+    historical = summarize.summarize_jsonl(
+        [_submission(search_id), json.dumps(ranking), json.dumps(terminal)],
+        report_date=date(2026, 8, 3),
+    )
+    assert historical.complete
+
+    ranking.update(
+        schema_version=6,
+        apparel_expanded_photo_count=2,
+        final_matched_photo_count=8,
+        matched_photo_count=8,
+    )
+    terminal.update(schema_version=4, apparel_expanded_photo_count=2, matched_photo_count=8)
     summary = summarize.summarize_jsonl(
         [_submission(search_id), json.dumps(ranking), json.dumps(terminal)],
         report_date=date(2026, 8, 3),

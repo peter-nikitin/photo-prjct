@@ -58,6 +58,8 @@ class RankedPhotoExpansion:
     duration_ms: int
     outcome: str
     anchor_expanded_photo_count: int = 0
+    apparel_expanded_photo_count: int = 0
+    apparel_evidence: dict[str, object] | None = None
 
 
 def expand_ranked_photos(

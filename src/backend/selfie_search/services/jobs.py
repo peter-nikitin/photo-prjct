@@ -26,6 +26,7 @@ from selfie_search.models import (
     SelfieSearch,
     SelfieSearchAnchorEvidence,
     SelfieSearchAnchorEvidenceSource,
+    SelfieSearchApparelEvidence,
     SelfieSearchAttempt,
     SelfieSearchClusterEvidence,
     SelfieSearchDirectEvidence,
@@ -618,6 +619,7 @@ def _verify_prepared_result_identity(search: SelfieSearch, expansion: RankedPhot
         != expansion.direct_matched_photo_count
         + expansion.cluster_expanded_photo_count
         + expansion.anchor_expanded_photo_count
+        + expansion.apparel_expanded_photo_count
         or SelfieSearchResult.objects.filter(search=search).count()
         != expansion.final_matched_photo_count
         or SelfieSearchDirectEvidence.objects.filter(result__search=search).count()
@@ -627,6 +629,14 @@ def _verify_prepared_result_identity(search: SelfieSearch, expansion: RankedPhot
             primary_source=SelfieSearchResult.PrimarySource.FACE_CLUSTER_EXPANSION,
         ).count()
         != expansion.cluster_expanded_photo_count
+        or (
+            expansion.apparel_evidence is not None
+            and SelfieSearchResult.objects.filter(
+                search=search,
+                primary_source=SelfieSearchResult.PrimarySource.APPAREL_EXPANSION,
+            ).count()
+            != expansion.apparel_expanded_photo_count
+        )
         or (
             expansion.anchor_expanded_photo_count
             and SelfieSearchAnchorEvidence.objects.filter(
@@ -711,11 +721,16 @@ def prepare_search_result(
             )
         SelfieSearchAnchorEvidence.objects.bulk_create(anchor_evidence_rows)
         SelfieSearchAnchorEvidenceSource.objects.bulk_create(anchor_source_rows)
+        if expansion.apparel_evidence is not None:
+            SelfieSearchApparelEvidence.objects.create(
+                search=search, decisions=expansion.apparel_evidence
+            )
         _verify_prepared_result_identity(search, expansion)
         search.final_matched_photo_count = expansion.final_matched_photo_count
         search.direct_matched_photo_count = expansion.direct_matched_photo_count
         search.cluster_expanded_photo_count = expansion.cluster_expanded_photo_count
         search.anchor_expanded_photo_count = expansion.anchor_expanded_photo_count
+        search.apparel_expanded_photo_count = expansion.apparel_expanded_photo_count
         search.strong_anchor_count = expansion.strong_anchor_count
         search.expanded_cluster_count = expansion.expanded_cluster_count
         search.cluster_corpus_id = expansion.cluster_corpus_id
@@ -744,6 +759,7 @@ def prepare_search_result(
             "direct_matched_photo_count",
             "cluster_expanded_photo_count",
             "anchor_expanded_photo_count",
+            "apparel_expanded_photo_count",
             "strong_anchor_count",
             "expanded_cluster_count",
             "cluster_corpus",
@@ -868,8 +884,14 @@ def emit_ranking_finished(
         cluster_expansion_ms=cluster_expansion_ms,
         cluster_expansion_outcome=cluster_expansion_outcome,
         **(
+            {"apparel_expanded_photo_count": expansion.apparel_expanded_photo_count}
+            if expansion is not None and expansion.apparel_expanded_photo_count
+            else {}
+        ),
+        **(
             {"anchor_expanded_photo_count": expansion.anchor_expanded_photo_count}
-            if expansion is not None and expansion.anchor_expanded_photo_count
+            if expansion is not None
+            and (expansion.anchor_expanded_photo_count or expansion.apparel_expanded_photo_count)
             else {}
         ),
         configuration_hash=(
@@ -900,8 +922,14 @@ def _emit_search_terminal(*, search: SelfieSearch, now: timezone.datetime) -> No
             cluster_corpus_version=search.cluster_corpus_version if ready else None,
             cluster_configuration_hash=search.cluster_configuration_hash if ready else None,
             **(
+                {"apparel_expanded_photo_count": search.apparel_expanded_photo_count}
+                if ready and search.apparel_expanded_photo_count
+                else {}
+            ),
+            **(
                 {"anchor_expanded_photo_count": search.anchor_expanded_photo_count}
-                if ready and search.anchor_expanded_photo_count
+                if ready
+                and (search.anchor_expanded_photo_count or search.apparel_expanded_photo_count)
                 else {}
             ),
         )

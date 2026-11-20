@@ -252,11 +252,11 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
         assert "PHOTO_WORKER_CONCURRENCY" not in worker["environment"]
     assert bulk["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"].endswith(
         "1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,"
-        "2/face_embedding/3,3/face_embedding/5,1/bib_recognition/1}"
+        "3/face_embedding/5,1/bib_recognition/1,2/person_appearance/1}"
     )
     assert bulk["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"].endswith(
         "bib_recognition,face_embedding,capture_metadata,generate_preview,"
-        "generate_watermarked_preview}"
+        "generate_watermarked_preview,person_appearance}"
     )
     assert bulk["environment"]["PHOTO_WORKER_HTTP_TIMEOUT_SECONDS"].endswith("180}")
     assert selfie["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"].endswith("1/selfie_query/2}")

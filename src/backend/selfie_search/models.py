@@ -98,6 +98,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     anchor_expanded_photo_count = models.PositiveIntegerField(
         "anchor-expanded photo count (analytics)", default=0, db_default=0
     )
+    apparel_expanded_photo_count = models.PositiveIntegerField(default=0, db_default=0)
     strong_anchor_count = models.PositiveIntegerField(null=True, blank=True)
     expanded_cluster_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_expansion_outcome = models.CharField(  # noqa: DJ001
@@ -147,6 +148,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
                         final_matched_photo_count=models.F("direct_matched_photo_count")
                         + models.F("cluster_expanded_photo_count")
                         + models.F("anchor_expanded_photo_count")
+                        + models.F("apparel_expanded_photo_count")
                     )
                 ),
                 name="selfie_search_result_count_identity_chk",
@@ -189,6 +191,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
             != self.direct_matched_photo_count
             + self.cluster_expanded_photo_count
             + self.anchor_expanded_photo_count
+            + self.apparel_expanded_photo_count
         ):
             errors["final_matched_photo_count"] = "Search result counts must reconcile."
         if errors:
@@ -313,6 +316,7 @@ class SelfieSearchResult(models.Model):  # noqa: DJ008
         DIRECT = "direct", "Direct"
         FACE_CLUSTER_EXPANSION = "face_cluster_expansion", "Face-cluster expansion"
         FACE_ANCHOR_EXPANSION = "face_anchor_expansion", "Face-anchor expansion"
+        APPAREL_EXPANSION = "apparel_expansion", "Apparel expansion"
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     search = models.ForeignKey(SelfieSearch, on_delete=models.PROTECT, related_name="results")
@@ -331,7 +335,12 @@ class SelfieSearchResult(models.Model):  # noqa: DJ008
             models.UniqueConstraint(fields=("search", "rank"), name="selfie_result_rank_uniq"),
             models.CheckConstraint(
                 condition=models.Q(
-                    primary_source__in=("direct", "face_cluster_expansion", "face_anchor_expansion")
+                    primary_source__in=(
+                        "direct",
+                        "face_cluster_expansion",
+                        "face_anchor_expansion",
+                        "apparel_expansion",
+                    )
                 ),
                 name="selfie_result_primary_source_chk",
             ),
@@ -365,6 +374,20 @@ class SelfieSearchResult(models.Model):  # noqa: DJ008
             errors["photo"] = "The result photo must belong to the search event."
         if errors:
             raise ValidationError(errors)
+
+
+class SelfieSearchApparelEvidence(models.Model):  # noqa: DJ008
+    """Bounded appearance decisions for one search, without any vector data."""
+
+    search = models.OneToOneField(
+        SelfieSearch, on_delete=models.CASCADE, related_name="apparel_evidence"
+    )
+    decisions = models.JSONField()
+
+    def save(self, *args, **kwargs) -> None:
+        if self.pk and self.__class__.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Selfie apparel evidence is immutable.")
+        super().save(*args, **kwargs)
 
 
 class SelfieSearchDirectEvidence(models.Model):  # noqa: DJ008

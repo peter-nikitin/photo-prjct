@@ -59,6 +59,13 @@ FACE_SEARCH_ANCHOR_EXPANSION: Final = FeatureDefinition(
     "Expand face search using a centroid of strong single-face results",
 )
 
+PERSON_APPEARANCE_PROCESSING: Final = FeatureDefinition(
+    "person-appearance-processing", "Compute person appearance from accepted previews"
+)
+APPAREL_SEARCH_EXPANSION: Final = FeatureDefinition(
+    "apparel-search-expansion", "Expand face search by person appearance"
+)
+
 FEATURE_DEFINITIONS: Final = (
     PAID_EVENTS,
     PAID_WATERMARKED_PREVIEWS,
@@ -71,6 +78,8 @@ FEATURE_DEFINITIONS: Final = (
     EVENT_COVER_CDN_IMAGES,
     WEB_VITALS,
     FACE_SEARCH_ANCHOR_EXPANSION,
+    PERSON_APPEARANCE_PROCESSING,
+    APPAREL_SEARCH_EXPANSION,
 )
 
 validate_feature_definitions(FEATURE_DEFINITIONS)

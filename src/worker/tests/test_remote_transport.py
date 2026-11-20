@@ -5,12 +5,56 @@ import ssl
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 from photo_worker.client import ApiError, HttpClient
 from photo_worker.runner import WorkerConfig
 
 API = "https://findme-photo.ru:8443/internal/photo-processing/v1"
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _example_value(filename: str, name: str) -> str:
+    prefix = f"{name}="
+    return next(
+        line.removeprefix(prefix)
+        for line in (ROOT / filename).read_text().splitlines()
+        if line.startswith(prefix)
+    )
+
+
+def test_bulk_startup_accepts_appearance_from_remote_and_worktree_templates(monkeypatch):
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "fleet-secret")
+    monkeypatch.setenv("PHOTO_WORKER_BUILD", "a" * 40)
+    monkeypatch.setenv(
+        "PHOTO_WORKER_IMAGE", "ghcr.io/example/photo-prjct-worker@sha256:" + "a" * 64
+    )
+    monkeypatch.setenv("PHOTO_WORKER_TRANSPORT", "remote")
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", API)
+    monkeypatch.setenv("PHOTO_WORKER_POOL", "bulk")
+    monkeypatch.setenv("WORKER_POOL_PRIVATE_API_IPV4", "10.20.30.40")
+    monkeypatch.delenv("PHOTO_WORKER_PROCESSOR_TYPES", raising=False)
+    monkeypatch.setenv(
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES",
+        _example_value("deploy/worker-pools/contract.env.example", "WORKER_POOL_BULK_IDENTITIES"),
+    )
+
+    remote, _ = WorkerConfig.from_env()
+    assert remote.remote_pool == "bulk"
+    assert "2/person_appearance/1" in remote.processor_identities
+    assert "3/face_embedding/5" in remote.processor_identities
+
+    monkeypatch.setenv("PHOTO_WORKER_TRANSPORT", "local")
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
+    for setting in ("IDENTITIES", "TYPES"):
+        monkeypatch.setenv(
+            f"PHOTO_WORKER_PROCESSOR_{setting}",
+            _example_value(".env.example", f"PHOTO_WORKER_BULK_PROCESSOR_{setting}"),
+        )
+    local, _ = WorkerConfig.from_env()
+    assert "2/person_appearance/1" in local.processor_identities
+    assert "person_appearance" in local.processor_types
 
 
 @pytest.mark.parametrize(

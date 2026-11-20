@@ -633,3 +633,174 @@ class FaceCentroidSourcesMigrationTests(TransactionTestCase):
 
         MigrationExecutor(connection).migrate(self.before)
         self.assertEqual(AnchorEvidence.objects.values().get(pk=evidence.pk), saved_evidence)
+
+
+class AppearanceUpgradeTests(TransactionTestCase):
+    def test_previous_leaf_preserves_accepted_media_processing_history_and_pending_search(self):
+        from datetime import timedelta
+
+        from feature_flags.models import FeatureFlag
+
+        before = [
+            ("processing", "0021_photo_import_counters"),
+            ("selfie_search", "0015_face_centroid_sources"),
+        ]
+        executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        try:
+            executor.migrate(before)
+            apps = executor.loader.project_state(before).apps
+            Event = apps.get_model("picflow", "Event")
+            Photo = apps.get_model("picflow", "Photo")
+            Job = apps.get_model("processing", "ProcessingJob")
+            Run = apps.get_model("processing", "EventProcessingRun")
+            Attempt = apps.get_model("processing", "ProcessingAttempt")
+            State = apps.get_model("processing", "PhotoProcessingState")
+            Derivative = apps.get_model("processing", "PhotoDerivative")
+            Artifact = apps.get_model("processing", "FaceProcessingAttemptArtifact")
+            Detection = apps.get_model("processing", "PhotoFaceDetection")
+            Vector = apps.get_model("processing", "FaceEmbeddingVector")
+            Search = apps.get_model("selfie_search", "SelfieSearch")
+            Task = apps.get_model("selfie_search", "FaceSearchTask")
+            event = Event.objects.create(
+                name="Previous leaf appearance",
+                slug="previous-leaf-appearance",
+                start_date="2026-08-01",
+                end_date="2026-08-01",
+                city="Moscow",
+            )
+            photo = Photo.objects.create(
+                id="appearance-history-photo", event=event, src="photos/existing.jpg"
+            )
+            now = timezone.now()
+            flags = FeatureFlag.objects.create(key="face-search-anchor-expansion", state="staff")
+            vector = [1.0] + [0.0] * 511
+            for processor, contract, version in (
+                ("generate_preview", 2, 1),
+                ("face_embedding", 3, 5),
+            ):
+                identity = {
+                    "event": event,
+                    "processor_type": processor,
+                    "contract_version": contract,
+                    "processor_version": version,
+                }
+                run = Run.objects.create(**identity, configuration_hash="a" * 64)
+                job = Job.objects.create(
+                    **identity,
+                    run=run,
+                    photo=photo,
+                    configuration_hash="a" * 64,
+                    status="succeeded",
+                )
+                accepted = Attempt.objects.create(
+                    **identity,
+                    run=run,
+                    job=job,
+                    photo=photo,
+                    status="succeeded",
+                    accepted=True,
+                    terminal_at=now,
+                )
+                State.objects.create(
+                    photo=photo,
+                    processor_type=processor,
+                    status="succeeded",
+                    current_run=run,
+                    current_job=job,
+                    current_attempt=accepted,
+                    accepted_attempt=accepted,
+                )
+                for status in ("failed", "expired", "in_progress"):
+                    terminal_times = (
+                        {
+                            "claimed_at": now,
+                            "heartbeat_at": now,
+                            "lease_expires_at": now + timedelta(minutes=2),
+                        }
+                        if status == "in_progress"
+                        else {"terminal_at": now}
+                    )
+                    Attempt.objects.create(
+                        **identity,
+                        run=run,
+                        job=job,
+                        photo=photo,
+                        status=status,
+                        **terminal_times,
+                    )
+                if processor == "generate_preview":
+                    Derivative.objects.create(
+                        photo=photo,
+                        variant="preview-small-v1",
+                        accepted_attempt=accepted,
+                        final_key=(
+                            f"derivatives/previews/{photo.pk}/preview-small-v1/"
+                            f"{accepted.pk}-{'a' * 64}.jpg"
+                        ),
+                        sha256="a" * 64,
+                        byte_size=100,
+                        content_type="image/jpeg",
+                        width=400,
+                        height=500,
+                        oriented_source_width=400,
+                        oriented_source_height=500,
+                    )
+                else:
+                    artifact = Artifact.objects.create(attempt=accepted)
+                    detection = Detection.objects.create(
+                        attempt=accepted,
+                        artifact=artifact,
+                        face_index=0,
+                        status="kept",
+                    )
+                    Vector.objects.create(
+                        detection=detection,
+                        model_version="adaface-ir18-webface4m",
+                        vector=vector,
+                    )
+            search = Search.objects.create(
+                event=event,
+                stage="matching",
+                status="queued",
+                public_token_digest="b" * 64,
+                configuration={"anchor_expansion_staff_eligible": True},
+            )
+            Task.objects.create(
+                search=search,
+                event=event,
+                source="gallery",
+                embedding_model="adaface-ir18-webface4m",
+                vector=vector,
+            )
+            snapshots = {
+                model.__name__: list(model.objects.order_by("pk").values())
+                for model in (Job, Attempt, State, Derivative)
+            }
+            MigrationExecutor(connection).migrate(leaves)
+            upgraded = MigrationExecutor(connection).loader.project_state(leaves).apps
+            for name, rows in snapshots.items():
+                current = upgraded.get_model("processing", name)
+                assert list(current.objects.order_by("pk").values()) == rows
+            current_vectors = upgraded.get_model("processing", "FaceEmbeddingVector")
+            assert list(current_vectors.objects.get().vector) == vector
+            current_search = upgraded.get_model("selfie_search", "SelfieSearch").objects.get(
+                pk=search.pk
+            )
+            assert current_search.status == "queued"
+            assert current_search.apparel_expanded_photo_count == 0
+            assert current_search.configuration == {"anchor_expansion_staff_eligible": True}
+            assert list(current_search.matching_task.vector) == vector
+            assert not upgraded.get_model(
+                "processing", "PersonAppearanceDetection"
+            ).objects.exists()
+            assert not upgraded.get_model(
+                "selfie_search", "SelfieSearchApparelEvidence"
+            ).objects.exists()
+            flags.refresh_from_db()
+            assert flags.state == "staff"
+            assert not FeatureFlag.objects.filter(
+                key__in=("person-appearance-processing", "apparel-search-expansion")
+            ).exists()
+        finally:
+            MigrationExecutor(connection).migrate(leaves)

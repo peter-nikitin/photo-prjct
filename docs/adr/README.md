@@ -95,3 +95,7 @@ ADR фиксирует долговременный архитектурный �
 | 0071 | [Собирать архивы фотографий в фоне](0071-prepare-photo-archives-in-background.md) | Accepted |
 | 0072 | [Хранить приблизительные счётчики импорта фото в PostgreSQL](0072-store-approximate-photo-import-counters.md) | Accepted |
 | 0073 | [Управлять медиа CDN через Terraform](0073-manage-media-cdn-with-terraform.md) | Accepted |
+| 0074 | [Вычислять признаки внешности на принятом превью](0074-precompute-person-appearance-on-canonical-previews.md) | Accepted |
+| 0075 | [Отсеивать непригодную фигуру до вычисления дескрипторов](0075-filter-person-appearance-by-figure-quality.md) | Accepted |
+| 0076 | [Расширять выдачу по лицу свидетельствами внешности](0076-expand-face-results-with-person-appearance.md) | Accepted |
+| 0077 | [Раздельно включать вычисление внешности и расширение поиска](0077-separate-appearance-processing-and-search-rollout.md) | Accepted |

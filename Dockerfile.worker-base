@@ -51,5 +51,10 @@ ADD --checksum=sha256:e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89
 RUN python -c "import onnxruntime,pathlib; p=pathlib.Path('/worker/models/bib'); m=onnxruntime.InferenceSession(str(p/'ch_PP-OCRv5_rec_mobile.onnx')); (p/'dictionary.txt').write_text(m.get_modelmeta().custom_metadata_map['character'], encoding='utf-8')" \
     && echo "17665d27ed39f0deb82007859992d626d3105d0ee4578c120b7c72138dc04d05  /worker/models/bib/dictionary.txt" | sha256sum -c -
 
+RUN mkdir -p /worker/models/appearance
+ADD --checksum=sha256:c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063 https://huggingface.co/opencv/opencv_zoo/resolve/39a1451/models/object_detection_yolox/object_detection_yolox_2022nov.onnx /worker/models/appearance/object_detection_yolox_2022nov.onnx
+ADD --checksum=sha256:d9669dabfa73717a78da9e3b78374571e346cf1c9edf6cb5ff01ed296c878c30 https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/person-reidentification-retail-0286/FP32/person-reidentification-retail-0286.xml /worker/models/appearance/person-reidentification-retail-0286.xml
+ADD --checksum=sha256:70c3a02efef82911fad69997894e978eea1a842792f9e2182ad36cb0cb1f01e6 https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/person-reidentification-retail-0286/FP32/person-reidentification-retail-0286.bin /worker/models/appearance/person-reidentification-retail-0286.bin
+
 RUN useradd --create-home --uid 10001 worker && chown -R worker:worker /worker/models
 USER worker

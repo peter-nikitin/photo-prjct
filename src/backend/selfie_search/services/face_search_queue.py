@@ -3,6 +3,8 @@
 import logging
 from datetime import datetime, timedelta
 from functools import partial
+from math import ceil
+from time import perf_counter
 
 from config.queue_events import notify_queue_completion
 from config.queue_work import MATCHING_QUEUES, schedule_transition
@@ -20,7 +22,7 @@ from selfie_search.models import (
 )
 from selfie_search.observability import emit_selfie_observability_failure
 from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
-from selfie_search.services.apparel_expansion import expand_apparel
+from selfie_search.services.apparel_expansion import expand_apparel, verify_apparel_anchors
 from selfie_search.services.jobs import (
     emit_ranking_finished,
     expand_direct_ranking,
@@ -150,6 +152,8 @@ def process_face_search(task: FaceSearchTask) -> None:
     # Resolve the vector inside PostgreSQL so it is never included in the SQL text or worker logs.
     query = Subquery(FaceSearchTask.objects.filter(pk=task.pk).values("vector"))
     anchor_matches: tuple[AnchorMatch, ...] = ()
+    verification = None
+    apparel_spent_ms = 0
     with transaction.atomic():
         timeout_ms = RANKING_TIMEOUT_MS
         started_at = timezone.now()
@@ -161,9 +165,35 @@ def process_face_search(task: FaceSearchTask) -> None:
             timeout_ms = min(timeout_ms, remaining_ms)
         _set_statement_timeout(timeout_ms)
         ranking = rank_selected_direct(search, query)
+        staff_eligible = search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True
+        apparel_enabled = ranking.has_vectors and is_enabled_for_background_task(
+            APPAREL_SEARCH_EXPANSION, staff_eligible=staff_eligible
+        )
+        if apparel_enabled:
+            now = timezone.now()
+            if _expired(task, now):
+                _fail(task, code="matching_query_expired")
+                return
+            remaining_ms = timeout_ms - int((now - started_at).total_seconds() * 1000)
+            if remaining_ms <= 0:
+                logger.warning("apparel_expansion_unavailable")
+                raise _ApparelSearchUnavailable
+            verification_started = perf_counter()
+            try:
+                _set_statement_timeout(min(remaining_ms, APPAREL_TIMEOUT_MS))
+                verification = verify_apparel_anchors(
+                    search,
+                    ranking.photos,
+                    embedding_model=task.embedding_model,
+                    gallery=task.source == FaceSearchTask.Source.GALLERY,
+                )
+            except (DatabaseError, ValueError):
+                logger.warning("apparel_expansion_unavailable")
+                raise _ApparelSearchUnavailable from None
+            apparel_spent_ms = ceil((perf_counter() - verification_started) * 1000)
+
         expand_from_anchors = is_enabled_for_background_task(
-            FACE_SEARCH_ANCHOR_EXPANSION,
-            staff_eligible=search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True,
+            FACE_SEARCH_ANCHOR_EXPANSION, staff_eligible=staff_eligible
         )
         if ranking.photos and expand_from_anchors:
             source = search.configuration.get("query_source")
@@ -183,33 +213,32 @@ def process_face_search(task: FaceSearchTask) -> None:
                     ranking.photos,
                     embedding_model=task.embedding_model,
                     source_photo_id=source_photo_id if isinstance(source_photo_id, str) else None,
+                    verified_detection_ids=(
+                        verification.centroid_detection_ids if verification is not None else None
+                    ),
                 )
     expansion = expand_direct_ranking(search=search, ranked=ranking.photos, query=query)
     if anchor_matches:
         expansion = append_anchor_matches(expansion, anchor_matches)
-    apparel_enabled = ranking.has_vectors and is_enabled_for_background_task(
-        APPAREL_SEARCH_EXPANSION,
-        staff_eligible=search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True,
-    )
-    if apparel_enabled:
+    if verification is not None:
         now = timezone.now()
         if _expired(task, now):
             _fail(task, code="matching_query_expired")
             return
         remaining_ms = timeout_ms - int((now - started_at).total_seconds() * 1000)
-        if remaining_ms <= 0:
+        remaining_apparel_ms = min(remaining_ms, APPAREL_TIMEOUT_MS - apparel_spent_ms)
+        if remaining_apparel_ms <= 0:
             logger.warning("apparel_expansion_unavailable")
             raise _ApparelSearchUnavailable
         try:
             with transaction.atomic():
-                _set_statement_timeout(min(remaining_ms, APPAREL_TIMEOUT_MS))
+                _set_statement_timeout(remaining_apparel_ms)
                 expansion = expand_apparel(
                     search,
                     task.pk,
-                    ranking.photos,
                     expansion,
                     embedding_model=task.embedding_model,
-                    gallery=task.source == FaceSearchTask.Source.GALLERY,
+                    verification=verification,
                 )
                 if expansion.apparel_evidence is None:
                     raise ValueError("apparel expansion did not supply evidence")

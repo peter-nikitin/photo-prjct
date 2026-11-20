@@ -168,7 +168,10 @@ def _selfie(now: datetime) -> dict[str, Any]:
         "results": SelfieSearchResult.objects.count(),
         "direct_evidence": SelfieSearchDirectEvidence.objects.count(),
         "cluster_evidence": SelfieSearchClusterEvidence.objects.count(),
-        "published_results": SelfieSearchResult.objects.filter(search__status="ready").count(),
+        "published_results": SelfieSearchResult.objects.filter(
+            search__status=SelfieSearch.Status.READY,
+            excluded_by_apparel=False,
+        ).count(),
     }
     return report
 

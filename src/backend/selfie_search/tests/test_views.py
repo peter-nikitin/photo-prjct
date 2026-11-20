@@ -1177,6 +1177,58 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
 
     @override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON})
+    def test_bearer_page_and_downloads_use_only_published_results(self) -> None:
+        search, token = self.make_search(
+            status=SelfieSearch.Status.READY, eligible_photo_count=7, matched_photo_count=3
+        )
+        search.apparel_excluded_photo_count = 1
+        search.save(update_fields=["apparel_excluded_photo_count"])
+        photos = [
+            self.make_private_photo(search.event, photo_id=name)
+            for name in ("kept-first", "excluded-middle", "kept-last")
+        ]
+        for rank, photo in enumerate(photos, 1):
+            SelfieSearchResult.objects.create(
+                search=search,
+                photo=photo,
+                rank=rank,
+                excluded_by_apparel=rank == 2,
+            )
+
+        with self.subTest(route="result"):
+            page = self.client.get(self.result_url(event=search.event, token=token))
+            self.assertContains(page, 'data-photo-id="kept-first"')
+            self.assertContains(page, 'data-photo-id="kept-last"')
+            self.assertNotContains(page, 'data-photo-id="excluded-middle"')
+            self.assertContains(page, "Найдено фотографий: 2.")
+        with self.subTest(route="status"):
+            status = self.client.get(self.status_url(event=search.event, token=token))
+            self.assertEqual(
+                status.json(),
+                {"status": "ready", "eligible_photo_count": 7, "matched_photo_count": 2},
+            )
+        media = self.result_media_url(
+            event=search.event, token=token, photo=photos[1], variant="preview-small"
+        )
+        download = self.result_download_url(event=search.event, token=token, photo=photos[1])
+        resolver = Mock()
+        resolver.resolve_signed.return_value = resolver.resolve_download.return_value = (
+            "https://storage.example.test/object"
+        )
+        with patch("selfie_search.views._public_media_resolver", return_value=resolver):
+            for url in (media, download):
+                with self.subTest(route=url):
+                    response = self.client.get(url)
+                    self.assertEqual(response.status_code, 404)
+        with self.subTest(route="archive"):
+            archive = self.client.post(self.result_archive_url(event=search.event, token=token))
+            self.assertEqual(archive.status_code, 202)
+            self.assertEqual(
+                {entry["photo_id"] for entry in PhotoArchiveJob.objects.get().entries},
+                {"kept-first", "kept-last"},
+            )
+
+    @override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON})
     def test_archive_authorizes_once_and_download_link_survives_visibility_change(self) -> None:
         search, token = self.make_search(status=SelfieSearch.Status.READY)
         photos = [self.make_private_photo(search.event) for _ in range(3)]

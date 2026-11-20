@@ -53,6 +53,18 @@ class ProvenanceReadOnlyAdmin(admin.ModelAdmin):
         return False
 
 
+def _without_association_ids(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_association_ids(item)
+            for key, item in value.items()
+            if not key.endswith("_id")
+        }
+    if isinstance(value, (list, tuple)):
+        return [_without_association_ids(item) for item in value]
+    return value
+
+
 class ApparelEvidenceInline(ReadOnlyInline):
     model = SelfieSearchApparelEvidence
     fields = ("decision_summary",)
@@ -65,28 +77,37 @@ class ApparelEvidenceInline(ReadOnlyInline):
         from django.utils.html import format_html
 
         decisions = obj.decisions
+        fields = (
+            "policy",
+            "anchor_outcome",
+            "anchors",
+            "anchor_checks",
+            "anchor_comparisons",
+            "anchor_candidates_truncated",
+            "candidates",
+            "candidates_truncated",
+            "additions_truncated",
+            "recommendations",
+            "recommendations_truncated",
+            "exclusions",
+        )
         summary = {
-            "policy": decisions["policy"],
-            "candidates_truncated": decisions["candidates_truncated"],
-            "additions_truncated": decisions["additions_truncated"],
-            "anchor_count": len(decisions["anchors"]),
-            "candidates": [
-                {k: v for k, v in row.items() if not k.endswith("_id")}
-                for row in decisions["candidates"]
-            ],
-            "recommendations": [
-                {k: v for k, v in row.items() if not k.endswith("_id")}
-                for row in decisions["recommendations"]
-            ],
+            "anchor_count": len(decisions.get("anchors", ())),
+            **{field: decisions[field] for field in fields if field in decisions},
         }
-        return format_html("<pre>{}</pre>", json.dumps(summary, ensure_ascii=False, indent=2))
+        return format_html(
+            "<pre>{}</pre>",
+            json.dumps(_without_association_ids(summary), ensure_ascii=False, indent=2),
+        )
 
 
 @admin.register(SelfieSearch)
 class SelfieSearchAdmin(ProvenanceReadOnlyAdmin):
     list_display = (
         "status",
-        "matched_photo_count",
+        "published_matched_photo_count",
+        "stored_matched_photo_count",
+        "apparel_excluded_photo_count",
         "final_matched_photo_count",
         "direct_matched_photo_count",
         "cluster_expanded_photo_count",
@@ -100,11 +121,19 @@ class SelfieSearchAdmin(ProvenanceReadOnlyAdmin):
     readonly_fields = list_display
     fields = readonly_fields
 
+    @admin.display(description="Опубликовано фотографий")
+    def published_matched_photo_count(self, obj: SelfieSearch) -> int:
+        return obj.published_matched_photo_count
+
+    @admin.display(description="Сохранено фотографий", ordering="matched_photo_count")
+    def stored_matched_photo_count(self, obj: SelfieSearch) -> int:
+        return obj.matched_photo_count
+
 
 @admin.register(SelfieSearchResult)
 class SelfieSearchResultAdmin(ProvenanceReadOnlyAdmin):
-    list_display = ("primary_source", "rank", "created_at")
-    list_filter = ("primary_source",)
+    list_display = ("primary_source", "rank", "excluded_by_apparel", "created_at")
+    list_filter = ("primary_source", "excluded_by_apparel")
     readonly_fields = list_display
     fields = readonly_fields
 

@@ -1,6 +1,7 @@
 """Rank face matches against one transient centroid inside PostgreSQL."""
 
 from dataclasses import replace
+from uuid import UUID
 
 from django.db import connection
 from psycopg import Cursor
@@ -29,6 +30,7 @@ anchor_candidates AS (
     JOIN kept_faces AS face USING (photo_id, detection_id)
     WHERE direct.distance <= %s
       AND direct.photo_id IS DISTINCT FROM %s
+      AND (%s::uuid[] IS NULL OR direct.detection_id = ANY(%s::uuid[]))
       AND NOT EXISTS (
           SELECT 1
           FROM processing_photofacedetection AS other_face
@@ -80,7 +82,11 @@ def find_anchor_matches(
     *,
     embedding_model: str,
     source_photo_id: str | None,
+    verified_detection_ids: tuple[UUID, ...] | None = None,
 ) -> tuple[AnchorMatch, ...]:
+    if verified_detection_ids == ():
+        return ()
+    verified = list(verified_detection_ids) if verified_detection_ids is not None else None
     cohort_sql, cohort_params = (
         accepted_kept_faces(search, embedding_model)
         .values_list(
@@ -103,6 +109,8 @@ def find_anchor_matches(
                 [row.cosine_distance for row in direct],
                 _ANCHOR_DISTANCE,
                 source_photo_id,
+                verified,
+                verified,
                 _ANCHOR_CONSISTENCY_DISTANCE,
                 _MATCH_DISTANCE,
             ),

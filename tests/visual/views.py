@@ -182,7 +182,7 @@ class FixtureOrderPresentation:
 class FixtureSelfieSearch:
     status: str
     eligible_photo_count: int = 0
-    matched_photo_count: int = 0
+    published_matched_photo_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -953,7 +953,9 @@ def _selfie_search_ready(
             "result_feedback_url": reverse("search_feedback_submit", args=(event.slug,)),
             "selfie_search_page": selfie_search_page,
             "is_terminal": True,
-            "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
+            "search": FixtureSelfieSearch(
+                "ready", eligible_photo_count=46, published_matched_photo_count=3
+            ),
             "status_url": "",
         },
     )
@@ -1208,7 +1210,9 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
             "selfie_search_page": Paginator(photos, 2).page(1),
             "is_terminal": True,
             "public_token_digest": "b" * 64,
-            "search": FixtureSelfieSearch("ready", eligible_photo_count=46, matched_photo_count=3),
+            "search": FixtureSelfieSearch(
+                "ready", eligible_photo_count=46, published_matched_photo_count=3
+            ),
             "status_url": "",
             "feedback": {
                 "url": reverse(

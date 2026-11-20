@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 from math import sqrt
 from unittest.mock import call, patch
@@ -26,10 +27,18 @@ from selfie_search.models import (
     SelfieSearchResult,
 )
 from selfie_search.services import face_search_queue
-from selfie_search.services.apparel_expansion import candidate_veto, expand_apparel
+from selfie_search.services.apparel_expansion import POLICY, candidate_veto, expand_apparel
 from selfie_search.services.face_search_queue import run_once
 from selfie_search.services.submission import submit_gallery_photo_search
 from selfie_search.tests import test_anchor_expansion, test_gallery_queue, test_submission
+
+
+def _regional_color_vector(head: float, torso: float | None) -> list[float]:
+    scale = sqrt(0.5) if torso is not None else 1.0
+    vector = [head * scale, sqrt(1 - head**2) * scale] + [0.0] * 190
+    if torso is None:
+        return vector + [0.0] * 192
+    return vector + [torso * scale, sqrt(1 - torso**2) * scale] + [0.0] * 190
 
 
 class ApparelPolicyTests(SimpleTestCase):
@@ -60,6 +69,13 @@ class ApparelQueueTests(TestCase):
         event=None,
         associate_face=True,
         second_head=False,
+        reid_similarity=1.0,
+        color_similarity=1.0,
+        head_color_similarity=None,
+        zero_torso=False,
+        headless_bystander_matches=None,
+        unassigned_head=False,
+        helmet_similarity=None,
     ):
         event = event or self.event
         photo = self.make_photo(event=event, photo_id=identifier)
@@ -99,7 +115,18 @@ class ApparelQueueTests(TestCase):
             "head": [20, 20, 60, 60] if face is not None and associate_face else None,
         }
         if not reason:
-            row.update(reid=[1] + [0] * 255, color=[1] + [0] * 383, helmet=None)
+            row.update(
+                reid=[reid_similarity, sqrt(1 - reid_similarity**2)] + [0] * 254,
+                color=_regional_color_vector(
+                    color_similarity if head_color_similarity is None else head_color_similarity,
+                    None if zero_torso else color_similarity,
+                ),
+                helmet=(
+                    [helmet_similarity, sqrt(1 - helmet_similarity**2)] + [0] * 1762
+                    if helmet_similarity is not None
+                    else None
+                ),
+            )
         rows = [row]
         if second_head:
             rows.append(
@@ -111,7 +138,24 @@ class ApparelQueueTests(TestCase):
                     "head": [21, 20, 60, 60],
                 }
             )
-        head_count = int(face is not None) + int(second_head)
+        if headless_bystander_matches is not None:
+            rows.append(
+                {
+                    "bbox": [150, 0, 250, 300],
+                    "confidence": 0.8,
+                    "reason": "",
+                    "focus": [450, 450, 12, 12],
+                    "head": None,
+                    "reid": [1] + [0] * 255 if headless_bystander_matches else row["reid"],
+                    "color": (
+                        _regional_color_vector(1.0, 1.0)
+                        if headless_bystander_matches
+                        else row["color"]
+                    ),
+                    "helmet": None,
+                }
+            )
+        head_count = int(face is not None) + int(second_head) + int(unassigned_head)
         complete_attempt(claim.attempt.pk, result=appearance_result(*rows, head_count=head_count))
         return photo, face
 
@@ -159,6 +203,228 @@ class ApparelQueueTests(TestCase):
         assert [(row["result_rank"], row["reason"]) for row in decisions["recommendations"]] == [
             (3, "strong_blur")
         ]
+
+    def test_cross_signal_checks_keep_incompatible_anchors_out_of_both_expansions(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        FeatureFlag.objects.create(key="face-search-anchor-expansion", state="on")
+        _, source = self.index_appearance("grey-source", face_similarity=1.0)
+        _, clean = self.index_appearance("grey-anchor", face_similarity=0.75)
+        _, white = self.index_appearance(
+            "white-anchor", face_similarity=0.78, reid_similarity=0.4336, color_similarity=0.7233
+        )
+        self.index_appearance(
+            "pink-anchor", face_similarity=0.77, reid_similarity=0.4924, color_similarity=0.5267
+        )
+        self.index_appearance("grey-centroid", face_similarity=0.5, reason="strong_blur")
+        self.index_appearance("pink-only", reid_similarity=0.4924, color_similarity=0.5267)
+        self.index_appearance("grey-only")
+        search = self.submit_gallery(source)
+
+        with patch.dict(POLICY, {"max_recommendations": 1}):
+            assert run_once()
+        assert "grey-only" in self.result_photos(search)
+        assert "pink-only" not in self.result_photos(search)
+        centroid = search.results.get(photo_id="grey-centroid")
+        sources = list(
+            centroid.anchor_evidence.sources.values_list("anchor__detection_id", flat=True)
+        )
+        assert sources == [clean.detection_id]
+        autosuppressed = search.results.get(photo_id="white-anchor")
+        assert autosuppressed.excluded_by_apparel
+        assert autosuppressed.direct_evidence.detection_id == white.detection_id
+        assert search.apparel_excluded_photo_count == 2
+        decisions = search.apparel_evidence.decisions
+        assert [row["photo_id"] for row in decisions["anchors"]] == ["grey-source", "grey-anchor"]
+        assert decisions["recommendations_truncated"]
+        assert {row["photo_id"] for row in decisions["exclusions"]} == {
+            "pink-anchor",
+            "white-anchor",
+        }
+        assert {
+            row["photo_id"] for row in decisions["anchor_checks"] if row["decision"] == "rejected"
+        } == {"pink-anchor", "white-anchor"}
+
+    def test_helmet_disagreement_rejects_an_anchor_without_hiding_the_face_result(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        _, source = self.index_appearance(
+            "helmet-source", face_similarity=1.0, helmet_similarity=1.0
+        )
+        self.index_appearance("weak-helmet", face_similarity=0.9, helmet_similarity=0.65)
+        self.index_appearance("unknown-helmet", face_similarity=0.8)
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert self.result_photos(search) == ["helmet-source", "weak-helmet", "unknown-helmet"]
+        decisions = search.apparel_evidence.decisions
+        assert [row["photo_id"] for row in decisions["anchors"]] == [
+            "helmet-source",
+            "unknown-helmet",
+        ]
+        outcomes = {row["photo_id"]: row["decision"] for row in decisions["anchor_checks"]}
+        assert outcomes["weak-helmet"] == "rejected"
+        assert search.apparel_excluded_photo_count == 0
+
+    def test_torso_agreement_preserves_result_despite_other_color_disagreement(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        _, source = self.index_appearance("grey-source", face_similarity=1.0)
+        self.index_appearance(
+            "same-kit-side-view",
+            face_similarity=0.95,
+            reid_similarity=0.45,
+            head_color_similarity=0.60,
+            color_similarity=0.86,
+        )
+        self.index_appearance(
+            "regional-anchor-mismatch",
+            face_similarity=0.92,
+            head_color_similarity=0.69,
+            color_similarity=0.97,
+        )
+        self.index_appearance(
+            "unknown-torso",
+            face_similarity=0.9,
+            reid_similarity=0.45,
+            color_similarity=0.60,
+            zero_torso=True,
+        )
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert set(self.result_photos(search)) == {
+            "grey-source",
+            "same-kit-side-view",
+            "regional-anchor-mismatch",
+            "unknown-torso",
+        }
+        assert search.apparel_excluded_photo_count == 0
+        decisions = search.apparel_evidence.decisions
+        assert [row["photo_id"] for row in decisions["anchors"]] == ["grey-source"]
+        pair = next(
+            row
+            for row in decisions["anchor_comparisons"]
+            if {row["left_photo_id"], row["right_photo_id"]}
+            == {"grey-source", "regional-anchor-mismatch"}
+        )
+        assert pair["color_cosine_similarity"] >= 0.8
+        assert pair["head_color_cosine_similarity"] < 0.8
+        assert pair["torso_color_cosine_similarity"] >= 0.8
+
+    def test_group_protection_and_quality_keep_uncertain_face_matches_visible(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        _, source = self.index_appearance("grey-source", face_similarity=1.0)
+        self.index_appearance("unknown-quality", face_similarity=0.85, reason="strong_blur")
+        self.index_appearance(
+            "group-with-match",
+            face_similarity=0.83,
+            reid_similarity=0.42,
+            color_similarity=0.7,
+            headless_bystander_matches=True,
+        )
+        self.index_appearance(
+            "one-signal-disagrees", face_similarity=0.81, reid_similarity=0.42, color_similarity=0.9
+        )
+        self.index_appearance(
+            "two-signals-disagree", face_similarity=0.79, reid_similarity=0.42, color_similarity=0.7
+        )
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert len(self.result_photos(search)) == 5
+        assert set(
+            search.results.filter(excluded_by_apparel=True).values_list("photo_id", flat=True)
+        ) == {"two-signals-disagree"}
+        decisions = search.apparel_evidence.decisions
+        excluded = decisions["exclusions"][0]
+        assert excluded["photo_id"] == "two-signals-disagree"
+        assert excluded["matches"][0]["comparisons"][0]["photo_id"] == "grey-source"
+        ordinary = {row["photo_id"]: row for row in decisions["recommendations"]}
+        assert ordinary["group-with-match"]["protection"] == "agreeing_figure"
+        assert ordinary["unknown-quality"]["reason"] == "strong_blur"
+
+    def test_unassigned_head_protects_group_even_if_detected_figures_disagree(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        _, source = self.index_appearance("grey-source", face_similarity=1.0)
+        for photo_id, unassigned_head in (("complete-group", False), ("incomplete-group", True)):
+            self.index_appearance(
+                photo_id,
+                face_similarity=0.83,
+                reid_similarity=0.42,
+                color_similarity=0.7,
+                headless_bystander_matches=False,
+                unassigned_head=unassigned_head,
+            )
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert self.result_photos(search) == ["grey-source", "complete-group", "incomplete-group"]
+        assert search.results.get(photo_id="complete-group").excluded_by_apparel
+        assert not search.results.get(photo_id="incomplete-group").excluded_by_apparel
+        assert search.published_matched_photo_count == 2
+        recommendations = {
+            row["photo_id"]: row["protection"]
+            for row in search.apparel_evidence.decisions["recommendations"]
+        }
+        assert recommendations["incomplete-group"] == "uncertain_figure"
+
+    def test_publication_keeps_excluded_face_results_and_original_anchor_sources(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        FeatureFlag.objects.create(key="face-search-anchor-expansion", state="on")
+        _, source = self.index_appearance("apparel-source", face_similarity=1.0)
+        _, direct = self.index_appearance("direct-anchor", face_similarity=0.75)
+        self.index_appearance("centroid-match", face_similarity=0.5, reason="strong_blur")
+        search = self.submit_gallery(source)
+
+        def record_exclusion(*args, **kwargs):
+            expansion = expand_apparel(*args, **kwargs)
+            assert expansion.apparel_evidence is not None
+            audit = {
+                "photo_id": "direct-anchor",
+                "result_rank": 2,
+                "reason": "all_matched_figures_disagree",
+                "matches": [{"detection_id": str(direct.detection_id)}],
+            }
+            return replace(
+                expansion,
+                excluded_photo_ids=frozenset({"direct-anchor"}),
+                apparel_evidence=expansion.apparel_evidence | {"exclusions": [audit]},
+            )
+
+        with patch.object(face_search_queue, "expand_apparel", side_effect=record_exclusion):
+            assert run_once()
+
+        assert self.result_photos(search) == ["apparel-source", "direct-anchor", "centroid-match"]
+        assert search.apparel_excluded_photo_count == 1
+        assert search.matched_photo_count == search.final_matched_photo_count == 3
+        assert search.published_matched_photo_count == 2
+        excluded = search.results.get(rank=2)
+        assert excluded.excluded_by_apparel
+        assert excluded.primary_source == SelfieSearchResult.PrimarySource.DIRECT
+        assert excluded.direct_evidence.detection_id == direct.detection_id
+        centroid = search.results.get(rank=3)
+        assert centroid.anchor_evidence.sources.get().anchor_id == excluded.direct_evidence.pk
+        assert search.apparel_evidence.decisions
+
+    def test_publication_retries_when_excluded_row_has_no_audit_decision(self):
+        _, source = self.index_source_with_processing_enabled()
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        search = self.submit_gallery(source)
+
+        def record_exclusion(*args, **kwargs):
+            return replace(
+                expand_apparel(*args, **kwargs),
+                excluded_photo_ids=frozenset({"apparel-source"}),
+            )
+
+        with patch.object(face_search_queue, "expand_apparel", side_effect=record_exclusion):
+            assert run_once()
+
+        self.assert_retry_pending(search)
 
     def test_face_association_does_not_repeat_corpus_work_for_each_person(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
@@ -235,9 +501,13 @@ class ApparelQueueTests(TestCase):
     def test_gate_off_does_not_enter_optional_appearance_step(self):
         _, source = self.index_source_with_processing_enabled()
         search = self.submit_gallery(source)
-        with patch("selfie_search.services.face_search_queue.expand_apparel") as apparel:
+        with (
+            patch.object(face_search_queue, "expand_apparel") as apparel,
+            patch.object(face_search_queue, "verify_apparel_anchors") as verify_anchors,
+        ):
             assert run_once()
         apparel.assert_not_called()
+        verify_anchors.assert_not_called()
         assert self.result_photos(search) == ["apparel-source"]
 
     def index_source_with_processing_enabled(self):
@@ -248,18 +518,44 @@ class ApparelQueueTests(TestCase):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="staff")
         self.index_appearance("anchor", face_similarity=1.0)
+        self.index_appearance("another-anchor", face_similarity=0.85)
         self.index_appearance("person-without-face", face_similarity=0.1, associate_face=False)
         visitor = self.submit_selfie(self.user)
         staff = get_user_model().objects.create_user(username="apparel-reviewer", is_staff=True)
         private = self.submit_selfie(staff)
         assert run_once()
         assert run_once()
-        assert self.result_photos(visitor) == ["anchor"]
-        assert self.result_photos(private) == ["anchor", "person-without-face"]
+        assert self.result_photos(visitor) == ["anchor", "another-anchor"]
+        assert self.result_photos(private) == ["anchor", "another-anchor", "person-without-face"]
         decisions = private.apparel_evidence.decisions
-        assert len(decisions["anchors"]) == 1
-        assert decisions["anchors"][0]["photo_id"] == "anchor"
+        assert [row["photo_id"] for row in decisions["anchors"]] == ["anchor", "another-anchor"]
         assert decisions["candidates"][0]["face_cosine_distance"] is None
+
+    def test_selfie_with_two_equally_supported_groups_keeps_the_face_baseline(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        FeatureFlag.objects.create(key="face-search-anchor-expansion", state="on")
+        self.index_appearance("first-grey", face_similarity=1.0)
+        self.index_appearance("second-grey", face_similarity=0.95)
+        self.index_appearance(
+            "first-pink", face_similarity=0.90, reid_similarity=0.4, color_similarity=0.6
+        )
+        self.index_appearance(
+            "second-pink", face_similarity=0.85, reid_similarity=0.4, color_similarity=0.6
+        )
+        self.index_appearance("grey-appearance-only")
+        search = self.submit_selfie(self.user)
+
+        assert run_once()
+        assert self.result_photos(search) == [
+            "first-grey",
+            "second-grey",
+            "first-pink",
+            "second-pink",
+        ]
+        decisions = search.apparel_evidence.decisions
+        assert decisions["anchor_outcome"] == "ambiguous_agreement"
+        assert decisions["anchors"] == decisions["exclusions"] == []
 
     def test_apparel_statement_timeout_requeues_and_preserves_vector_for_successful_retry(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
@@ -388,14 +684,27 @@ class ApparelQueueTests(TestCase):
         assert self.result_photos(search) == ["apparel-source"]
         assert search.apparel_evidence.decisions["candidates"] == []
 
-    def test_apparel_with_no_anchors_completes_and_records_empty_evidence(self):
+    def test_unindexed_event_uses_face_centroid_and_records_missing_appearance(self):
         source = self.make_eligible_embedding(event=self.event, photo_id="face-only-source")
+        for photo_id, similarity in (("face-only-anchor", 0.75), ("face-only-centroid", 0.50)):
+            self.make_eligible_embedding(
+                event=self.event,
+                photo_id=photo_id,
+                vector=[similarity, sqrt(1 - similarity**2)] + [0] * 510,
+            )
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        FeatureFlag.objects.create(key="face-search-anchor-expansion", state="on")
         search = self.submit_gallery(source)
+
         assert run_once()
-        assert self.result_photos(search) == ["face-only-source"]
-        assert search.apparel_evidence.decisions["anchors"] == []
-        assert search.apparel_evidence.decisions["candidates"] == []
+        assert self.result_photos(search) == [
+            "face-only-source",
+            "face-only-anchor",
+            "face-only-centroid",
+        ]
+        decisions = search.apparel_evidence.decisions
+        assert decisions["anchor_outcome"] == "no_compatible_appearance"
+        assert decisions["anchors"] == decisions["candidates"] == decisions["exclusions"] == []
 
     def test_expiry_while_waiting_for_apparel_retry_ends_search_without_results(self):
         _, source = self.index_source_with_processing_enabled()

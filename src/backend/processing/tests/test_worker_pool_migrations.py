@@ -163,7 +163,10 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
             if pair == ("processing", "FaceEmbedding"):
                 assert snapshot(apps, *pair) == before[pair]
                 continue
-            assert snapshot(current, *pair) == before[pair]
+            expected = before[pair]
+            if pair == ("selfie_search", "SelfieSearchResult"):
+                expected = [row | {"excluded_by_apparel": False} for row in expected]
+            assert snapshot(current, *pair) == expected
         with pytest.raises(LookupError):
             current.get_model("processing", "FaceEmbedding")
         assert current.get_model("processing", "WorkerPool").objects.count() == 0

@@ -674,11 +674,30 @@ def prepare_search_result(
                 photo_id=row.photo_id,
                 primary_source=row.primary_source,
                 rank=position,
+                excluded_by_apparel=row.photo_id in expansion.excluded_photo_ids,
             )
             for position, row in enumerate(expansion.results, start=1)
         ]
-        SelfieSearchResult.objects.bulk_create(result_rows)
         result_by_photo = {row.photo_id: row for row in result_rows}
+        exclusions = (expansion.apparel_evidence or {}).get("exclusions", [])
+        if not isinstance(exclusions, list):
+            raise SearchCompletionConflict("prepared selfie exclusion audit is invalid")
+        audited_ranks = {
+            decision["photo_id"]: decision.get("result_rank")
+            for decision in exclusions
+            if isinstance(decision, dict)
+            and isinstance(decision.get("photo_id"), str)
+            and decision.get("reason")
+            and decision.get("matches")
+        }
+        excluded_ranks = {row.photo_id: row.rank for row in result_rows if row.excluded_by_apparel}
+        if (
+            len(excluded_ranks) != len(expansion.excluded_photo_ids)
+            or len(exclusions) != len(audited_ranks)
+            or excluded_ranks != audited_ranks
+        ):
+            raise SearchCompletionConflict("prepared selfie exclusions do not match their audit")
+        SelfieSearchResult.objects.bulk_create(result_rows)
         direct_evidence_by_photo = {
             row.photo_id: SelfieSearchDirectEvidence(
                 result=result_by_photo[row.photo_id],
@@ -739,6 +758,7 @@ def prepare_search_result(
         search.cluster_expanded_photo_count = expansion.cluster_expanded_photo_count
         search.anchor_expanded_photo_count = expansion.anchor_expanded_photo_count
         search.apparel_expanded_photo_count = expansion.apparel_expanded_photo_count
+        search.apparel_excluded_photo_count = len(expansion.excluded_photo_ids)
         search.strong_anchor_count = expansion.strong_anchor_count
         search.expanded_cluster_count = expansion.expanded_cluster_count
         search.cluster_corpus_id = expansion.cluster_corpus_id
@@ -768,6 +788,7 @@ def prepare_search_result(
             "cluster_expanded_photo_count",
             "anchor_expanded_photo_count",
             "apparel_expanded_photo_count",
+            "apparel_excluded_photo_count",
             "strong_anchor_count",
             "expanded_cluster_count",
             "cluster_corpus",

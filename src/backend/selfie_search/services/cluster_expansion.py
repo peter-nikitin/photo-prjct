@@ -60,6 +60,7 @@ class RankedPhotoExpansion:
     anchor_expanded_photo_count: int = 0
     apparel_expanded_photo_count: int = 0
     apparel_evidence: dict[str, object] | None = None
+    excluded_photo_ids: frozenset[str] = frozenset()
 
 
 def expand_ranked_photos(

@@ -134,6 +134,9 @@ func (c *cdnClient) modify(ctx context.Context, method, address string, payload 
 	}
 	for {
 		if op.Error != nil {
+			if resourceIDPattern.MatchString(op.ID) {
+				return nil, fmt.Errorf("CDN operation %s failed with code %d", op.ID, op.Error.Code)
+			}
 			return nil, fmt.Errorf("CDN operation failed with code %d", op.Error.Code)
 		}
 		if op.Done {

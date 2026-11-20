@@ -27,7 +27,7 @@ provider "terraform.findme-photo.ru/findme/findmecdn" {
   version     = "0.1.0"
   constraints = "0.1.0"
   hashes = [
-    "h1:55OO8CKt9i1YvcpGbbpHA8g/KDVlCSWtNqlg4MQZkQg=",
-    "h1:X4EKtJXhoAhEaKPAliXrh3BRINTSDbb82VO4KHRLTtw=",
+    "h1:OBb9875O4nQFIWdFXk9B7/lj7E56Pt/c80ZzU14XOsQ=",
+    "h1:nyW4N7/rUqulh5uDjGiAZtxx5oO0tOJnZHFAz7P0ag4=",
   ]
 }

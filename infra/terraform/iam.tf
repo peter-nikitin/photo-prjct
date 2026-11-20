@@ -30,3 +30,10 @@ resource "yandex_resourcemanager_folder_iam_member" "infrastructure_storage" {
   role      = "storage.admin"
   member    = "serviceAccount:ajema849qjho2lgjaqvo"
 }
+
+# The infrastructure workflow owns the existing media CDN and its rules.
+resource "yandex_resourcemanager_folder_iam_member" "infrastructure_cdn" {
+  folder_id = var.folder_id
+  role      = "cdn.editor"
+  member    = "serviceAccount:ajema849qjho2lgjaqvo"
+}

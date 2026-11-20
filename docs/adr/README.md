@@ -103,3 +103,5 @@ ADR фиксирует долговременный архитектурный �
 | 0079 | [Завершать включённую проверку одежды до публикации выдачи](0079-require-enabled-apparel-search-to-complete.md) | Accepted |
 | 0080 | [Сохранять исходные совпадения при вычитании по одежде](0080-retain-provenance-for-apparel-exclusions.md) | Accepted |
 | 0081 | [Проверять опоры расширения по согласованным признакам](0081-verify-search-anchors-across-signals.md) | Accepted |
+| 0082 | [Ограничить защиту кадра от непригодной фоновой фигуры](0082-limit-background-figure-protection.md) | Accepted |
+| 0083 | [Подтверждать добавление по внешности цветом](0083-require-color-for-apparel-additions.md) | Accepted |

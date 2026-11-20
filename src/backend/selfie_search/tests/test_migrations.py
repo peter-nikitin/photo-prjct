@@ -804,3 +804,72 @@ class AppearanceUpgradeTests(TransactionTestCase):
             ).exists()
         finally:
             MigrationExecutor(connection).migrate(leaves)
+
+
+class ApparelExclusionUpgradeTests(TransactionTestCase):
+    make_event = GalleryPhotoSubmissionTests.make_event
+    make_eligible_embedding = GalleryPhotoSubmissionTests.make_eligible_embedding
+
+    def test_ready_results_keep_their_rank_counts_and_frozen_provenance(self) -> None:
+        GalleryPhotoSubmissionTests.setUp(self)
+        direct_face, centroid_face = [
+            self.make_eligible_embedding(
+                event=self.event, photo_id=photo_id, vector=[1.0] + [0.0] * 511
+            )
+            for photo_id in ("historical-direct", "historical-centroid")
+        ]
+        before = [("selfie_search", "0016_selfiesearchapparelevidence_and_more")]
+        executor = MigrationExecutor(connection)
+        leaves = executor.loader.graph.leaf_nodes()
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(leaves))
+        executor.migrate(before)
+        old_apps = executor.loader.project_state(before).apps
+        Search = old_apps.get_model("selfie_search", "SelfieSearch")
+        Result = old_apps.get_model("selfie_search", "SelfieSearchResult")
+        Direct = old_apps.get_model("selfie_search", "SelfieSearchDirectEvidence")
+        Anchor = old_apps.get_model("selfie_search", "SelfieSearchAnchorEvidence")
+        Source = old_apps.get_model("selfie_search", "SelfieSearchAnchorEvidenceSource")
+        Apparel = old_apps.get_model("selfie_search", "SelfieSearchApparelEvidence")
+
+        search = Search.objects.create(
+            event_id=self.event.pk,
+            public_token_digest="e" * 64,
+            status="ready",
+            terminal_at=timezone.now(),
+            matched_photo_count=2,
+            direct_matched_photo_count=1,
+            cluster_expanded_photo_count=0,
+            anchor_expanded_photo_count=1,
+            final_matched_photo_count=2,
+        )
+        direct = Result.objects.create(
+            search=search, photo_id="historical-direct", rank=1, primary_source="direct"
+        )
+        centroid = Result.objects.create(
+            search=search,
+            photo_id="historical-centroid",
+            rank=2,
+            primary_source="face_anchor_expansion",
+        )
+        evidence = Direct.objects.create(
+            result=direct, detection_id=direct_face.detection_id, cosine_distance=0.3
+        )
+        anchor = Anchor.objects.create(
+            result=centroid, detection_id=centroid_face.detection_id, cosine_distance=0.4
+        )
+        Source.objects.create(evidence=anchor, anchor=evidence, position=1)
+        Apparel.objects.create(search=search, decisions={"policy": {"version": 1}})
+        snapshots = {
+            model.__name__: list(model.objects.order_by("pk").values())
+            for model in (Search, Result, Direct, Anchor, Source, Apparel)
+        }
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(leaves)
+        upgraded = executor.loader.project_state(leaves).apps
+        snapshots["SelfieSearch"][0]["apparel_excluded_photo_count"] = 0
+        for result in snapshots["SelfieSearchResult"]:
+            result["excluded_by_apparel"] = False
+        for model_name, rows in snapshots.items():
+            current = upgraded.get_model("selfie_search", model_name)
+            self.assertEqual(list(current.objects.order_by("pk").values()), rows)

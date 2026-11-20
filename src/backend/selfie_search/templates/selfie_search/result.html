@@ -29,7 +29,7 @@
     {% elif search.status == "ready" %}
       <section class="event-gallery selfie-search-results" data-event-gallery aria-labelledby="selfie-search-matches-title">
         <h2 id="selfie-search-matches-title">Возможные совпадения</h2>
-        <p class="selfie-search-count">Найдено фотографий: {{ search.matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
+        <p class="selfie-search-count">Найдено фотографий: {{ search.published_matched_photo_count }}. Проверено фотографий: {{ search.eligible_photo_count }}.</p>
         {% if archive_action %}
           <div class="selfie-search-archive-action">
             {% include "ui/archive_form.html" with action=archive_url label=archive_action.label %}

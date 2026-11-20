@@ -99,6 +99,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
         "anchor-expanded photo count (analytics)", default=0, db_default=0
     )
     apparel_expanded_photo_count = models.PositiveIntegerField(default=0, db_default=0)
+    apparel_excluded_photo_count = models.PositiveIntegerField(default=0, db_default=0)
     strong_anchor_count = models.PositiveIntegerField(null=True, blank=True)
     expanded_cluster_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_expansion_outcome = models.CharField(  # noqa: DJ001
@@ -153,11 +154,21 @@ class SelfieSearch(models.Model):  # noqa: DJ008
                 ),
                 name="selfie_search_result_count_identity_chk",
             ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    apparel_excluded_photo_count__lte=models.F("matched_photo_count")
+                ),
+                name="selfie_search_apparel_excluded_count_chk",
+            ),
         ]
         indexes = [
             models.Index(fields=["event", "status"], name="selfie_search_event_status_idx"),
             models.Index(fields=["stage", "status"], name="face_search_stage_status_idx"),
         ]
+
+    @property
+    def published_matched_photo_count(self) -> int:
+        return self.matched_photo_count - self.apparel_excluded_photo_count
 
     def clean(self) -> None:
         super().clean()
@@ -327,6 +338,7 @@ class SelfieSearchResult(models.Model):  # noqa: DJ008
         default=PrimarySource.DIRECT,
     )
     rank = models.PositiveIntegerField()
+    excluded_by_apparel = models.BooleanField(default=False, db_default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

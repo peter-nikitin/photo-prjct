@@ -226,6 +226,20 @@ class WorkerPoolStateCommandTests(TestCase):
         self.assertEqual(selfie["attempts"]["succeeded"], 1)
         self.assertEqual(list(SelfieSearch.objects.values()), before)
 
+    def test_stored_result_volume_includes_excluded_but_published_volume_does_not(self):
+        complete = self.selfie_job("succeeded", search_status="ready")
+        other_photo = Photo.objects.create(
+            id="included-photo", event=self.event, src="https://private-url/other.jpg"
+        )
+        SelfieSearchResult.objects.create(search=complete.search, photo=other_photo, rank=1)
+        SelfieSearchResult.objects.create(
+            search=complete.search, photo=self.photo, rank=2, excluded_by_apparel=True
+        )
+
+        artifacts = self.report()["pools"]["selfie"]["artifacts"]
+        self.assertEqual(artifacts["results"], 2)
+        self.assertEqual(artifacts["published_results"], 1)
+
     def test_current_leases_and_accepted_artifacts_are_counted_without_recovery(self):
         active = self.bulk_job("processing")
         self.bulk_attempt(active)

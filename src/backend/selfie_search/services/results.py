@@ -111,6 +111,7 @@ def _eligible_saved_result_rows(
     return (
         SelfieSearchResult.objects.filter(
             search=search,
+            excluded_by_apparel=False,
             photo__event_id=search.event_id,
             photo__src="",
             photo__original_key__isnull=False,
@@ -131,5 +132,5 @@ def public_status_payload(search: SelfieSearch) -> dict[str, int | str]:
     payload: dict[str, int | str] = {"status": search.status}
     if search.status == SelfieSearch.Status.READY:
         payload["eligible_photo_count"] = search.eligible_photo_count
-        payload["matched_photo_count"] = search.matched_photo_count
+        payload["matched_photo_count"] = search.published_matched_photo_count
     return payload

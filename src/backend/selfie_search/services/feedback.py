@@ -51,7 +51,7 @@ def save_feedback_selfie(
             consent_text_version=FEEDBACK_CONSENT_TEXT_VERSION,
             consented_at=timezone.now(),
             source_status=search.status,
-            source_matched_photo_count=search.matched_photo_count,
+            source_matched_photo_count=search.published_matched_photo_count,
             source_visible_result_count=visible_count,
             source_configuration=search.configuration,
             object_key=stored.key,

@@ -235,6 +235,31 @@ class FeedbackSubmissionTests(TestCase):
             "personal_data_consent": "on",
         }
 
+    def test_feedback_uses_published_matches_and_rejects_excluded_result_reports(self) -> None:
+        search, token = self.make_search(status=SelfieSearch.Status.READY)
+        SelfieSearch.objects.filter(pk=search.pk).update(apparel_excluded_photo_count=1)
+        result = self.make_result(search=search)
+        SelfieSearchResult.objects.filter(pk=result.pk).update(excluded_by_apparel=True)
+
+        with self.subTest(path="result report"):
+            response = self.csrf_post(
+                self.report_url(), self.report_data(result.photo_id, public_token=token)
+            )
+            self.assertEqual(response.status_code, 404)
+            self.assertFalse(SearchFeedback.objects.exists())
+
+        storage = Mock()
+        storage.put.return_value = Mock(
+            key="0123456789abcdef0123456789abcdef", size=100, content_type="image/jpeg"
+        )
+        with patch("selfie_search.views.FeedbackSelfieStorage", return_value=storage):
+            response = self.csrf_post(self.feedback_url(token=token), self.submission_data())
+        self.assertEqual(response.status_code, 201)
+        feedback = SelfieSearchFeedback.objects.get(search=search)
+        self.assertEqual(feedback.variant, SelfieSearchFeedback.Variant.PROBLEM)
+        self.assertEqual(feedback.source_visible_result_count, 0)
+        self.assertEqual(feedback.source_matched_photo_count, 0)
+
     def test_paid_result_reports_use_the_current_preview_gate(self) -> None:
         self.client.get(reverse("event_detail", args=(self.event.slug,)))
         self.event.access_type = Event.AccessType.PAID

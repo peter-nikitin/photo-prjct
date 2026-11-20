@@ -8,8 +8,14 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, StorageUnavailable
-from picflow.models import Event
-from selfie_search.models import SelfieSearch, SelfieSearchFeedback, SelfieSearchFeedbackAccessAudit
+from picflow.models import Event, Photo
+from selfie_search.models import (
+    SelfieSearch,
+    SelfieSearchApparelEvidence,
+    SelfieSearchFeedback,
+    SelfieSearchFeedbackAccessAudit,
+    SelfieSearchResult,
+)
 from selfie_search.storage import DownloadGrant
 
 
@@ -250,3 +256,78 @@ class SelfieSearchFeedbackAdminTests(TestCase):
         self.assertNotIn("object_key", model_admin.list_display)
         self.assertNotIn("contact", model_admin.search_fields)
         self.assertNotIn("object_key", model_admin.search_fields)
+
+
+@override_settings(
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+)
+class ApparelExclusionAdminTests(TestCase):
+    def test_excluded_result_remains_inspectable_and_the_counts_are_visible(self) -> None:
+        staff = get_user_model().objects.create_superuser(username="apparel-admin")
+        self.client.force_login(staff)
+        event = Event.objects.create(
+            name="Apparel admin event",
+            slug="apparel-admin-event",
+            start_date=date(2026, 8, 4),
+            end_date=date(2026, 8, 4),
+            city="Moscow",
+        )
+        search = SelfieSearch.objects.create(
+            event=event,
+            public_token_digest="c" * 64,
+            status=SelfieSearch.Status.READY,
+            matched_photo_count=2,
+            apparel_excluded_photo_count=1,
+        )
+        kept = Photo.objects.create(event=event, id="admin-kept", src="test/kept.jpg")
+        hidden = Photo.objects.create(event=event, id="admin-excluded", src="test/excluded.jpg")
+        SelfieSearchResult.objects.create(search=search, photo=kept, rank=1)
+        archived = SelfieSearchResult.objects.create(
+            search=search, photo=hidden, rank=2, excluded_by_apparel=True
+        )
+
+        SelfieSearchApparelEvidence.objects.create(
+            search=search,
+            decisions={
+                "policy": {"version": 2},
+                "candidates_truncated": False,
+                "additions_truncated": False,
+                "anchors": [],
+                "candidates": [],
+                "recommendations": [],
+                "anchor_checks": [{"decision": "rejected", "reason": "incompatible_features"}],
+                "exclusions": [
+                    {
+                        "photo_id": "unpublished-raw-identifier",
+                        "result_rank": 2,
+                        "reason": "all_matched_figures_disagree",
+                        "matches": [
+                            {
+                                "detection_id": "private-matched-detection",
+                                "comparisons": [
+                                    {"anchor_position": 1, "reid_cosine_similarity": 0.4}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+        with self.subTest(page="search"):
+            detail = self.client.get(
+                reverse("admin:selfie_search_selfiesearch_change", args=[search.pk])
+            )
+            self.assertContains(detail, "Опубликовано фотографий")
+            self.assertContains(detail, 'class="form-row field-apparel_excluded_photo_count"')
+            self.assertContains(detail, "all_matched_figures_disagree")
+            self.assertContains(detail, "incompatible_features")
+            self.assertContains(detail, "reid_cosine_similarity")
+            self.assertNotContains(detail, "unpublished-raw-identifier")
+            self.assertNotContains(detail, "private-matched-detection")
+        with self.subTest(page="excluded filter"):
+            changelist = self.client.get(
+                reverse("admin:selfie_search_selfiesearchresult_changelist"),
+                {"excluded_by_apparel__exact": "1"},
+            )
+            self.assertEqual(list(changelist.context["cl"].result_list), [archived])

@@ -101,3 +101,5 @@ ADR фиксирует долговременный архитектурный �
 | 0077 | [Раздельно включать вычисление внешности и расширение поиска](0077-separate-appearance-processing-and-search-rollout.md) | Accepted |
 | 0078 | [Хранить приблизительные остатки всех очередей в PostgreSQL](0078-store-approximate-queue-work-counters.md) | Accepted |
 | 0079 | [Завершать включённую проверку одежды до публикации выдачи](0079-require-enabled-apparel-search-to-complete.md) | Accepted |
+| 0080 | [Сохранять исходные совпадения при вычитании по одежде](0080-retain-provenance-for-apparel-exclusions.md) | Accepted |
+| 0081 | [Проверять опоры расширения по согласованным признакам](0081-verify-search-anchors-across-signals.md) | Accepted |

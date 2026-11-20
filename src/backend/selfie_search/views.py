@@ -17,7 +17,6 @@ from django.http import (
     HttpResponse,
     HttpResponseBase,
     JsonResponse,
-    StreamingHttpResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -25,15 +24,10 @@ from django.views.decorators.debug import sensitive_post_parameters, sensitive_v
 from django.views.decorators.http import require_GET, require_POST
 from feature_flags import services as feature_flag_services
 from feature_flags.registry import BULK_PHOTO_DOWNLOAD
-from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError, StorageUnavailable
+from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.access import mark_event_staff_preview
-from picflow.archive import (
-    ArchiveEntry,
-    ArchiveObservation,
-    ArchiveSourceMissing,
-    ArchiveSourceUnavailable,
-    prepare_zip_archive,
-)
+from picflow.archive import ArchiveEntry, ArchiveObservation
+from picflow.archive_delivery import prepare_archive_response
 from picflow.archive_presentation import archive_page_action
 from picflow.gallery import (
     GALLERY_VARIANTS,
@@ -423,7 +417,7 @@ def result_download(request, event_slug: str, public_token: str, photo_id: str) 
     return redirect(signed_url)
 
 
-@require_GET
+@require_POST
 def result_archive(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
     if not feature_flag_services.is_enabled(BULK_PHOTO_DOWNLOAD, request.user):
         return _not_found_response()
@@ -441,24 +435,12 @@ def result_archive(request, event_slug: str, public_token: str) -> HttpResponseB
     entries = _archive_entries(page)
     if entries is None or len(entries) < 2:
         return _not_found_response()
-    try:
-        archive = prepare_zip_archive(
-            entries=entries,
-            storage_factory=_archive_storage,
-            observation=ArchiveObservation(context="free_result", page=page.number),
-        )
-    except ArchiveSourceMissing:
-        return _not_found_response()
-    except (ArchiveSourceUnavailable, StorageUnavailable):
-        return HttpResponse(status=503)
-    response = StreamingHttpResponse(archive, content_type="application/zip")
-    response["Content-Disposition"] = (
-        f'attachment; filename="{_result_archive_filename(search=search, page=page)}"'
+    return prepare_archive_response(
+        scope=f"search:{search.pk}",
+        entries=entries,
+        filename=_result_archive_filename(search=search, page=page),
+        observation=ArchiveObservation(context="free_result", page=page.number),
     )
-    response["Cache-Control"] = "private, no-store"
-    response["Referrer-Policy"] = "no-referrer"
-    response["X-Accel-Buffering"] = "no"
-    return response
 
 
 def _event_page(request, event_slug: str, form: SelfieSearchUploadForm, *, status: int = 200):
@@ -517,13 +499,6 @@ def _archive_entries(page) -> tuple[ArchiveEntry, ...] | None:
             )
         )
     return tuple(entries)
-
-
-def _archive_storage() -> PrivateUploadStorage:
-    try:
-        return PrivateUploadStorage()
-    except (TypeError, ValueError):
-        raise StorageUnavailable() from None
 
 
 def _result_archive_filename(*, search: SelfieSearch, page) -> str:

@@ -40,13 +40,18 @@ run "isolate_media_buckets" {
   assert {
     condition = (
       { for rule in yandex_storage_bucket.media_scratch.lifecycle_rule : one(rule.filter).prefix => one(rule.expiration).days if rule.enabled } == {
+        "archives/"      = 1
         "preview-jobs/"  = 7
         "selfie-search/" = 1
       } &&
+      one([
+        for rule in yandex_storage_bucket.media_scratch.lifecycle_rule :
+        rule.abort_incomplete_multipart_upload_days if one(rule.filter).prefix == "archives/"
+      ]) == 1 &&
       toset(one(yandex_storage_bucket.media_scratch.cors_rule).allowed_methods) == toset(["POST"]) &&
       toset(one(yandex_storage_bucket.media_scratch.cors_rule).allowed_origins) == var.media_upload_origins
     )
-    error_message = "Only abandoned preview attempts and temporary selfies expire; browser upload CORS is confined to the reviewed origins."
+    error_message = "Temporary previews, selfies, and archives expire. Abandoned archive multipart uploads are cleaned up, and upload CORS stays restricted."
   }
 
   assert {

@@ -114,6 +114,18 @@ resource "yandex_storage_bucket" "media_scratch" {
     }
   }
 
+  lifecycle_rule {
+    id      = "expire-photo-archives"
+    enabled = true
+    filter {
+      prefix = "archives/"
+    }
+    expiration {
+      days = 1
+    }
+    abort_incomplete_multipart_upload_days = 1
+  }
+
   depends_on = [yandex_resourcemanager_folder_iam_member.infrastructure_storage]
 }
 
@@ -233,6 +245,12 @@ resource "yandex_storage_bucket_policy" "media_scratch" {
           "arn:aws:s3:::${yandex_storage_bucket.media_scratch.bucket}/preview-jobs/*",
           "arn:aws:s3:::${yandex_storage_bucket.media_scratch.bucket}/selfie-search/*"
         ]
+      },
+      {
+        Effect    = "Allow"
+        Principal = { CanonicalUser = var.media_storage_principals.private_media }
+        Action    = ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"]
+        Resource  = "arn:aws:s3:::${yandex_storage_bucket.media_scratch.bucket}/archives/*"
       },
       {
         Effect    = "Allow"

@@ -408,7 +408,7 @@ class OriginalDeliveryTests(TestCase):
         self.assertEqual(CommerceAttention.objects.count(), 0)
         self.assertFalse(DownloadGrantAudit.objects.exists())
 
-    def test_paid_archive_authorizes_exact_page_and_audits_every_item_before_streaming(
+    def test_paid_archive_authorizes_exact_page_and_audits_every_item_on_request(
         self,
     ) -> None:
         delivery = load_original_delivery()
@@ -452,12 +452,14 @@ class OriginalDeliveryTests(TestCase):
         )
         self.assertEqual(archive.page.number, 1)
         self.assertEqual(archive.page.paginator.count, 2)
+        self.assertFalse(DownloadGrantAudit.objects.exists())
+        delivery.audit_purchased_archive_request(archive)
         self.assertEqual(
             set(DownloadGrantAudit.objects.values_list("order_item_id", flat=True)),
             {archive_order.items.exclude(pk=second_item.pk).get().pk, second_item.pk},
         )
         archive_order.refresh_from_db()
-        self.assertEqual(archive_order.first_customer_access_at, self.now)
+        self.assertIsNotNone(archive_order.first_customer_access_at)
 
     def test_paid_archive_rejects_nonpaid_invalid_page_and_foreign_or_revoked_authority(
         self,
@@ -543,20 +545,9 @@ class OriginalDeliveryTests(TestCase):
             unit_price_kopecks=30000,
             line_total_kopecks=30000,
         )
-        archive = delivery.authorize_purchased_archive(
-            order=archive_order,
-            page_number=None,
-            purchase_browser_token=archive_capability.token,
-            grant_identifier=None,
-            grant_signature=None,
-            order_access_signing_secret=self.signing_secret,
-            now=self.now,
-        )
-
-        entry = next(entry for entry in archive.entries if entry.photo_id == self.photo.pk)
-        self.assertIsNotNone(entry.on_source_missing)
-        entry.on_source_missing()
-        entry.on_source_missing()
+        item_id = archive_order.items.get(photo=self.photo).pk
+        delivery.record_archive_original_missing(item_id)
+        delivery.record_archive_original_missing(item_id)
 
         attention = CommerceAttention.objects.get()
         self.assertEqual(attention.kind, CommerceAttention.Kind.ORIGINAL_MISSING)

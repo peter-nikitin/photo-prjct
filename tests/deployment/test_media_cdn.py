@@ -21,9 +21,34 @@ def cdn() -> ModuleType:
 
 def test_media_cdn_routes_keep_distinct_security_and_cache_contracts(cdn: ModuleType) -> None:
     bucket = "findme-photo-media-delivery-prod-b1g2qttg"
-    cover, preview, original, denied = cdn.rules(
-        bucket, "123", "456", "token-secret", "origin-secret"
+    archive_bucket = "findme-photo.scratch-prod-b1g2qttg"
+    cover, preview, original, archive, denied = cdn.rules(
+        bucket, archive_bucket, "123", "456", "token-secret", "origin-secret"
     )
+    archive_path = f"/{archive_bucket}/archives/12345678-1234-1234-1234-123456789abc.zip"
+    assert re.fullmatch(archive["rulePattern"], archive_path)
+    for invalid_path in (
+        archive_path.replace("photo.scratch", "photo-scratch"),
+        archive_path.replace("archives/", "uploads/"),
+        archive_path.replace("-1234-", "-12345-", 1),
+        archive_path.replace("123456789abc", "123456789abd/other"),
+        archive_path + "/other",
+        archive_path + ".jpg",
+    ):
+        assert not re.fullmatch(archive["rulePattern"], invalid_path)
+        assert re.fullmatch(denied["rulePattern"], invalid_path)
+    options = archive["options"]
+    assert archive["originProtocol"] == "HTTPS"
+    assert options["secureKey"] == {
+        "enabled": True,
+        "key": "token-secret",
+        "type": "DISABLE_IP_SIGNING",
+    }
+    assert options["queryParamsOptions"]["ignoreQueryString"]["value"] is True
+    assert options["edgeCacheSettings"]["value"]["customValues"] == {"200": "600", "206": "600"}
+    assert options["slice"]["value"] is True
+    assert options["staticHeaders"]["value"]["Cache-Control"] == "private, no-store"
+    assert "Content-Disposition" in options["cacheHttpHeaders"]["value"]
     cover_path = f"/{bucket}/event-covers/12345678-1234-1234-1234-123456789abc"
     for suffix in ("", ".jpg", ".png"):
         assert re.fullmatch(cover["rulePattern"], cover_path + suffix)
@@ -36,15 +61,16 @@ def test_media_cdn_routes_keep_distinct_security_and_cache_contracts(cdn: Module
         original["rulePattern"], "/delivery/originals/" + "a" * 32 + "/findme-photo-p.jpg"
     )
     assert re.fullmatch(denied["rulePattern"], f"/{bucket}/originals/a")
-    assert [int(rule["weight"]) for rule in (cover, preview, original, denied)] == [
+    assert [int(rule["weight"]) for rule in (cover, preview, original, archive, denied)] == [
         10,
         20,
         30,
+        40,
         9999,
     ]
     assert cover["options"]["secureKey"] == {"enabled": False}
     assert cover["options"]["browserCacheSettings"] == {"enabled": True, "value": "31536000"}
-    for rule in (cover, preview):
+    for rule in (cover, preview, archive):
         assert "X-FindMe-Origin-Auth" not in str(rule)
         assert rule["options"]["hostOptions"]["host"]["value"] == "storage.yandexcloud.net"
         assert rule["originsGroupId"] == "123"
@@ -112,29 +138,39 @@ class FakeCloud:
 
 def test_media_cdn_dry_run_and_repeat_apply(cdn: ModuleType) -> None:
     cloud = FakeCloud()
-    plan = cdn.configure(cloud, "test-bucket")
+    plan = cdn.configure(cloud, "test-bucket", "archive-bucket")
     assert not cloud.mutations
     assert not cloud.groups
     assert plan["mode"] == "dry-run"
     assert "secret" not in str(plan).lower()
-    cdn.configure(cloud, "test-bucket", credentials=("token-secret", "origin-secret"))
+    archive = next(rule for rule in plan["rules"] if rule["name"] == "private-archives")
+    assert archive["origin"] == "storage.yandexcloud.net"
+    assert archive["signed"] is True and archive["action"] == "create"
+    cdn.configure(
+        cloud, "test-bucket", "archive-bucket", credentials=("token-secret", "origin-secret")
+    )
     assert cloud.mutations == [
         "deny-other-paths",
         "resource",
         "public-covers",
         "private-previews",
         "private-originals",
+        "private-archives",
     ]
     assert cloud.resource["sslCertificate"] == {"type": "CM", "status": "READY"}
     assert cloud.resource["options"]["secureKey"] == {"enabled": False}
     assert cloud.resource["options"]["staticRequestHeaders"] == {"enabled": False}
-    cdn.configure(cloud, "test-bucket", credentials=("token-secret", "origin-secret"))
-    assert len(cloud.groups) == 2 and len(cloud.rules) == 4
+    cdn.configure(
+        cloud, "test-bucket", "archive-bucket", credentials=("token-secret", "origin-secret")
+    )
+    assert len(cloud.groups) == 2 and len(cloud.rules) == 5
 
 
 def test_media_cdn_refuses_unknown_rule_before_mutation(cdn: ModuleType) -> None:
     cloud = FakeCloud()
     cloud.rules.append({"id": "1", "name": "unreviewed-rule"})
     with pytest.raises(cdn.ConfigurationError, match="unexpected_rule"):
-        cdn.configure(cloud, "test-bucket", credentials=("token-secret", "origin-secret"))
+        cdn.configure(
+            cloud, "test-bucket", "archive-bucket", credentials=("token-secret", "origin-secret")
+        )
     assert not cloud.groups and not cloud.mutations

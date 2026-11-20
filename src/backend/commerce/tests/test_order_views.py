@@ -191,7 +191,7 @@ class OrderViewTests(OrderViewFixture):
 
         paid = self.client.get(self.order_url(paid_order))
 
-        self.assertContains(paid, f'href="{archive_url}"')
+        self.assertContains(paid, f'action="{archive_url}"')
         self.assertContains(paid, ">Скачать все<", html=False)
         self.assertLess(
             paid.content.index(b"order-archive-action"),
@@ -214,7 +214,7 @@ class OrderViewTests(OrderViewFixture):
         archive_url = reverse(
             "commerce:order_archive", kwargs={"public_number": order.public_number}
         )
-        self.assertContains(response, f'href="{archive_url}?page=2"')
+        self.assertContains(response, f'action="{archive_url}?page=2"')
         self.assertContains(response, "Скачать эту страницу")
         self.assertContains(
             response,

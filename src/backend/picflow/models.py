@@ -435,3 +435,28 @@ class GalleryMediaProjection(models.Model):  # noqa: DJ008
                 name="picflow_gallery_media_watermarked_pair_chk",
             ),
         ]
+
+
+class PhotoArchiveJob(models.Model):  # noqa: DJ008
+    class Status(models.TextChoices):
+        QUEUED = "queued", "В очереди"
+        RUNNING = "running", "Собирается"
+        READY = "ready", "Готов"
+        FAILED = "failed", "Ошибка"
+
+    request_key = models.CharField(max_length=64, unique=True)
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    entries = models.JSONField()
+    filename = models.CharField(max_length=300)
+    context = models.CharField(max_length=12)
+    page = models.PositiveIntegerField()
+    status = models.CharField(max_length=7, choices=Status, default=Status.QUEUED)
+    object_id = models.UUIDField(default=uuid4)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "updated_at", "id"], name="picflow_archive_queue_idx"),
+        ]

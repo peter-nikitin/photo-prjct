@@ -2,12 +2,13 @@ import logging
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import partial
 from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.core.paginator import InvalidPage, Paginator
-from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import Resolver404, resolve, reverse
 from django.utils.cache import patch_vary_headers
@@ -26,12 +27,8 @@ from feature_flags.registry import (
     PAID_WATERMARKED_PREVIEWS,
 )
 from ingestion.storage import ObjectMissing, PrivateUploadStorage, StorageError, StorageUnavailable
-from picflow.archive import (
-    ArchiveObservation,
-    ArchiveSourceMissing,
-    ArchiveSourceUnavailable,
-    prepare_zip_archive,
-)
+from picflow.archive import ArchiveObservation
+from picflow.archive_delivery import prepare_archive_response
 from picflow.archive_presentation import archive_page_action
 from picflow.gallery import (
     GALLERY_VARIANTS,
@@ -75,6 +72,7 @@ from commerce.order_payment import (
 from commerce.original_delivery import (
     PurchasedOriginalDenied,
     PurchasedOriginalUnavailable,
+    audit_purchased_archive_request,
     authorize_purchased_archive,
     sign_purchased_original,
 )
@@ -703,12 +701,12 @@ def grant_order_download(
     )
 
 
-@require_GET
+@require_POST
 def order_archive(request: HttpRequest, public_number: str) -> HttpResponse:
     return _archive_order(request, public_number=public_number)
 
 
-@require_GET
+@require_POST
 def grant_order_archive(
     request: HttpRequest,
     public_number: str,
@@ -892,25 +890,16 @@ def _archive_order(
         return _purchase_not_found()
     except PurchasedOriginalUnavailable:
         return private_purchase_response(HttpResponse(status=503))
-    try:
-        archive = prepare_zip_archive(
+    return private_purchase_response(
+        prepare_archive_response(
+            scope=f"order:{order_instance.pk}",
             entries=authorized.entries,
-            storage_factory=_archive_storage,
-            observation=ArchiveObservation(
-                context="paid_order",
-                page=authorized.page.number,
-            ),
+            filename=_order_archive_filename(order=order_instance, page=authorized.page),
+            observation=ArchiveObservation(context="paid_order", page=authorized.page.number),
+            order_item_ids=tuple(item.pk for item in authorized.page.object_list),
+            audit_request=partial(audit_purchased_archive_request, authorized),
         )
-    except (ArchiveSourceMissing, ArchiveSourceUnavailable, StorageUnavailable, ValueError):
-        return private_purchase_response(HttpResponse(status=503))
-    response = StreamingHttpResponse(archive, content_type="application/zip")
-    archive_filename = _order_archive_filename(
-        order=order_instance,
-        page=authorized.page,
     )
-    response["Content-Disposition"] = f'attachment; filename="{archive_filename}"'
-    response["X-Accel-Buffering"] = "no"
-    return private_purchase_response(response)
 
 
 def _order_archive_action(*, request: HttpRequest, order: Order, items_page):
@@ -981,13 +970,6 @@ def _order_archive_filename(*, order: Order, page) -> str:
     if page.paginator.num_pages == 1:
         return f"findme-photo-order-{order.public_number}.zip"
     return f"findme-photo-order-{order.public_number}-page-{page.number}.zip"
-
-
-def _archive_storage() -> PrivateUploadStorage:
-    try:
-        return PrivateUploadStorage()
-    except (TypeError, ValueError):
-        raise StorageUnavailable() from None
 
 
 def _order_status(

@@ -3,7 +3,6 @@ from django.test import TestCase, override_settings
 
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import (
-    BULK_PHOTO_DOWNLOAD,
     PAID_EVENTS,
     PAID_PHOTO_CART,
     PAID_PHOTO_PAYMENT_SIMULATOR,
@@ -24,7 +23,6 @@ class LocalPurchaseBootstrapTests(TestCase):
             [
                 (definition.key, FeatureFlag.State.ON)
                 for definition in (
-                    BULK_PHOTO_DOWNLOAD,
                     PAID_EVENTS,
                     PAID_PHOTO_CART,
                     PAID_PHOTO_PAYMENT_SIMULATOR,

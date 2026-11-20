@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from time import time
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
@@ -13,6 +14,7 @@ from picflow.gallery_image_delivery import (
     CdnFinalObjectStorage,
     GalleryImageDeliverySettings,
     GalleryImageUrlSigner,
+    sign_private_archive,
 )
 
 PREVIEW_KEY = (
@@ -177,3 +179,35 @@ def test_preview_redirect_checks_exact_storage_object_before_issuing_grant(statu
     with pytest.raises(expected):
         CdnFinalObjectStorage(client=client).sign_final(key=PREVIEW_KEY)
     assert client.calls == [("head_object", {"Bucket": "gallery-media", "Key": object_key})]
+
+
+@override_settings(
+    **VALID_SETTINGS,
+    OPERATIONAL_S3_BUCKET="test-operational",
+)
+def test_archive_link_binds_exact_storage_path_origin_signature_and_short_edge_access() -> None:
+    object_id = UUID("12345678-1234-1234-1234-123456789abc")
+    with (
+        patch(
+            "picflow.gallery_image_delivery.GalleryImageUrlSigner",
+            side_effect=lambda config: GalleryImageUrlSigner(
+                config, clock=lambda: 1_700_000_000.75
+            ),
+        ),
+        patch(
+            "botocore.auth.get_current_datetime",
+            return_value=datetime.fromtimestamp(1_700_000_000, UTC),
+        ),
+    ):
+        url = urlsplit(sign_private_archive(object_id=object_id, expires_in=225))
+    assert url.scheme == "https"
+    assert url.hostname == "img.findme-photo.ru"
+    assert url.path == f"/test-operational/archives/{object_id}.zip"
+    query = parse_qs(url.query)
+    assert query["expires"] == ["1700000225"]
+    assert query["X-Amz-Expires"] == ["225"]
+    assert query["X-Amz-SignedHeaders"] == ["host"]
+    assert query["md5"] == ["LNLH-gh7BMfFhW1N9UcCbw"]
+    assert query["X-Amz-Signature"] == [
+        "878a59c909519e6d6dbd8ff33a9709b845eca3ebd6993aedff75acd66a4e59ee"
+    ]

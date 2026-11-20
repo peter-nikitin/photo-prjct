@@ -2358,6 +2358,247 @@
           }
         ]
       }
+    },
+    {
+      "position": {
+        "y": "208",
+        "w": "24",
+        "h": "24"
+      },
+      "group": {
+        "id": "a81b7d63-36cf-4212-88dc-90855adaba98",
+        "title": "Подготовка архивов",
+        "widgets": [
+          {
+            "id": "5e63367f-5445-4c85-b75b-15f1e19b9698",
+            "multiSourceChart": {
+              "id": "5e63367f-5445-4c85-b75b-15f1e19b9698",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "db6f0615-f923-5356-b17b-f460fe880e17",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_queue_ready_count{job=\"findme-http\",queue=\"photo_archive\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "db6f0615-f923-5356-b17b-f460fe880e17",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Архивы в очереди",
+              "description": "Задания, готовые к сборке. Уже выполняемые задания не входят."
+            },
+            "position": {
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "da891d30-7981-4862-8b58-ff5a9b3bdff4",
+            "multiSourceChart": {
+              "id": "da891d30-7981-4862-8b58-ff5a9b3bdff4",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "53d69af7-f0ff-54ea-866e-e351e21b8e2a",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "findme_queue_oldest_ready_age_seconds{job=\"findme-http\",queue=\"photo_archive\"}",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "53d69af7-f0ff-54ea-866e-e351e21b8e2a",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                }
+              },
+              "title": "Возраст старейшего задания, с",
+              "description": "Сколько старейшее задание ждёт начала сборки."
+            },
+            "position": {
+              "x": "12",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "1c0d178c-5f3b-4015-910b-70d81f1bca53",
+            "multiSourceChart": {
+              "id": "1c0d178c-5f3b-4015-910b-70d81f1bca53",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "Секунды"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Среднее время подготовки архива, с",
+              "description": "Ожидание, сборка ZIP и загрузка в S3 за последние 5 минут по успешным заданиям.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "8",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "871c3e46-ed49-4a27-a7c4-1f05215d69a2",
+            "multiSourceChart": {
+              "id": "871c3e46-ed49-4a27-a7c4-1f05215d69a2",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "bdc430df-8f37-5c29-8a74-26bb00e80a1a",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m] @ end()))",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "bdc430df-8f37-5c29-8a74-26bb00e80a1a",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "type": "VISUALIZATION_TYPE_PIE",
+                "aggregation": "SERIES_AGGREGATION_LAST"
+              },
+              "title": "Доли времени подготовки",
+              "description": "Доли этапов успешных заданий за 5 минут к концу периода.",
+              "displayLegend": true
+            },
+            "position": {
+              "x": "12",
+              "y": "8",
+              "w": "12",
+              "h": "8"
+            }
+          },
+          {
+            "id": "a223189c-04ef-4f88-954d-ccd956282f1a",
+            "multiSourceChart": {
+              "id": "a223189c-04ef-4f88-954d-ccd956282f1a",
+              "targets": [
+                {
+                  "prometheusTarget": {
+                    "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "workspaceId": "{{workspace_id}}",
+                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m])) > 0)",
+                    "textMode": true,
+                    "name": "A"
+                  }
+                }
+              ],
+              "dataSources": [
+                {
+                  "prometheusDataSource": {
+                    "id": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
+                    "step": "60000"
+                  }
+                }
+              ],
+              "visualizationSettings": {
+                "colorSchemeSettings": {
+                  "automatic": {}
+                },
+                "yaxisSettings": {
+                  "left": {
+                    "type": "YAXIS_TYPE_LINEAR",
+                    "title": "%",
+                    "min": "0",
+                    "max": "100"
+                  },
+                  "right": {
+                    "type": "YAXIS_TYPE_LINEAR"
+                  }
+                },
+                "type": "VISUALIZATION_TYPE_STACK"
+              },
+              "title": "Доли времени подготовки в динамике, %",
+              "description": "Доли ожидания, сборки ZIP и загрузки в S3 в скользящем окне 5 минут.",
+              "displayLegend": true
+            },
+            "position": {
+              "y": "16",
+              "w": "24",
+              "h": "8"
+            }
+          }
+        ]
+      }
     }
   ]
 }

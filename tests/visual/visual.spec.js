@@ -961,11 +961,12 @@ test('archive actions preserve the page boundary and paid result denial', async 
     await page.goto(path);
     const action = page.locator('.selfie-search-archive-action, .order-archive-action');
     await expect(action).toHaveCount(1);
-    await expect(action.getByRole('link')).toHaveText(expected.label);
+    await expect(action.getByRole('button')).toHaveAccessibleName(expected.label);
+    await expect(action.locator('form')).toHaveAttribute('method', 'post');
     if (expected.helper) {
-      await expect(action.locator('p')).toHaveText(expected.helper);
+      await expect(action.locator(':scope > p')).toHaveText(expected.helper);
     } else {
-      await expect(action.locator('p')).toHaveCount(0);
+      await expect(action.locator(':scope > p')).toHaveCount(0);
     }
     if (expected.pages) {
       await expect(page.locator('.gallery-pagination')).toHaveCount(1);
@@ -977,8 +978,8 @@ test('archive actions preserve the page boundary and paid result denial', async 
 
   await page.goto('/__visual__/event/selfie-search/ready/paid/');
   await expect(page.locator('.selfie-search-archive-action')).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Скачать все' })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Скачать эту страницу' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Скачать все' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Скачать эту страницу' })).toHaveCount(0);
 
   await page.goto('/__visual__/order/paid/multi/');
   await expect(page.locator('.order-summary dt').filter({ hasText: 'Фотографий' }).locator('..')).toHaveText(
@@ -986,6 +987,70 @@ test('archive actions preserve the page boundary and paid result denial', async 
   );
   await expect(page.locator('.order-summary-total')).toHaveText('Итого900 ₽');
 });
+
+for (const [device, viewport] of [
+  ['desktop', DESKTOP_VIEWPORT],
+  ['mobile', MOBILE_VIEWPORT],
+]) {
+  test(`archive prepares on the existing page and uses the same download link again - ${device}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.route('**/__visual__/event/selfie-search/ready/single/', async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: { ...response.headers(), 'referrer-policy': 'no-referrer' },
+      });
+    });
+    await page.goto('/__visual__/event/selfie-search/ready/single/');
+    await page.locator('[data-cookie-notice-accept]').click();
+    const pageUrl = page.url();
+    const form = page.locator('[data-archive-request]');
+    const target = new URL(await form.getAttribute('action'), pageUrl);
+    const statusPath = '/archives/d06ed5fe-142b-427b-b15b-a966f47fbfa9/';
+    let submissions = 0;
+    let statusPolls = 0;
+    let ready = false;
+    await page.route(target.href, async (route) => {
+      submissions++;
+      const headers = await route.request().allHeaders();
+      expect(route.request().method()).toBe('POST');
+      expect(headers.origin).toBe(target.origin);
+      expect(headers.referer).toBe(`${target.origin}/`);
+      await route.fulfill({ status: 202, json: { status_url: statusPath } });
+    });
+    await page.route(new URL(statusPath, pageUrl).href, async (route) => {
+      statusPolls++;
+      await route.fulfill({ json: { status: ready ? 'ready' : 'running' } });
+    });
+    await page.route(new URL(`${statusPath}?download=1`, pageUrl).href, (route) =>
+      route.fulfill({
+        contentType: 'application/zip',
+        headers: { 'Content-Disposition': 'attachment; filename="photos.zip"' },
+        body: 'archive fixture',
+      }),
+    );
+
+    const button = form.getByRole('button');
+    await button.click();
+    await expect(button).toHaveAccessibleName('Готовим архив, скоро начнётся скачивание');
+    await expect(button).toBeDisabled();
+    await expect(page).toHaveURL(pageUrl);
+    await expect(page).toHaveScreenshot(`${device}-archive-preparing.png`, { animations: 'disabled' });
+
+    const first = page.waitForEvent('download');
+    ready = true;
+    expect((await first).suggestedFilename()).toBe('photos.zip');
+    await expect(button).toBeEnabled();
+    const pollsAtReady = statusPolls;
+    const second = page.waitForEvent('download');
+    await button.click();
+    expect((await second).suggestedFilename()).toBe('photos.zip');
+    expect(submissions).toBe(1);
+    expect(statusPolls).toBe(pollsAtReady);
+    await expect(page).toHaveURL(pageUrl);
+  });
+}
 
 test('mobile archive action fills the result width and paid Order action hierarchy is explicit', async ({
   page,

@@ -238,7 +238,7 @@ def prepare_zip_archive(
     declared_input_bytes = 0
     try:
         prepared_entries = tuple(entries)
-        _validate_entries(prepared_entries)
+        validate_archive_entries(prepared_entries)
         file_count = len(prepared_entries)
         declared_input_bytes = sum(entry.original_size for entry in prepared_entries)
         storage = storage_factory()
@@ -298,7 +298,7 @@ def _log_archive_outcome(
     )
 
 
-def _validate_entries(entries: tuple[ArchiveEntry, ...]) -> None:
+def validate_archive_entries(entries: tuple[ArchiveEntry, ...]) -> None:
     if not entries:
         raise ValueError("an archive needs at least one entry")
     seen_photo_ids: set[str] = set()

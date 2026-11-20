@@ -1,11 +1,11 @@
 # 0034: Stream page-scoped photo archives through Django
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-08-30
 - Deciders: project maintainers
 - Supersedes: [ADR 0020](0020-use-signed-direct-object-storage-media-delivery.md), only for the
   transport of an authorized page-scoped aggregate archive
-- Superseded by: none
+- Superseded by: [ADR 0071](0071-prepare-photo-archives-in-background.md)
 
 ## Context
 

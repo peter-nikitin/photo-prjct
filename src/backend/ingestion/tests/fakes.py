@@ -111,6 +111,17 @@ class FakeS3Client:
             "ContentType": obj.content_type,
         }
 
+    def upload_fileobj(self, **kwargs: Any) -> None:
+        self.calls.append(("upload_fileobj", kwargs))
+        self._raise("upload_fileobj")
+        self.put_object(
+            kwargs["Bucket"],
+            kwargs["Key"],
+            kwargs["Fileobj"].read(),
+            '"uploaded"',
+            kwargs["ExtraArgs"]["ContentType"],
+        )
+
     def copy_object(self, **kwargs: Any) -> dict[str, Any]:
         self._before("copy_object")
         self.calls.append(("copy_object", kwargs))

@@ -627,38 +627,43 @@ def _claim_with_grant(
                 selfie_grant.expires_at,
                 selfie_fingerprint,
             )
-        fingerprint = _input_fingerprint(
-            claimed.job.input_fingerprint,
-            contract_version=claimed.job.contract_version,
-            processor_type=claimed.job.processor_type,
-            processor_version=claimed.job.processor_version,
-        )
-        _require_accepted_clean_input(claimed.job, fingerprint)
-        quality_input_geometry = _quality_claim_input_geometry(claimed.job)
-        grant = _download_storage(fingerprint).create_download_grant(
-            final_key=_fingerprint_key(fingerprint),
+        return photo_claim_payload(claimed)
+
+
+def photo_claim_payload(claimed: ClaimedJob) -> dict[str, object]:
+    """Build the ordinary worker payload inside the caller's claim transaction."""
+    fingerprint = _input_fingerprint(
+        claimed.job.input_fingerprint,
+        contract_version=claimed.job.contract_version,
+        processor_type=claimed.job.processor_type,
+        processor_version=claimed.job.processor_version,
+    )
+    _require_accepted_clean_input(claimed.job, fingerprint)
+    quality_input_geometry = _quality_claim_input_geometry(claimed.job)
+    grant = _download_storage(fingerprint).create_download_grant(
+        final_key=_fingerprint_key(fingerprint),
+        max_ttl_seconds=_remaining_lease(claimed.attempt),
+    )
+    _validate_grant_lease(claimed.attempt, grant.expires_at)
+    preview_upload_grant = None
+    if claimed.job.processor_type in {
+        GENERATE_PREVIEW_CONTRACT.processor_type,
+        GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
+    }:
+        variant = _preview_variant(claimed.job.processor_type)
+        preview_upload_grant = ExactPreviewStorage().create_upload_grant(
+            staging_key=_preview_staging_key(str(claimed.attempt.id), variant=variant),
             max_ttl_seconds=_remaining_lease(claimed.attempt),
         )
-        _validate_grant_lease(claimed.attempt, grant.expires_at)
-        preview_upload_grant = None
-        if claimed.job.processor_type in {
-            GENERATE_PREVIEW_CONTRACT.processor_type,
-            GENERATE_WATERMARKED_PREVIEW_CONTRACT.processor_type,
-        }:
-            variant = _preview_variant(claimed.job.processor_type)
-            preview_upload_grant = ExactPreviewStorage().create_upload_grant(
-                staging_key=_preview_staging_key(str(claimed.attempt.id), variant=variant),
-                max_ttl_seconds=_remaining_lease(claimed.attempt),
-            )
-            _validate_grant_lease(claimed.attempt, preview_upload_grant.expires_at)
-        return _claimed_payload(
-            claimed,
-            grant.url,
-            grant.expires_at,
-            fingerprint,
-            preview_upload_grant=preview_upload_grant,
-            quality_input_geometry=quality_input_geometry,
-        )
+        _validate_grant_lease(claimed.attempt, preview_upload_grant.expires_at)
+    return _claimed_payload(
+        claimed,
+        grant.url,
+        grant.expires_at,
+        fingerprint,
+        preview_upload_grant=preview_upload_grant,
+        quality_input_geometry=quality_input_geometry,
+    )
 
 
 def _refresh_with_grant(attempt_id: UUID) -> dict[str, object] | None:

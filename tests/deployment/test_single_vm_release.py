@@ -167,6 +167,7 @@ def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch, caps
     archive = io.BytesIO(base64.b64decode(captured["payload"]["archive"]))
     with tarfile.open(fileobj=archive) as package:
         assert "deploy/verify-photo-worker.py" in package.getnames()
+        assert "deploy/backfill-person-appearance.py" in package.getnames()
     output = capsys.readouterr().out.splitlines()
     assert "PHOTO_WORKER_VERIFY=ok" in output
     assert all("secret-output" not in line for line in output)

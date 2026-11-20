@@ -23,7 +23,12 @@ def cpu_thread_budget(path: Path = CPU_MAX_PATH) -> int:
 
 # Two bulk slots share the existing two-vCPU container; native libraries must not
 # each reserve the full CPU budget independently.
-CPU_THREADS = 1 if os.environ.get("PHOTO_WORKER_POOL") == "bulk" else cpu_thread_budget()
+CPU_THREADS = (
+    1
+    if os.environ.get("PHOTO_WORKER_POOL") == "bulk"
+    or os.environ.get("PHOTO_WORKER_APPEARANCE_BATCH") == "1"
+    else cpu_thread_budget()
+)
 
 
 def configure_native_environment() -> None:

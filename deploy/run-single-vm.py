@@ -188,6 +188,7 @@ def main() -> None:
             "docker-compose.deployment.yml",
             "deploy/apply-deployment.sh",
             "deploy/verify-photo-worker.py",
+            "deploy/backfill-person-appearance.py",
             "deploy/postgres-monitoring/prepare-role.py",
             "deploy/nginx/http.conf",
             "deploy/nginx/https.conf",

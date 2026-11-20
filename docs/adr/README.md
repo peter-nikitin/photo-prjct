@@ -100,3 +100,4 @@ ADR фиксирует долговременный архитектурный �
 | 0076 | [Расширять выдачу по лицу свидетельствами внешности](0076-expand-face-results-with-person-appearance.md) | Accepted |
 | 0077 | [Раздельно включать вычисление внешности и расширение поиска](0077-separate-appearance-processing-and-search-rollout.md) | Accepted |
 | 0078 | [Хранить приблизительные остатки всех очередей в PostgreSQL](0078-store-approximate-queue-work-counters.md) | Accepted |
+| 0079 | [Завершать включённую проверку одежды до публикации выдачи](0079-require-enabled-apparel-search-to-complete.md) | Accepted |

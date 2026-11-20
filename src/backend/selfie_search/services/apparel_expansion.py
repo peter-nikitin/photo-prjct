@@ -75,39 +75,48 @@ people AS MATERIALIZED (
             'pixel_height', derivative.height
         )
 ),
+-- Keep unmatched people in the windowed pass to avoid joining all people back to their matches.
 head_matches AS (
-    SELECT person.person_id, face.id AS face_id, face.status,
+    SELECT person.*, matched.id AS matched_face_id, matched.status AS matched_face_status,
         count(*) OVER (PARTITION BY person.person_id) AS faces_per_person,
-        count(*) OVER (PARTITION BY face.id) AS people_per_face
+        row_number() OVER (PARTITION BY person.person_id) AS person_row,
+        count(*) OVER (PARTITION BY matched.id) AS people_per_face
     FROM people person
-    JOIN processing_processingattempt attempt ON attempt.id = person.face_attempt
+    LEFT JOIN processing_processingattempt attempt ON attempt.id = person.face_attempt
         AND attempt.input_fingerprint = person.fingerprint AND attempt.accepted
         AND attempt.status = 'succeeded'
-    JOIN processing_photofacedetection face ON face.attempt_id = attempt.id
-    CROSS JOIN LATERAL (
-        SELECT (face.geometry#>>'{{bbox,0}}')::float8 AS x,
-            (face.geometry#>>'{{bbox,1}}')::float8 AS y,
-            (face.geometry#>>'{{bbox,2}}')::float8 AS w,
-            (face.geometry#>>'{{bbox,3}}')::float8 AS h,
-            (person.head->>0)::float8 AS l, (person.head->>1)::float8 AS t,
-            (person.head->>2)::float8 AS r, (person.head->>3)::float8 AS b
-    ) AS box
-    CROSS JOIN LATERAL (
-        SELECT greatest(0, least(box.x + box.w, box.r) - greatest(box.x, box.l)) *
-               greatest(0, least(box.y + box.h, box.b) - greatest(box.y, box.t)) AS area
-    ) AS overlap
-    WHERE person.head IS NOT NULL AND box.w > 0 AND box.h > 0 AND (
-        overlap.area >= 0.85 * box.w * box.h
-        AND overlap.area >= 0.85 * (box.r - box.l) * (box.b - box.t)
-    )
+    LEFT JOIN LATERAL (
+        SELECT face.id, face.status
+        FROM processing_photofacedetection face
+        CROSS JOIN LATERAL (
+            SELECT (face.geometry#>>'{{bbox,0}}')::float8 AS x,
+                (face.geometry#>>'{{bbox,1}}')::float8 AS y,
+                (face.geometry#>>'{{bbox,2}}')::float8 AS w,
+                (face.geometry#>>'{{bbox,3}}')::float8 AS h,
+                (person.head->>0)::float8 AS l, (person.head->>1)::float8 AS t,
+                (person.head->>2)::float8 AS r, (person.head->>3)::float8 AS b
+        ) AS box
+        CROSS JOIN LATERAL (
+            SELECT greatest(0, least(box.x + box.w, box.r) - greatest(box.x, box.l)) *
+                   greatest(0, least(box.y + box.h, box.b) - greatest(box.y, box.t)) AS area
+        ) AS overlap
+        WHERE face.attempt_id = attempt.id AND box.w > 0 AND box.h > 0
+            AND overlap.area >= 0.85 * box.w * box.h
+            AND overlap.area >= 0.85 * (box.r - box.l) * (box.b - box.t)
+    ) AS matched ON person.head IS NOT NULL
+),
+resolved_people AS (
+    SELECT person_id, photo_id, reason, reid, color, helmet, head_count, face_attempt,
+        CASE WHEN faces_per_person = 1 AND people_per_face = 1 THEN matched_face_id END AS face_id,
+        matched_face_status
+    FROM head_matches
+    WHERE person_row = 1
 ),
 linked AS MATERIALIZED (
-    SELECT person.*, detected.face_id, embedding.vector
-    FROM people person
-    LEFT JOIN head_matches detected ON detected.person_id = person.person_id
-        AND detected.faces_per_person = 1 AND detected.people_per_face = 1
-    LEFT JOIN processing_faceembeddingvector embedding ON embedding.detection_id = detected.face_id
-        AND detected.status = 'kept' AND embedding.model_version = %(model)s
+    SELECT person.*, embedding.vector
+    FROM resolved_people person
+    LEFT JOIN processing_faceembeddingvector embedding ON embedding.detection_id = person.face_id
+        AND person.matched_face_status = 'kept' AND embedding.model_version = %(model)s
 ),
 anchor_input AS (
     SELECT * FROM direct

@@ -22,7 +22,6 @@ from selfie_search.observability import emit_selfie_observability_failure
 from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
 from selfie_search.services.apparel_expansion import expand_apparel
 from selfie_search.services.jobs import (
-    SearchCompletionConflict,
     emit_ranking_finished,
     expand_direct_ranking,
     prepare_search_result,
@@ -36,6 +35,11 @@ MAX_ATTEMPTS = 3
 RETRY_DELAY = timedelta(seconds=5)
 RANKING_TIMEOUT_MS = 120_000
 APPAREL_TIMEOUT_MS = 2_000
+APPAREL_MAX_ATTEMPTS = 2
+
+
+class _ApparelSearchUnavailable(Exception):
+    pass
 
 
 def recover_processing() -> int:
@@ -183,71 +187,74 @@ def process_face_search(task: FaceSearchTask) -> None:
     expansion = expand_direct_ranking(search=search, ranked=ranking.photos, query=query)
     if anchor_matches:
         expansion = append_anchor_matches(expansion, anchor_matches)
-    baseline = expansion
-    now = timezone.now()
-    remaining_ms = timeout_ms - int((now - started_at).total_seconds() * 1000)
-    if ranking.has_vectors and remaining_ms > APPAREL_TIMEOUT_MS:
-        try:
-            with transaction.atomic():
-                _set_statement_timeout(APPAREL_TIMEOUT_MS)
-                if is_enabled_for_background_task(
-                    APPAREL_SEARCH_EXPANSION,
-                    staff_eligible=search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY)
-                    is True,
-                ):
-                    expansion = expand_apparel(
-                        search,
-                        task.pk,
-                        ranking.photos,
-                        baseline,
-                        embedding_model=task.embedding_model,
-                        gallery=task.source == FaceSearchTask.Source.GALLERY,
-                    )
-        except (DatabaseError, ValueError):
-            logger.warning("apparel_expansion_unavailable")
-
-    with transaction.atomic():
-        locked_search = SelfieSearch.objects.select_for_update().get(pk=task.search_id)
-        if locked_search.status != SelfieSearch.Status.PROCESSING:
-            _terminal(task)
-            return
-        if (
-            locked_search.event_id != search.event_id
-            or locked_search.configuration_hash != search.configuration_hash
-            or locked_search.configuration != search.configuration
-        ):
-            raise RankingError("search configuration changed during matching")
-        search = locked_search
+    apparel_enabled = ranking.has_vectors and is_enabled_for_background_task(
+        APPAREL_SEARCH_EXPANSION,
+        staff_eligible=search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True,
+    )
+    if apparel_enabled:
         now = timezone.now()
         if _expired(task, now):
             _fail(task, code="matching_query_expired")
             return
-        intended_status = (
-            SelfieSearch.Status.READY
-            if ranking.has_vectors
-            else SelfieSearch.Status.SEARCH_UNAVAILABLE
-        )
-        search.eligible_photo_count = ranking.eligible_photo_count
-        search.eligible_face_count = ranking.eligible_face_count
-        if expansion.apparel_evidence is not None:
-            try:
-                with transaction.atomic():
-                    prepare_search_result(
-                        search,
-                        intended_status=str(intended_status),
-                        failure_code="",
-                        expansion=expansion,
-                    )
-            except (DatabaseError, SearchCompletionConflict):
-                logger.warning("apparel_evidence_unavailable")
-                expansion = baseline
-        if expansion is baseline:
-            prepare_search_result(
-                search, intended_status=str(intended_status), failure_code="", expansion=baseline
+        remaining_ms = timeout_ms - int((now - started_at).total_seconds() * 1000)
+        if remaining_ms <= 0:
+            logger.warning("apparel_expansion_unavailable")
+            raise _ApparelSearchUnavailable
+        try:
+            with transaction.atomic():
+                _set_statement_timeout(min(remaining_ms, APPAREL_TIMEOUT_MS))
+                expansion = expand_apparel(
+                    search,
+                    task.pk,
+                    ranking.photos,
+                    expansion,
+                    embedding_model=task.embedding_model,
+                    gallery=task.source == FaceSearchTask.Source.GALLERY,
+                )
+                if expansion.apparel_evidence is None:
+                    raise ValueError("apparel expansion did not supply evidence")
+        except (DatabaseError, ValueError):
+            logger.warning("apparel_expansion_unavailable")
+            raise _ApparelSearchUnavailable from None
+
+    try:
+        with transaction.atomic():
+            locked_search = SelfieSearch.objects.select_for_update().get(pk=task.search_id)
+            if locked_search.status != SelfieSearch.Status.PROCESSING:
+                _terminal(task)
+                return
+            if (
+                locked_search.event_id != search.event_id
+                or locked_search.configuration_hash != search.configuration_hash
+                or locked_search.configuration != search.configuration
+            ):
+                raise RankingError("search configuration changed during matching")
+            search = locked_search
+            if _expired(task, timezone.now()):
+                _fail(task, code="matching_query_expired")
+                return
+            intended_status = (
+                SelfieSearch.Status.READY
+                if ranking.has_vectors
+                else SelfieSearch.Status.SEARCH_UNAVAILABLE
             )
-        _terminal(task)
-        if intended_status == SelfieSearch.Status.READY:
-            transaction.on_commit(partial(_publish_completion, search, task.source), robust=True)
+            search.eligible_photo_count = ranking.eligible_photo_count
+            search.eligible_face_count = ranking.eligible_face_count
+            prepare_search_result(
+                search, intended_status=str(intended_status), failure_code="", expansion=expansion
+            )
+            _terminal(task)
+            if intended_status == SelfieSearch.Status.READY:
+                transaction.on_commit(
+                    partial(_publish_completion, search, task.source), robust=True
+                )
+    except RankingError:
+        raise
+    except (DatabaseError, ValueError):
+        if not apparel_enabled:
+            raise
+        logger.warning("apparel_evidence_unavailable")
+        raise _ApparelSearchUnavailable from None
     try:
         attempt = (
             SelfieSearchAttempt.objects.filter(
@@ -328,17 +335,22 @@ def _fail(task: FaceSearchTask, *, code: str) -> None:
         _terminal(task)
 
 
-def retry(task: FaceSearchTask) -> None:
+def retry(task: FaceSearchTask, *, apparel_failure: bool = False) -> None:
+    # Publication might have staged TERMINAL before its transaction was rolled back.
+    task.refresh_from_db(fields=["status"])
     now = timezone.now()
+    max_attempts = APPAREL_MAX_ATTEMPTS if apparel_failure else MAX_ATTEMPTS
     if _expired(task, now):
         _fail(task, code="matching_query_expired")
-    elif task.attempt_count >= MAX_ATTEMPTS:
-        _fail(task, code="attempts_exhausted")
+    elif task.attempt_count >= max_attempts:
+        code = "apparel_search_unavailable" if apparel_failure else "attempts_exhausted"
+        _fail(task, code=code)
     else:
         with transaction.atomic():
-            SelfieSearch.objects.filter(pk=task.search_id).update(
-                status=SelfieSearch.Status.QUEUED, state_changed_at=now
-            )
+            if not SelfieSearch.objects.filter(
+                pk=task.search_id, status=SelfieSearch.Status.PROCESSING
+            ).update(status=SelfieSearch.Status.QUEUED, state_changed_at=now):
+                return
             previous_status = task.status
             task.status = FaceSearchTask.Status.QUEUED
             task.available_at = now + RETRY_DELAY
@@ -351,6 +363,8 @@ def run_once() -> bool:
     if task is not None:
         try:
             process_face_search(task)
+        except _ApparelSearchUnavailable:
+            retry(task, apparel_failure=True)
         except DatabaseError as error:
             if getattr(error.__cause__, "sqlstate", None) == "57014":
                 code = "matching_query_expired" if _expired(task, timezone.now()) else "failed"

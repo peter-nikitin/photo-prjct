@@ -53,15 +53,15 @@ def candidate_veto(
     return ""
 
 
-# The verification pass restricts this reader to the bounded anchor inputs. Retrieval
-# scans the event cohort once and reuses the same face-person association for exclusions.
+# Keep descriptor eligibility independent of face association. Nearest selection uses
+# all eligible descriptors, including people without an identifiable face.
 _PEOPLE_CTES = """
 appearance_inputs AS MATERIALIZED (
     SELECT attempt.id, state.photo_id, (attempt.result->>'head_count')::int AS head_count,
         jsonb_array_length(attempt.result->'people') AS person_count,
         (attempt.result->>'detections_truncated')::boolean
             OR (attempt.result->>'descriptors_truncated')::boolean AS people_incomplete,
-        face_state.accepted_attempt_id AS face_attempt, attempt.input_fingerprint AS fingerprint
+        attempt.input_fingerprint AS fingerprint
     FROM processing_photoprocessingstate state
     JOIN processing_processingattempt attempt ON attempt.id = state.accepted_attempt_id
     JOIN processing_processingjob job ON job.id = attempt.job_id
@@ -70,15 +70,12 @@ appearance_inputs AS MATERIALIZED (
     JOIN processing_photoderivative derivative ON derivative.photo_id = state.photo_id
         AND derivative.variant = 'preview-small-v1'
         AND derivative.accepted_attempt_id = preview.accepted_attempt_id
-    LEFT JOIN processing_photoprocessingstate face_state ON face_state.photo_id = state.photo_id
-        AND face_state.processor_type = 'face_embedding' AND face_state.status = 'succeeded'
     WHERE state.processor_type = 'person_appearance'
         AND state.status = 'succeeded' AND attempt.accepted
         AND attempt.processor_version = 1 AND attempt.contract_version = 2
         AND attempt.event_id = %(event)s AND attempt.status = 'succeeded'
         AND job.configuration_hash = %(config)s
         AND state.photo_id IN ({cohort_sql})
-        {photo_scope}
         AND attempt.input_fingerprint = jsonb_build_object(
             'object_key', derivative.final_key, 'object_size', derivative.byte_size,
             'object_content_type', derivative.content_type, 'object_etag', NULL,
@@ -90,9 +87,20 @@ people AS MATERIALIZED (
     SELECT appearance.id AS person_id, input.photo_id, appearance.bbox, appearance.head,
         appearance.reason,
         appearance.reid, appearance.color, appearance.helmet, input.head_count,
-        input.person_count, input.people_incomplete, input.face_attempt, input.fingerprint
+        input.person_count, input.people_incomplete, input.fingerprint
     FROM appearance_inputs input
     JOIN processing_personappearancedetection appearance ON appearance.attempt_id = input.id
+)
+"""
+
+# Each scope supplies every person on its photos: two heads sharing a face must stay
+# ambiguous even if one person's descriptors could not enter the nearest probe.
+_FACE_ASSOCIATION_CTES = """
+people_with_face_state AS MATERIALIZED (
+    SELECT person.*, face_state.accepted_attempt_id AS face_attempt
+    FROM scoped_people person
+    LEFT JOIN processing_photoprocessingstate face_state ON face_state.photo_id = person.photo_id
+        AND face_state.processor_type = 'face_embedding' AND face_state.status = 'succeeded'
 ),
 -- Batch the optional key lookups. The full joins with a subquery boundary prevent
 -- a bad row estimate from making PostgreSQL compare every person against the table.
@@ -100,14 +108,16 @@ face_attempts AS (
     SELECT id, input_fingerprint
     FROM processing_processingattempt
     WHERE accepted AND status = 'succeeded'
-      AND id = ANY(ARRAY(SELECT face_attempt FROM people WHERE face_attempt IS NOT NULL))
+      AND id = ANY(ARRAY(
+          SELECT face_attempt FROM people_with_face_state WHERE face_attempt IS NOT NULL
+      ))
 ),
 people_with_attempt AS (
     SELECT mapped.*
     FROM (
         SELECT person.*, CASE WHEN attempt.input_fingerprint = person.fingerprint
             THEN attempt.id END AS matched_attempt_id
-        FROM people person
+        FROM people_with_face_state person
         FULL JOIN face_attempts attempt ON attempt.id = person.face_attempt
         OFFSET 0
     ) mapped
@@ -183,6 +193,10 @@ WITH anchor_input AS (
 """
     + _PEOPLE_CTES
     + """,
+scoped_people AS (SELECT * FROM people),
+"""
+    + _FACE_ASSOCIATION_CTES
+    + """,
 checks AS MATERIALIZED (
     SELECT proposed.*, p.person_id, p.vector, p.reid, p.color, p.helmet,
         regions.head_color, regions.torso_color,
@@ -250,6 +264,15 @@ found_centroids AS (
 """
     + _PEOPLE_CTES
     + """,
+anchor_linked AS MATERIALIZED (
+    WITH scoped_people AS (
+        SELECT * FROM people WHERE photo_id = ANY(%(anchor_photo_ids)s::varchar[])
+    ),
+"""
+    + _FACE_ASSOCIATION_CTES
+    + """
+    SELECT * FROM linked
+),
 anchors AS MATERIALIZED (
     SELECT person.*, selected.ordinality AS position, selected.centroid_index,
         subvector(person.color, 1, 192) AS head_color,
@@ -257,17 +280,17 @@ anchors AS MATERIALIZED (
     FROM unnest(%(anchor_person_ids)s::bigint[], %(anchor_detection_ids)s::uuid[],
         %(anchor_centroid_indices)s::smallint[])
         WITH ORDINALITY AS selected(person_id, detection_id, centroid_index, ordinality)
-    JOIN linked person ON person.person_id = selected.person_id
+    JOIN anchor_linked person ON person.person_id = selected.person_id
         AND person.face_id = selected.detection_id
     WHERE person.vector IS NOT NULL AND person.reid IS NOT NULL AND person.color IS NOT NULL
 ),
 nearest AS MATERIALIZED (
-    SELECT candidate.person_id, candidate.photo_id, candidate.vector, candidate.face_id,
+    SELECT candidate.person_id, candidate.photo_id,
         best.person_id AS source_person_id,
         best.photo_id AS source_photo_id,
         best.face_id AS source_detection_id,
         best.reid_cosine_similarity, best.color_cosine_similarity, best.helmet_cosine_similarity
-    FROM linked candidate
+    FROM people candidate
     CROSS JOIN LATERAL (
         SELECT anchor.person_id, anchor.photo_id, anchor.face_id,
             (1 - (candidate.reid <=> anchor.reid)) AS reid_cosine_similarity,
@@ -285,15 +308,25 @@ nearest AS MATERIALIZED (
     ORDER BY best.reid_cosine_similarity DESC, candidate.photo_id, candidate.person_id
     LIMIT %(candidate_probe)s
 ),
+assessment_photos AS (
+    SELECT photo_id FROM unnest(%(baseline)s::varchar[]) AS baseline(photo_id)
+    UNION
+    SELECT photo_id FROM nearest
+),
+scoped_people AS (
+    SELECT person.* FROM people person JOIN assessment_photos USING (photo_id)
+),
+"""
+    + _FACE_ASSOCIATION_CTES
+    + """,
 assessments AS (
-    SELECT person_id, photo_id, face_id AS detection_id,
-        source_person_id, source_photo_id, source_detection_id,
-        reid_cosine_similarity, color_cosine_similarity, helmet_cosine_similarity,
-        CASE WHEN nearest.vector IS NOT NULL THEN greatest(0, least(
-            (SELECT min(nearest.vector <=> vector) FROM face_queries),
-            (SELECT min(nearest.vector <=> anchor.vector) FROM anchors anchor)
+    SELECT nearest.*, candidate.face_id AS detection_id,
+        CASE WHEN candidate.vector IS NOT NULL THEN greatest(0, least(
+            (SELECT min(candidate.vector <=> vector) FROM face_queries),
+            (SELECT min(candidate.vector <=> anchor.vector) FROM anchors anchor)
         )) END AS face_cosine_distance
     FROM nearest
+    JOIN linked candidate USING (person_id)
 ),
 person_assessments AS MATERIALIZED (
     SELECT person.photo_id, person.person_id, person.face_id, person.reason, person.bbox,
@@ -465,14 +498,12 @@ def _read_appearance_sql(
     statement: str,
     params: dict[str, Any],
     *,
-    photo_scope: str = "",
+    photo_ids: list[str] | None = None,
 ) -> tuple[Any, ...]:
-    cohort_sql, cohort_params = (
-        retrieval_gallery_photo_queryset(event=search.event)
-        .order_by()
-        .values("pk")
-        .query.sql_with_params()
-    )
+    cohort = retrieval_gallery_photo_queryset(event=search.event)
+    if photo_ids is not None:
+        cohort = cohort.filter(pk__in=photo_ids)
+    cohort_sql, cohort_params = cohort.order_by().values("pk").query.sql_with_params()
     # Reuse face-cohort eligibility and bind its positional parameters by name.
     for index, value in enumerate(cohort_params):
         key = f"cohort_{index}"
@@ -480,7 +511,7 @@ def _read_appearance_sql(
         params[key] = value
     with connection.wrap_database_errors, Cursor(connection.connection) as cursor:
         cursor.execute("SET LOCAL log_parameter_max_length_on_error = 0")
-        cursor.execute(statement.format(cohort_sql=cohort_sql, photo_scope=photo_scope), params)
+        cursor.execute(statement.format(cohort_sql=cohort_sql), params)
         row = cursor.fetchone()
         assert row is not None
         return row
@@ -548,6 +579,9 @@ def _select_anchors(
 def _read_anchor_checks(
     search: SelfieSearch, proposed: list[tuple[str, UUID, float]], model: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not proposed:
+        return [], []
+    photo_ids = [row[0] for row in proposed]
     checks, comparisons = _read_appearance_sql(
         search,
         _VERIFY_QUERY,
@@ -555,11 +589,11 @@ def _read_anchor_checks(
             "event": search.event_id,
             "model": model,
             "config": _configuration_hash(APPEARANCE_CONFIGURATION),
-            "ids": [row[0] for row in proposed],
+            "ids": photo_ids,
             "detections": [row[1] for row in proposed],
             "distances": [row[2] for row in proposed],
         },
-        photo_scope="AND state.photo_id IN (SELECT photo_id FROM anchor_input)",
+        photo_ids=photo_ids,
     )
     return json.loads(checks), json.loads(comparisons)
 
@@ -774,6 +808,7 @@ def expand_apparel(
                 "found_ranks": [row[2] for row in found_faces],
                 "found_centroid_indices": [row[3] for row in found_faces],
                 "source_photo": verification.source_photo_id,
+                "anchor_photo_ids": [row["photo_id"] for row in verification.anchors],
                 "anchor_person_ids": [row["person_id"] for row in verification.anchors],
                 "anchor_detection_ids": [UUID(row["detection_id"]) for row in verification.anchors],
                 "anchor_centroid_indices": [

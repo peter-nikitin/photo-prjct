@@ -870,9 +870,11 @@ class ApparelExclusionUpgradeTests(TransactionTestCase):
         snapshots["SelfieSearch"][0]["apparel_excluded_photo_count"] = 0
         snapshots["SelfieSearch"][0]["parent_search_id"] = None
         snapshots["SelfieSearch"][0]["negative_feedback_photos"] = {}
+        snapshots["SelfieSearch"][0]["face_history_excluded_photo_count"] = 0
         snapshots["SelfieSearchDirectEvidence"][0]["centroid_index"] = None
         for result in snapshots["SelfieSearchResult"]:
             result["excluded_by_apparel"] = False
+            result["excluded_by_face_history"] = False
         for model_name, rows in snapshots.items():
             current = upgraded.get_model("selfie_search", model_name)
             self.assertEqual(list(current.objects.order_by("pk").values()), rows)

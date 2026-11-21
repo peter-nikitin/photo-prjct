@@ -262,7 +262,7 @@ anchors AS MATERIALIZED (
     WHERE person.vector IS NOT NULL AND person.reid IS NOT NULL AND person.color IS NOT NULL
 ),
 nearest AS MATERIALIZED (
-    SELECT candidate.person_id, candidate.photo_id, candidate.vector,
+    SELECT candidate.person_id, candidate.photo_id, candidate.vector, candidate.face_id,
         best.person_id AS source_person_id,
         best.photo_id AS source_photo_id,
         best.face_id AS source_detection_id,
@@ -286,7 +286,8 @@ nearest AS MATERIALIZED (
     LIMIT %(candidate_probe)s
 ),
 assessments AS (
-    SELECT person_id, photo_id, source_person_id, source_photo_id, source_detection_id,
+    SELECT person_id, photo_id, face_id AS detection_id,
+        source_person_id, source_photo_id, source_detection_id,
         reid_cosine_similarity, color_cosine_similarity, helmet_cosine_similarity,
         CASE WHEN nearest.vector IS NOT NULL THEN greatest(0, least(
             (SELECT min(nearest.vector <=> vector) FROM face_queries),
@@ -810,9 +811,13 @@ def expand_apparel(
             candidate["person_id"],
         )
     )
-    additions: dict[str, int] = {}
+    additions: dict[str, tuple[int, UUID | None]] = {}
     for candidate in valid:
-        additions.setdefault(candidate["photo_id"], candidate["person_id"])
+        detection_id = candidate.get("detection_id")
+        additions.setdefault(
+            candidate["photo_id"],
+            (candidate["person_id"], UUID(detection_id) if detection_id else None),
+        )
     addition_limit = int(POLICY["max_additions"])
     found = [
         ExpandedRankedPhoto(
@@ -820,6 +825,7 @@ def expand_apparel(
             primary_source=str(SelfieSearchResult.PrimarySource.APPAREL_EXPANSION),
             direct=None,
             cluster_evidence=(),
+            apparel_detection_id=additions[photo_id][1],
         )
         for photo_id in list(additions)[:addition_limit]
     ]
@@ -843,7 +849,7 @@ def expand_apparel(
         "recommendations_truncated": len(recommendations) > recommendation_limit,
         "candidates_truncated": candidates_truncated,
         "additions_truncated": len(additions) > addition_limit,
-        "added_people": {row.photo_id: additions[row.photo_id] for row in found},
+        "added_people": {row.photo_id: additions[row.photo_id][0] for row in found},
     }
     if continuation_groups:
         evidence["centroid_anchor_outcomes"] = verification.group_outcomes

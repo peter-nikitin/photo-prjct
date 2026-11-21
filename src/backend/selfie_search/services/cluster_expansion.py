@@ -42,6 +42,7 @@ class ExpandedRankedPhoto:
     direct: RankedPhoto | None
     cluster_evidence: tuple[ClusterEvidenceValue, ...]
     anchor_evidence: AnchorMatch | None = None
+    apparel_detection_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ class RankedPhotoExpansion:
     apparel_expanded_photo_count: int = 0
     apparel_evidence: dict[str, object] | None = None
     excluded_photo_ids: frozenset[str] = frozenset()
+    face_history_excluded_photo_ids: frozenset[str] = frozenset()
 
 
 def expand_ranked_photos(

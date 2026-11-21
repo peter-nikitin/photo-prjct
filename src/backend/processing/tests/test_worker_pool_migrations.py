@@ -165,7 +165,10 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
                 continue
             expected = before[pair]
             if pair == ("selfie_search", "SelfieSearchResult"):
-                expected = [row | {"excluded_by_apparel": False} for row in expected]
+                expected = [
+                    row | {"excluded_by_apparel": False, "excluded_by_face_history": False}
+                    for row in expected
+                ]
             elif pair == ("selfie_search", "SelfieSearchDirectEvidence"):
                 expected = [row | {"centroid_index": None} for row in expected]
             assert snapshot(current, *pair) == expected

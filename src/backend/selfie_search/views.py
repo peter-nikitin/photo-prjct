@@ -323,15 +323,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     continuation_empty = (
         last_pass is not None
         and last_pass.status == SelfieSearch.Status.READY
-        and (
-            last_pass.published_matched_photo_count == 0
-            or (
-                bool(excluded_ids)
-                and not last_pass.results.filter(excluded_by_apparel=False)
-                .exclude(photo_id__in=excluded_ids)
-                .exists()
-            )
-        )
+        and not any(row.search_id == last_pass.pk for row in result_rows)
     )
     no_new_anchors = last_pass is not None and last_pass.failure_code == "continuation_unavailable"
     response = render(

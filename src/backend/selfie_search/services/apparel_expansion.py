@@ -486,11 +486,7 @@ class ApparelAnchorVerification:
     def centroid_detection_ids(self) -> tuple[UUID, ...] | None:
         if self.outcome == "no_compatible_appearance":
             return None
-        return tuple(
-            UUID(row["detection_id"])
-            for row in self.anchors
-            if row["photo_id"] != self.source_photo_id
-        )
+        return tuple(UUID(row["detection_id"]) for row in self.anchors)
 
 
 def _read_appearance_sql(

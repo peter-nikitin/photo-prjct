@@ -243,10 +243,13 @@ test('focuses an existing selfie rejection summary when the page starts', () => 
   assert.equal(focusCount, 1);
 });
 
-test('polls queued and processing states every two seconds before terminal refresh', async () => {
+test('polls early search states quickly, then returns to two-second polling', async () => {
   const timers = clock();
   const statuses = [
     { status: 'queued' },
+    { status: 'processing' },
+    { status: 'processing' },
+    { status: 'processing' },
     { status: 'processing' },
     { status: 'ready' },
   ];
@@ -263,13 +266,19 @@ test('polls queued and processing states every two seconds before terminal refre
   });
 
   await poller.poll();
-  assert.equal(timers.scheduled[0].delay, 2000);
+  assert.equal(timers.scheduled[0].delay, 500);
   await timers.scheduled[0].callback();
-  assert.equal(timers.scheduled[1].delay, 2000);
+  assert.equal(timers.scheduled[1].delay, 500);
   await timers.scheduled[1].callback();
+  assert.equal(timers.scheduled[2].delay, 500);
+  await timers.scheduled[2].callback();
+  assert.equal(timers.scheduled[3].delay, 500);
+  await timers.scheduled[3].callback();
+  assert.equal(timers.scheduled[4].delay, 2000);
+  await timers.scheduled[4].callback();
 
   assert.equal(reloads, 1);
-  assert.equal(timers.scheduled.length, 2);
+  assert.equal(timers.scheduled.length, 5);
 });
 
 test('gallery waiting heading stays the same through status polling', async () => {
@@ -291,7 +300,7 @@ test('gallery waiting heading stays the same through status polling', async () =
   }, { storage: {} });
   for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
   assert.equal(heading.textContent, 'Ищем фотографии…');
-  await timers.scheduled.find((timer) => timer.delay === 2000).callback();
+  await timers.scheduled.find((timer) => timer.delay === 500).callback();
   assert.equal(heading.textContent, 'Ищем фотографии…');
   poller.stop();
 });

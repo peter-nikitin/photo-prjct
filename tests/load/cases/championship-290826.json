@@ -58,23 +58,6 @@
       "expectedPhotoId": "7347405e17b24b85a7fd885dbf5a563e"
     }
   ],
-  "find_more": [
-    {
-      "page": 111,
-      "detectionId": "2166eaaf-0906-47b8-861c-011d8d64f6f2",
-      "expectedPhotoId": "2d0055f10a274d32900244b88ce74773"
-    },
-    {
-      "page": 111,
-      "detectionId": "fb16301d-29e9-461b-b8ce-315a0654c64a",
-      "expectedPhotoId": "5293ead875234f2fb034de83e860b354"
-    },
-    {
-      "page": 111,
-      "detectionId": "9ba5b493-5cdd-4a00-bc5a-db4df84e5d62",
-      "expectedPhotoId": "7347405e17b24b85a7fd885dbf5a563e"
-    }
-  ],
   "find_by_result": [
     {
       "page": 111,

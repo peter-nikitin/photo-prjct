@@ -47,4 +47,11 @@
       </details>
     {% endif %}
   </div>
+{% elif photo.photo_id in gallery_apparel_search_ids %}
+  <div class="gallery-face-control">
+    <form class="gallery-face-search" action="{% url 'selfie_search:submit_gallery_apparel' event_slug=event.slug photo_id=photo.photo_id %}" method="post" target="_blank">
+      {% csrf_token %}
+      <button class="button gallery-apparel-search-button" type="submit">Найти похожее</button>
+    </form>
+  </div>
 {% endif %}

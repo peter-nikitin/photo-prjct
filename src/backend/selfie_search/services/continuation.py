@@ -39,6 +39,7 @@ from selfie_search.services.results import (
 )
 from selfie_search.services.submission import (
     CONTINUATION_PAID_PREVIEWS_KEY,
+    GALLERY_APPAREL_SOURCE,
     GallerySearchUnavailable,
     _configuration_hash,
     _gallery_configuration,
@@ -70,7 +71,11 @@ class Anchor:
 
 def _manual_source_photo_id(search: SelfieSearch) -> str | None:
     source = search.configuration.get("query_source")
-    if isinstance(source, dict) and source.get("kind") in (_MANUAL_SOURCE, _APPAREL_SOURCE):
+    if isinstance(source, dict) and source.get("kind") in (
+        _MANUAL_SOURCE,
+        _APPAREL_SOURCE,
+        GALLERY_APPAREL_SOURCE,
+    ):
         photo_id = source.get("photo_id")
         if isinstance(photo_id, str):
             return photo_id
@@ -639,18 +644,4 @@ def verify_apparel_continuation(search: SelfieSearch) -> ApparelAnchorVerificati
         != person_id
     ):
         raise ContinuationUnavailable
-    return ApparelAnchorVerification(
-        photo_id,
-        "verified",
-        (
-            {
-                "photo_id": photo_id,
-                "person_id": person_id,
-                "detection_id": None,
-                "anchor_position": 1,
-            },
-        ),
-        [],
-        [],
-        False,
-    )
+    return ApparelAnchorVerification.for_person(photo_id, person_id)

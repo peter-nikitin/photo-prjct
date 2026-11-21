@@ -1234,6 +1234,13 @@
   position: static;
 }
 
+.gallery-apparel-search-button {
+  min-height: 44px;
+  padding-inline: 8px;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+}
+
 .gallery-face-button,
 .gallery-face-stack {
   box-sizing: border-box;

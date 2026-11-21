@@ -14,7 +14,8 @@ from django.db import DatabaseError, transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
-from feature_flags.services import is_enabled_for_state
+from feature_flags.registry import APPAREL_SEARCH_EXPANSION
+from feature_flags.services import is_enabled, is_enabled_for_state
 from feature_flags.states import FEATURE_FLAG_STAFF
 from picflow.gallery import (
     GalleryFaceCrop,
@@ -37,11 +38,13 @@ from selfie_search.models import (
     SelfieSearch,
     SelfieSearchJob,
 )
+from selfie_search.services.apparel_expansion import gallery_apparel_sources
 from selfie_search.services.jobs import enqueue_face_search
 from selfie_search.services.ranking import RankingError, validate_query_vector
 from selfie_search.storage import StoredTemporarySelfie
 
 CONTINUATION_PAID_PREVIEWS_KEY = "continuation_paid_watermarked_previews"
+GALLERY_APPAREL_SOURCE = "gallery_apparel"
 
 
 @dataclass(frozen=True)
@@ -51,7 +54,7 @@ class CreatedSearch:
 
 
 class GallerySearchUnavailable(LookupError):
-    """A selected gallery face is no longer usable current evidence."""
+    """A selected gallery source is no longer usable current evidence."""
 
 
 class GallerySearchFailed(RuntimeError):
@@ -180,7 +183,7 @@ def submit_gallery_photo_search(
     now: datetime | None = None,
     paid_watermarked_previews_enabled: bool = False,
 ) -> CreatedSearch:
-    """Validate one selected gallery face and create its queued bearer result."""
+    """Validate the selected gallery source and enqueue a new search."""
     now = now or timezone.now()
     try:
         with transaction.atomic():
@@ -199,13 +202,30 @@ def submit_gallery_photo_search(
             if photo is None:
                 raise GallerySearchUnavailable() from None
 
-            configuration = _gallery_configuration(
-                event=event, photo=photo, detection_id=detection_id
-            )
+            if detection_id is None:
+                if not is_enabled(APPAREL_SEARCH_EXPANSION, user):
+                    raise GallerySearchUnavailable
+                person_id = _gallery_apparel_person_id(
+                    photo, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+                )
+                if person_id is None:
+                    raise GallerySearchUnavailable
+                configuration = _gallery_configuration(event=event)
+                configuration["query_source"] = {
+                    "kind": GALLERY_APPAREL_SOURCE,
+                    "photo_id": photo.pk,
+                    "person_id": person_id,
+                }
+                configuration[CONTINUATION_PAID_PREVIEWS_KEY] = paid_watermarked_previews_enabled
+                query = None
+            else:
+                configuration = _gallery_configuration(
+                    event=event, photo=photo, detection_id=detection_id
+                )
+                query = _gallery_source_vector(event=event, configuration=configuration)
             configuration[ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY] = is_enabled_for_state(
                 FEATURE_FLAG_STAFF, user
             )
-            query = _gallery_source_vector(event=event, configuration=configuration)
 
             public_token = secrets.token_urlsafe(32)
             search = SelfieSearch.objects.create(
@@ -227,6 +247,40 @@ def submit_gallery_photo_search(
     except DatabaseError as error:
         raise GallerySearchFailed() from error
     return CreatedSearch(search=search, public_token=public_token)
+
+
+def _gallery_apparel_person_id(
+    photo: Photo, *, paid_watermarked_previews_enabled: bool
+) -> int | None:
+    if gallery_search_faces_by_photo(
+        event=photo.event,
+        photos=(photo,),
+        paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+    ):
+        return None
+    return gallery_apparel_sources(photo.event, photo_ids=[photo.pk]).get(photo.pk)
+
+
+def verify_gallery_apparel_source(search: SelfieSearch) -> tuple[str, int]:
+    source = search.configuration.get("query_source")
+    if not isinstance(source, dict) or source.get("kind") != GALLERY_APPAREL_SOURCE:
+        raise GallerySearchUnavailable
+    photo_id, person_id = source.get("photo_id"), source.get("person_id")
+    if not isinstance(photo_id, str) or type(person_id) is not int:
+        raise GallerySearchUnavailable
+    paid_previews = search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True
+    photo = (
+        gallery_photo_queryset(event=search.event, paid_watermarked_previews_enabled=paid_previews)
+        .filter(pk=photo_id)
+        .first()
+    )
+    if (
+        photo is None
+        or _gallery_apparel_person_id(photo, paid_watermarked_previews_enabled=paid_previews)
+        != person_id
+    ):
+        raise GallerySearchUnavailable
+    return photo_id, person_id
 
 
 def _gallery_source_vector(

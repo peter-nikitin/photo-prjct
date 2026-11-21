@@ -145,6 +145,40 @@ def test_bulk_entrypoint_runs_two_slots_and_drains_together(monkeypatch) -> None
     assert workers[0].drain.completed.is_set()
 
 
+def test_local_selfie_entrypoint_starts_two_slots_and_drains_together(monkeypatch) -> None:
+    from photo_worker import __main__ as entrypoint
+    from photo_worker import runtime_threads
+    from photo_worker.runner import Worker
+
+    monkeypatch.setattr(runtime_threads, "_CPU_BUDGET", 2)
+    monkeypatch.setattr(entrypoint, "install_signal_handlers", lambda _worker: None)
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv("PHOTO_WORKER_TRANSPORT", "local")
+    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_TYPES", "selfie_query")
+    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_IDENTITIES", "1/selfie_query/2")
+
+    entered = threading.Barrier(2)
+    workers: list[Worker] = []
+
+    def run(worker: Worker) -> None:
+        workers.append(worker)
+        entered.wait(timeout=3)
+        if worker is workers[0]:
+            worker.request_drain()
+        assert worker.draining.wait(timeout=3)
+        assert not worker.drain.completed.is_set()
+
+    monkeypatch.setattr(Worker, "run_forever", run)
+    entrypoint.main()
+
+    assert len(workers) == 2
+    assert workers[0] is not workers[1]
+    assert workers[0].fleet is workers[1].fleet is None
+    assert workers[0].drain is workers[1].drain
+    assert workers[0].drain.completed.is_set()
+
+
 def test_bulk_slot_failure_keeps_drain_deadline_until_other_slot_finishes(monkeypatch) -> None:
     from photo_worker import __main__ as entrypoint
     from photo_worker.runner import Worker, WorkerConfig

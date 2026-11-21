@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from photo_worker.transport import POOL_IDENTITIES
+
 CPU_MAX_PATH = Path("/sys/fs/cgroup/cpu.max")
 
 
@@ -21,9 +23,24 @@ def cpu_thread_budget(path: Path = CPU_MAX_PATH) -> int:
         return 1
 
 
-# Two bulk slots share the existing two-vCPU container; native libraries must not
-# each reserve the full CPU budget independently.
-CPU_THREADS = 1 if os.environ.get("PHOTO_WORKER_POOL") == "bulk" else cpu_thread_budget()
+_CPU_BUDGET = cpu_thread_budget()
+
+
+def worker_slot_count() -> int:
+    if os.environ.get("PHOTO_WORKER_TRANSPORT", "local") == "remote":
+        return 2 if os.environ.get("PHOTO_WORKER_POOL") == "bulk" else 1
+    if (
+        _CPU_BUDGET == 2
+        and os.environ.get("PHOTO_WORKER_PROCESSOR_IDENTITIES", "").strip()
+        == POOL_IDENTITIES["selfie"]
+        and os.environ.get("PHOTO_WORKER_PROCESSOR_TYPES", "").strip() == "selfie_query"
+    ):
+        return 2
+    return 1
+
+
+# Each slot gets a share of the total budget, including the existing remote bulk slots.
+CPU_THREADS = max(1, _CPU_BUDGET // worker_slot_count())
 
 
 def configure_native_environment() -> None:

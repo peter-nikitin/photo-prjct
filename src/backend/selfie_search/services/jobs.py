@@ -83,7 +83,7 @@ class SearchCompletionConflict(ValueError):
 
 @dataclass(frozen=True)
 class EmptySearchClaim:
-    suggested_delay_seconds: int = 5
+    suggested_delay_seconds: int = 1
 
     @property
     def empty(self) -> bool:

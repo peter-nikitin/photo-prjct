@@ -51,8 +51,9 @@ from photo_worker.lifecycle import DrainController, FleetLifecycle
 from photo_worker.metadata import InputTooLarge, MetadataError, extract_capture_metadata
 from photo_worker.observability import SelfieWorkerEventName, emit_selfie_worker_event
 from photo_worker.preview import PreviewError, PreviewResult, generate_preview
+from photo_worker.runtime_threads import worker_slot_count
 from photo_worker.telemetry import Outcome, RuntimeTelemetry
-from photo_worker.transport import validate_remote_config
+from photo_worker.transport import POOL_IDENTITIES, validate_remote_config
 from photo_worker.watermark import (
     WatermarkedPreviewError,
     WatermarkedPreviewResult,
@@ -148,8 +149,6 @@ class WorkerConfig:
     def __post_init__(self) -> None:
         if self.runtime_telemetry_enabled and self.remote_pool is None:
             raise ValueError("runtime telemetry requires remote worker transport")
-        if self.concurrency not in {1, 2} or (self.concurrency == 2 and self.remote_pool != "bulk"):
-            raise ValueError("worker concurrency must be 1 or 2 on the remote bulk pool")
         supported = {
             PROCESSOR_TYPE,
             PROCESSOR_TYPE_FACE_EMBEDDING,
@@ -175,6 +174,15 @@ class WorkerConfig:
         identities = tuple(_parse_processor_identity(value) for value in self.processor_identities)
         if len(set(identities)) != len(identities):
             raise ValueError("processor identities must not repeat")
+        local_selfie_only = (
+            self.remote_pool is None
+            and types == (PROCESSOR_TYPE_SELFIE_QUERY,)
+            and self.processor_identities == (POOL_IDENTITIES["selfie"],)
+        )
+        if self.concurrency not in {1, 2} or (
+            self.concurrency == 2 and self.remote_pool != "bulk" and not local_selfie_only
+        ):
+            raise ValueError("worker concurrency must be 1, or 2 for remote bulk or local selfie")
         object.__setattr__(self, "processor_types", types)
         object.__setattr__(
             self,
@@ -226,11 +234,7 @@ class WorkerConfig:
                 processor_types=processor_types,
                 log_secrets=(token,),
                 remote_pool=os.environ["PHOTO_WORKER_POOL"] if transport == "remote" else None,
-                concurrency=(
-                    2
-                    if transport == "remote" and os.environ.get("PHOTO_WORKER_POOL") == "bulk"
-                    else 1
-                ),
+                concurrency=worker_slot_count(),
                 runtime_telemetry_enabled=os.environ.get(
                     "PHOTO_WORKER_RUNTIME_TELEMETRY_ENABLED", "False"
                 )

@@ -1611,14 +1611,14 @@ def test_claimed_configuration_sets_the_next_poll_delay(tmp_path: Path) -> None:
     assert worker._next_poll_delay_seconds == 5
 
 
-def test_worker_configuration_bounds_parallel_concurrency_to_bulk() -> None:
+def test_worker_configuration_rejects_invalid_parallel_concurrency() -> None:
     assert (
         WorkerConfig(
             worker_build="worker-test", lease_seconds=60, concurrency=2, remote_pool="bulk"
         ).concurrency
         == 2
     )
-    for concurrency, pool in ((0, "bulk"), (3, "bulk"), (2, "selfie")):
+    for concurrency, pool in ((0, "bulk"), (3, "bulk"), (2, "selfie"), (2, None)):
         with pytest.raises(ValueError, match="concurrency"):
             WorkerConfig(
                 worker_build="worker-test",

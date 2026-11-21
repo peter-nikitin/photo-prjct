@@ -324,6 +324,57 @@ class ApparelQueueTests(TestCase):
             result.anchor_evidence.sources.values_list("anchor__detection_id", flat=True)
         ) == [source.detection_id, anchor.detection_id]
 
+    def test_results_can_continue_from_the_saved_person_without_a_face(self):
+        from selfie_search.services.submission import _token_digest
+
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        FeatureFlag.objects.create(key="selfie-search-passes", state="on")
+        _, source = self.index_appearance("apparel-source", face_similarity=1.0)
+        self.index_appearance("saved-person", reid_similarity=0.75)
+        self.index_appearance("new-no-face", reid_similarity=0.5)
+        self.index_appearance("wrong-face", face_similarity=0.1, reid_similarity=0.5)
+        self.index_appearance("wrong-color", reid_similarity=0.5, color_similarity=0.0)
+        search = self.submit_gallery(source)
+        token = uuid4().hex
+        SelfieSearch.objects.filter(pk=search.pk).update(public_token_digest=_token_digest(token))
+        kwargs = {"event_slug": self.event.slug, "public_token": token}
+        result_url = reverse("selfie_search:result", kwargs=kwargs)
+        continue_url = reverse("selfie_search:continue", kwargs=kwargs)
+
+        assert run_once()
+        assert self.result_photos(search) == ["apparel-source", "saved-person"]
+        page = self.client.get(result_url)
+        assert "saved-person" in page.context["continuation_photo_ids"]
+
+        gate = FeatureFlag.objects.filter(key="apparel-search-expansion")
+        gate.update(state="off")
+        page = self.client.get(result_url)
+        assert page.context["continuation_photo_ids"] == {"apparel-source"}
+        response = self.client.post(
+            continue_url, {"photo_id": "saved-person"}, HTTP_ACCEPT="application/json"
+        )
+        assert response.status_code == 409
+        assert not search.continuation_passes.exists()
+        gate.update(state="on")
+
+        response = self.client.post(
+            continue_url, {"photo_id": "saved-person"}, HTTP_ACCEPT="application/json"
+        )
+        assert response.status_code == 200
+        assert response.json()["result_url"] == result_url
+        assert run_once()
+        child = search.continuation_passes.get()
+        assert self.result_photos(child) == ["new-no-face", "wrong-face"]
+        assert child.results.get(photo_id="wrong-face").excluded_by_face_history
+        assert (
+            child.apparel_evidence.decisions["policy"]["addition_color_cosine_similarity_min"]
+            == 0.70
+        )
+        assert child.published_matched_photo_count == 1
+        page = self.client.get(result_url)
+        assert "new-no-face" in page.context["continuation_photo_ids"]
+
     def test_centroid_face_result_stays_in_baseline_with_quality_recommendation(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")

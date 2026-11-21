@@ -23,7 +23,11 @@ from django.urls import reverse
 from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from django.views.decorators.http import require_GET, require_POST
 from feature_flags import services as feature_flag_services
-from feature_flags.registry import BULK_PHOTO_DOWNLOAD, SELFIE_SEARCH_PASSES
+from feature_flags.registry import (
+    APPAREL_SEARCH_EXPANSION,
+    BULK_PHOTO_DOWNLOAD,
+    SELFIE_SEARCH_PASSES,
+)
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.access import mark_event_staff_preview
 from picflow.archive import ArchiveEntry, ArchiveObservation
@@ -265,7 +269,12 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         )
         if not pending:
             usable_photo_ids = available_manual_photo_ids(
-                search, photo_ids=tuple(photo.pk for photo in photos)
+                search,
+                photo_ids=tuple(photo.pk for photo in photos),
+                apparel_enabled=feature_flag_services.is_enabled(
+                    APPAREL_SEARCH_EXPANSION, request.user
+                ),
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             )
     cart_state = cart_state_for_photos(
         request=request,

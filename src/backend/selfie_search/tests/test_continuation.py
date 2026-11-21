@@ -7,6 +7,9 @@ from uuid import uuid4
 from django.db import close_old_connections
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
+from feature_flags.registry import SELFIE_SEARCH_PASSES
+from feature_flags.states import FEATURE_FLAG_ON
+from feature_flags.testing import override_feature_flags
 from picflow.models import Photo
 from processing.models import PhotoFaceDetection
 from search_feedback.models import SearchFeedback
@@ -84,6 +87,7 @@ class SearchContinuationTests(TestCase):
         with self.assertRaises(ContinuationUnavailable):
             submit_continuation(search=root, user=self.user, photo_id=source.photo_id)
 
+    @override_feature_flags({SELFIE_SEARCH_PASSES: FEATURE_FLAG_ON})
     def test_both_http_posts_continue_on_the_same_bearer_link(self):
         token = uuid4().hex
         root = self.root_search(token=token)
@@ -114,6 +118,7 @@ class SearchContinuationTests(TestCase):
             {"manual-addition", "auto-addition"},
         )
 
+    @override_feature_flags({SELFIE_SEARCH_PASSES: FEATURE_FLAG_ON})
     def test_automatic_post_leaves_anchor_selection_to_matching_worker(self):
         token = uuid4().hex
         root = self.root_search(token=token)

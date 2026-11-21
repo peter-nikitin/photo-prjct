@@ -22,7 +22,7 @@ from django.urls import reverse
 from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from django.views.decorators.http import require_GET, require_POST
 from feature_flags import services as feature_flag_services
-from feature_flags.registry import BULK_PHOTO_DOWNLOAD
+from feature_flags.registry import BULK_PHOTO_DOWNLOAD, SELFIE_SEARCH_PASSES
 from ingestion.storage import ObjectMissing, StorageError, StorageUnavailable
 from picflow.access import mark_event_staff_preview
 from picflow.archive import ArchiveEntry, ArchiveObservation
@@ -219,6 +219,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
+    search_passes_enabled = feature_flag_services.is_enabled(SELFIE_SEARCH_PASSES, request.user)
     paid_watermarked_previews_enabled = _paid_watermarked_previews_enabled(request)
     passes = search.continuation_passes.order_by("-created_at", "-pk")
     last_pass = passes.first()
@@ -239,7 +240,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         if last_pass is not None and last_is_selfie
         else search.status
     )
-    upload_count = selfie_upload_count(search) if is_terminal else 0
+    upload_count = selfie_upload_count(search) if search_passes_enabled and is_terminal else 0
     is_gallery_origin = search.configuration.get("processor") == "gallery_photo_query"
     negative_feedback = negative_feedback_state(search)
     saved_rows = tuple(
@@ -269,7 +270,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     )
     continuation_url = None
     usable_photo_ids: set[str] = set()
-    if result_rows:
+    if search_passes_enabled and result_rows:
         continuation_url = reverse(
             "selfie_search:continue",
             kwargs={"event_slug": event_slug, "public_token": public_token},
@@ -351,6 +352,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "all_results_marked": published_count == len(reported_ids),
             "feedback_excluded_photo_count": len(excluded_ids),
             "continuation_url": continuation_url,
+            "search_passes_enabled": search_passes_enabled,
             "continuation_pending": pending,
             "continuation_unavailable": request.GET.get("more") == "unavailable" or no_new_anchors,
             "continuation_empty": continuation_empty,
@@ -408,6 +410,8 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
 @sensitive_variables()
 def add_selfie(request, event_slug: str, public_token: str) -> HttpResponseBase:
     started_at = monotonic()
+    if not feature_flag_services.is_enabled(SELFIE_SEARCH_PASSES, request.user):
+        return _not_found_response()
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
@@ -462,6 +466,8 @@ def add_selfie(request, event_slug: str, public_token: str) -> HttpResponseBase:
 @_sanitize_result_exception_path
 @sensitive_variables("public_token")
 def continue_search(request, event_slug: str, public_token: str) -> HttpResponseBase:
+    if not feature_flag_services.is_enabled(SELFIE_SEARCH_PASSES, request.user):
+        return _not_found_response()
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()

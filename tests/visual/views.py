@@ -970,6 +970,7 @@ def _selfie_search_ready(
                 "selfie_search:continue",
                 kwargs={"event_slug": event.slug, "public_token": "visual-ready-result"},
             ),
+            "search_passes_enabled": True,
             "continuation_photo_ids": {photos[0].photo_id} if photos else set(),
             "gallery_photos": photos,
             "gallery_result_items": tuple(
@@ -1237,6 +1238,7 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
             "reported_photo_ids": {photos[0].photo_id},
             "similar_feedback_photo_ids": {photos[1].photo_id},
             "published_count": len(photos),
+            "search_passes_enabled": True,
             "result_feedback_url": reverse("search_feedback_submit", args=(EVENTS[0].slug,)),
             "is_terminal": True,
             "public_token_digest": "b" * 64,

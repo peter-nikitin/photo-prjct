@@ -78,7 +78,9 @@
                   {% if result_feedback_url %}
                     {% include "ui/search_result_feedback.html" with feedback_url=result_feedback_url photo_id=photo.photo_id reversible_feedback=True %}
                   {% endif %}
-                    <button class="button" form="search-continuation" name="photo_id" value="{{ photo.photo_id }}" type="submit" disabled{% if continuation_url and photo.photo_id in continuation_photo_ids %} data-continuation-control{% endif %}>Найти по этому фото</button>
+                  {% if search_passes_enabled %}
+                      <button class="button" form="search-continuation" name="photo_id" value="{{ photo.photo_id }}" type="submit" disabled{% if continuation_url and photo.photo_id in continuation_photo_ids %} data-continuation-control{% endif %}>Найти по этому фото</button>
+                  {% endif %}
                   </div>
                 {% endif %}
               </figure>

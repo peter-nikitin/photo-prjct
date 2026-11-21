@@ -100,6 +100,7 @@ class ApparelQueueTests(TestCase):
         *,
         face_similarity=None,
         face_axis=1,
+        face_vector=None,
         reason="",
         event=None,
         associate_face=True,
@@ -131,15 +132,16 @@ class ApparelQueueTests(TestCase):
         )
         publish_gallery_media(preview)
         face = None
-        if face_similarity is not None:
-            vector = [0.0] * 512
-            vector[0] = face_similarity
-            vector[face_axis] = sqrt(1 - face_similarity**2)
+        if face_vector is None and face_similarity is not None:
+            face_vector = [0.0] * 512
+            face_vector[0] = face_similarity
+            face_vector[face_axis] = sqrt(1 - face_similarity**2)
+        if face_vector is not None:
             face = self.make_eligible_embedding(
                 event=event,
                 photo_id=photo.pk,
                 photo=photo,
-                vector=vector,
+                vector=face_vector,
                 input_fingerprint=_derivative_fingerprint(preview),
             )
         assert request_person_appearance(photo.pk, preview.final_key)
@@ -298,6 +300,30 @@ class ApparelQueueTests(TestCase):
         assert candidate["color_cosine_similarity"] == 0.70
         assert candidate["veto"] == ""
 
+    def test_initial_gallery_centroid_includes_the_verified_source(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        FeatureFlag.objects.create(key="face-search-anchor-expansion", state="on")
+        _, source = self.index_appearance("gallery-source", face_similarity=1.0)
+        _, anchor = self.index_appearance("direct-anchor", face_similarity=0.74)
+        # Cosine similarity is 0.55 to both individual faces and above 0.58 to their centroid.
+        second = 0.55 * (1 - 0.74) / sqrt(1 - 0.74**2)
+        face_vector = [0.55, second, sqrt(1 - 0.55**2 - second**2)] + [0.0] * 509
+        # Keep the photo outside apparel retrieval, without qualifying it for exclusion.
+        self.index_appearance("combined-only", face_vector=face_vector, reid_similarity=0.6)
+
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        assert self.result_photos(search) == ["gallery-source", "direct-anchor", "combined-only"]
+        result = search.results.get(photo_id="combined-only")
+        assert result.primary_source == SelfieSearchResult.PrimarySource.FACE_ANCHOR_EXPANSION
+        assert not result.excluded_by_apparel
+        assert search.published_matched_photo_count == 3
+        assert list(
+            result.anchor_evidence.sources.values_list("anchor__detection_id", flat=True)
+        ) == [source.detection_id, anchor.detection_id]
+
     def test_centroid_face_result_stays_in_baseline_with_quality_recommendation(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
@@ -342,7 +368,7 @@ class ApparelQueueTests(TestCase):
         sources = list(
             centroid.anchor_evidence.sources.values_list("anchor__detection_id", flat=True)
         )
-        assert sources == [clean.detection_id]
+        assert sources == [source.detection_id, clean.detection_id]
         autosuppressed = search.results.get(photo_id="white-anchor")
         assert autosuppressed.excluded_by_apparel
         assert autosuppressed.direct_evidence.detection_id == white.detection_id
@@ -703,7 +729,9 @@ class ApparelQueueTests(TestCase):
         assert excluded.primary_source == SelfieSearchResult.PrimarySource.DIRECT
         assert excluded.direct_evidence.detection_id == direct.detection_id
         centroid = search.results.get(rank=3)
-        assert centroid.anchor_evidence.sources.get().anchor_id == excluded.direct_evidence.pk
+        assert list(
+            centroid.anchor_evidence.sources.values_list("anchor__detection_id", flat=True)
+        ) == [source.detection_id, excluded.direct_evidence.detection_id]
         assert search.apparel_evidence.decisions
 
     def test_publication_retries_when_excluded_row_has_no_audit_decision(self):

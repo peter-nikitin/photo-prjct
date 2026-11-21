@@ -15,6 +15,7 @@ from feature_flags.states import FEATURE_FLAG_STAFF
 from picflow.models import Event
 from processing.models import FaceEmbeddingVector, PhotoFaceDetection, PhotoProcessingState
 from psycopg import Cursor
+from search_feedback.services import active_negative_reports
 
 from selfie_search.models import (
     _TERMINAL_SEARCH_STATUSES,
@@ -54,6 +55,7 @@ _MAX_MEMBERS = 5
 _MAX_CANDIDATES = 60
 _STRONG_DISTANCE = 0.38
 _CONSISTENCY_DISTANCE = 0.35
+_APPAREL_FACE_CONFIRMATION_DISTANCE = 0.42
 
 
 class ContinuationUnavailable(LookupError):
@@ -181,22 +183,65 @@ def _saved_apparel_sources(
 
 
 _MANUAL_SAVED_FACES_SQL = """
-WITH evidence_rows AS MATERIALIZED (
-    SELECT id, photo_id, search_id FROM selfie_search_selfiesearchresult
+WITH selected_results AS MATERIALIZED (
+    SELECT id, photo_id, search_id, primary_source FROM selfie_search_selfiesearchresult
     WHERE id = ANY(%s::uuid[])
 ),
-matched_faces AS ({matched_face_sql}),
-usable_faces(detection_id, photo_id) AS ({usable_sql})
-SELECT matched.photo_id, (array_agg(DISTINCT matched.detection_id))[1]
-FROM matched_faces matched
+first_pass AS MATERIALIZED (
+    SELECT first.* FROM ({first_pass_sql}) AS first(id, photo_id, search_id)
+    WHERE EXISTS (SELECT 1 FROM selected_results WHERE primary_source = 'apparel_expansion')
+),
+evidence_rows AS MATERIALIZED (
+    SELECT id, photo_id, search_id FROM selected_results
+    UNION
+    SELECT id, photo_id, search_id FROM first_pass
+),
+matched_faces AS MATERIALIZED ({matched_face_sql}),
+usable_faces(detection_id, photo_id, vector) AS ({usable_sql}),
+first_pass_matches AS (
+    SELECT (array_agg(DISTINCT matched.detection_id))[1] AS detection_id
+    FROM matched_faces matched
+    JOIN first_pass first ON first.id = matched.id
+    JOIN processing_photoprocessingstate state ON state.photo_id = matched.photo_id
+        AND state.processor_type = 'face_embedding'
+    JOIN processing_photofacedetection detection ON detection.id = matched.detection_id
+        AND detection.attempt_id = state.accepted_attempt_id AND detection.status = 'kept'
+    GROUP BY matched.photo_id
+    HAVING count(DISTINCT matched.detection_id) = 1
+),
+first_pass_vectors AS MATERIALIZED (
+    SELECT embedding.vector FROM first_pass_matches
+    JOIN processing_faceembeddingvector embedding USING (detection_id)
+    WHERE embedding.model_version = %s AND vector_norm(embedding.vector) > 0
+),
+selected_faces AS (
+    SELECT matched.photo_id, selected.primary_source,
+        (array_agg(DISTINCT matched.detection_id))[1] AS detection_id
+    FROM matched_faces matched
+    JOIN selected_results selected ON selected.id = matched.id
+    JOIN usable_faces usable ON usable.photo_id = matched.photo_id
+        AND usable.detection_id = matched.detection_id
+    GROUP BY matched.photo_id, selected.primary_source
+    HAVING count(DISTINCT matched.detection_id) = 1
+)
+SELECT selected.photo_id, selected.detection_id
+FROM selected_faces selected
 JOIN usable_faces usable USING (photo_id, detection_id)
-GROUP BY matched.photo_id
-HAVING count(DISTINCT matched.detection_id) = 1
+WHERE selected.primary_source <> 'apparel_expansion'
+    OR EXISTS (
+        SELECT 1 FROM first_pass_vectors first
+        WHERE (usable.vector <=> first.vector) <= %s
+    )
 """
 
 
 def _saved_manual_faces(
-    search: SelfieSearch, *, result_ids: Sequence[UUID], photo_ids: set[str], model: object
+    search: SelfieSearch,
+    *,
+    result_ids: Sequence[UUID],
+    photo_ids: set[str],
+    model: object,
+    paid_previews: bool = False,
 ) -> dict[str, UUID]:
     attempts = _saved_face_attempt_ids(event_id=search.event_id, photo_ids=photo_ids)
     if not attempts:
@@ -204,15 +249,40 @@ def _saved_manual_faces(
     usable_sql, usable_params = (
         _usable_gallery_vectors(accepted_attempt_ids=attempts, model=model)
         .order_by()
-        .values_list("detection_id", "detection__attempt__photo_id")
+        .values_list("detection_id", "detection__attempt__photo_id", "vector")
+        .query.sql_with_params()
+    )
+    # An apparel result from the initial pass cannot corroborate its own face.
+    first_pass_sql, first_pass_params = (
+        eligible_saved_result_rows(search, paid_watermarked_previews_enabled=paid_previews)
+        .filter(search=search)
+        .exclude(primary_source=SelfieSearchResult.PrimarySource.APPAREL_EXPANSION)
+        .exclude(photo_id__in=active_negative_reports(search).values("photo_id"))
+        .exclude(
+            photo_id__in=[
+                photo_id
+                for photo_id, state in search.negative_feedback_photos.items()
+                if state == "excluded"
+            ]
+        )
+        .order_by()
+        .values_list("id", "photo_id", "search_id")
         .query.sql_with_params()
     )
     with connection.wrap_database_errors, Cursor(connection.connection) as cursor:
         cursor.execute(
             _MANUAL_SAVED_FACES_SQL.format(
-                matched_face_sql=MATCHED_FACE_EVIDENCE_SQL, usable_sql=usable_sql
+                first_pass_sql=first_pass_sql,
+                matched_face_sql=MATCHED_FACE_EVIDENCE_SQL,
+                usable_sql=usable_sql,
             ),
-            [list(result_ids), *usable_params],
+            [
+                list(result_ids),
+                *first_pass_params,
+                *usable_params,
+                model,
+                _APPAREL_FACE_CONFIRMATION_DISTANCE,
+            ],
         )
         return dict(cursor.fetchall())
 
@@ -222,6 +292,7 @@ def available_manual_photo_ids(
     *,
     result_rows: Sequence[SelfieSearchResult],
     apparel_enabled: bool = False,
+    paid_watermarked_previews_enabled: bool = False,
 ) -> set[str]:
     """Resolve the person recorded for the exact result row rendered by each card."""
     if not result_rows:
@@ -230,7 +301,13 @@ def available_manual_photo_ids(
     photo_ids = {row.photo_id for row in result_rows}
     result_ids = [row.pk for row in result_rows]
     with_faces = set(
-        _saved_manual_faces(search, result_ids=result_ids, photo_ids=photo_ids, model=model)
+        _saved_manual_faces(
+            search,
+            result_ids=result_ids,
+            photo_ids=photo_ids,
+            model=model,
+            paid_previews=paid_watermarked_previews_enabled,
+        )
     )
     if not apparel_enabled or not (without_faces := photo_ids - with_faces):
         return with_faces
@@ -417,6 +494,7 @@ def submit_continuation(
             result_ids=[result_id],
             photo_ids={photo_id},
             model=configuration["embedding_model"],
+            paid_previews=paid_watermarked_previews_enabled,
         ).get(photo_id)
         if detection_id is not None:
             configuration["query_source"] = {
@@ -517,16 +595,14 @@ def validate_continuation_source(search: SelfieSearch, *, model: str) -> None:
         raise RankingError("invalid manual continuation source")
     if photo_id in _negative_anchor_photo_ids(parent, automatic=False):
         raise RankingError("continuation source is no longer eligible")
-    result_id = _manual_result_id(
-        parent,
-        photo_id=photo_id,
-        paid_previews=search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True,
-    )
+    paid_previews = search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True
+    result_id = _manual_result_id(parent, photo_id=photo_id, paid_previews=paid_previews)
     if result_id is None or _saved_manual_faces(
         parent,
         result_ids=[result_id],
         photo_ids={photo_id},
         model=model,
+        paid_previews=paid_previews,
     ).get(photo_id) != UUID(detection_id):
         raise RankingError("continuation source is no longer eligible")
 

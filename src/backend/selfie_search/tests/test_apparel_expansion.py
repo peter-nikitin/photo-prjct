@@ -722,6 +722,29 @@ class ApparelQueueTests(TestCase):
 
         self.assert_retry_pending(search)
 
+    def test_reid_probe_keeps_ties_and_filters_missing_descriptors_before_limit(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        _, source = self.index_appearance("probe-source", face_similarity=1.0)
+        for photo_id in ("a-no-color", "b-no-reid", "c-first", "d-second", "e-overflow"):
+            photo, _ = self.index_appearance(photo_id, helmet_similarity=None)
+            if photo_id in ("a-no-color", "b-no-reid"):
+                PersonAppearanceDetection.objects.filter(attempt__photo=photo).update(
+                    **{"color" if photo_id == "a-no-color" else "reid": None}
+                )
+        search = self.submit_gallery(source)
+        with patch.dict(POLICY, {"max_candidates": 2}):
+            assert run_once()
+        decisions = search.apparel_evidence.decisions
+        assert decisions["candidates_truncated"]
+        assert [row["photo_id"] for row in decisions["candidates"]] == ["c-first", "d-second"]
+        assert all(row["helmet_cosine_similarity"] is None for row in decisions["candidates"])
+        assert list(
+            search.results.filter(primary_source=SelfieSearchResult.PrimarySource.APPAREL_EXPANSION)
+            .order_by("rank")
+            .values_list("photo_id", flat=True)
+        ) == ["c-first", "d-second"]
+
     def test_face_association_only_reads_people_on_selected_photos(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")

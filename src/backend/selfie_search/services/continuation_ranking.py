@@ -10,7 +10,7 @@ from selfie_search.models import SelfieSearch
 from selfie_search.services.continuation import Anchor, _manual_source_photo_id
 from selfie_search.services.direct_ranking import DirectRankingOutcome
 from selfie_search.services.ranking import RankedPhoto, RankingError, _configuration
-from selfie_search.services.results import eligible_saved_result_rows
+from selfie_search.services.results import eligible_saved_result_rows, family_excluded_photo_ids
 from selfie_search.services.submission import CONTINUATION_PAID_PREVIEWS_KEY
 from selfie_search.services.vector_ranking import accepted_kept_faces, cohort_counts
 
@@ -67,6 +67,7 @@ def previous_matches(search: SelfieSearch) -> QuerySet:
         )
         .order_by()
         .values("photo_id")
+        .union(family_excluded_photo_ids(parent))
     )
 
 

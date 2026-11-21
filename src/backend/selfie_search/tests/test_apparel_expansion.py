@@ -726,9 +726,12 @@ class ApparelQueueTests(TestCase):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
         _, source = self.index_appearance("apparel-source", face_similarity=1.0)
-        candidate_count = 12
-        for index in range(candidate_count):
-            self.index_appearance(f"other-person-{index}", face_similarity=0.1)
+        detection_ids = {}
+        for index in range(12):
+            photo_id = f"other-person-{index}"
+            _, face = self.index_appearance(photo_id, face_similarity=0.1)
+            assert face is not None
+            detection_ids[photo_id] = str(face.detection_id)
         for index in range(4):
             self.index_appearance(
                 f"outside-reid-probe-{index}", face_similarity=0.1, reid_similarity=0.2
@@ -786,6 +789,9 @@ class ApparelQueueTests(TestCase):
             (photo_id, "face_veto")
             for photo_id in ("other-person-0", "other-person-1", "other-person-10")
         ]
+        assert all(
+            row["detection_id"] == detection_ids[row["photo_id"]] for row in decisions["candidates"]
+        )
         # The face veto runs after the ordered ReID probe. Each selected photo has one
         # person: the probe contains one overflow row and the baseline has the source.
         assert max(rows_per_operation) <= candidate_limit + 2

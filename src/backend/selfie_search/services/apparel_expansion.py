@@ -320,7 +320,7 @@ scoped_people AS (
     + _FACE_ASSOCIATION_CTES
     + """,
 assessments AS (
-    SELECT nearest.*,
+    SELECT nearest.*, candidate.face_id AS detection_id,
         CASE WHEN candidate.vector IS NOT NULL THEN greatest(0, least(
             (SELECT min(candidate.vector <=> vector) FROM face_queries),
             (SELECT min(candidate.vector <=> anchor.vector) FROM anchors anchor)
@@ -846,9 +846,13 @@ def expand_apparel(
             candidate["person_id"],
         )
     )
-    additions: dict[str, int] = {}
+    additions: dict[str, tuple[int, UUID | None]] = {}
     for candidate in valid:
-        additions.setdefault(candidate["photo_id"], candidate["person_id"])
+        detection_id = candidate.get("detection_id")
+        additions.setdefault(
+            candidate["photo_id"],
+            (candidate["person_id"], UUID(detection_id) if detection_id else None),
+        )
     addition_limit = int(POLICY["max_additions"])
     found = [
         ExpandedRankedPhoto(
@@ -856,6 +860,7 @@ def expand_apparel(
             primary_source=str(SelfieSearchResult.PrimarySource.APPAREL_EXPANSION),
             direct=None,
             cluster_evidence=(),
+            apparel_detection_id=additions[photo_id][1],
         )
         for photo_id in list(additions)[:addition_limit]
     ]
@@ -879,7 +884,7 @@ def expand_apparel(
         "recommendations_truncated": len(recommendations) > recommendation_limit,
         "candidates_truncated": candidates_truncated,
         "additions_truncated": len(additions) > addition_limit,
-        "added_people": {row.photo_id: additions[row.photo_id] for row in found},
+        "added_people": {row.photo_id: additions[row.photo_id][0] for row in found},
     }
     if continuation_groups:
         evidence["centroid_anchor_outcomes"] = verification.group_outcomes

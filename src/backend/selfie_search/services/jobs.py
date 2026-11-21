@@ -691,6 +691,7 @@ def prepare_search_result(
                 primary_source=row.primary_source,
                 rank=position,
                 excluded_by_apparel=row.photo_id in expansion.excluded_photo_ids,
+                excluded_by_face_history=row.photo_id in expansion.face_history_excluded_photo_ids,
             )
             for position, row in enumerate(expansion.results, start=1)
         ]
@@ -776,6 +777,7 @@ def prepare_search_result(
         search.anchor_expanded_photo_count = expansion.anchor_expanded_photo_count
         search.apparel_expanded_photo_count = expansion.apparel_expanded_photo_count
         search.apparel_excluded_photo_count = len(expansion.excluded_photo_ids)
+        search.face_history_excluded_photo_count = len(expansion.face_history_excluded_photo_ids)
         search.strong_anchor_count = expansion.strong_anchor_count
         search.expanded_cluster_count = expansion.expanded_cluster_count
         search.cluster_corpus_id = expansion.cluster_corpus_id
@@ -806,6 +808,7 @@ def prepare_search_result(
             "anchor_expanded_photo_count",
             "apparel_expanded_photo_count",
             "apparel_excluded_photo_count",
+            "face_history_excluded_photo_count",
             "strong_anchor_count",
             "expanded_cluster_count",
             "cluster_corpus",

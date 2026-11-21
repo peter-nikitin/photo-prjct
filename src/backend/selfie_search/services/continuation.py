@@ -104,7 +104,7 @@ def _configured_centroids(search: SelfieSearch) -> tuple[tuple[Anchor, ...], ...
     return groups
 
 
-def consumed_anchor_photo_ids(search: SelfieSearch, *, include_automatic: bool = True) -> set[str]:
+def consumed_anchor_photo_ids(search: SelfieSearch) -> set[str]:
     consumed = set()
     root_gallery_seed = _manual_source_photo_id(search)
     if root_gallery_seed is not None:
@@ -115,7 +115,7 @@ def consumed_anchor_photo_ids(search: SelfieSearch, *, include_automatic: bool =
         manual = _manual_source_photo_id(child)
         if manual is not None:
             consumed.add(manual)
-        elif include_automatic:
+        else:
             consumed.update(
                 anchor.photo_id for group in _configured_centroids(child) for anchor in group
             )
@@ -165,14 +165,13 @@ def _saved_face_attempt_ids(*, event_id: int, photo_ids: set[str]) -> tuple[UUID
 
 
 def available_manual_photo_ids(search: SelfieSearch, *, photo_ids: tuple[str, ...]) -> set[str]:
-    """Return unused single-face anchors from a page of already eligible saved photos."""
-    unused = set(photo_ids) - consumed_anchor_photo_ids(search, include_automatic=False)
-    if not unused:
+    """Return single-face anchors from a page of already eligible saved photos."""
+    if not photo_ids:
         return set()
     model = _gallery_configuration(event=search.event)["embedding_model"]
     # The result rows already supplied the eligible photo IDs. Start from their
     # processing states so the embedding query does not scan the event's faces.
-    attempts = _saved_face_attempt_ids(event_id=search.event_id, photo_ids=unused)
+    attempts = _saved_face_attempt_ids(event_id=search.event_id, photo_ids=set(photo_ids))
     return set(
         _single_gallery_vectors(attempts, model).values_list(
             "detection__attempt__photo_id", flat=True
@@ -351,8 +350,6 @@ def submit_continuation(
     configuration = _gallery_configuration(event=root.event)
     payload = None
     if photo_id is not None:
-        if photo_id in consumed_anchor_photo_ids(root, include_automatic=False):
-            raise ContinuationUnavailable
         detection_id = (
             _current_single_faces(
                 event=root.event,

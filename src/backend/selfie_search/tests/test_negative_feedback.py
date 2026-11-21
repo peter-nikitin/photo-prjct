@@ -222,6 +222,25 @@ class NegativeFeedbackTests(TestCase):
             {"same-other-person", "another-hit-of-other-person"},
         )
 
+    def test_new_pass_uses_all_earlier_faces_against_negative_feedback(self):
+        from selfie_search.services.negative_feedback import refresh_negative_feedback
+
+        search, token = self.root()
+        self.save_photo(search, "wrong", 0)
+        self.save_photo(search, "earlier-support", 1.0, distance=0.40)
+        self.assertEqual(self.report(token, "wrong", "mark").status_code, 201)
+        child = SelfieSearch.objects.create(
+            event=self.event,
+            parent_search=search,
+            status=SelfieSearch.Status.READY,
+            public_token_digest=_token_digest(uuid4().hex),
+        )
+        self.save_photo(child, "supported-new", 0.7)
+        self.save_photo(child, "unsupported-new", -0.4)
+
+        state = refresh_negative_feedback(search)
+        self.assertEqual(state.excluded_photo_ids, {"unsupported-new"})
+
     def test_stale_negative_evidence_does_not_select_a_different_current_face(self):
         from selfie_search.services.negative_feedback import refresh_negative_feedback
 
@@ -242,6 +261,7 @@ class NegativeFeedbackTests(TestCase):
     def test_new_continuation_match_is_restored_on_undo(self):
         from selfie_search.services.continuation import ContinuationUnavailable, submit_continuation
         from selfie_search.services.negative_feedback import negative_feedback_state
+        from selfie_search.services.results import saved_ready_result_photo
 
         search, token = self.root()
         self.save_photo(search, "wrong", 0.0)
@@ -259,10 +279,13 @@ class NegativeFeedbackTests(TestCase):
         state = negative_feedback_state(search)
         self.assertEqual(state.similar_photo_ids, {"earlier", "rerun-anchor"})
         self.assertEqual(state.excluded_photo_ids, {"new-result"})
+        self.assertIsNone(saved_ready_result_photo(search=search, photo_id="new-result"))
         self.assertEqual(self.report(token, "new-result", "mark").status_code, 404)
         with self.assertRaises(ContinuationUnavailable):
             submit_continuation(search=search, user=self.user, photo_id="new-result")
         self.assertEqual(self.report(token, "wrong", "unmark").json()["excluded_photo_count"], 0)
+        search.refresh_from_db()
+        self.assertIsNotNone(saved_ready_result_photo(search=search, photo_id="new-result"))
         self.assertTrue(SelfieSearchDirectEvidence.objects.filter(result=row).exists())
 
     def test_marked_results_cannot_seed_manual_or_automatic_continuation(self):

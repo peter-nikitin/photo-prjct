@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-from django.db.models import F, Q, QuerySet, Window
+from django.db.models import F, Q, QuerySet, Subquery, Window
 from django.db.models.functions import RowNumber
 from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import saved_result_photo_queryset
@@ -89,6 +89,8 @@ def saved_ready_result_photo(
     paid_watermarked_previews_enabled: bool = False,
 ) -> Photo | None:
     """Return one currently eligible saved bearer member, never a general event photo."""
+    if search.negative_feedback_photos.get(photo_id) == "excluded":
+        return None
     row = saved_ready_result_row(
         search=search,
         photo_id=photo_id,
@@ -113,20 +115,33 @@ def saved_ready_result_row(
     )
 
 
+def ready_family_results(search: SelfieSearch) -> QuerySet[SelfieSearchResult]:
+    ready_searches = SelfieSearch.objects.filter(
+        Q(pk=search.pk) | Q(parent_search=search), status=SelfieSearch.Status.READY
+    ).values("pk")
+    return SelfieSearchResult.objects.filter(
+        search_id__in=ready_searches, photo__event_id=search.event_id
+    ).order_by()
+
+
+def family_excluded_photo_ids(search: SelfieSearch) -> QuerySet:
+    return (
+        ready_family_results(search)
+        .filter(Q(excluded_by_apparel=True) | Q(excluded_by_face_history=True))
+        .values("photo_id")
+    )
+
+
 def eligible_saved_result_rows(
     search: SelfieSearch,
     *,
     paid_watermarked_previews_enabled: bool = False,
 ) -> QuerySet[SelfieSearchResult]:
     """Return visible rows in the root and committed passes, including provenance duplicates."""
-    ready_searches = SelfieSearch.objects.filter(
-        Q(pk=search.pk) | Q(parent_search=search), status=SelfieSearch.Status.READY
-    ).values("pk")
     return (
-        SelfieSearchResult.objects.filter(
-            search_id__in=ready_searches,
-            excluded_by_apparel=False,
-            photo__event_id=search.event_id,
+        ready_family_results(search)
+        .exclude(photo_id__in=Subquery(family_excluded_photo_ids(search)))
+        .filter(
             photo__src="",
             photo__original_key__isnull=False,
             photo__original_key__gt="",

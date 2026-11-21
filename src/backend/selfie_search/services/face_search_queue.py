@@ -1,6 +1,7 @@
 """Shared PostgreSQL work queue for face matching and result publication."""
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta
 from functools import cache, partial
 from math import ceil
@@ -40,6 +41,7 @@ from selfie_search.services.continuation_ranking import (
     previous_matches,
     rank_continuation_centroids,
 )
+from selfie_search.services.face_history import face_history_exclusions
 from selfie_search.services.jobs import (
     emit_ranking_finished,
     expand_direct_ranking,
@@ -48,7 +50,7 @@ from selfie_search.services.jobs import (
 from selfie_search.services.negative_feedback import refresh_negative_feedback
 from selfie_search.services.ranking import AnchorMatch, RankingError, _configuration
 from selfie_search.services.read_selection import rank_selected_direct, report_direct_ranking
-from selfie_search.services.submission import _configuration_hash
+from selfie_search.services.submission import CONTINUATION_PAID_PREVIEWS_KEY, _configuration_hash
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +344,27 @@ def process_face_search(task: FaceSearchTask) -> None:
             logger.warning("apparel_expansion_unavailable")
             raise _ApparelSearchUnavailable from None
 
+    parent_search = search.parent_search if is_continuation and expansion.results else None
+    if parent_search is not None:
+        remaining_ms = timeout_ms - int((timezone.now() - started_at).total_seconds() * 1000)
+        if remaining_ms <= 0:
+            _fail(
+                task, code="matching_query_expired" if _expired(task, timezone.now()) else "failed"
+            )
+            return
+        with transaction.atomic():
+            _set_statement_timeout(remaining_ms)
+            expansion = replace(
+                expansion,
+                face_history_excluded_photo_ids=face_history_exclusions(
+                    parent=parent_search,
+                    search=search,
+                    expansion=expansion,
+                    paid_previews_enabled=(
+                        search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True
+                    ),
+                ),
+            )
     try:
         with transaction.atomic():
             parent = (

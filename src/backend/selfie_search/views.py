@@ -4,6 +4,7 @@ from functools import wraps
 from time import monotonic
 from typing import Literal, cast
 from urllib.parse import urlencode
+from uuid import UUID
 
 from commerce.views import (
     cart_state_for_photos,
@@ -55,13 +56,8 @@ from selfie_search.services.results import (
     saved_ready_result_rows,
 )
 from selfie_search.services.submission import (
-    MAX_SELFIE_UPLOADS,
-    AdditionalSelfieUnavailable,
     GallerySearchFailed,
     GallerySearchUnavailable,
-    is_additional_selfie,
-    selfie_upload_count,
-    submit_additional_selfie,
     submit_gallery_photo_search,
     submit_selfie_search,
 )
@@ -232,15 +228,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     if last_pass is not None and last_pass.status != SelfieSearch.Status.READY:
         latest_ready = passes.filter(status=SelfieSearch.Status.READY).first()
     result_ready = search.status == SelfieSearch.Status.READY or latest_ready is not None
-    last_is_selfie = last_pass is not None and is_additional_selfie(last_pass)
-    display_status = (
-        SelfieSearch.Status.READY
-        if result_ready
-        else last_pass.status
-        if last_pass is not None and last_is_selfie
-        else search.status
-    )
-    upload_count = selfie_upload_count(search) if search_passes_enabled and is_terminal else 0
+    display_status = SelfieSearch.Status.READY if result_ready else search.status
     is_gallery_origin = search.configuration.get("processor") == "gallery_photo_query"
     negative_feedback = negative_feedback_state(search)
     saved_rows = tuple(
@@ -323,15 +311,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     continuation_empty = (
         last_pass is not None
         and last_pass.status == SelfieSearch.Status.READY
-        and (
-            last_pass.published_matched_photo_count == 0
-            or (
-                bool(excluded_ids)
-                and not last_pass.results.filter(excluded_by_apparel=False)
-                .exclude(photo_id__in=excluded_ids)
-                .exists()
-            )
-        )
+        and not any(row.search_id == last_pass.pk for row in result_rows)
     )
     no_new_anchors = last_pass is not None and last_pass.failure_code == "continuation_unavailable"
     response = render(
@@ -357,7 +337,6 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "continuation_unavailable": request.GET.get("more") == "unavailable" or no_new_anchors,
             "continuation_empty": continuation_empty,
             "continuation_failed": last_pass is not None
-            and not last_is_selfie
             and not no_new_anchors
             and last_pass.status
             in (
@@ -381,14 +360,6 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "selfie_feedback_correlation": feedback_correlation,
             "is_terminal": is_terminal,
             "display_status": display_status,
-            "upload_count": upload_count,
-            "upload_limit": MAX_SELFIE_UPLOADS,
-            "selfie_upload_form": SelfieSearchUploadForm()
-            if 0 < upload_count < MAX_SELFIE_UPLOADS and not pending
-            else None,
-            "selfie_pass_error": _SELFIE_PASS_ERRORS.get(last_pass.status)
-            if last_pass is not None and last_is_selfie and result_ready
-            else None,
             "public_token": public_token,
             "public_token_digest": search.public_token_digest,
             "search": search,
@@ -396,70 +367,12 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
                 "selfie_search:status",
                 kwargs={"event_slug": search.event.slug, "public_token": public_token},
             )
-            + ("?continuation=1" if pending else ""),
+            + (f"?pass={last_pass.pk}" if pending and last_pass is not None else ""),
         },
     )
     if cart_state is not None:
         private_cart_response(response)
     return response
-
-
-@require_POST
-@sensitive_post_parameters()
-@_sanitize_result_exception_path
-@sensitive_variables()
-def add_selfie(request, event_slug: str, public_token: str) -> HttpResponseBase:
-    started_at = monotonic()
-    if not feature_flag_services.is_enabled(SELFIE_SEARCH_PASSES, request.user):
-        return _not_found_response()
-    search = _public_search(request, event_slug=event_slug, public_token=public_token)
-    if search is None:
-        return _not_found_response()
-    try:
-        expected_upload_count = int(request.POST.get("upload_count", ""))
-    except ValueError:
-        expected_upload_count = 0
-    if not 1 <= expected_upload_count <= MAX_SELFIE_UPLOADS:
-        return JsonResponse({"error": "Обновите страницу и повторите загрузку."}, status=422)
-    if len(request.FILES.getlist("selfie")) > 1:
-        return JsonResponse({"error": "Выберите одно селфи для этого прохода."}, status=422)
-    form = SelfieSearchUploadForm(files=request.FILES)
-    if not form.is_valid():
-        return JsonResponse({"error": form.errors["selfie"][0]}, status=422)
-    result_url = reverse(
-        "selfie_search:result", kwargs={"event_slug": event_slug, "public_token": public_token}
-    )
-    try:
-        child = submit_additional_selfie(
-            search=search,
-            selfie=form.cleaned_data["selfie"],
-            storage=TemporarySelfieStorage(),
-            user=request.user,
-            expected_upload_count=expected_upload_count,
-            paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
-        )
-    except AdditionalSelfieUnavailable as error:
-        if error.reason == "stale":
-            return JsonResponse({"result_url": result_url}, status=202)
-        if error.reason == "limit":
-            return JsonResponse({"error": "В этом поиске уже использовано три селфи."}, status=409)
-        if error.reason == "pending":
-            return JsonResponse({"error": "Дождитесь завершения текущего прохода."}, status=409)
-        return _not_found_response()
-    except StorageUnavailable:
-        return JsonResponse(
-            {"error": "Не удалось загрузить фотографию. Попробуйте ещё раз."}, status=503
-        )
-    _emit_submission_finished(
-        event=search.event,
-        form=form,
-        outcome="accepted",
-        reason_code="",
-        search_id=child.pk,
-        started_at=started_at,
-        level=logging.INFO,
-    )
-    return JsonResponse({"result_url": result_url}, status=202)
 
 
 @require_POST
@@ -472,29 +385,44 @@ def continue_search(request, event_slug: str, public_token: str) -> HttpResponse
     if search is None:
         return _not_found_response()
     photo_id = request.POST.get("photo_id")
-    if photo_id is not None and not (1 <= len(photo_id) <= 32):
+    if not photo_id or len(photo_id) > 32:
         return _not_found_response()
     target = reverse(
         "selfie_search:result", kwargs={"event_slug": event_slug, "public_token": public_token}
     )
     try:
-        submit_continuation(
+        child = submit_continuation(
             search=search,
             user=request.user,
             photo_id=photo_id,
             paid_watermarked_previews_enabled=_paid_watermarked_previews_enabled(request),
         )
     except ContinuationUnavailable:
-        target = f"{target}?more=unavailable"
+        if request.headers.get("Accept") == "application/json":
+            return JsonResponse({"error": "По этому фото сейчас нельзя искать."}, status=409)
+        return redirect(f"{target}?more=unavailable")
     if request.headers.get("Accept") == "application/json":
-        return JsonResponse({"result_url": target})
+        status_url = reverse(
+            "selfie_search:status", kwargs={"event_slug": event_slug, "public_token": public_token}
+        )
+        return JsonResponse({"result_url": target, "status_url": f"{status_url}?pass={child.pk}"})
     return redirect(target)
 
 
-def status(request, event_slug: str, public_token: str) -> HttpResponseBase:  # noqa: ARG001
+def status(request, event_slug: str, public_token: str) -> HttpResponseBase:
     search = _public_search(request, event_slug=event_slug, public_token=public_token)
     if search is None:
         return _not_found_response()
+    pass_id = request.GET.get("pass")
+    if pass_id is not None:
+        try:
+            child_id = UUID(pass_id)
+        except ValueError:
+            return _not_found_response()
+        child = search.continuation_passes.filter(pk=child_id).first()
+        if child is None:
+            return _not_found_response()
+        return JsonResponse(public_status_payload(child))
     if request.GET.get("continuation") == "1":
         last_pass = search.continuation_passes.order_by("-created_at", "-pk").first()
         if last_pass is not None:
@@ -652,14 +580,6 @@ _TERMINAL_SEARCH_STATUSES = frozenset(
         SelfieSearch.Status.FAILED,
     }
 )
-
-_SELFIE_PASS_ERRORS = {
-    "no_face": "На добавленном селфи не удалось найти подходящее лицо.",
-    "multiple_faces": "На добавленном селфи должно быть только одно лицо.",
-    "quality_rejected": "На добавленном селфи не удалось распознать лицо достаточно чётко.",
-    "search_unavailable": "По добавленному селфи сейчас не удалось выполнить поиск.",
-    "failed": "Не удалось продолжить поиск по добавленному селфи.",
-}
 
 
 def _public_search(request, *, event_slug: str, public_token: str) -> SelfieSearch | None:

@@ -89,6 +89,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     eligible_face_count = models.PositiveIntegerField(default=0)
     negative_feedback_photos = models.JSONField(default=dict, db_default={})
     matched_photo_count = models.PositiveIntegerField(default=0)
+    face_history_excluded_photo_count = models.PositiveIntegerField(default=0, db_default=0)
     final_matched_photo_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_corpus = models.ForeignKey(
         FaceClusterCorpus,
@@ -181,7 +182,11 @@ class SelfieSearch(models.Model):  # noqa: DJ008
 
     @property
     def published_matched_photo_count(self) -> int:
-        return self.matched_photo_count - self.apparel_excluded_photo_count
+        return (
+            self.matched_photo_count
+            - self.apparel_excluded_photo_count
+            - self.face_history_excluded_photo_count
+        )
 
     def clean(self) -> None:
         super().clean()
@@ -358,6 +363,7 @@ class SelfieSearchResult(models.Model):  # noqa: DJ008
     )
     rank = models.PositiveIntegerField()
     excluded_by_apparel = models.BooleanField(default=False, db_default=False)
+    excluded_by_face_history = models.BooleanField(default=False, db_default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

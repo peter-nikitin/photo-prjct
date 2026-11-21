@@ -25,11 +25,11 @@ direct_matches AS (
     AS direct(photo_id, detection_id, distance)
 ),
 anchor_candidates AS (
-    SELECT direct.photo_id, direct.detection_id, direct.distance, face.embedding
+    SELECT direct.photo_id, direct.detection_id, direct.distance, face.embedding,
+        direct.photo_id IS NOT DISTINCT FROM %s AS is_source
     FROM direct_matches AS direct
     JOIN kept_faces AS face USING (photo_id, detection_id)
     WHERE direct.distance <= %s
-      AND direct.photo_id IS DISTINCT FROM %s
       AND (%s::uuid[] IS NULL OR direct.detection_id = ANY(%s::uuid[]))
       AND NOT EXISTS (
           SELECT 1
@@ -38,9 +38,11 @@ anchor_candidates AS (
             AND other_face.id <> face.detection_id
       )
 ),
+-- Require a supporting direct match before the source can contribute.
 first_anchor AS (
     SELECT embedding
     FROM anchor_candidates
+    WHERE NOT is_source
     ORDER BY distance, photo_id, detection_id
     LIMIT 1
 ),
@@ -49,13 +51,14 @@ anchors AS (
     FROM anchor_candidates AS candidate
     CROSS JOIN first_anchor AS first
     WHERE (candidate.embedding <=> first.embedding) <= %s
-    ORDER BY candidate.distance, candidate.photo_id, candidate.detection_id
+    ORDER BY is_source DESC, distance, photo_id, detection_id
     LIMIT 5
 ),
 centroid AS (
     SELECT
         l2_normalize(avg(l2_normalize(embedding))) AS embedding,
-        array_agg(photo_id ORDER BY distance, photo_id, detection_id) AS anchor_photo_ids
+        array_agg(photo_id ORDER BY is_source DESC, distance, photo_id, detection_id)
+            AS anchor_photo_ids
     FROM anchors
     HAVING count(*) > 0
 ),
@@ -109,8 +112,8 @@ def find_anchor_matches(
                 [row.photo_id for row in direct],
                 [row.detection_id for row in direct],
                 [row.cosine_distance for row in direct],
-                _ANCHOR_DISTANCE,
                 source_photo_id,
+                _ANCHOR_DISTANCE,
                 verified,
                 verified,
                 _ANCHOR_CONSISTENCY_DISTANCE,

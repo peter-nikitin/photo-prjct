@@ -726,8 +726,8 @@
         if (!response.ok) throw new Error(`Unexpected status: ${response.status}`);
         const payload = await response.json();
         if (!ACTIVE_STATES.has(payload.status)) {
+          await this.reload();
           this.stop();
-          this.reload();
           return;
         }
         this.failureCount = 0;
@@ -760,20 +760,133 @@
     if (error && typeof error.focus === 'function') error.focus();
   }
 
-  function bindSearchContinuation(form, window) {
-    if (!form) return;
-    const error = form.querySelector('[role="alert"]');
-    const defaultError = error.textContent;
-    form.addEventListener('submit', async (event) => {
+  function showPassState(result, message) {
+    const state = result.querySelector('[data-pass-state]');
+    state.hidden = !message;
+    state.querySelector('[data-pass-message]').textContent = message;
+  }
+
+  function updatePassControls(result, busy) {
+    result.toggleAttribute('data-continuation-pending', busy);
+    for (const control of result.querySelectorAll('button[form="search-continuation"]')) {
+      control.disabled = busy || !control.hasAttribute('data-continuation-control')
+        || Boolean(control.closest('[data-negative-feedback="manual"]'));
+    }
+  }
+
+  function updateCards(current, incoming) {
+    const cards = new Map(
+      [...current.querySelectorAll('.gallery-card')].map(card => [card.dataset.photoId, card]),
+    );
+    const grid = current.querySelector('.event-gallery-grid');
+    for (const card of incoming.querySelectorAll('.gallery-card')) {
+      const existing = cards.get(card.dataset.photoId);
+      if (!existing) {
+        grid.append(card);
+        continue;
+      }
+      cards.delete(card.dataset.photoId);
+      const feedback = card.getAttribute('data-negative-feedback');
+      if (feedback) existing.setAttribute('data-negative-feedback', feedback);
+      else existing.removeAttribute('data-negative-feedback');
+      const mark = existing.querySelector('[data-reversible-feedback] button');
+      if (mark) mark.setAttribute('aria-pressed', String(feedback === 'manual'));
+      const previousButton = existing.querySelector('button[form="search-continuation"]');
+      const newButton = card.querySelector('button[form="search-continuation"]');
+      if (previousButton && newButton) {
+        previousButton.toggleAttribute(
+          'data-continuation-control', newButton.hasAttribute('data-continuation-control'),
+        );
+      } else if (previousButton) previousButton.remove();
+    }
+    for (const card of cards.values()) card.remove();
+  }
+
+  function updateResultPasses(result, snapshot, window) {
+    const current = result.querySelector('[data-result-passes]');
+    const incoming = snapshot.querySelector('[data-result-passes]');
+    const visibleIds = new Set();
+    for (const group of incoming.querySelectorAll('[data-result-pass]')) {
+      for (const card of group.querySelectorAll('.gallery-card')) {
+        const id = card.dataset.photoId;
+        if (visibleIds.has(id)) card.remove();
+        else visibleIds.add(id);
+      }
+      if (!group.querySelector('.gallery-card')) group.remove();
+    }
+    const scrollAnchor = [...current.querySelectorAll('.gallery-card')].find(card => {
+      const rect = card.getBoundingClientRect();
+      return visibleIds.has(card.dataset.photoId) && rect.bottom > 0 && rect.top < window.innerHeight;
+    });
+    const anchorTop = scrollAnchor?.getBoundingClientRect().top;
+    const groups = new Map(
+      [...current.querySelectorAll('[data-result-pass]')].map(group => [group.dataset.resultPass, group]),
+    );
+    for (const group of incoming.querySelectorAll('[data-result-pass]')) {
+      const existing = groups.get(group.dataset.resultPass);
+      if (existing) updateCards(existing, group);
+      else current.append(group);
+      groups.delete(group.dataset.resultPass);
+    }
+    for (const group of groups.values()) group.remove();
+
+    const empty = current.querySelector('.selfie-search-empty');
+    const incomingEmpty = incoming.querySelector('.selfie-search-empty');
+    if (empty && !incomingEmpty) empty.remove();
+    if (!empty && incomingEmpty) current.append(incomingEmpty);
+    const scope = current.closest('[data-feedback-scope]');
+    const nextScope = snapshot.querySelector('[data-feedback-scope]');
+    scope.dataset.excludedPhotoCount = nextScope.dataset.excludedPhotoCount;
+    scope.dataset.resultPhotoCount = String(visibleIds.size);
+    const count = scope.querySelector('.selfie-search-count');
+    count.replaceChildren(...nextScope.querySelector('.selfie-search-count').childNodes);
+    count.querySelector('[data-published-count]').textContent = visibleIds.size;
+
+    const archive = scope.querySelector('.selfie-search-archive-action');
+    const nextArchive = nextScope.querySelector('.selfie-search-archive-action');
+    if (!nextArchive) archive?.remove();
+    else if (archive) archive.hidden = nextArchive.hidden;
+    else count.after(nextArchive);
+
+    const cart = result.querySelector('.event-cart-link');
+    const nextCart = snapshot.querySelector('.event-cart-link');
+    if (!nextCart) cart?.remove();
+    else if (!cart) result.querySelector('.event-detail-header')?.append(nextCart);
+    const form = result.querySelector('#search-continuation');
+    const nextForm = snapshot.querySelector('#search-continuation');
+    if (form && !nextForm) form.remove();
+    else if (!form && nextForm) scope.append(nextForm);
+    const message = snapshot.querySelector('[data-pass-message]').textContent.trim();
+    showPassState(result, message);
+    updatePassControls(result, false);
+    if (scrollAnchor?.isConnected) {
+      const offset = scrollAnchor.getBoundingClientRect().top - anchorTop;
+      if (offset) window.scrollBy({ top: offset, behavior: 'instant' });
+    }
+    result.ownerDocument.dispatchEvent(new Event('search:results-updated'));
+  }
+
+  async function loadContinuationResults(result, window, url) {
+    const response = await window.fetch(url, { mode: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error('Search results unavailable');
+    const document = new window.DOMParser().parseFromString(await response.text(), 'text/html');
+    const snapshot = document.querySelector('[data-selfie-search-result]');
+    if (!snapshot?.querySelector('[data-result-passes]')) throw new Error('Search results missing');
+    updateResultPasses(result, snapshot, window);
+  }
+
+  function bindSearchContinuation(result, window) {
+    updatePassControls(result, result.hasAttribute('data-continuation-pending'));
+    result.addEventListener('submit', async (event) => {
+      const form = event.target;
+      if (form.id !== 'search-continuation') return;
       event.preventDefault();
-      if (form.getAttribute('aria-busy') === 'true') return;
+      if (result.hasAttribute('data-continuation-pending') || !event.submitter?.value) return;
       const data = new FormData(form, event.submitter);
-      form.setAttribute('aria-busy', 'true');
-      error.hidden = true;
-      error.textContent = defaultError;
-      if (event.submitter) event.submitter.disabled = true;
+      updatePassControls(result, true);
+      showPassState(result, 'Ищем фотографии по выбранному кадру…');
+      let failureMessage = 'Не удалось продолжить поиск. Попробуйте ещё раз.';
       try {
-        // Send the origin needed by HTTPS CSRF without sending the private result URL.
         const response = await window.fetch(form.action, {
           method: 'POST',
           mode: 'same-origin',
@@ -782,24 +895,27 @@
           body: data,
         });
         const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload?.result_url) {
-          if (typeof payload?.error === 'string') error.textContent = payload.error;
+        if (!response.ok || !payload?.status_url || !payload.result_url) {
+          if (response.status === 409 && typeof payload?.error === 'string') failureMessage = payload.error;
           throw new Error('Search continuation failed');
         }
-        window.location.assign(payload.result_url);
+        continuationPoller(result, window, payload.status_url, payload.result_url);
       } catch {
-        form.removeAttribute('aria-busy');
-        if (event.submitter) {
-          event.submitter.disabled = Boolean(event.submitter.closest('[data-negative-feedback="manual"]'));
-        }
-        error.hidden = false;
+        updatePassControls(result, false);
+        showPassState(result, failureMessage);
       }
     });
-    for (const control of form.elements) {
-      if (control.hasAttribute('data-continuation-control')) {
-        control.disabled = Boolean(control.closest('[data-negative-feedback="manual"]'));
-      }
-    }
+  }
+
+  function continuationPoller(result, window, statusUrl, resultUrl) {
+    return new SelfieSearchPoller({
+      url: statusUrl,
+      fetch: window.fetch.bind(window),
+      setTimeout: window.setTimeout.bind(window),
+      clearTimeout: window.clearTimeout.bind(window),
+      reload: () => loadContinuationResults(result, window, resultUrl),
+      onMessage: message => showPassState(result, message || 'Ищем фотографии по выбранному кадру…'),
+    }).start();
   }
 
   function startBrowserUi(document, window, options = {}) {
@@ -811,10 +927,7 @@
     const form = document.querySelector('[data-selfie-search-form]');
     focusSelfieSearchError(document);
     const result = document.querySelector('[data-selfie-search-result]');
-    if (result) {
-      bindSearchContinuation(document.querySelector('#search-continuation'), window);
-      bindSearchContinuation(document.querySelector('[data-selfie-add-photo]'), window);
-    }
+    if (result?.querySelector?.('[data-result-passes]')) bindSearchContinuation(result, window);
     const feedbackEnabled = (form || result)?.dataset?.selfieFeedbackEnabled === 'true';
     const galleryOrigin = result?.dataset?.galleryOrigin === 'true';
     bindSelfieSearchForm(form, { storage });
@@ -834,6 +947,9 @@
       }
     });
     if (!result || !result.dataset.statusUrl) return null;
+    if (result.hasAttribute?.('data-continuation-pending') && result.querySelector('[data-pass-state]')) {
+      return continuationPoller(result, window, result.dataset.statusUrl, window.location.pathname);
+    }
     const poller = new SelfieSearchPoller({
       url: result.dataset.statusUrl,
       fetch: window.fetch.bind(window),

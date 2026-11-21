@@ -12,16 +12,15 @@ const rates = {
   folder: 45,
   time: 30,
   folder_and_time: 30,
-  gallery_face: 30,
+  gallery_face: 45,
   selfie: 15,
-  find_more: 15,
   find_by_result: 15,
   add_selfie: 15,
   negative_feedback: 15,
 };
 const selected = __ENV.JOURNEY ? [__ENV.JOURNEY] : Object.keys(rates);
 const smoke = profile === 'smoke';
-const searchFlows = ['gallery_face', 'selfie', 'find_more', 'find_by_result', 'add_selfie', 'negative_feedback'];
+const searchFlows = ['gallery_face', 'selfie', 'find_by_result', 'add_selfie', 'negative_feedback'];
 const uploadFlows = ['selfie', 'add_selfie'];
 const previewCount = Number(__ENV.PREVIEW_COUNT || '6');
 if (!Number.isSafeInteger(previewCount) || previewCount < 0 || previewCount > 20) throw new Error('PREVIEW_COUNT must be 0..20.');
@@ -51,7 +50,7 @@ const validators = {
   selfie: (entry) => typeof entry.file === 'string' && /^(?:\/|\.\/).+\.(?:png|jpe?g)$/i.test(entry.file),
 };
 
-for (const name of ['find_more', 'find_by_result', 'negative_feedback']) validators[name] = validators.gallery_face;
+for (const name of ['find_by_result', 'negative_feedback']) validators[name] = validators.gallery_face;
 validators.add_selfie = validators.selfie;
 
 for (const name of selected) {
@@ -120,6 +119,7 @@ function readPage(url, name) {
   const response = http.get(url, params(name, { 'Accept-Encoding': 'gzip' }));
   requireCheck(response.status === 200, `${name}: HTTP 200`);
   const page = response.html();
+  if (previewCount === 0) return page;
   const images = page.find('.gallery-card img');
   const requests = [];
   for (let i = 0; i < Math.min(previewCount, images.size()); i++) {
@@ -317,7 +317,7 @@ export default function () {
     const gallery = readPage(sourceUrl, 'gallery_open');
     if (searchFlows.includes(name)) {
       const result = findByFace(name, entry, gallery, index, sourceUrl);
-      if (['find_more', 'find_by_result', 'add_selfie'].includes(name)) followSearchButton(name, entry, result, index);
+      if (['find_by_result', 'add_selfie'].includes(name)) followSearchButton(name, entry, result, index);
       if (name === 'negative_feedback') toggleFeedback(entry, result);
     }
     else filterOrPaginate(name, entry, gallery);

@@ -7,7 +7,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from ingestion.storage import ObjectMissing, OpenedObject, StorageUnavailable
 
@@ -215,3 +215,163 @@ class ArchiveJobTests(TestCase):
 
         PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.QUEUED).delete()
         assert collect_queue_samples()["photo_archive"][:2] == (0, 0.0)
+
+
+class ConcurrentArchiveJobTests(TransactionTestCase):
+    def test_two_slots_claim_distinct_jobs_and_finish_them(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        from django.db import connections
+
+        from picflow.archive_jobs import process_next_archive
+
+        for index in range(2):
+            enqueue_archive_job(
+                scope=f"parallel:{index}",
+                entries=(_ENTRY,),
+                filename="findme-photo-test-search-results.zip",
+                observation=ArchiveObservation(context="free_result", page=1),
+            )
+        barrier = Barrier(2)
+        claimed = []
+
+        def build(job):
+            claimed.append(job.pk)
+            barrier.wait(timeout=5)
+            return 0
+
+        def run():
+            try:
+                return process_next_archive()
+            finally:
+                connections.close_all()
+
+        with patch("picflow.archive_jobs._build_and_upload", side_effect=build):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(run) for _ in range(2)]
+                assert all(f.result(timeout=10) for f in futures)
+        assert len(set(claimed)) == 2
+        assert PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.READY).count() == 2
+
+
+class ArchiveWorkerLifecycleTests(TransactionTestCase):
+    def test_prunes_before_claims_and_holds_lock_until_active_slots_finish(self):
+        from threading import Barrier
+
+        from picflow.management.commands import run_archive_worker as worker
+
+        events: list[str] = []
+        barrier = Barrier(2)
+        handlers = []
+
+        def install_handler(signum, handler):
+            handlers.append(handler)
+            return None
+
+        def execute(sql, params):
+            if "pg_advisory_unlock" in sql:
+                assert events.count("finished") == 2
+                events.append("unlocked")
+
+        def prune():
+            events.append("pruned")
+
+        def process():
+            assert "pruned" in events
+            events.append("claimed")
+            barrier.wait(timeout=5)
+            handlers[0](None, None)
+            events.append("finished")
+            return True
+
+        with (
+            patch.object(worker.connection, "cursor") as cursor,
+            patch.object(worker.signal, "signal", side_effect=install_handler),
+            patch.object(worker, "recover_interrupted_archives") as recover,
+            patch.object(worker, "prune_archive_jobs", side_effect=prune),
+            patch.object(worker, "process_next_archive", side_effect=process),
+        ):
+            cursor.return_value.__enter__.return_value.fetchone.return_value = (True,)
+            cursor.return_value.__enter__.return_value.execute.side_effect = execute
+            worker.Command().handle(once=False)
+
+        recover.assert_called_once_with()
+        assert events[0] == "pruned"
+        assert events.count("pruned") == 1
+        assert events.count("claimed") == 2
+        assert events[-1] == "unlocked"
+
+
+class ArchiveSpaceTests(TransactionTestCase):
+    def test_reservations_serialize_large_archives_and_release_on_failure(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+        from types import SimpleNamespace
+
+        from picflow import archive_jobs
+
+        first_active = Event()
+        release_first = Event()
+        second_active = Event()
+        entries = [{"original_size": 500_000}]
+
+        def first():
+            with archive_jobs._reserve_archive_space(entries):
+                first_active.set()
+                assert release_first.wait(timeout=5)
+
+        def second():
+            with archive_jobs._reserve_archive_space(entries):
+                second_active.set()
+                raise OSError("upload failed")
+
+        with (
+            patch.object(archive_jobs, "disk_usage", return_value=SimpleNamespace(free=1_000_000)),
+            patch.object(archive_jobs, "_DISK_MARGIN_BYTES", 0),
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                a = pool.submit(first)
+                assert first_active.wait(timeout=5)
+                b = pool.submit(second)
+                assert not second_active.wait(timeout=0.05)
+                release_first.set()
+                a.result(timeout=5)
+                with self.assertRaisesMessage(OSError, "upload failed"):
+                    b.result(timeout=5)
+        assert archive_jobs._reserved_archive_bytes == 0
+
+    def test_insufficient_space_without_active_reservation_fails_immediately(self):
+        from types import SimpleNamespace
+
+        from picflow import archive_jobs
+
+        with patch.object(archive_jobs, "disk_usage", return_value=SimpleNamespace(free=0)):
+            with self.assertRaisesMessage(OSError, "insufficient temporary archive space"):
+                with archive_jobs._reserve_archive_space([{"original_size": 10}]):
+                    self.fail("reservation unexpectedly granted")
+        assert archive_jobs._reserved_archive_bytes == 0
+
+
+class ArchiveWorkerIdleTests(TestCase):
+    def test_idle_slot_rechecks_after_half_second_and_stops_without_another_claim(self):
+        from threading import Event
+
+        from picflow.management.commands import run_archive_worker as worker
+
+        stopping = Event()
+        delays = []
+
+        def wait(seconds):
+            delays.append(seconds)
+            stopping.set()
+
+        with (
+            patch.object(worker, "process_next_archive", return_value=False) as process,
+            patch.object(stopping, "wait", side_effect=wait),
+            patch.object(worker.connections, "close_all") as close,
+        ):
+            worker._run_slot(stopping)
+        assert delays == [0.5]
+        process.assert_called_once_with()
+        close.assert_called_once_with()

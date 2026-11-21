@@ -931,7 +931,7 @@ test('upload sources stack before local folder targets collapse at tablet width'
   expect(localTargetCopy.width).toBeGreaterThan(100);
 });
 
-test('continuation buttons submit the expected source without exposing the result URL as a referrer', async ({ page }) => {
+test('a photo adds only unseen results below the current cards without navigation or scrolling', async ({ page }) => {
   const path = '/__visual__/event/selfie-search/ready/';
   await page.route(`**${path}*`, async (route) => {
     const response = await route.fetch();
@@ -940,12 +940,14 @@ test('continuation buttons submit the expected source without exposing the resul
       headers: { ...response.headers(), 'referrer-policy': 'no-referrer' },
     });
   });
-  await page.goto(path);
-  await page.locator('[data-cookie-notice-accept]').click();
+  await preloadCookieAcknowledgement(page);
+  await page.goto(`${path}?before=1`);
   const manual = page.getByRole('button', { name: 'Найти по этому фото' }).first();
   const source = await manual.getAttribute('value');
   const target = new URL(await page.locator('#search-continuation').getAttribute('action'), page.url());
-  const submitted = [];
+  const status = new URL('/__visual__/continuation-status/', target);
+  let done = false;
+  await page.route(status.href, route => route.fulfill({ json: { status: done ? 'ready' : 'processing' } }));
   await page.route(target.href, async (route) => {
     const request = route.request();
     const headers = await request.allHeaders();
@@ -953,55 +955,30 @@ test('continuation buttons submit the expected source without exposing the resul
     expect(headers.origin).toBe(target.origin);
     expect(headers.referer).toBe(`${target.origin}/`);
     expect(headers.accept).toBe('application/json');
-    const data = request.postData();
-    expect(data).toContain('name="csrfmiddlewaretoken"');
-    submitted.push(data);
-    await route.fulfill({ json: { result_url: `${path}?submitted=${submitted.length}` } });
+    expect(request.postData()).toContain('name="csrfmiddlewaretoken"');
+    expect(request.postData()).toContain(`name="photo_id"\r\n\r\n${source}\r\n`);
+    await route.fulfill({ json: { result_url: `${path}?duplicate=1`, status_url: status.href } });
   });
 
+  const existingCard = page.locator('.gallery-card').first();
+  await existingCard.evaluate(el => { el.dataset.existingNode = 'yes'; });
+  await manual.scrollIntoViewIfNeeded();
+  const position = await page.evaluate(() => window.scrollY);
   await manual.click();
-  await expect(page).toHaveURL(/\?submitted=1$/);
-  expect(submitted[0]).toContain(`name="photo_id"\r\n\r\n${source}\r\n`);
-  await page.getByRole('button', { name: 'Найти ещё' }).click();
-  await expect(page).toHaveURL(/\?submitted=2$/);
-  expect(submitted[1]).not.toContain('name="photo_id"');
-});
-
-test('an additional selfie uses the existing result link and reports upload errors', async ({ page }) => {
-  const path = '/__visual__/event/selfie-search/ready/';
-  await preloadCookieAcknowledgement(page);
-  await page.goto(path);
-  await page.getByText('Добавить селфи', { exact: true }).click();
-  const form = page.locator('[data-selfie-add-photo]');
-  const action = new URL(await form.getAttribute('action'), page.url());
-  const input = form.getByLabel('Селфи для нового прохода');
-  const submit = form.getByRole('button', { name: 'Найти по этому селфи' });
-  await expect(form).toContainText('Использовано 1 из 3 селфи');
+  await expect(page.locator('[data-pass-message]')).toHaveText('Ищем фотографии по выбранному кадру…');
+  await expect(page.locator('.gallery-card')).toHaveCount(2);
+  done = true;
+  const next = page.locator('[data-result-pass="next-pass"]');
+  await expect(next.getByRole('heading', { name: 'Новые фото' })).toBeVisible();
+  await expect(next.locator('.gallery-card')).toHaveCount(1);
   await expect(page.locator('.gallery-card')).toHaveCount(3);
-  let requests = 0;
-  await page.route(action.href, async (route) => {
-    const request = route.request();
-    const headers = await request.allHeaders();
-    expect(request.method()).toBe('POST');
-    expect(headers.origin).toBe(action.origin);
-    expect(headers.referer).toBe(`${action.origin}/`);
-    expect(request.postData()).toContain('name="selfie"; filename="second.jpg"');
-    expect(request.postData()).toContain('name="upload_count"\r\n\r\n1\r\n');
-    requests++;
-    await route.fulfill(requests === 1
-      ? { status: 422, json: { error: 'Выберите другую фотографию.' } }
-      : { status: 202, json: { result_url: `${path}?uploaded=1` } });
-  });
-
-  await input.setInputFiles({
-    name: 'second.jpg',
-    mimeType: 'image/jpeg',
-    buffer: Buffer.from('selfie fixture'),
-  });
-  await submit.click();
-  await expect(form.getByRole('alert')).toHaveText('Выберите другую фотографию.');
-  await submit.click();
-  await expect(page).toHaveURL(/\?uploaded=1$/);
+  await expect(page.locator(`.gallery-card[data-photo-id="${source}"]`)).toHaveCount(1);
+  await expect(page.locator('[data-published-count]')).toHaveText('3');
+  await expect(existingCard).toHaveAttribute('data-existing-node', 'yes');
+  await expect(page).toHaveURL(/\?before=1$/);
+  expect(await page.evaluate(() => window.scrollY)).toBe(position);
+  await expect(page.getByRole('button', { name: 'Найти ещё' })).toHaveCount(0);
+  await expect(page.getByText('Добавить селфи', { exact: true })).toHaveCount(0);
 });
 
 test('free search results show all passes and archive actions preserve order pagination', async ({ page }) => {

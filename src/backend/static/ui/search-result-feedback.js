@@ -15,7 +15,10 @@
       const mark = card.querySelector('[data-reversible-feedback] button');
       if (mark) mark.setAttribute('aria-pressed', String(manual.has(id)));
       const search = card.querySelector('button[name="photo_id"][data-continuation-control]');
-      if (search) search.disabled = manual.has(id);
+      if (search) {
+        search.disabled = manual.has(id)
+          || Boolean(scope.closest('[data-continuation-pending]'));
+      }
       if (manual.has(id)) card.dataset.negativeFeedback = 'manual';
       else if (similar.has(id)) card.dataset.negativeFeedback = 'similar';
       else delete card.dataset.negativeFeedback;
@@ -74,12 +77,12 @@
   }
 
   if (typeof document !== 'undefined') {
-    for (const form of document.querySelectorAll('[data-result-feedback]')) {
-      form.addEventListener('submit', (event) => {
-        event.preventDefault();
-        submitResultFeedback(form, new FormData(form), window.fetch.bind(window));
-      });
-    }
+    document.addEventListener('submit', (event) => {
+      const form = event.target;
+      if (!form.matches?.('[data-result-feedback]')) return;
+      event.preventDefault();
+      submitResultFeedback(form, new FormData(form), window.fetch.bind(window));
+    });
   }
 
   if (typeof module !== 'undefined') module.exports = { submitResultFeedback };

@@ -208,7 +208,7 @@ class AnchorExpansionTests(TestCase):
         self.assertNotContains(response, str(addition.detection_id))
         self.assertEqual(self.client.post(url, {"cosine_distance": 0}).status_code, 403)
 
-    def test_finds_a_face_close_to_the_centroid_of_two_anchors(self):
+    def test_finds_the_best_detection_close_to_the_gallery_centroid(self):
         source = self.add_face("query-source", 1)
         for photo_id, third_component in (("first", 0.3), ("second", -0.3)):
             self.make_eligible_embedding(
@@ -219,10 +219,10 @@ class AnchorExpansionTests(TestCase):
         addition = self.make_eligible_embedding(
             event=self.event,
             photo_id="addition",
-            vector=_pad_vector(0.4, 0.44, 0, sqrt(0.6464)),
+            vector=_pad_vector(0.5, 0.32, 0, sqrt(1 - 0.5**2 - 0.32**2)),
             detection_id=UUID(int=1),
         )
-        better_vector = _pad_vector(0.4, 0.45, 0, sqrt(0.6375))
+        better_vector = _pad_vector(0.5, 0.33, 0, sqrt(1 - 0.5**2 - 0.33**2))
         tied_face = self.make_additional_face(
             embedding=addition, vector=better_vector, detection_id=UUID(int=3)
         )
@@ -239,8 +239,8 @@ class AnchorExpansionTests(TestCase):
         search = self.submit_gallery(source)
         self.assertTrue(run_once())
 
-        # The better face's dot product is about .572 with either unit anchor
-        # and .599 with their unit centroid. Only the centroid passes .58.
+        # The better face is below .58 similarity to every individual anchor.
+        # The centroid passes .58 and records the best detection.
         self.assertEqual(
             self.result_photos(search), ["query-source", "first", "second", "addition"]
         )
@@ -263,10 +263,10 @@ class AnchorExpansionTests(TestCase):
         )
         evidence = search.results.get(photo_id="addition").anchor_evidence
         self.assertEqual(evidence.detection_id, better_face.detection_id)
-        self.assertAlmostEqual(evidence.cosine_distance, 0.40077, places=4)
+        self.assertAlmostEqual(evidence.cosine_distance, 0.40324, places=4)
         self.assertEqual(
             list(evidence.sources.values_list("position", "anchor__result__photo_id")),
-            [(1, "first"), (2, "second")],
+            [(1, "query-source"), (2, "first"), (3, "second")],
         )
 
     def test_uses_at_most_five_nearest_consistent_single_face_results(self):
@@ -313,7 +313,7 @@ class AnchorExpansionTests(TestCase):
         evidence = search.results.get(photo_id="addition").anchor_evidence
         self.assertEqual(
             list(evidence.sources.values_list("position", "anchor__result__photo_id")),
-            [(1, "first"), (2, "near-a"), (3, "near-b"), (4, "near-c"), (5, "near-d")],
+            [(1, "query-source"), (2, "first"), (3, "near-a"), (4, "near-b"), (5, "near-c")],
         )
 
     def test_gallery_search_has_no_centroid_when_the_source_is_the_only_strong_result(self):
@@ -371,7 +371,7 @@ class AnchorExpansionTests(TestCase):
         evidence = search.results.get(photo_id="boundary-addition").anchor_evidence
         self.assertEqual(
             list(evidence.sources.values_list("anchor__result__photo_id", flat=True)),
-            ["boundary-first", "boundary-second"],
+            ["boundary-query", "boundary-first", "boundary-second"],
         )
 
     def test_flag_is_registered_and_synchronized_off(self):
@@ -467,7 +467,7 @@ class AnchorExpansionTests(TestCase):
         self.assertNotIn(anchor.detection_id.hex, sql)
         self.assertNotIn(str(anchor.detection_id), sql)
         self.assertRegex(sql, r"unnest\(\$\d+::varchar\[\], \$\d+::uuid\[\], \$\d+::float8\[\]\)")
-        self.assertRegex(sql, r"direct.photo_id IS DISTINCT FROM \$\d+")
+        self.assertRegex(sql, r"direct.photo_id IS NOT DISTINCT FROM \$\d+")
         self.assertEqual(parameter_log_limit, "0")
         self.assertGreater(timeout, 0)
         self.assertLess(timeout, 0.25)

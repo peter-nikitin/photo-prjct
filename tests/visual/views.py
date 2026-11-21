@@ -879,12 +879,9 @@ def selfie_search_processing_status(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"status": "processing"})
 
 
-def _selfie_upload_context(token: str) -> dict[str, Any]:
+def _selfie_result_context(token: str) -> dict[str, Any]:
     return {
         "public_token": token,
-        "selfie_upload_form": SelfieSearchUploadForm(),
-        "upload_count": 1,
-        "upload_limit": 3,
         "checked_photo_count": 46,
     }
 
@@ -894,7 +891,7 @@ def selfie_search_empty(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
-            **_selfie_upload_context("visual-empty"),
+            **_selfie_result_context("visual-empty"),
             "event": EVENTS[0],
             "gallery_photos": (),
             "published_count": 0,
@@ -910,7 +907,7 @@ def selfie_search_error(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
-            **_selfie_upload_context("visual-error"),
+            **_selfie_result_context("visual-error"),
             "event": EVENTS[0],
             "gallery_photos": (),
             "is_terminal": True,
@@ -950,7 +947,7 @@ def _selfie_search_ready(
         request,
         "selfie_search/result.html",
         {
-            **_selfie_upload_context("visual-ready-result"),
+            **_selfie_result_context("visual-ready-result"),
             "event": event,
             "cart_presentation": cart_presentation,
             "archive_action": archive_action,
@@ -988,6 +985,15 @@ def _selfie_search_ready(
 
 
 def selfie_search_ready(request: HttpRequest) -> HttpResponse:
+    if request.GET.get("before") == "1":
+        return _selfie_search_ready(request, event=EVENTS[0], photos=SELFIE_RESULT_PHOTOS[:2])
+    if request.GET.get("duplicate") == "1":
+        return _selfie_search_ready(
+            request,
+            event=EVENTS[0],
+            include_pass=True,
+            photos=(*SELFIE_RESULT_PHOTOS, SELFIE_RESULT_PHOTOS[0]),
+        )
     return _selfie_search_ready(request, event=EVENTS[0], include_pass=True)
 
 
@@ -1199,7 +1205,7 @@ def selfie_search_feedback_problem(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
-            **_selfie_upload_context("visual-problem"),
+            **_selfie_result_context("visual-problem"),
             "event": EVENTS[0],
             "gallery_photos": (),
             "gallery_result_items": (),
@@ -1229,7 +1235,7 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
-            **_selfie_upload_context("visual-feedback"),
+            **_selfie_result_context("visual-feedback"),
             "event": EVENTS[0],
             "gallery_photos": photos,
             "gallery_result_items": tuple(

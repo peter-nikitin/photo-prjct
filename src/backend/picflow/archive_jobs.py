@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
-from contextlib import closing
+from collections.abc import Iterator, Sequence
+from contextlib import closing, contextmanager
 from datetime import timedelta
 from functools import partial
 from hashlib import sha256
-from tempfile import TemporaryFile
-from time import monotonic_ns
+from shutil import disk_usage
+from tempfile import TemporaryFile, gettempdir
+from threading import Condition
+from time import monotonic, monotonic_ns
 from uuid import UUID, uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -38,6 +40,32 @@ logger = logging.getLogger(__name__)
 _RETENTION = timedelta(hours=24)
 _MAX_PAGE_ENTRIES = 100
 _MAX_ENTRY_BYTES = 50 * 1024 * 1024
+_DISK_MARGIN_BYTES = 1024 * 1024 * 1024
+_space_condition = Condition()
+_reserved_archive_bytes = 0
+
+
+@contextmanager
+def _reserve_archive_space(entries: Sequence[dict]) -> Iterator[int]:
+    global _reserved_archive_bytes
+    # ZIP_STORED retains source bytes; allow ZIP64 headers and generous filename overhead.
+    required = sum(entry["original_size"] + 4096 for entry in entries) + 65536
+    started = monotonic()
+    with _space_condition:
+        while (
+            required + _reserved_archive_bytes + _DISK_MARGIN_BYTES > disk_usage(gettempdir()).free
+        ):
+            if not _reserved_archive_bytes:
+                raise OSError("insufficient temporary archive space")
+            _space_condition.wait()
+        # Written bytes also reduce free space, making this reservation conservative.
+        _reserved_archive_bytes += required
+    try:
+        yield round((monotonic() - started) * 1000)
+    finally:
+        with _space_condition:
+            _reserved_archive_bytes -= required
+            _space_condition.notify_all()
 
 
 def enqueue_archive_job(
@@ -152,7 +180,7 @@ def prune_archive_jobs() -> None:
 def process_next_archive() -> bool:
     with transaction.atomic():
         job = (
-            PhotoArchiveJob.objects.select_for_update()
+            PhotoArchiveJob.objects.select_for_update(skip_locked=True)
             .filter(status=PhotoArchiveJob.Status.QUEUED)
             .order_by("updated_at", "id")
             .first()
@@ -165,9 +193,11 @@ def process_next_archive() -> bool:
         job.save(update_fields=["status", "object_id", "updated_at"])
         schedule_transition(ARCHIVE, str(PhotoArchiveJob.Status.QUEUED), job.status)
 
-    started_ns = monotonic_ns()
     try:
-        built_ns = _build_and_upload(job)
+        with _reserve_archive_space(job.entries) as reservation_wait_ms:
+            wait_ms += reservation_wait_ms
+            started_ns = monotonic_ns()
+            built_ns = _build_and_upload(job)
     except (ArchiveSourceMissing, ArchiveSourceUnavailable, StorageUnavailable, OSError) as error:
         logger.warning(
             "archive preparation failed",

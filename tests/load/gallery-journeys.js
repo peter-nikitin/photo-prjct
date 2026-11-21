@@ -174,6 +174,7 @@ function filterOrPaginate(name, entry, gallery) {
 }
 
 function waitUntilReady(statusUrl, startedAt) {
+  let earlyPollsRemaining = 4;
   const pending = ['queued', 'processing', 'cleanup_pending'];
   while (Date.now() - startedAt < deadlineMs) {
     const remaining = deadlineMs - (Date.now() - startedAt);
@@ -184,7 +185,9 @@ function waitUntilReady(statusUrl, startedAt) {
     if (state === 'ready' && Date.now() - startedAt <= deadlineMs) return;
     requireCheck(pending.includes(state), 'search remains active');
     const waitMs = deadlineMs - (Date.now() - startedAt);
-    if (waitMs > 0) sleep(Math.min(2_000, waitMs) / 1000);
+    const delayMs = earlyPollsRemaining > 0 ? 500 : 2_000;
+    earlyPollsRemaining = Math.max(0, earlyPollsRemaining - 1);
+    if (waitMs > 0) sleep(Math.min(delayMs, waitMs) / 1000);
   }
   requireCheck(false, 'search ready within 120 seconds');
 }

@@ -7,6 +7,8 @@
 
   const ACTIVE_STATES = new Set(['queued', 'processing']);
   const POLL_DELAY_MS = 2000;
+  const FAST_POLL_DELAY_MS = 500;
+  const EARLY_POLLS = 4;
   const MAX_BACKOFF_MS = 30000;
   const FEEDBACK_PENDING_KEY = 'findme_selfie_feedback_pending';
   const FEEDBACK_DB_NAME = 'findme-photo-feedback';
@@ -698,6 +700,7 @@
       this.inFlight = false;
       this.stopped = false;
       this.failureCount = 0;
+      this.earlyPollsRemaining = EARLY_POLLS;
     }
 
     schedule(delay) {
@@ -732,7 +735,9 @@
         }
         this.failureCount = 0;
         this.onMessage('');
-        this.schedule(POLL_DELAY_MS);
+        const delay = this.earlyPollsRemaining > 0 ? FAST_POLL_DELAY_MS : POLL_DELAY_MS;
+        this.earlyPollsRemaining = Math.max(0, this.earlyPollsRemaining - 1);
+        this.schedule(delay);
       } catch (_error) {
         this.onMessage('Не удалось обновить статус. Проверьте подключение; поиск продолжается.');
         this.failureCount += 1;

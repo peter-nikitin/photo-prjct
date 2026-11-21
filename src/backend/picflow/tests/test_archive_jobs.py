@@ -351,3 +351,27 @@ class ArchiveSpaceTests(TransactionTestCase):
                 with archive_jobs._reserve_archive_space([{"original_size": 10}]):
                     self.fail("reservation unexpectedly granted")
         assert archive_jobs._reserved_archive_bytes == 0
+
+
+class ArchiveWorkerIdleTests(TestCase):
+    def test_idle_slot_rechecks_after_half_second_and_stops_without_another_claim(self):
+        from threading import Event
+
+        from picflow.management.commands import run_archive_worker as worker
+
+        stopping = Event()
+        delays = []
+
+        def wait(seconds):
+            delays.append(seconds)
+            stopping.set()
+
+        with (
+            patch.object(worker, "process_next_archive", return_value=False) as process,
+            patch.object(stopping, "wait", side_effect=wait),
+            patch.object(worker.connections, "close_all") as close,
+        ):
+            worker._run_slot(stopping)
+        assert delays == [0.5]
+        process.assert_called_once_with()
+        close.assert_called_once_with()

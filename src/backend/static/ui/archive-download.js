@@ -1,6 +1,7 @@
 (() => {
   const readyDownloads = new WeakMap();
   const pollIntervalMs = 2000;
+  const fastPollIntervalMs = 500;
 
   async function getJson(url, options = {}) {
     const response = await fetch(url, { mode: 'same-origin', ...options });
@@ -9,11 +10,14 @@
   }
 
   async function waitForArchive(statusUrl) {
+    let earlyPollsRemaining = 3;
     for (;;) {
       const { status } = await getJson(statusUrl);
       if (status === 'ready') return;
       if (status !== 'queued' && status !== 'running') throw new Error('Archive failed');
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      const delay = status === 'running' || earlyPollsRemaining > 0 ? fastPollIntervalMs : pollIntervalMs;
+      earlyPollsRemaining = Math.max(0, earlyPollsRemaining - 1);
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 

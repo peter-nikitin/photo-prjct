@@ -15,7 +15,7 @@ if [ "$DEPLOY_WEB" = true ]; then
     compose run --rm --no-deps -T --entrypoint python web manage.py check --tag commerce_runtime
     printf '%s\n' 'DEPLOY_STAGE=database'
     compose up -d --wait db
-    compose stop --timeout 0 gallery-search-worker
+    compose stop gallery-search-worker
     compose stop archive-worker
     compose stop web
     printf '%s\n' 'DEPLOY_STAGE=migrate'

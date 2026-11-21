@@ -249,7 +249,25 @@ class GalleryQueueTests(TestCase):
         ):
             call_command("run_gallery_search_worker")
         self.assertEqual(events, ["recover", "recover", "claim"])
-        sleep.assert_called_once_with(2)
+        sleep.assert_called_once_with(0.5)
+
+    def test_gallery_worker_uses_fixed_idle_polling_delay(self):
+        from unittest.mock import call, patch
+
+        from django.core.management import call_command
+        from selfie_search.management.commands import run_gallery_search_worker as worker
+
+        with (
+            patch.object(worker, "recover_processing"),
+            patch.object(worker, "recover_missing_payloads"),
+            patch.object(worker, "run_once", side_effect=[False, False, True, False, EOFError]),
+            patch.object(worker.time, "sleep") as sleep,
+            patch.object(worker.signal, "signal"),
+            patch.object(worker.signal, "alarm"),
+            self.assertRaises(EOFError),
+        ):
+            call_command("run_gallery_search_worker")
+        self.assertEqual(sleep.call_args_list, [call(0.5), call(0.5), call(0.5)])
 
     make_photo = fixtures.GalleryPhotoSubmissionTests.make_photo
     publish_watermark = fixtures.GalleryPhotoSubmissionTests.publish_watermark
@@ -373,6 +391,86 @@ class GalleryWorkerRestartTests(TransactionTestCase):
                 self.fail(worker.stderr.read())
             time.sleep(0.05)
         self.fail(f"search did not finish: {search.status}")
+
+    def test_parallel_claims_and_supervisor_reaping(self):
+        import os
+        import signal
+        import time
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        for shutdown in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(shutdown=shutdown), TemporaryDirectory() as directory:
+                searches = [self.create_search(), self.create_search()]
+                output = Path(directory)
+                code = f"""
+import django
+import os
+import signal
+import time
+from pathlib import Path
+from unittest.mock import patch
+django.setup()
+from django.core.management import call_command
+from selfie_search.management.commands import run_gallery_search_worker
+from selfie_search.services.face_search_queue import recover_processing
+
+output = Path({directory!r})
+
+def recover():
+    recover_processing()
+    with (output / 'recoveries').open('a') as stream:
+        stream.write('recovered\\n')
+
+def pause(task):
+    assert (output / 'recoveries').read_text().splitlines() == ['recovered']
+    # Once both tasks are claimed, exercise the supervisor's forced reap path.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    temporary = output / f'{{os.getpid()}}.pending'
+    temporary.write_text(str(task.search_id))
+    temporary.rename(output / f'{{os.getpid()}}.claimed')
+    time.sleep(60)
+
+with (
+    patch.object(run_gallery_search_worker, 'recover_processing', recover),
+    patch('selfie_search.services.face_search_queue.process_face_search', pause),
+):
+    call_command('run_gallery_search_worker', '--concurrency', '2')
+"""
+                with self.worker(code) as worker:
+                    deadline = time.monotonic() + 10
+                    while len(claims := list(output.glob("*.claimed"))) < 2:
+                        if worker.poll() is not None:
+                            self.fail(worker.stderr.read())
+                        if time.monotonic() >= deadline:
+                            self.fail("both workers did not claim separate tasks")
+                        time.sleep(0.05)
+                    self.assertEqual(
+                        (output / "recoveries").read_text().splitlines(), ["recovered"]
+                    )
+                    self.assertEqual(
+                        {claim.read_text() for claim in claims},
+                        {str(search.id) for search in searches},
+                    )
+                    self.assertEqual(
+                        list(
+                            FaceSearchTask.objects.filter(search__in=searches).values_list(
+                                "attempt_count", flat=True
+                            )
+                        ),
+                        [1, 1],
+                    )
+                    pids = [int(claim.stem) for claim in claims]
+                    os.kill(worker.pid if shutdown == signal.SIGTERM else pids[0], shutdown)
+                    worker.wait(timeout=5)
+                    self.assertEqual(worker.returncode, 0 if shutdown == signal.SIGTERM else 1)
+                    for pid in pids:
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(pid, 0)
+                with self.worker() as restarted:
+                    for search in searches:
+                        self.wait_for_search(search, restarted)
+                        self.assertEqual(search.matching_task.attempt_count, 1)
 
     def test_each_start_immediately_reprocesses_fresh_or_exhausted_processing(self):
         for attempts in (0, 3, 99):

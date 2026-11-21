@@ -1,0 +1,135 @@
+{
+  "pagination": [
+    {
+      "expectedPhotoId": "c7a6d6fb394e4494bdac84807424bbb9",
+      "page": 2
+    },
+    {
+      "page": 100,
+      "expectedPhotoId": "772fe9efce1e4cc3a3bab1c371e74710"
+    }
+  ],
+  "folder": [
+    {
+      "expectedPhotoId": "0bdb2e3044394c2eb7fd61a9461145a3",
+      "folders": [
+        "8"
+      ]
+    },
+    {
+      "folders": [
+        "5",
+        "6"
+      ],
+      "expectedPhotoId": "df9262b9e596421eb19d0b6852a96afd"
+    }
+  ],
+  "time": [
+    {
+      "expectedPhotoId": "0bdb2e3044394c2eb7fd61a9461145a3",
+      "from": "2026-08-29T11:00",
+      "to": "2026-08-29T12:00"
+    }
+  ],
+  "folder_and_time": [
+    {
+      "expectedPhotoId": "0bdb2e3044394c2eb7fd61a9461145a3",
+      "folders": [
+        "8"
+      ],
+      "from": "2026-08-29T11:00",
+      "to": "2026-08-29T12:00"
+    }
+  ],
+  "gallery_face": [
+    {
+      "page": 111,
+      "detectionId": "2166eaaf-0906-47b8-861c-011d8d64f6f2",
+      "expectedPhotoId": "2d0055f10a274d32900244b88ce74773"
+    },
+    {
+      "page": 111,
+      "detectionId": "fb16301d-29e9-461b-b8ce-315a0654c64a",
+      "expectedPhotoId": "5293ead875234f2fb034de83e860b354"
+    },
+    {
+      "page": 111,
+      "detectionId": "9ba5b493-5cdd-4a00-bc5a-db4df84e5d62",
+      "expectedPhotoId": "7347405e17b24b85a7fd885dbf5a563e"
+    }
+  ],
+  "find_more": [
+    {
+      "page": 111,
+      "detectionId": "2166eaaf-0906-47b8-861c-011d8d64f6f2",
+      "expectedPhotoId": "2d0055f10a274d32900244b88ce74773"
+    },
+    {
+      "page": 111,
+      "detectionId": "fb16301d-29e9-461b-b8ce-315a0654c64a",
+      "expectedPhotoId": "5293ead875234f2fb034de83e860b354"
+    },
+    {
+      "page": 111,
+      "detectionId": "9ba5b493-5cdd-4a00-bc5a-db4df84e5d62",
+      "expectedPhotoId": "7347405e17b24b85a7fd885dbf5a563e"
+    }
+  ],
+  "find_by_result": [
+    {
+      "page": 111,
+      "detectionId": "2166eaaf-0906-47b8-861c-011d8d64f6f2",
+      "expectedPhotoId": "2d0055f10a274d32900244b88ce74773"
+    },
+    {
+      "page": 111,
+      "detectionId": "fb16301d-29e9-461b-b8ce-315a0654c64a",
+      "expectedPhotoId": "5293ead875234f2fb034de83e860b354"
+    },
+    {
+      "page": 111,
+      "detectionId": "9ba5b493-5cdd-4a00-bc5a-db4df84e5d62",
+      "expectedPhotoId": "7347405e17b24b85a7fd885dbf5a563e"
+    }
+  ],
+  "negative_feedback": [
+    {
+      "page": 111,
+      "detectionId": "2166eaaf-0906-47b8-861c-011d8d64f6f2",
+      "expectedPhotoId": "2d0055f10a274d32900244b88ce74773"
+    },
+    {
+      "page": 111,
+      "detectionId": "fb16301d-29e9-461b-b8ce-315a0654c64a",
+      "expectedPhotoId": "5293ead875234f2fb034de83e860b354"
+    },
+    {
+      "page": 111,
+      "detectionId": "9ba5b493-5cdd-4a00-bc5a-db4df84e5d62",
+      "expectedPhotoId": "7347405e17b24b85a7fd885dbf5a563e"
+    }
+  ],
+  "selfie": [
+    {
+      "file": "./.local/participant.jpg",
+      "expectedPhotoId": "2b78a86ae85146cb98a13645952a3664"
+    }
+  ],
+  "add_selfie": [
+    {
+      "file": "./.local/participant.jpg",
+      "expectedPhotoId": "2b78a86ae85146cb98a13645952a3664"
+    }
+  ],
+  "_meta": {
+    "eventSlug": "cycling-russian-amateur-championship-290826",
+    "photoCount": 12390,
+    "selfieReferencePhotoId": "2d0055f10a274d32900244b88ce74773",
+    "selfieSha256": "5ba13438f5e20a4a7b38e0a2286ff6975ed669240c6bcf75e3e4b87db82d13c8",
+    "features": [
+      "face-search-anchor-expansion",
+      "apparel-search-expansion",
+      "selfie-search-passes"
+    ]
+  }
+}

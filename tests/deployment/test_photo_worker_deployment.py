@@ -9,21 +9,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKER_IMAGE = "ghcr.io/example/photo-worker@sha256:" + "a" * 64
-IDENTITIES = {
-    "1/capture_metadata/2",
-    "2/generate_preview/1",
-    "2/generate_watermarked_preview/1",
-    "3/face_embedding/5",
-    "1/bib_recognition/1",
-    "2/person_appearance/1",
-    "1/selfie_query/2",
-}
-IDENTITY_LIST = ",".join(sorted(IDENTITIES))
+IDENTITY = "1/selfie_query/2"
+STALE_IDENTITIES = "3/face_embedding/5,1/selfie_query/2"
 DESIRED_TOKEN = "private-desired-worker-token"
 RUNNING_TOKEN = "private-running-worker-token"
 
 
-def test_deployment_renders_all_worker_identities_despite_stale_overrides():
+def test_deployment_renders_search_serving_configuration_despite_stale_overrides():
     required = {
         key: "test"
         for key in (
@@ -54,24 +46,27 @@ def test_deployment_renders_all_worker_identities_despite_stale_overrides():
             "--format",
             "json",
             "photo-worker",
+            "web",
         ],
         env={
             **os.environ,
             **required,
             "APP_IMAGE": WORKER_IMAGE,
             "PHOTO_WORKER_IMAGE": WORKER_IMAGE,
-            "PHOTO_WORKER_PROCESSOR_IDENTITIES": "1/selfie_query/2",
-            "PHOTO_WORKER_PROCESSOR_TYPES": "selfie_query",
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES": STALE_IDENTITIES,
+            "PHOTO_WORKER_PROCESSOR_TYPES": "face_embedding,selfie_query",
         },
         check=True,
         capture_output=True,
         text=True,
     )
-    service = json.loads(result.stdout)["services"]["photo-worker"]["environment"]
-    assert set(service["PHOTO_WORKER_PROCESSOR_IDENTITIES"].split(",")) == IDENTITIES
-    assert set(service["PHOTO_WORKER_PROCESSOR_TYPES"].split(",")) == {
-        identity.split("/")[1] for identity in IDENTITIES
-    }
+    services = json.loads(result.stdout)["services"]
+    worker = services["photo-worker"]
+    assert worker["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"] == IDENTITY
+    assert worker["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"] == "selfie_query"
+    assert worker["cpus"] == 2
+    assert services["web"]["environment"]["GUNICORN_WORKERS"] == "4"
+    assert services["web"]["environment"]["GUNICORN_THREADS"] == "2"
 
 
 @pytest.fixture
@@ -118,7 +113,7 @@ def run_release(release, *, web=True, worker=False, active=True, corruption=None
     desired = {
         "image": WORKER_IMAGE,
         "environment": {
-            "PHOTO_WORKER_PROCESSOR_IDENTITIES": IDENTITY_LIST,
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES": IDENTITY,
             "PHOTO_WORKER_TOKEN": DESIRED_TOKEN,
         },
     }
@@ -132,7 +127,7 @@ def run_release(release, *, web=True, worker=False, active=True, corruption=None
                     if not worker
                     else WORKER_IMAGE.replace("a" * 64, "b" * 64),
                     "status": "running" if active else "exited",
-                    "environment": ["PHOTO_WORKER_PROCESSOR_IDENTITIES=1/selfie_query/2"],
+                    "environment": ["PHOTO_WORKER_PROCESSOR_IDENTITIES=" + STALE_IDENTITIES],
                 },
                 "corruption": corruption or {},
             }
@@ -155,17 +150,10 @@ def run_release(release, *, web=True, worker=False, active=True, corruption=None
     return result, (release / "commands").read_text(), json.loads(state.read_text())["actual"]
 
 
-def test_web_only_release_repairs_running_selfie_only_worker_using_existing_image(release):
+def test_web_only_release_switches_running_worker_to_selfie_only_using_existing_image(release):
     result, calls, actual = run_release(release)
     assert result.returncode == 0, result.stderr
-    assert (
-        set(
-            next(value for value in actual["environment"] if "IDENTITIES=" in value)
-            .split("=", 1)[1]
-            .split(",")
-        )
-        == IDENTITIES
-    )
+    assert "PHOTO_WORKER_PROCESSOR_IDENTITIES=" + IDENTITY in actual["environment"]
     assert actual["image"] == WORKER_IMAGE
     assert calls.index("up -d --wait web") < calls.index(
         "up -d --no-deps --pull never --timeout 180 photo-worker"
@@ -219,7 +207,7 @@ def test_standalone_package_runs_worker_verification_after_extraction(release):
         (
             {
                 "environment": [
-                    "PHOTO_WORKER_PROCESSOR_IDENTITIES=" + IDENTITY_LIST,
+                    "PHOTO_WORKER_PROCESSOR_IDENTITIES=" + IDENTITY,
                     "PHOTO_WORKER_TOKEN=" + RUNNING_TOKEN,
                 ]
             },

@@ -1809,6 +1809,9 @@ class SelfieWorkerApiTests(TestCase):
         claim = self.post("/internal/photo-processing/v1/claim", self.claim_body())
         self.assertEqual(claim.status_code, 200)
         job = claim.json()["job"]
+        empty = self.post("/internal/photo-processing/v1/claim", self.claim_body())
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json(), {"empty": True, "suggested_delay_seconds": 1})
         self.assertEqual(
             set(job),
             {

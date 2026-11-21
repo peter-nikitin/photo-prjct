@@ -274,6 +274,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
                 apparel_enabled=feature_flag_services.is_enabled(
                     APPAREL_SEARCH_EXPANSION, request.user
                 ),
+                paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             )
     cart_state = cart_state_for_photos(
         request=request,

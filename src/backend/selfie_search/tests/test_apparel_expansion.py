@@ -334,6 +334,7 @@ class ApparelQueueTests(TestCase):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
         _, source = self.index_appearance("apparel-source", face_similarity=1.0)
+        self.index_appearance("confirmed-first-pass-face", face_similarity=0.75)
         _, target = self.index_appearance("group", face_similarity=0.55, reid_similarity=0.75)
         self.make_additional_face(
             embedding=target,
@@ -357,6 +358,24 @@ class ApparelQueueTests(TestCase):
         assert child.configuration["query_source"]["detection_id"] == str(target.detection_id)
         assert run_once()
         assert self.result_photos(child) == []
+
+    def test_apparel_found_face_requires_first_pass_confirmation(self):
+        from selfie_search.services.continuation import submit_continuation
+
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        _, source = self.index_appearance("apparel-source", face_similarity=1.0)
+        self.index_appearance("unconfirmed", face_similarity=0.55, reid_similarity=0.75)
+        self.index_appearance("shape-only-addition", reid_similarity=0.5)
+        search = self.submit_gallery(source)
+        assert run_once()
+        assert self.result_photos(search) == ["apparel-source", "unconfirmed"]
+
+        child = submit_continuation(search=search, user=self.user, photo_id="unconfirmed")
+
+        assert child.configuration["query_source"]["kind"] == "continuation_apparel"
+        assert run_once()
+        assert self.result_photos(child) == ["shape-only-addition"]
 
     def test_results_can_continue_from_the_saved_person_without_a_face(self):
         from selfie_search.services.submission import _token_digest

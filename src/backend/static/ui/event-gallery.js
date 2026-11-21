@@ -81,14 +81,16 @@
       },
     });
     const ownerDocument = root.ownerDocument;
-    ownerDocument?.addEventListener?.('cart:snapshot-applied', () => {
+    const refresh = () => {
       if (!lightbox?.reload) return;
       if (lightbox.lightboxOpen) {
         lightbox.once?.('close', () => lightbox.reload());
       } else {
         lightbox.reload();
       }
-    });
+    };
+    ownerDocument?.addEventListener?.('cart:snapshot-applied', refresh);
+    ownerDocument?.addEventListener?.('search:results-updated', refresh);
     return lightbox;
   }
 

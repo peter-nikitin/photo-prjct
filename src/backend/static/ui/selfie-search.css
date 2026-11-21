@@ -127,8 +127,7 @@
   font-weight: var(--weight-800);
 }
 
-.selfie-search input[type="file"],
-.selfie-add-photo input[type="file"] {
+.selfie-search input[type="file"] {
   box-sizing: border-box;
   width: 100%;
   max-width: 100%;
@@ -309,28 +308,8 @@
   margin-top: clamp(32px, 5vw, 52px);
 }
 
-.selfie-search-terminal-actions > .button,
-.selfie-add-photo > .button {
+.selfie-search-terminal-actions > .button {
   width: 100%;
-}
-
-.selfie-add-photo {
-  min-width: 0;
-}
-
-.selfie-add-photo > summary::-webkit-details-marker {
-  display: none;
-}
-
-.selfie-add-photo-form {
-  display: grid;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.selfie-add-photo p {
-  margin: 0 0 8px;
-  color: var(--color-text-muted);
 }
 
 .selfie-search-terminal-feedback {
@@ -575,8 +554,14 @@
   white-space: normal;
 }
 
-.selfie-search-more {
-  margin-top: 1rem;
+.selfie-search-pass {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.selfie-search-pass > p {
+  margin: 0;
 }
 
 .selfie-search-results [data-negative-feedback] .gallery-card-link img {

@@ -84,56 +84,43 @@ class SearchContinuationTests(TestCase):
             list(child.results.values_list("photo_id", flat=True)), ["manual-addition"]
         )
         self.assertEqual(list(root.results.values()), snapshot)
-        with self.assertRaises(ContinuationUnavailable):
-            submit_continuation(search=root, user=self.user, photo_id=source.photo_id)
+        repeat = submit_continuation(search=root, user=self.user, photo_id=source.photo_id)
+        self.assertNotEqual(child.pk, repeat.pk)
+        self.assertTrue(run_once())
+        repeat.refresh_from_db()
+        self.assertEqual(repeat.status, SelfieSearch.Status.READY)
+        self.assertFalse(repeat.results.exists())
 
     @override_feature_flags({SELFIE_SEARCH_PASSES: FEATURE_FLAG_ON})
-    def test_both_http_posts_continue_on_the_same_bearer_link(self):
+    def test_http_continuation_requires_a_photo_and_returns_its_status_link(self):
         token = uuid4().hex
         root = self.root_search(token=token)
         self.save_match(root, self.face("manual-source"), 1)
-        self.save_match(root, self.face("auto-source", axis=2), 2)
         self.face("manual-addition", primary=0.3)
-        self.face("auto-addition", axis=2, primary=0.3)
         url_kwargs = {"event_slug": self.event.slug, "public_token": token}
         uri = reverse("selfie_search:continue", kwargs=url_kwargs)
         result = reverse("selfie_search:result", kwargs=url_kwargs)
 
-        manual = self.client.post(uri, data={"photo_id": "manual-source"})
-        self.assertRedirects(manual, result, fetch_redirect_response=False)
-        self.assertTrue(run_once())
-        automatic = self.client.post(uri, data={}, HTTP_ACCEPT="application/json")
-        self.assertEqual(automatic.status_code, 200)
-        self.assertEqual(automatic.json()["result_url"], result)
-        self.assertEqual(automatic["Referrer-Policy"], "no-referrer")
-        self.assertTrue(run_once())
-
-        self.assertEqual(root.continuation_passes.count(), 2)
-        self.assertEqual(
-            set(
-                SelfieSearchResult.objects.filter(search__parent_search=root).values_list(
-                    "photo_id", flat=True
-                )
-            ),
-            {"manual-addition", "auto-addition"},
+        self.assertEqual(self.client.post(uri).status_code, 404)
+        self.assertFalse(root.continuation_passes.exists())
+        response = self.client.post(
+            uri, {"photo_id": "manual-source"}, HTTP_ACCEPT="application/json"
         )
-
-    @override_feature_flags({SELFIE_SEARCH_PASSES: FEATURE_FLAG_ON})
-    def test_automatic_post_leaves_anchor_selection_to_matching_worker(self):
-        token = uuid4().hex
-        root = self.root_search(token=token)
-        self.save_match(root, self.face("deferred-anchor"), 1)
-        uri = reverse("selfie_search:continue", args=(self.event.slug, token))
-        from selfie_search.services import continuation
-
-        with patch.object(
-            continuation, "_select_centroids", wraps=continuation._select_centroids
-        ) as select:
-            response = self.client.post(uri, HTTP_ACCEPT="application/json")
-            self.assertEqual(response.status_code, 200)
-            select.assert_not_called()
-            self.assertTrue(run_once())
-            select.assert_called_once()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["result_url"], result)
+        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        child = root.continuation_passes.get()
+        self.assertEqual(
+            response.json()["status_url"],
+            f"{reverse('selfie_search:status', kwargs=url_kwargs)}?pass={child.pk}",
+        )
+        self.assertEqual(self.client.get(response.json()["status_url"]).json()["status"], "queued")
+        other = self.root_search()
+        url = reverse("selfie_search:status", kwargs=url_kwargs)
+        self.assertEqual(self.client.get(url, {"pass": str(other.pk)}).status_code, 404)
+        self.assertTrue(run_once())
+        self.assertEqual(self.client.get(response.json()["status_url"]).json()["status"], "ready")
+        self.assertEqual(child.results.get().photo_id, "manual-addition")
 
     def test_automatic_anchor_query_is_scoped_to_saved_visible_results(self):
         from selfie_search.services import continuation
@@ -326,7 +313,7 @@ class SearchContinuationTests(TestCase):
         self.assertTrue(run_once())
         self.assertEqual(
             available_manual_photo_ids(root, photo_ids=("first-source", "other-source")),
-            {"other-source"},
+            {"first-source", "other-source"},
         )
 
     def test_automatic_can_use_new_result_supported_by_two_trusted_faces(self):

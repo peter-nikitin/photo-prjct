@@ -1201,7 +1201,7 @@ class PublicSelfieResultViewTests(TestCase):
             self.assertContains(page, 'data-photo-id="kept-first"')
             self.assertContains(page, 'data-photo-id="kept-last"')
             self.assertNotContains(page, 'data-photo-id="excluded-middle"')
-            self.assertContains(page, "Найдено фотографий: 2.")
+            self.assertContains(page, "<span data-published-count>2</span>")
         with self.subTest(route="status"):
             status = self.client.get(self.status_url(event=search.event, token=token))
             self.assertEqual(
@@ -1317,10 +1317,10 @@ class PublicSelfieResultViewTests(TestCase):
                 self.assertEqual(self.client.post(continue_url, data).status_code, 404)
             self.assertEqual(
                 self.client.post(
-                    reverse("selfie_search:add_selfie", args=args),
+                    self.result_url(event=root.event, token=token) + "add-selfie/",
                     {"upload_count": 1, "selfie": _view_jpeg_upload()},
                 ).status_code,
-                404,
+                405,
             )
             anchors.assert_not_called()
             storage.assert_not_called()
@@ -1332,7 +1332,6 @@ class PublicSelfieResultViewTests(TestCase):
         self.add_result(search=root, photo=photo, rank=1)
         args = (root.event.slug, token)
         uri = reverse("selfie_search:continue", args=args)
-        upload_uri = reverse("selfie_search:add_selfie", args=args)
         staff = get_user_model().objects.create_user(username="search-pass-staff", is_staff=True)
         for state, login, allowed in (
             (FEATURE_FLAG_OFF, staff, False),
@@ -1351,82 +1350,12 @@ class PublicSelfieResultViewTests(TestCase):
             ):
                 page = browser.get(self.result_url(event=root.event, token=token))
                 has_controls = self.assertContains if allowed else self.assertNotContains
-                has_controls(page, "Найти ещё")
+                self.assertNotContains(page, "Найти ещё")
                 has_controls(page, "Найти по этому фото")
-                self.assertEqual(browser.post(uri).status_code, 302 if allowed else 404)
-                self.assertEqual(browser.post(upload_uri).status_code, 422 if allowed else 404)
+                self.assertEqual(
+                    browser.post(uri, {"photo_id": photo.pk}).status_code, 302 if allowed else 404
+                )
                 self.assertEqual(submit.call_count, int(allowed))
-
-    @override_feature_flags({SELFIE_SEARCH_PASSES: FEATURE_FLAG_ON})
-    def test_result_accepts_two_additional_selfies_on_the_same_link(self) -> None:
-        root, token = self.make_search(status=SelfieSearch.Status.NO_FACE)
-        root.configuration = {"processor": "selfie_query"}
-        root.save(update_fields=["configuration"])
-        root_url = self.result_url(event=root.event, token=token)
-        upload_url = reverse("selfie_search:add_selfie", args=(root.event.slug, token))
-        browser = Client(enforce_csrf_checks=True)
-        self.assertContains(browser.get(root_url, secure=True), "Использовано 1 из 3 селфи")
-        self.assertEqual(browser.post(upload_url, {"selfie": _view_jpeg_upload()}).status_code, 403)
-
-        def post(files, *, uploads=1):
-            return browser.post(
-                upload_url,
-                {
-                    "selfie": files,
-                    "upload_count": uploads,
-                    "csrfmiddlewaretoken": browser.cookies["csrftoken"].value,
-                },
-                secure=True,
-                HTTP_ORIGIN="https://testserver",
-            )
-
-        with patch("selfie_search.views.TemporarySelfieStorage") as factory:
-            store = factory.return_value
-            store.put.side_effect = lambda **kwargs: SimpleNamespace(
-                key=kwargs["key"],
-                size=len(kwargs["content"]),
-                content_type=kwargs["content_type"],
-            )
-            self.assertEqual(post([_view_jpeg_upload(), _view_jpeg_upload()]).status_code, 422)
-            self.assertEqual(post(SimpleUploadedFile("bad.gif", b"bad")).status_code, 422)
-            store.put.assert_not_called()
-
-            first = post(_view_jpeg_upload())
-            self.assertEqual(first.status_code, 202)
-            self.assertEqual(first.json(), {"result_url": root_url})
-            self.assert_bearer_headers(first)
-            self.assertContains(browser.get(root_url), "Ищем фотографии")
-            self.assertEqual(post(_view_jpeg_upload(), uploads=2).status_code, 409)
-
-            child = root.continuation_passes.get()
-            child.status = SelfieSearch.Status.READY
-            child.eligible_photo_count = 12
-            child.save(update_fields=["status", "eligible_photo_count"])
-            photo = self.make_private_photo(root.event, photo_id="additional-selfie-photo")
-            self.add_result(search=child, photo=photo, rank=1)
-            ready = browser.get(root_url)
-            self.assertContains(ready, 'data-photo-id="additional-selfie-photo"')
-            self.assertContains(ready, "Использовано 2 из 3 селфи")
-            self.assertContains(ready, "Проверено фотографий: 12.")
-            status_url = self.status_url(event=root.event, token=token)
-            status = browser.get(status_url, {"continuation": 1}).json()
-            self.assertEqual(status["status"], "ready")
-            self.assertEqual(status["eligible_photo_count"], 12)
-            self.assertEqual(post(_view_jpeg_upload()).json(), {"result_url": root_url})
-            self.assertEqual(store.put.call_count, 1)
-
-            self.assertEqual(post(_view_jpeg_upload(), uploads=2).status_code, 202)
-            second = root.continuation_passes.exclude(pk=child.pk).get()
-            second.status = SelfieSearch.Status.NO_FACE
-            second.save(update_fields=["status"])
-            self.assertEqual(post(_view_jpeg_upload(), uploads=3).status_code, 409)
-            self.assertEqual(store.put.call_count, 2)
-
-        page = browser.get(root_url)
-        self.assertContains(page, "Использовано 3 из 3 селфи")
-        self.assertNotContains(page, "data-selfie-add-photo")
-        self.assertContains(page, "На добавленном селфи не удалось найти подходящее лицо.")
-        self.assertContains(page, 'data-photo-id="additional-selfie-photo"')
 
     @override_feature_flags({BULK_PHOTO_DOWNLOAD: FEATURE_FLAG_ON})
     def test_result_archive_follows_current_manual_marks_and_can_restore_the_original_set(self):
@@ -1485,7 +1414,7 @@ class PublicSelfieResultViewTests(TestCase):
         page_url = self.result_url(event=search.event, token=token)
         archive_url = self.result_archive_url(event=search.event, token=token)
         self.assertNotContains(self.client.get(page_url), 'data-photo-id="pass-new"')
-        self.assertContains(self.client.get(page_url), "Ищем ещё фотографии")
+        self.assertContains(self.client.get(page_url), "Ищем фотографии по выбранному кадру")
         self.assertEqual(
             self.client.get(
                 self.status_url(event=search.event, token=token), {"continuation": 1}
@@ -1503,8 +1432,8 @@ class PublicSelfieResultViewTests(TestCase):
         self.assertNotContains(page, "gallery-pagination")
         self.assertContains(page, 'data-photo-id="pass-first"', count=1)
         self.assertContains(page, 'data-photo-id="pass-new"', count=1)
-        self.assertContains(page, "Найдено фотографий: 3.")
-        self.assertContains(page, "Найти ещё")
+        self.assertContains(page, "<span data-published-count>3</span>")
+        self.assertNotContains(page, "Найти ещё")
         self.assertEqual(
             self.client.get(self.result_url(event=search.event, token=child_token)).status_code, 404
         )

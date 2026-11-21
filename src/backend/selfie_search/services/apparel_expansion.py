@@ -285,8 +285,7 @@ anchors AS MATERIALIZED (
         AND (
             (selected.detection_id IS NOT NULL AND person.face_id = selected.detection_id
                 AND person.vector IS NOT NULL)
-            OR (selected.detection_id IS NULL AND person.vector IS NULL
-                AND NOT person.ambiguous_face AND person.reason = '')
+            OR (%(apparel_only)s AND selected.detection_id IS NULL AND person.reason = '')
         )
 ),
 nearest_reid AS MATERIALIZED (
@@ -297,7 +296,8 @@ nearest_reid AS MATERIALIZED (
         best.reid_cosine_similarity, best.anchor_position
     FROM people candidate
     CROSS JOIN LATERAL (
-        SELECT anchor.person_id, anchor.photo_id, anchor.face_id,
+        SELECT anchor.person_id, anchor.photo_id,
+            CASE WHEN NOT %(apparel_only)s THEN anchor.face_id END AS face_id,
             (1 - (candidate.reid <=> anchor.reid)) AS reid_cosine_similarity,
             anchor.position AS anchor_position
         FROM anchors anchor
@@ -527,33 +527,27 @@ def _read_appearance_sql(
         return row
 
 
-_FACELESS_SOURCES_QUERY = (
+_APPAREL_SOURCES_QUERY = (
     "WITH "
     + _PEOPLE_CTES
-    + ", scoped_people AS (SELECT * FROM people), "
-    + _FACE_ASSOCIATION_CTES
     + """
-    SELECT coalesce(jsonb_object_agg(linked.photo_id, linked.person_id), '{{}}'::jsonb)::text
-    FROM linked
+    SELECT coalesce(jsonb_object_agg(people.photo_id, people.person_id), '{{}}'::jsonb)::text
+    FROM people
     JOIN unnest(%(photo_ids)s::varchar[], %(person_ids)s::bigint[]) AS source(photo_id, person_id)
         USING (photo_id, person_id)
-    WHERE linked.vector IS NULL AND NOT linked.ambiguous_face AND linked.reason = ''
-        AND linked.reid IS NOT NULL AND linked.color IS NOT NULL
+    WHERE people.reason = '' AND people.reid IS NOT NULL AND people.color IS NOT NULL
     """
 )
 
 
-def current_faceless_apparel_sources(
-    search: SelfieSearch, sources: dict[str, int], *, model: str
-) -> dict[str, int]:
+def current_apparel_sources(search: SelfieSearch, sources: dict[str, int]) -> dict[str, int]:
     if not sources:
         return {}
     (payload,) = _read_appearance_sql(
         search,
-        _FACELESS_SOURCES_QUERY,
+        _APPAREL_SOURCES_QUERY,
         {
             "event": search.event_id,
-            "model": model,
             "config": _configuration_hash(APPEARANCE_CONFIGURATION),
             "photo_ids": list(sources),
             "person_ids": list(sources.values()),

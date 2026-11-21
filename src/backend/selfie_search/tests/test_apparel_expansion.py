@@ -89,6 +89,7 @@ class ApparelQueueTests(TestCase):
     make_event = test_submission.GalleryPhotoSubmissionTests.make_event
     make_photo = test_submission.GalleryPhotoSubmissionTests.make_photo
     make_eligible_embedding = test_submission.GalleryPhotoSubmissionTests.make_eligible_embedding
+    make_additional_face = test_submission.GalleryPhotoSubmissionTests.make_additional_face
     publish_preview = test_views.WorkerApiTests.publish_preview
     submit_gallery = test_anchor_expansion.AnchorExpansionTests.submit_gallery
     submit_selfie = test_anchor_expansion.AnchorExpansionTests.submit_selfie
@@ -324,6 +325,39 @@ class ApparelQueueTests(TestCase):
             result.anchor_evidence.sources.values_list("anchor__detection_id", flat=True)
         ) == [source.detection_id, anchor.detection_id]
 
+    def test_results_continue_from_the_apparel_match_face_on_a_group_photo(self):
+        from selfie_search.services.continuation import (
+            available_manual_photo_ids,
+            submit_continuation,
+        )
+
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        _, source = self.index_appearance("apparel-source", face_similarity=1.0)
+        _, target = self.index_appearance("group", face_similarity=0.55, reid_similarity=0.75)
+        self.make_additional_face(
+            embedding=target,
+            vector=[0.0, 0.0, 1.0] + [0.0] * 509,
+            geometry={
+                "coordinate_space": "preview-small-v1",
+                "pixel_width": 100,
+                "pixel_height": 100,
+                "bbox": [75, 20, 20, 20],
+            },
+        )
+        search = self.submit_gallery(source)
+        assert run_once()
+        result = search.results.get(photo_id="group")
+        assert result.primary_source == SelfieSearchResult.PrimarySource.APPAREL_EXPANSION
+        assert available_manual_photo_ids(search, result_rows=(result,), apparel_enabled=True) == {
+            "group"
+        }
+
+        child = submit_continuation(search=search, user=self.user, photo_id="group")
+        assert child.configuration["query_source"]["detection_id"] == str(target.detection_id)
+        assert run_once()
+        assert self.result_photos(child) == []
+
     def test_results_can_continue_from_the_saved_person_without_a_face(self):
         from selfie_search.services.submission import _token_digest
 
@@ -331,7 +365,9 @@ class ApparelQueueTests(TestCase):
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
         FeatureFlag.objects.create(key="selfie-search-passes", state="on")
         _, source = self.index_appearance("apparel-source", face_similarity=1.0)
-        self.index_appearance("saved-person", reid_similarity=0.75)
+        self.index_appearance(
+            "saved-person", face_similarity=0.1, associate_face=False, reid_similarity=0.75
+        )
         self.index_appearance("new-no-face", reid_similarity=0.5)
         self.index_appearance("wrong-face", face_similarity=0.1, reid_similarity=0.5)
         self.index_appearance("wrong-color", reid_similarity=0.5, color_similarity=0.0)

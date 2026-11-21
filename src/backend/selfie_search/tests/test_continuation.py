@@ -273,8 +273,8 @@ class SearchContinuationTests(TestCase):
         self.assertEqual(exhausted.failure_code, "continuation_unavailable")
         self.assertFalse(exhausted.results.exists())
 
-    def test_automatic_and_manual_refuse_photo_with_another_detected_face(self):
-        from selfie_search.services.continuation import ContinuationUnavailable, submit_continuation
+    def test_manual_uses_saved_face_but_automatic_skips_group_photo(self):
+        from selfie_search.services.continuation import submit_continuation
 
         root = self.root_search()
         embedding = self.face("group-photo")
@@ -285,8 +285,13 @@ class SearchContinuationTests(TestCase):
             face_index=1,
             status=PhotoFaceDetection.Status.QUALITY_REJECTED,
         )
-        with self.assertRaises(ContinuationUnavailable):
-            submit_continuation(search=root, user=self.user, photo_id=row.photo_id)
+        manual = submit_continuation(search=root, user=self.user, photo_id=row.photo_id)
+        self.assertEqual(
+            manual.configuration["query_source"]["detection_id"], str(embedding.detection_id)
+        )
+        self.assertTrue(run_once())
+        manual.refresh_from_db()
+        self.assertEqual(manual.status, SelfieSearch.Status.READY)
         automatic = submit_continuation(search=root, user=self.user, photo_id=None)
         self.assertTrue(run_once())
         automatic.refresh_from_db()
@@ -300,19 +305,19 @@ class SearchContinuationTests(TestCase):
         )
 
         root = self.root_search()
-        self.save_match(root, self.face("first-source"), 1)
-        self.save_match(root, self.face("other-source", primary=0.85), 2)
+        first = self.save_match(root, self.face("first-source"), 1)
+        other = self.save_match(root, self.face("other-source", primary=0.85), 2)
         auto = submit_continuation(search=root, user=self.user, photo_id=None)
         self.assertTrue(run_once())
         self.assertEqual(
-            available_manual_photo_ids(root, photo_ids=("first-source", "other-source")),
+            available_manual_photo_ids(root, result_rows=(first, other)),
             {"first-source", "other-source"},
         )
         manual = submit_continuation(search=root, user=self.user, photo_id="first-source")
         self.assertNotEqual(auto.pk, manual.pk)
         self.assertTrue(run_once())
         self.assertEqual(
-            available_manual_photo_ids(root, photo_ids=("first-source", "other-source")),
+            available_manual_photo_ids(root, result_rows=(first, other)),
             {"first-source", "other-source"},
         )
 
@@ -376,8 +381,11 @@ class ContinuationConcurrencyTests(TransactionTestCase):
             event=self.event, status=SelfieSearch.Status.READY, public_token_digest=uuid4().hex
         )
         photo_id = "concurrent"
-        self.make_eligible_embedding(event=self.event, photo_id=photo_id)
-        SelfieSearchResult.objects.create(search=root, photo_id=photo_id, rank=1)
+        face = self.make_eligible_embedding(event=self.event, photo_id=photo_id)
+        row = SelfieSearchResult.objects.create(search=root, photo_id=photo_id, rank=1)
+        SelfieSearchDirectEvidence.objects.create(
+            result=row, detection=face.detection, cosine_distance=0.30
+        )
         starting = Barrier(2)
 
         def start():

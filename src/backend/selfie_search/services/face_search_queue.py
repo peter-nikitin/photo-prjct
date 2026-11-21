@@ -301,9 +301,7 @@ def process_face_search(task: FaceSearchTask) -> None:
                 ) as timing:
                     _set_statement_timeout(remaining_apparel_ms)
                     if ranking is None:
-                        verification = verify_apparel_continuation(
-                            search, model=task.embedding_model
-                        )
+                        verification = verify_apparel_continuation(search)
                     else:
                         verification = verify_apparel_anchors(
                             search,

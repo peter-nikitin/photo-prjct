@@ -262,7 +262,7 @@ found_centroids AS (
     SELECT DISTINCT photo_id, centroid_index FROM found_faces WHERE centroid_index IS NOT NULL
 ),
 """
-    + _PEOPLE_CTES
+    + _PEOPLE_CTES.replace("people AS MATERIALIZED (", "people AS NOT MATERIALIZED (", 1)
     + """,
 anchor_linked AS MATERIALIZED (
     WITH scoped_people AS (
@@ -284,18 +284,17 @@ anchors AS MATERIALIZED (
         AND person.face_id = selected.detection_id
     WHERE person.vector IS NOT NULL AND person.reid IS NOT NULL AND person.color IS NOT NULL
 ),
-nearest AS MATERIALIZED (
+nearest_reid AS MATERIALIZED (
     SELECT candidate.person_id, candidate.photo_id,
         best.person_id AS source_person_id,
         best.photo_id AS source_photo_id,
         best.face_id AS source_detection_id,
-        best.reid_cosine_similarity, best.color_cosine_similarity, best.helmet_cosine_similarity
+        best.reid_cosine_similarity, best.anchor_position
     FROM people candidate
     CROSS JOIN LATERAL (
         SELECT anchor.person_id, anchor.photo_id, anchor.face_id,
             (1 - (candidate.reid <=> anchor.reid)) AS reid_cosine_similarity,
-            (1 - (candidate.color <=> anchor.color)) AS color_cosine_similarity,
-            (1 - (candidate.helmet <=> anchor.helmet)) AS helmet_cosine_similarity
+            anchor.position AS anchor_position
         FROM anchors anchor
         WHERE candidate.reid <=> anchor.reid <= 1 - %(reid_cosine_similarity_min)s
         ORDER BY reid_cosine_similarity DESC, anchor.position
@@ -307,6 +306,16 @@ nearest AS MATERIALIZED (
         AND NOT (candidate.photo_id = ANY(%(prior_photos)s::varchar[]))
     ORDER BY best.reid_cosine_similarity DESC, candidate.photo_id, candidate.person_id
     LIMIT %(candidate_probe)s
+),
+nearest AS MATERIALIZED (
+    SELECT probe.person_id, probe.photo_id, probe.source_person_id, probe.source_photo_id,
+        probe.source_detection_id, probe.reid_cosine_similarity,
+        (1 - (candidate.color <=> anchor.color)) AS color_cosine_similarity,
+        (1 - (candidate.helmet <=> anchor.helmet)) AS helmet_cosine_similarity
+    FROM nearest_reid probe
+    JOIN processing_personappearancedetection candidate ON candidate.id = probe.person_id
+    JOIN anchors anchor ON anchor.person_id = probe.source_person_id
+        AND anchor.position = probe.anchor_position
 ),
 assessment_photos AS (
     SELECT photo_id FROM unnest(%(baseline)s::varchar[]) AS baseline(photo_id)

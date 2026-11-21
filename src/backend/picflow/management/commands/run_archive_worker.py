@@ -14,7 +14,8 @@ from picflow.archive_jobs import (
 )
 
 _WORKER_ADVISORY_LOCK = 806_220_02
-_POLL_SECONDS = 2
+_IDLE_POLL_SECONDS = 0.5
+_SUPERVISOR_POLL_SECONDS = 2
 _PRUNE_INTERVAL_SECONDS = 900
 
 
@@ -22,7 +23,7 @@ def _run_slot(stopping: Event) -> None:
     try:
         while not stopping.is_set():
             if not process_next_archive():
-                stopping.wait(_POLL_SECONDS)
+                stopping.wait(_IDLE_POLL_SECONDS)
     finally:
         connections.close_all()
 
@@ -63,7 +64,7 @@ class Command(BaseCommand):
                         if monotonic() >= next_prune:
                             prune_archive_jobs()
                             next_prune = monotonic() + _PRUNE_INTERVAL_SECONDS
-                        stopping.wait(_POLL_SECONDS)
+                        stopping.wait(_SUPERVISOR_POLL_SECONDS)
                 finally:
                     stopping.set()
                 for slot in slots:

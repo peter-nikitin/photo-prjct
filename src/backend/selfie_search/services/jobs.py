@@ -202,34 +202,40 @@ def refresh_search_download(
         return attempt if _owns_current_lease(search, job, attempt, now) else None
 
 
-@sensitive_variables("query")
+@sensitive_variables("query", "vector_param")
 def enqueue_face_search(
     search: SelfieSearch,
     *,
     source: str,
-    query: tuple[float, ...],
+    query: tuple[float, ...] | UUID | None,
     now: timezone.datetime,
     expires_at: timezone.datetime | None = None,
 ) -> None:
     """Insert a validated payload and advance its search within the caller's transaction."""
+    vector_sql = (
+        "(SELECT vector FROM processing_faceembeddingvector WHERE detection_id = %s)"
+        if isinstance(query, UUID)
+        else "%s::vector"
+    )
+    vector_param = Vector(list(query)).to_text() if isinstance(query, tuple) else query
     # Django's PostgreSQL client cursor interpolates parameters into statement text.
     # A server cursor keeps this sensitive parameter out of both SQL text and Django SQL logs.
     model = _configuration(search).model
     with connection.wrap_database_errors, Cursor(connection.connection) as cursor:
         cursor.execute("SET LOCAL log_parameter_max_length_on_error = 0")
         cursor.execute(
-            """
+            f"""
             INSERT INTO selfie_search_facesearchtask
                 (search_id, event_id, source, embedding_model, vector, status,
                  attempt_count, available_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s::vector, 'queued', 0, %s, %s)
+            VALUES (%s, %s, %s, %s, {vector_sql}, 'queued', 0, %s, %s)
             """,
             (
                 search.id,
                 search.event_id,
                 source,
                 model,
-                Vector(list(query)).to_text(),
+                vector_param,
                 now,
                 expires_at,
             ),
@@ -601,7 +607,11 @@ def _terminal_attempt(
 
 
 def expand_direct_ranking(
-    *, search: SelfieSearch, ranked: tuple, query: object
+    *,
+    search: SelfieSearch,
+    ranked: tuple,
+    query: object,
+    prior_photos: Callable[[], tuple[str, ...]] | None = None,
 ) -> RankedPhotoExpansion:
     """Read optional immutable corpus evidence before the publication transaction."""
     if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
@@ -615,7 +625,13 @@ def expand_direct_ranking(
                 .filter(event=search.event, active=True)
                 .first()
             )
-            return expand_ranked_photos(search, ranked, query, activation)
+            return expand_ranked_photos(
+                search,
+                ranked,
+                query,
+                activation,
+                prior_photo_ids=prior_photos() if activation is not None and prior_photos else (),
+            )
     except DatabaseError:
         return direct_only_ranked_photos(ranked, outcome="corpus_unavailable")
 
@@ -703,6 +719,7 @@ def prepare_search_result(
                 result=result_by_photo[row.photo_id],
                 detection_id=row.direct.detection_id,
                 cosine_distance=row.direct.cosine_distance,
+                centroid_index=row.direct.centroid_index,
             )
             for row in expansion.results
             if row.direct is not None

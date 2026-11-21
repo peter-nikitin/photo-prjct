@@ -931,7 +931,80 @@ test('upload sources stack before local folder targets collapse at tablet width'
   expect(localTargetCopy.width).toBeGreaterThan(100);
 });
 
-test('archive actions preserve the page boundary and paid result denial', async ({ page }) => {
+test('continuation buttons submit the expected source without exposing the result URL as a referrer', async ({ page }) => {
+  const path = '/__visual__/event/selfie-search/ready/';
+  await page.route(`**${path}*`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: { ...response.headers(), 'referrer-policy': 'no-referrer' },
+    });
+  });
+  await page.goto(path);
+  await page.locator('[data-cookie-notice-accept]').click();
+  const manual = page.getByRole('button', { name: 'Найти по этому фото' }).first();
+  const source = await manual.getAttribute('value');
+  const target = new URL(await page.locator('#search-continuation').getAttribute('action'), page.url());
+  const submitted = [];
+  await page.route(target.href, async (route) => {
+    const request = route.request();
+    const headers = await request.allHeaders();
+    expect(request.method()).toBe('POST');
+    expect(headers.origin).toBe(target.origin);
+    expect(headers.referer).toBe(`${target.origin}/`);
+    expect(headers.accept).toBe('application/json');
+    const data = request.postData();
+    expect(data).toContain('name="csrfmiddlewaretoken"');
+    submitted.push(data);
+    await route.fulfill({ json: { result_url: `${path}?submitted=${submitted.length}` } });
+  });
+
+  await manual.click();
+  await expect(page).toHaveURL(/\?submitted=1$/);
+  expect(submitted[0]).toContain(`name="photo_id"\r\n\r\n${source}\r\n`);
+  await page.getByRole('button', { name: 'Найти ещё' }).click();
+  await expect(page).toHaveURL(/\?submitted=2$/);
+  expect(submitted[1]).not.toContain('name="photo_id"');
+});
+
+test('an additional selfie uses the existing result link and reports upload errors', async ({ page }) => {
+  const path = '/__visual__/event/selfie-search/ready/';
+  await preloadCookieAcknowledgement(page);
+  await page.goto(path);
+  await page.getByText('Добавить селфи', { exact: true }).click();
+  const form = page.locator('[data-selfie-add-photo]');
+  const action = new URL(await form.getAttribute('action'), page.url());
+  const input = form.getByLabel('Селфи для нового прохода');
+  const submit = form.getByRole('button', { name: 'Найти по этому селфи' });
+  await expect(form).toContainText('Использовано 1 из 3 селфи');
+  await expect(page.locator('.gallery-card')).toHaveCount(3);
+  let requests = 0;
+  await page.route(action.href, async (route) => {
+    const request = route.request();
+    const headers = await request.allHeaders();
+    expect(request.method()).toBe('POST');
+    expect(headers.origin).toBe(action.origin);
+    expect(headers.referer).toBe(`${action.origin}/`);
+    expect(request.postData()).toContain('name="selfie"; filename="second.jpg"');
+    expect(request.postData()).toContain('name="upload_count"\r\n\r\n1\r\n');
+    requests++;
+    await route.fulfill(requests === 1
+      ? { status: 422, json: { error: 'Выберите другую фотографию.' } }
+      : { status: 202, json: { result_url: `${path}?uploaded=1` } });
+  });
+
+  await input.setInputFiles({
+    name: 'second.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from('selfie fixture'),
+  });
+  await submit.click();
+  await expect(form.getByRole('alert')).toHaveText('Выберите другую фотографию.');
+  await submit.click();
+  await expect(page).toHaveURL(/\?uploaded=1$/);
+});
+
+test('free search results show all passes and archive actions preserve order pagination', async ({ page }) => {
   for (const [path, expected] of [
     [
       '/__visual__/event/selfie-search/ready/single/',
@@ -939,11 +1012,7 @@ test('archive actions preserve the page boundary and paid result denial', async 
     ],
     [
       '/__visual__/event/selfie-search/ready/',
-      {
-        label: 'Скачать эту страницу',
-        helper: 'В архив попадут 2 фотографии со страницы 1 из 2. Остальные страницы можно скачать отдельно.',
-        pages: true,
-      },
+      { label: 'Скачать все', helper: null, pages: false },
     ],
     [
       '/__visual__/order/paid/',
@@ -976,6 +1045,12 @@ test('archive actions preserve the page boundary and paid result denial', async 
     }
   }
 
+  await page.goto('/__visual__/event/selfie-search/ready/');
+  const groups = page.locator('.selfie-search-results .event-gallery-grid');
+  await expect(groups).toHaveCount(2);
+  await expect(groups.nth(0).locator('.gallery-card')).toHaveCount(2);
+  await expect(groups.nth(1).locator('.gallery-card')).toHaveCount(1);
+
   await page.goto('/__visual__/event/selfie-search/ready/paid/');
   await expect(page.locator('.selfie-search-archive-action')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Скачать все' })).toHaveCount(0);
@@ -992,7 +1067,7 @@ for (const [device, viewport] of [
   ['desktop', DESKTOP_VIEWPORT],
   ['mobile', MOBILE_VIEWPORT],
 ]) {
-  test(`archive prepares on the existing page and uses the same download link again - ${device}`, async ({ page }) => {
+  test(`search archive revalidates the result set on each download - ${device}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.route('**/__visual__/event/selfie-search/ready/single/', async (route) => {
@@ -1046,8 +1121,8 @@ for (const [device, viewport] of [
     const second = page.waitForEvent('download');
     await button.click();
     expect((await second).suggestedFilename()).toBe('photos.zip');
-    expect(submissions).toBe(1);
-    expect(statusPolls).toBe(pollsAtReady);
+    expect(submissions).toBe(2);
+    expect(statusPolls).toBe(pollsAtReady + 1);
     await expect(page).toHaveURL(pageUrl);
   });
 }
@@ -1290,7 +1365,7 @@ test('desktop feedback keeps gallery full width and terminal actions equal', asy
     activeTag: document.activeElement?.tagName,
     terminal: (() => {
       const actions = document.querySelector('.selfie-search-terminal-actions');
-      const newSearch = actions?.querySelector(':scope > .button');
+      const newSearch = actions?.querySelector(':scope > .button, :scope > .selfie-add-photo > summary');
       const feedback = actions?.querySelector(':scope > .selfie-search-terminal-feedback');
       const actionsRect = actions?.getBoundingClientRect();
       const newSearchRect = newSearch?.getBoundingClientRect();
@@ -1306,13 +1381,13 @@ test('desktop feedback keeps gallery full width and terminal actions equal', asy
       };
     })(),
     cards: Array.from(document.querySelectorAll('.gallery-card-actions')).map((actions) => {
-      const controls = actions.querySelector('[data-result-feedback]');
+      const controls = actions.nextElementSibling?.querySelector('[data-result-feedback]');
       const download = actions.querySelector('.gallery-download');
       const controlRect = controls?.getBoundingClientRect();
       const downloadRect = download?.getBoundingClientRect();
       return {
         controlsVisible: Boolean(controls && !controls.hidden),
-        controlsBeforeDownload: Boolean(controlRect && downloadRect && controlRect.right <= downloadRect.left),
+        controlsBelowDownload: Boolean(controlRect && downloadRect && controlRect.top >= downloadRect.bottom),
       };
     }),
   }));
@@ -1328,7 +1403,7 @@ test('desktop feedback keeps gallery full width and terminal actions equal', asy
   await expect(page.getByRole('checkbox', { name: /Я согласен/ })).not.toBeChecked();
   expect(layout.cards).toHaveLength(3);
   expect(layout.cards.every(({ controlsVisible }) => controlsVisible)).toBe(true);
-  expect(layout.cards.every(({ controlsBeforeDownload }) => controlsBeforeDownload)).toBe(true);
+  expect(layout.cards.every(({ controlsBelowDownload }) => controlsBelowDownload)).toBe(true);
   await page.addStyleTag({
     content: '.topbar { position: static !important; } .skip-link { display: none !important; }',
   });
@@ -1368,7 +1443,7 @@ test('mobile feedback stacks the new-search action before the form', async ({ pa
 
   const layout = await page.evaluate(() => {
     const actions = document.querySelector('.selfie-search-terminal-actions');
-    const newSearch = actions?.querySelector(':scope > .button');
+    const newSearch = actions?.querySelector(':scope > .button, :scope > .selfie-add-photo > summary');
     const feedback = actions?.querySelector(':scope > .selfie-search-terminal-feedback');
     const actionsRect = actions?.getBoundingClientRect();
     const newSearchRect = newSearch?.getBoundingClientRect();
@@ -1395,28 +1470,33 @@ for (const viewport of [
   test(`paid result feedback reserves the price and right actions at ${viewport.width}px`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await preloadCookieAcknowledgement(page);
+    await page.goto('/__visual__/event/selfie-search/ready/paid/');
+    const card = page.locator('.gallery-card').first();
+    const photoId = await card.getAttribute('data-photo-id');
     let calls = 0;
     await page.route('**/search-feedback/', (route) => {
       calls += 1;
       return route.fulfill({
         status: calls === 1 ? 503 : 201,
-        json: { status: calls === 1 ? 'unavailable' : 'saved' },
+        json: {
+          status: calls === 1 ? 'unavailable' : 'saved',
+          manual_photo_ids: [photoId],
+          similar_photo_ids: [],
+          excluded_photo_count: 0,
+        },
       });
     });
-    await page.goto('/__visual__/event/selfie-search/ready/paid/');
     await settlePage(page);
 
-    const row = page.locator('.gallery-card-actions').first();
-    const boxes = () => row.evaluate((element) => {
+    const row = card.locator('.gallery-card-actions');
+    const boxes = () => card.evaluate((element) => {
       const box = (selector) => element.querySelector(selector).getBoundingClientRect().toJSON();
       const price = element.querySelector('.gallery-card-price');
-      const text = document.createRange();
-      text.selectNodeContents(price);
       return {
-        row: element.getBoundingClientRect().toJSON(),
-        feedback: box('[data-result-feedback]'),
+        row: box('.gallery-card-actions'),
+        feedback: box('[data-result-feedback] button'),
+        search: box('.selfie-search-photo-actions button[name="photo_id"]'),
         price: price.getBoundingClientRect().toJSON(),
-        priceText: text.getBoundingClientRect().toJSON(),
         priceFits: price.scrollWidth <= price.clientWidth,
         time: box('.gallery-card-time'),
         cart: box('.gallery-cart-button'),
@@ -1425,16 +1505,14 @@ for (const viewport of [
 
     const before = await boxes();
     expect(before.priceFits, JSON.stringify(before)).toBe(true);
-    expect(before.feedback.left, JSON.stringify(before)).toBeCloseTo(before.row.left, 0);
-    expect(before.feedback.right).toBeLessThanOrEqual(before.priceText.left);
-    expect(before.priceText.right).toBeLessThanOrEqual(before.time.left);
-    expect(before.priceText.right).toBeLessThanOrEqual(before.price.right);
+    expect(before.price.right).toBeLessThanOrEqual(before.time.left);
     expect(before.time.right).toBeLessThanOrEqual(before.cart.left);
     expect(before.cart.right).toBeCloseTo(before.row.right, 0);
-    expect(Math.abs(
-      (before.priceText.left + before.priceText.right) / 2
-      - (before.feedback.right + before.time.left) / 2
-    )).toBeLessThan(2);
+    expect(before.feedback.left).toBeCloseTo(before.row.left, 0);
+    expect(before.search.right).toBeCloseTo(before.row.right, 0);
+    expect(before.feedback.width).toBeCloseTo(before.search.width, 0);
+    expect(before.feedback.top).toBeCloseTo(before.search.top, 0);
+    expect(before.feedback.top).toBeGreaterThanOrEqual(before.row.bottom);
 
     const checkRightSlots = async () => {
       const current = await boxes();
@@ -1443,12 +1521,13 @@ for (const viewport of [
       expect(current.cart.left).toBeCloseTo(before.cart.left, 0);
       expect(current.cart.top - current.row.top).toBeCloseTo(before.cart.top - before.row.top, 0);
     };
-    const report = row.getByRole('button', { name: 'Это не я' });
+    const report = card.getByRole('button', { name: 'Это не я' });
     await report.click();
-    await expect(row.getByRole('alert')).toBeVisible();
+    await expect(card.getByRole('alert')).toBeVisible();
     await checkRightSlots();
     await report.click();
-    await expect(row.getByRole('status')).toHaveText('Отметка сохранена');
+    await expect(report).toHaveAttribute('aria-pressed', 'true');
+    await expect(card).toHaveAttribute('data-negative-feedback', 'manual');
     await checkRightSlots();
 
     const price = row.locator('.gallery-card-price');
@@ -1492,28 +1571,53 @@ test('bib and selfie forms use the same feedback URL and the bib gallery keeps i
   await expect(card.locator('[data-face-choice]')).toHaveCount(2);
 });
 
-test('result feedback retries a failed request and leaves other photos usable without a selfie', async ({ page }) => {
+test('result feedback toggles manual and similar dimming after a successful retry', async ({ page }) => {
+  await page.goto('/__visual__/event/selfie-search/ready/');
+  const first = page.locator('.gallery-card').first();
+  const second = page.locator('.gallery-card').nth(1);
+  const firstId = await first.getAttribute('data-photo-id');
+  const secondId = await second.getAttribute('data-photo-id');
   let calls = 0;
   await page.route('**/search-feedback/', async (route) => {
     calls += 1;
+    const request = route.request();
+    expect(request.postData()).toContain(calls <= 2 ? '\r\n\r\nmark\r\n' : '\r\n\r\nunmark\r\n');
     await route.fulfill({
-      status: calls === 1 ? 503 : 201,
-      json: { status: calls === 1 ? 'unavailable' : 'saved' },
+      status: calls === 1 ? 503 : 200,
+      json: {
+        status: calls === 1 ? 'unavailable' : 'saved',
+        manual_photo_ids: calls === 2 ? [firstId] : [],
+        similar_photo_ids: calls === 2 ? [secondId] : [],
+        excluded_photo_count: 0,
+      },
     });
   });
-  await page.goto('/__visual__/event/selfie-search/ready/');
-  const first = page.locator('.gallery-card').first();
   const button = first.getByRole('button', { name: 'Это не я' });
+  const firstSearch = first.getByRole('button', { name: 'Найти по этому фото' });
+  const secondSearch = second.getByRole('button', { name: 'Найти по этому фото' });
+  await expect(firstSearch).toBeEnabled();
+  await expect(secondSearch).toBeDisabled();
   await expect(page.locator('[data-feedback-form]')).toHaveCount(0);
-  await expect(first.locator('[data-feedback-saved]')).toBeHidden();
+  await expect(button).toHaveAttribute('aria-pressed', 'false');
   await button.click();
   await expect(first.getByRole('alert')).toBeVisible();
-  await expect(first.locator('[data-feedback-saved]')).toBeHidden();
+  await expect(first).not.toHaveAttribute('data-negative-feedback');
+  await expect(firstSearch).toBeEnabled();
   await button.click();
-  await expect(first.getByRole('status')).toHaveText('Отметка сохранена');
-  await expect(button).toBeHidden();
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+  await expect(first).toHaveAttribute('data-negative-feedback', 'manual');
+  await expect(firstSearch).toBeDisabled();
+  await expect(second).toHaveAttribute('data-negative-feedback', 'similar');
+  await expect(first.locator('img')).toHaveCSS('opacity', '0.45');
+  await expect(second.locator('img')).toHaveCSS('opacity', '0.45');
   await expect(first.locator('.gallery-card-link')).toBeVisible();
-  await expect(page.locator('.gallery-card').nth(1).getByRole('button', { name: 'Это не я' })).toBeVisible();
+  await expect(second.getByRole('button', { name: 'Это не я' })).toHaveAttribute('aria-pressed', 'false');
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'false');
+  await expect(first).not.toHaveAttribute('data-negative-feedback');
+  await expect(second).not.toHaveAttribute('data-negative-feedback');
+  await expect(firstSearch).toBeEnabled();
+  await expect(secondSearch).toBeDisabled();
 });
 
 test('cookie notice is visible and usable on a fresh desktop profile', async ({ page }) => {

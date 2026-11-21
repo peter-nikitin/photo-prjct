@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Final
 
-from django.core.paginator import Page, Paginator
-from django.db.models import F, QuerySet
+from django.db.models import F, Q, QuerySet, Window
+from django.db.models.functions import RowNumber
 from django.views.decorators.debug import sensitive_variables
 from picflow.gallery import saved_result_photo_queryset
 from picflow.models import Event, Photo
@@ -16,9 +15,6 @@ from selfie_search.models import SelfieSearch, SelfieSearchResult
 
 class PublicSearchNotFound(LookupError):
     """A bearer token does not identify a currently public event result."""
-
-
-SELFIE_SEARCH_RESULT_PAGE_SIZE: Final = 100
 
 
 @sensitive_variables("public_token")
@@ -32,9 +28,17 @@ def resolve_public_result(*, event_slug: str, public_token: str, user) -> Selfie
         return SelfieSearch.objects.select_related("event").get(
             event__in=Event.objects.site_visible_to(user).filter(slug=event_slug),
             public_token_digest=public_token_digest,
+            parent_search__isnull=True,
         )
     except SelfieSearch.DoesNotExist:
         raise PublicSearchNotFound from None
+
+
+def has_ready_search_pass(search: SelfieSearch) -> bool:
+    return (
+        search.status == SelfieSearch.Status.READY
+        or search.continuation_passes.filter(status=SelfieSearch.Status.READY).exists()
+    )
 
 
 def saved_ready_result_photos(
@@ -42,32 +46,40 @@ def saved_ready_result_photos(
     *,
     paid_watermarked_previews_enabled: bool = False,
 ) -> tuple[Photo, ...]:
-    """Return eligible saved members in capture-time order."""
-    if search.status != SelfieSearch.Status.READY:
-        return ()
-    rows = _eligible_saved_result_rows(
-        search,
-        paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
-    )
-    return tuple(row.photo for row in rows)
-
-
-def saved_ready_result_page(
-    *,
-    search: SelfieSearch,
-    page_number: str | None,
-    paid_watermarked_previews_enabled: bool = False,
-) -> Page:
-    """Return one capture-time-ordered page of eligible saved members."""
-    rows = (
-        _eligible_saved_result_rows(
-            search,
-            paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
+    """Return eligible saved members in pass order, then capture-time order."""
+    return tuple(
+        row.photo
+        for row in saved_ready_result_rows(
+            search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
         )
-        if search.status == SelfieSearch.Status.READY
-        else ()
     )
-    return Paginator(rows, SELFIE_SEARCH_RESULT_PAGE_SIZE).page(page_number or 1)
+
+
+def saved_ready_result_rows(
+    search: SelfieSearch,
+    *,
+    paid_watermarked_previews_enabled: bool = False,
+) -> QuerySet[SelfieSearchResult]:
+    """Return eligible members in pass and capture-time order, once per photo."""
+    return (
+        eligible_saved_result_rows(
+            search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+        )
+        .alias(
+            first_pass=Window(
+                expression=RowNumber(),
+                partition_by=[F("photo_id")],
+                order_by=[F("search__created_at").asc(), F("search_id").asc()],
+            )
+        )
+        .filter(first_pass=1)
+        .order_by(
+            "search__created_at",
+            "search_id",
+            F("photo__capture_time").asc(nulls_last=True),
+            "photo_id",
+        )
+    )
 
 
 def saved_ready_result_photo(
@@ -91,10 +103,8 @@ def saved_ready_result_row(
     photo_id: str,
     paid_watermarked_previews_enabled: bool,
 ) -> SelfieSearchResult | None:
-    if search.status != SelfieSearch.Status.READY:
-        return None
     return (
-        _eligible_saved_result_rows(
+        saved_ready_result_rows(
             search,
             paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
         )
@@ -103,14 +113,18 @@ def saved_ready_result_row(
     )
 
 
-def _eligible_saved_result_rows(
+def eligible_saved_result_rows(
     search: SelfieSearch,
     *,
-    paid_watermarked_previews_enabled: bool,
+    paid_watermarked_previews_enabled: bool = False,
 ) -> QuerySet[SelfieSearchResult]:
+    """Return visible rows in the root and committed passes, including provenance duplicates."""
+    ready_searches = SelfieSearch.objects.filter(
+        Q(pk=search.pk) | Q(parent_search=search), status=SelfieSearch.Status.READY
+    ).values("pk")
     return (
         SelfieSearchResult.objects.filter(
-            search=search,
+            search_id__in=ready_searches,
             excluded_by_apparel=False,
             photo__event_id=search.event_id,
             photo__src="",

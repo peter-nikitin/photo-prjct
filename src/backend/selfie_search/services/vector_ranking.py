@@ -32,7 +32,27 @@ def accepted_kept_faces(search: SelfieSearch, model: str) -> QuerySet[PhotoProce
     ).order_by()
 
 
-def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRankingOutcome:
+def cohort_counts(search: SelfieSearch, model: str) -> tuple[int, int]:
+    # Counts are advisory for one minute; only fresh ranking controls results.
+    key = f"selfie-search:cohort-counts:v1:{search.event_id}:{model}"
+    counts = cache.get(key)
+    if counts is None:
+        sampled = accepted_kept_faces(search, model).aggregate(
+            face_count=Count("pk"), photo_count=Count("photo_id", distinct=True)
+        )
+        counts = (sampled["face_count"], sampled["photo_count"])
+        if counts[0]:
+            cache.set(key, counts, timeout=_COUNT_CACHE_TTL_SECONDS)
+    return counts
+
+
+def rank_vector_direct(
+    search: SelfieSearch,
+    query_vector: object,
+    *,
+    exclude_photo_ids: QuerySet | None = None,
+    original_gallery_seed: str | None = None,
+) -> DirectRankingOutcome:
     """Rank current vectors; fresh matches and emptiness share one database snapshot."""
     configuration = _configuration(search)
     query = (
@@ -53,8 +73,13 @@ def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRank
             ),
         ),
     )
+    candidates = states
+    if exclude_photo_ids is not None:
+        candidates = candidates.exclude(photo_id__in=Subquery(exclude_photo_ids))
+    if original_gallery_seed is not None:
+        candidates = candidates.exclude(photo_id=original_gallery_seed)
     matches = (
-        states.annotate(
+        candidates.annotate(
             photo_rank=Window(
                 RowNumber(),
                 partition_by=[F("photo_id")],
@@ -79,19 +104,7 @@ def rank_vector_direct(search: SelfieSearch, query_vector: object) -> DirectRank
         .values("has_vectors", "matches")
         .get()
     )
-    if result["has_vectors"]:
-        # Counts are advisory for one minute; only the fresh query controls results.
-        cache_key = f"selfie-search:cohort-counts:v1:{search.event_id}:{configuration.model}"
-        counts = cache.get(cache_key)
-        if counts is None:
-            sampled = states.aggregate(
-                face_count=Count("pk"), photo_count=Count("photo_id", distinct=True)
-            )
-            counts = (sampled["face_count"], sampled["photo_count"])
-            if counts[0]:
-                cache.set(cache_key, counts, timeout=_COUNT_CACHE_TTL_SECONDS)
-    else:
-        counts = (0, 0)
+    counts = cohort_counts(search, configuration.model) if result["has_vectors"] else (0, 0)
     ranked_photos = tuple(
         RankedPhoto(
             photo_id=row["photo_id"],

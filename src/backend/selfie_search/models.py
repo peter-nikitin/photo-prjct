@@ -68,6 +68,13 @@ class SelfieSearch(models.Model):  # noqa: DJ008
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     event = models.ForeignKey(Event, on_delete=models.PROTECT, related_name="selfie_searches")
+    parent_search = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="continuation_passes",
+        null=True,
+        blank=True,
+    )
     public_token_digest = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=24, choices=Status, default=Status.QUEUED)
     stage = models.CharField(max_length=12, choices=Stage, default=Stage.RECOGNITION)
@@ -80,6 +87,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     configuration_hash = models.CharField(max_length=64, blank=True, default="")
     eligible_photo_count = models.PositiveIntegerField(default=0)
     eligible_face_count = models.PositiveIntegerField(default=0)
+    negative_feedback_photos = models.JSONField(default=dict, db_default={})
     matched_photo_count = models.PositiveIntegerField(default=0)
     final_matched_photo_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_corpus = models.ForeignKey(
@@ -116,6 +124,11 @@ class SelfieSearch(models.Model):  # noqa: DJ008
 
     class Meta:
         constraints = [
+            models.UniqueConstraint(
+                fields=("parent_search",),
+                condition=models.Q(status__in=("queued", "processing")),
+                name="selfie_one_active_continuation",
+            ),
             models.CheckConstraint(
                 condition=models.Q(
                     status__in=(
@@ -173,6 +186,12 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     def clean(self) -> None:
         super().clean()
         errors = {}
+        if self.parent_search_id and (
+            self.parent_search_id == self.pk
+            or self.parent_search.parent_search_id
+            or self.parent_search.event_id != self.event_id
+        ):
+            errors["parent_search"] = "The parent must be a root search for this event."
         if self.cluster_corpus_id:
             if self.cluster_corpus.event_id != self.event_id:
                 errors["cluster_corpus"] = "The selected corpus must belong to the search event."
@@ -225,7 +244,7 @@ class FaceSearchTask(models.Model):  # noqa: DJ008
     event = models.ForeignKey(Event, on_delete=models.PROTECT)
     source = models.CharField(max_length=8, choices=Source)
     embedding_model = models.CharField(max_length=100)
-    vector = VectorField(dimensions=512)
+    vector = VectorField(dimensions=512, null=True)
     status = models.CharField(max_length=12, choices=Status, default=Status.QUEUED)
     attempt_count = models.PositiveSmallIntegerField(default=0)
     available_at = models.DateTimeField(default=timezone.now)
@@ -417,14 +436,20 @@ class SelfieSearchDirectEvidence(models.Model):  # noqa: DJ008
         related_name="selfie_search_direct_evidence",
     )
     cosine_distance = models.FloatField()
+    centroid_index = models.PositiveSmallIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
             models.CheckConstraint(
+                condition=models.Q(centroid_index__isnull=True)
+                | models.Q(centroid_index__gte=1, centroid_index__lte=3),
+                name="selfie_direct_centroid_index_chk",
+            ),
+            models.CheckConstraint(
                 condition=models.Q(cosine_distance__gte=0, cosine_distance__lte=2),
                 name="selfie_direct_evidence_distance_chk",
-            )
+            ),
         ]
         indexes = [
             models.Index(fields=["detection"], name="selfie_direct_evidence_det_idx"),

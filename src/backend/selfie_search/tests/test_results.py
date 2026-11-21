@@ -1,7 +1,6 @@
 import hashlib
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
-from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -25,8 +24,8 @@ from selfie_search.models import SelfieSearch, SelfieSearchDirectEvidence, Selfi
 from selfie_search.services.results import (
     PublicSearchNotFound,
     resolve_public_result,
-    saved_ready_result_page,
     saved_ready_result_photos,
+    saved_ready_result_rows,
 )
 
 LEGACY_ORIGINAL_POLICY: str = cast(str, Photo.GalleryMediaPolicy.LEGACY_ORIGINAL_ALLOWED)
@@ -191,18 +190,17 @@ class SavedReadyResultPageTests(TestCase):
         )
         photo.gallery_media_projection = publish_gallery_media(derivative)
 
-    def test_page_filters_no_longer_eligible_saved_members(self) -> None:
+    def test_result_filters_no_longer_eligible_saved_members(self) -> None:
         first = self.add_result(photo_id="rank-one", rank=1)
         removed = self.add_result(photo_id="rank-two", rank=2)
         third = self.add_result(photo_id="rank-three", rank=3)
         Photo.objects.filter(pk=removed.pk).update(original_key="")
 
-        page = saved_ready_result_page(search=self.search, page_number=None)
+        rows = saved_ready_result_rows(self.search)
 
-        self.assertEqual(tuple(row.photo_id for row in page.object_list), (first.pk, third.pk))
-        self.assertFalse(page.has_next())
+        self.assertEqual(tuple(row.photo_id for row in rows), (first.pk, third.pk))
 
-    def test_full_result_and_pages_share_capture_time_order_across_sources(self) -> None:
+    def test_full_result_preserves_capture_time_order_across_sources(self) -> None:
         source = SelfieSearchResult.PrimarySource
         morning = datetime(2026, 7, 30, 9, tzinfo=UTC)
         for rank, (photo_id, primary_source, minute) in enumerate(
@@ -226,31 +224,29 @@ class SavedReadyResultPageTests(TestCase):
             "photo_id", "rank", "primary_source"
         )
         original_snapshot = list(stored_results)
-        expected_pages = (
-            ("centroid-early", "cluster-tie-a"),
-            ("direct-tie-z", "cluster-late"),
-            ("direct-null-a", "direct-null-z"),
+        expected = (
+            "centroid-early",
+            "cluster-tie-a",
+            "direct-tie-z",
+            "cluster-late",
+            "direct-null-a",
+            "direct-null-z",
         )
         self.assertEqual(
-            tuple(photo.pk for photo in saved_ready_result_photos(self.search)),
-            tuple(photo_id for page in expected_pages for photo_id in page),
+            tuple(photo.pk for photo in saved_ready_result_photos(self.search)), expected
         )
-        with patch("selfie_search.services.results.SELFIE_SEARCH_RESULT_PAGE_SIZE", 2):
-            for number, expected in enumerate(expected_pages, start=1):
-                with self.subTest(page=number):
-                    page = saved_ready_result_page(search=self.search, page_number=str(number))
-                    self.assertEqual(tuple(row.photo_id for row in page.object_list), expected)
-                    self.assertEqual(page.paginator.num_pages, 3)
+        self.assertEqual(
+            tuple(row.photo_id for row in saved_ready_result_rows(self.search)), expected
+        )
         self.assertEqual(list(stored_results.all()), original_snapshot)
 
-    def test_nonready_search_has_empty_page(self) -> None:
+    def test_nonready_search_has_no_saved_rows(self) -> None:
         self.search.status = SelfieSearch.Status.PROCESSING
         self.search.save(update_fields=["status"])
 
-        page = saved_ready_result_page(search=self.search, page_number=None)
+        rows = saved_ready_result_rows(self.search)
 
-        self.assertEqual(tuple(page.object_list), ())
-        self.assertFalse(page.has_next())
+        self.assertEqual(tuple(rows), ())
 
     def test_paid_saved_results_keep_legacy_members_but_gate_new_watermarked_members(self) -> None:
         self.event.access_type = Event.AccessType.PAID
@@ -264,20 +260,18 @@ class SavedReadyResultPageTests(TestCase):
         )
         self.publish_watermark(watermarked)
 
-        gate_off = saved_ready_result_page(
+        gate_off = saved_ready_result_rows(
             search=self.search,
-            page_number=None,
             paid_watermarked_previews_enabled=False,
         )
-        gate_on = saved_ready_result_page(
+        gate_on = saved_ready_result_rows(
             search=self.search,
-            page_number=None,
             paid_watermarked_previews_enabled=True,
         )
 
-        self.assertEqual(tuple(row.photo_id for row in gate_off.object_list), (legacy.pk,))
+        self.assertEqual(tuple(row.photo_id for row in gate_off), (legacy.pk,))
         self.assertEqual(
-            tuple(row.photo_id for row in gate_on.object_list),
+            tuple(row.photo_id for row in gate_on),
             (legacy.pk, watermarked.pk),
         )
 

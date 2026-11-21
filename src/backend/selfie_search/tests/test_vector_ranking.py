@@ -44,8 +44,10 @@ class VectorRankingTests(CurrentFaceCohortTests):
         self.assertEqual(result.eligible_face_count, 1)
         self.assertEqual(result.photos[0].detection_id, detection.id)
         self.assertEqual(result.photos[0].cosine_distance, 0)
+        self.assertIsNone(result.photos[0].centroid_index)
         self.assertEqual(
-            set(vars(result.photos[0])), {"photo_id", "detection_id", "cosine_distance"}
+            set(vars(result.photos[0])),
+            {"photo_id", "detection_id", "cosine_distance", "centroid_index"},
         )
 
     def test_vector_only_current_identity_is_searchable(self) -> None:

@@ -59,6 +59,10 @@ FACE_SEARCH_ANCHOR_EXPANSION: Final = FeatureDefinition(
     "Expand face search using a centroid of strong single-face results",
 )
 
+SELFIE_SEARCH_PASSES: Final = FeatureDefinition(
+    "selfie-search-passes", "Allow additional passes from saved photo results or extra selfies"
+)
+
 PERSON_APPEARANCE_PROCESSING: Final = FeatureDefinition(
     "person-appearance-processing", "Compute person appearance from accepted previews"
 )
@@ -78,6 +82,7 @@ FEATURE_DEFINITIONS: Final = (
     EVENT_COVER_CDN_IMAGES,
     WEB_VITALS,
     FACE_SEARCH_ANCHOR_EXPANSION,
+    SELFIE_SEARCH_PASSES,
     PERSON_APPEARANCE_PROCESSING,
     APPAREL_SEARCH_EXPANSION,
 )

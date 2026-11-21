@@ -166,6 +166,8 @@ def test_populated_pgvector_baseline_survives_worker_schema_and_flag_sync():
             expected = before[pair]
             if pair == ("selfie_search", "SelfieSearchResult"):
                 expected = [row | {"excluded_by_apparel": False} for row in expected]
+            elif pair == ("selfie_search", "SelfieSearchDirectEvidence"):
+                expected = [row | {"centroid_index": None} for row in expected]
             assert snapshot(current, *pair) == expected
         with pytest.raises(LookupError):
             current.get_model("processing", "FaceEmbedding")

@@ -105,3 +105,4 @@ ADR фиксирует долговременный архитектурный �
 | 0081 | [Проверять опоры расширения по согласованным признакам](0081-verify-search-anchors-across-signals.md) | Accepted |
 | 0082 | [Ограничить защиту кадра от непригодной фоновой фигуры](0082-limit-background-figure-protection.md) | Accepted |
 | 0083 | [Подтверждать добавление по внешности цветом](0083-require-color-for-apparel-additions.md) | Accepted |
+| 0084 | [Продолжать поиск под одной ссылкой](0084-continue-search-under-one-result-link.md) | Accepted |

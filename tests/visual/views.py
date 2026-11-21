@@ -20,7 +20,7 @@ from django.urls import reverse
 from feature_flags.registry import PAID_PHOTO_PURCHASE
 from feature_flags.states import FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
-from picflow.archive_presentation import archive_page_action
+from picflow.archive_presentation import ArchivePageAction, archive_page_action
 from picflow.forms import BibSearchForm, EventGalleryFolderFilterForm, EventGalleryTimeFilterForm
 from selfie_search.forms import SelfieSearchUploadForm
 
@@ -188,6 +188,7 @@ class FixtureSelfieSearch:
 @dataclass(frozen=True)
 class FixtureSelfieSearchResult:
     pk: str
+    search_id: str | None = None
 
 
 EVENTS = (
@@ -878,13 +879,25 @@ def selfie_search_processing_status(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"status": "processing"})
 
 
+def _selfie_upload_context(token: str) -> dict[str, Any]:
+    return {
+        "public_token": token,
+        "selfie_upload_form": SelfieSearchUploadForm(),
+        "upload_count": 1,
+        "upload_limit": 3,
+        "checked_photo_count": 46,
+    }
+
+
 def selfie_search_empty(request: HttpRequest) -> HttpResponse:
     return _render(
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-empty"),
             "event": EVENTS[0],
             "gallery_photos": (),
+            "published_count": 0,
             "is_terminal": True,
             "search": FixtureSelfieSearch("ready", eligible_photo_count=46),
             "status_url": "",
@@ -897,6 +910,7 @@ def selfie_search_error(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-error"),
             "event": EVENTS[0],
             "gallery_photos": (),
             "is_terminal": True,
@@ -913,26 +927,30 @@ def _selfie_search_ready(
     photos: tuple[FixtureGalleryPhoto, ...] = SELFIE_RESULT_PHOTOS,
     cart_presentation: FixtureCartPresentation | None = None,
     archive_available: bool = True,
+    include_pass: bool = False,
 ) -> HttpResponse:
-    selfie_search_page = Paginator(photos, 2).page(1)
-    visible_photos = tuple(selfie_search_page.object_list)
     results = tuple(
-        FixtureSelfieSearchResult(f"00000000-0000-4000-8000-00000000001{index}")
-        for index in range(1, len(visible_photos) + 1)
+        FixtureSelfieSearchResult(
+            f"00000000-0000-4000-8000-00000000001{index}",
+            search_id="next-pass" if include_pass and index >= 3 else None,
+        )
+        for index in range(1, len(photos) + 1)
     )
     archive_action = (
-        archive_page_action(
-            item_count=len(visible_photos),
-            page_number=selfie_search_page.number,
-            page_count=selfie_search_page.paginator.num_pages,
-        )
-        if archive_available
+        ArchivePageAction(label="Скачать все", helper_text=None)
+        if archive_available and len(photos) >= 2
         else None
+    )
+    cart_photos = (
+        {item.photo.photo_id: item for item in cart_presentation.photos}
+        if cart_presentation
+        else {}
     )
     return _render(
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-ready-result"),
             "event": event,
             "cart_presentation": cart_presentation,
             "archive_action": archive_action,
@@ -947,11 +965,19 @@ def _selfie_search_ready(
                 if archive_action is not None
                 else None
             ),
-            "gallery_photos": visible_photos,
-            "gallery_result_items": tuple(zip(results, visible_photos, strict=True)),
-            "public_token": "visual-ready-result",
+            "published_count": len(photos),
+            "continuation_url": reverse(
+                "selfie_search:continue",
+                kwargs={"event_slug": event.slug, "public_token": "visual-ready-result"},
+            ),
+            "search_passes_enabled": True,
+            "continuation_photo_ids": {photos[0].photo_id} if photos else set(),
+            "gallery_photos": photos,
+            "gallery_result_items": tuple(
+                (row, photo, cart_photos.get(photo.photo_id))
+                for row, photo in zip(results, photos, strict=True)
+            ),
             "result_feedback_url": reverse("search_feedback_submit", args=(event.slug,)),
-            "selfie_search_page": selfie_search_page,
             "is_terminal": True,
             "search": FixtureSelfieSearch(
                 "ready", eligible_photo_count=46, published_matched_photo_count=3
@@ -962,7 +988,7 @@ def _selfie_search_ready(
 
 
 def selfie_search_ready(request: HttpRequest) -> HttpResponse:
-    return _selfie_search_ready(request, event=EVENTS[0])
+    return _selfie_search_ready(request, event=EVENTS[0], include_pass=True)
 
 
 def selfie_search_ready_single(request: HttpRequest) -> HttpResponse:
@@ -1173,6 +1199,7 @@ def selfie_search_feedback_problem(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-problem"),
             "event": EVENTS[0],
             "gallery_photos": (),
             "gallery_result_items": (),
@@ -1202,12 +1229,17 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
         request,
         "selfie_search/result.html",
         {
+            **_selfie_upload_context("visual-feedback"),
             "event": EVENTS[0],
             "gallery_photos": photos,
-            "gallery_result_items": tuple(zip(results, photos, strict=True)),
-            "public_token": "visual-feedback",
+            "gallery_result_items": tuple(
+                (row, photo, None) for row, photo in zip(results, photos, strict=True)
+            ),
+            "reported_photo_ids": {photos[0].photo_id},
+            "similar_feedback_photo_ids": {photos[1].photo_id},
+            "published_count": len(photos),
+            "search_passes_enabled": True,
             "result_feedback_url": reverse("search_feedback_submit", args=(EVENTS[0].slug,)),
-            "selfie_search_page": Paginator(photos, 2).page(1),
             "is_terminal": True,
             "public_token_digest": "b" * 64,
             "search": FixtureSelfieSearch(

@@ -144,6 +144,23 @@ class AnchorExpansionTests(TestCase):
                     finally:
                         get_user_model().objects.filter(pk=user.pk).update(is_staff=user.is_staff)
 
+    def test_manual_pass_uses_the_same_optional_face_expansion_as_initial_search(self):
+        from selfie_search.services.continuation import submit_continuation
+
+        self.add_face("selected", 1)
+        self.set_gate("off")
+        root = self.submit_selfie(self.user)
+        self.assertTrue(run_once())
+        self.assertEqual(self.result_photos(root), ["selected"])
+        self.add_face("direct-anchor", 0.75)
+        self.add_face("centroid-addition", 0.5)
+        self.set_gate("on")
+
+        child = submit_continuation(search=root, user=self.user, photo_id="selected")
+        self.assertTrue(run_once())
+        self.assertEqual(self.result_photos(child), ["direct-anchor", "centroid-addition"])
+        self.assertEqual(child.anchor_expanded_photo_count, 1)
+
     def test_staff_gate_requires_a_json_boolean_true_in_the_search_snapshot(self):
         source = self.add_face("query-source", 1)
         self.add_face("anchor", 0.75)

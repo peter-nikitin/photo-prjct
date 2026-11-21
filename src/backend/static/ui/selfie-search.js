@@ -760,6 +760,48 @@
     if (error && typeof error.focus === 'function') error.focus();
   }
 
+  function bindSearchContinuation(form, window) {
+    if (!form) return;
+    const error = form.querySelector('[role="alert"]');
+    const defaultError = error.textContent;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (form.getAttribute('aria-busy') === 'true') return;
+      const data = new FormData(form, event.submitter);
+      form.setAttribute('aria-busy', 'true');
+      error.hidden = true;
+      error.textContent = defaultError;
+      if (event.submitter) event.submitter.disabled = true;
+      try {
+        // Send the origin needed by HTTPS CSRF without sending the private result URL.
+        const response = await window.fetch(form.action, {
+          method: 'POST',
+          mode: 'same-origin',
+          referrerPolicy: 'origin',
+          headers: { Accept: 'application/json' },
+          body: data,
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.result_url) {
+          if (typeof payload?.error === 'string') error.textContent = payload.error;
+          throw new Error('Search continuation failed');
+        }
+        window.location.assign(payload.result_url);
+      } catch {
+        form.removeAttribute('aria-busy');
+        if (event.submitter) {
+          event.submitter.disabled = Boolean(event.submitter.closest('[data-negative-feedback="manual"]'));
+        }
+        error.hidden = false;
+      }
+    });
+    for (const control of form.elements) {
+      if (control.hasAttribute('data-continuation-control')) {
+        control.disabled = Boolean(control.closest('[data-negative-feedback="manual"]'));
+      }
+    }
+  }
+
   function startBrowserUi(document, window, options = {}) {
     const storage = options.storage || new BrowserStorageAdapter({
       indexedDB: safeObjectValue(window, 'indexedDB'),
@@ -769,6 +811,10 @@
     const form = document.querySelector('[data-selfie-search-form]');
     focusSelfieSearchError(document);
     const result = document.querySelector('[data-selfie-search-result]');
+    if (result) {
+      bindSearchContinuation(document.querySelector('#search-continuation'), window);
+      bindSearchContinuation(document.querySelector('[data-selfie-add-photo]'), window);
+    }
     const feedbackEnabled = (form || result)?.dataset?.selfieFeedbackEnabled === 'true';
     const galleryOrigin = result?.dataset?.galleryOrigin === 'true';
     bindSelfieSearchForm(form, { storage });

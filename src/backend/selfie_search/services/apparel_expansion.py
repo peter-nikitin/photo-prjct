@@ -9,6 +9,7 @@ from uuid import UUID
 
 from django.db import connection
 from picflow.gallery import retrieval_gallery_photo_queryset
+from picflow.models import Event
 from processing.appearance import APPEARANCE_CONFIGURATION
 from processing.services.enrollment import _configuration_hash
 from psycopg import Cursor
@@ -496,6 +497,24 @@ class ApparelAnchorVerification:
     truncated: bool
     group_outcomes: tuple[str, ...] = ()
 
+    @classmethod
+    def for_person(cls, photo_id: str, person_id: int) -> ApparelAnchorVerification:
+        return cls(
+            photo_id,
+            "verified",
+            (
+                {
+                    "photo_id": photo_id,
+                    "person_id": person_id,
+                    "detection_id": None,
+                    "anchor_position": 1,
+                },
+            ),
+            [],
+            [],
+            False,
+        )
+
     @property
     def centroid_detection_ids(self) -> tuple[UUID, ...] | None:
         if self.outcome == "no_compatible_appearance":
@@ -553,6 +572,31 @@ def current_apparel_sources(search: SelfieSearch, sources: dict[str, int]) -> di
             "person_ids": list(sources.values()),
         },
         photo_ids=list(sources),
+    )
+    return {photo_id: int(person_id) for photo_id, person_id in json.loads(payload).items()}
+
+
+_GALLERY_APPAREL_SOURCES_QUERY = (
+    "WITH "
+    + _PEOPLE_CTES
+    + """
+    SELECT coalesce(jsonb_object_agg(photo_id, person_id), '{{}}'::jsonb)::text
+    FROM people
+    WHERE person_count = 1 AND NOT people_incomplete
+        AND reason = '' AND reid IS NOT NULL AND color IS NOT NULL
+    """
+)
+
+
+def gallery_apparel_sources(event: Event, *, photo_ids: list[str]) -> dict[str, int]:
+    """Resolve ready single-person descriptors for the supplied gallery cards."""
+    if not photo_ids:
+        return {}
+    (payload,) = _read_appearance_sql(
+        SelfieSearch(event=event),
+        _GALLERY_APPAREL_SOURCES_QUERY,
+        {"event": event.pk, "config": _configuration_hash(APPEARANCE_CONFIGURATION)},
+        photo_ids=photo_ids,
     )
     return {photo_id: int(person_id) for photo_id, person_id in json.loads(payload).items()}
 

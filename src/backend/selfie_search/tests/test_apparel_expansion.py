@@ -205,6 +205,52 @@ class ApparelQueueTests(TestCase):
         complete_attempt(claim.attempt.pk, result=appearance_result(*rows, head_count=head_count))
         return photo, face
 
+    @override_settings(
+        STORAGES={
+            "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}
+        }
+    )
+    def test_gallery_starts_apparel_search_for_one_person_without_a_face(self):
+        FeatureFlag.objects.create(key="person-appearance-processing", state="on")
+        FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
+        single, _ = self.index_appearance("single-without-face")
+        group, _ = self.index_appearance(
+            "group-without-face",
+            reid_similarity=0.1,
+            extra_people=(_rejected_person([150, 0, 180, 100]),),
+        )
+        face, _ = self.index_appearance("has-face", face_similarity=1.0)
+        self.index_appearance("wrong-color", color_similarity=0.4)
+
+        page_url = reverse("event_detail", kwargs={"slug": self.event.slug})
+        single_url = f"{page_url}photos/{single.pk}/similar-search/"
+        group_url = f"{page_url}photos/{group.pk}/similar-search/"
+        face_url = f"{page_url}photos/{face.pk}/similar-search/"
+        with patch("config.views.issue_gallery_preview_urls", return_value={}):
+            page = self.client.get(page_url)
+        self.assertContains(page, f'action="{single_url}"')
+        self.assertNotContains(page, f'action="{group_url}"')
+        self.assertNotContains(page, f'action="{face_url}"')
+
+        assert self.client.post(group_url).status_code == 404
+        assert self.client.post(face_url).status_code == 404
+        gate = FeatureFlag.objects.filter(key="apparel-search-expansion")
+        gate.update(state="off")
+        with patch("config.views.issue_gallery_preview_urls", return_value={}):
+            page = self.client.get(page_url)
+        self.assertNotContains(page, f'action="{single_url}"')
+        assert self.client.post(single_url).status_code == 404
+        assert not SelfieSearch.objects.filter(event=self.event).exists()
+        gate.update(state="on")
+        response = self.client.post(single_url)
+        assert response.status_code == 302
+        search = SelfieSearch.objects.get(event=self.event)
+        assert search.configuration["query_source"]["kind"] == "gallery_apparel"
+        assert run_once()
+        assert self.result_photos(search) == ["has-face"]
+        assert search.apparel_expanded_photo_count == 1
+        assert search.direct_matched_photo_count == 0
+
     def test_empty_anchor_proposals_skip_the_reader(self):
         search = self.submit_selfie(self.user)
         with patch("selfie_search.services.apparel_expansion.Cursor") as cursor:

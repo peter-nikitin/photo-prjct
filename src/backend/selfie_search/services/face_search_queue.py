@@ -4,7 +4,6 @@ import logging
 from dataclasses import replace
 from datetime import datetime, timedelta
 from functools import cache, partial
-from math import ceil
 from time import perf_counter
 
 from config.queue_events import notify_queue_completion
@@ -22,6 +21,7 @@ from selfie_search.models import (
     SelfieSearchAttempt,
 )
 from selfie_search.observability import emit_selfie_observability_failure
+from selfie_search.services import apparel_telemetry
 from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
 from selfie_search.services.apparel_expansion import (
     ContinuationApparelChecks,
@@ -212,16 +212,31 @@ def process_face_search(task: FaceSearchTask) -> None:
                 elapsed_ms = int((timezone.now() - started_at).total_seconds() * 1000)
                 remaining_ms = timeout_ms - elapsed_ms
                 if remaining_ms <= 0:
+                    apparel_telemetry.record(
+                        "continuation_precheck",
+                        search.pk,
+                        0,
+                        APPAREL_TIMEOUT_MS,
+                        0,
+                        "matching_deadline_exhausted",
+                    )
                     raise _ApparelSearchUnavailable
                 try:
-                    _set_statement_timeout(min(remaining_ms, APPAREL_TIMEOUT_MS))
-                    continuation_checks = check_continuation_apparel(
-                        search, anchors, task.embedding_model
-                    )
+                    with apparel_telemetry.stage(
+                        "continuation_precheck",
+                        search.pk,
+                        APPAREL_TIMEOUT_MS,
+                        min(remaining_ms, APPAREL_TIMEOUT_MS),
+                        started=started,
+                    ) as timing:
+                        _set_statement_timeout(min(remaining_ms, APPAREL_TIMEOUT_MS))
+                        continuation_checks = check_continuation_apparel(
+                            search, anchors, task.embedding_model
+                        )
                 except (DatabaseError, ValueError):
                     logger.warning("apparel_expansion_unavailable")
                     raise _ApparelSearchUnavailable from None
-                apparel_spent_ms = ceil((perf_counter() - started) * 1000)
+                apparel_spent_ms = timing.elapsed_ms
                 _set_statement_timeout(max(1, remaining_ms - apparel_spent_ms))
                 return continuation_checks.compatible_neighbors()
 
@@ -255,31 +270,48 @@ def process_face_search(task: FaceSearchTask) -> None:
             remaining_ms = timeout_ms - int((now - started_at).total_seconds() * 1000)
             remaining_apparel_ms = min(remaining_ms, APPAREL_TIMEOUT_MS - apparel_spent_ms)
             if remaining_apparel_ms <= 0:
+                apparel_telemetry.record(
+                    "anchor_verification",
+                    search.pk,
+                    0,
+                    APPAREL_TIMEOUT_MS - apparel_spent_ms,
+                    0,
+                    "matching_deadline_exhausted" if remaining_ms <= 0 else "budget_exhausted",
+                )
                 logger.warning("apparel_expansion_unavailable")
                 raise _ApparelSearchUnavailable
             verification_started = perf_counter()
             try:
-                _set_statement_timeout(remaining_apparel_ms)
-                verification = verify_apparel_anchors(
-                    search,
-                    ranking.photos,
-                    embedding_model=task.embedding_model,
-                    gallery=task.source == FaceSearchTask.Source.GALLERY and not automatic,
-                    continuation_groups=sources if automatic else (),
-                    continuation_checks=continuation_checks,
-                )
-                if automatic:
-                    accepted = {row["photo_id"] for row in verification.anchors}
-                    if any(
-                        outcome != "no_compatible_appearance"
-                        and any(anchor.photo_id not in accepted for anchor in group)
-                        for group, outcome in zip(sources, verification.group_outcomes, strict=True)
-                    ):
-                        raise ValueError("continuation appearance anchors changed")
+                with apparel_telemetry.stage(
+                    "anchor_verification",
+                    search.pk,
+                    APPAREL_TIMEOUT_MS - apparel_spent_ms,
+                    remaining_apparel_ms,
+                    started=verification_started,
+                ) as timing:
+                    _set_statement_timeout(remaining_apparel_ms)
+                    verification = verify_apparel_anchors(
+                        search,
+                        ranking.photos,
+                        embedding_model=task.embedding_model,
+                        gallery=task.source == FaceSearchTask.Source.GALLERY and not automatic,
+                        continuation_groups=sources if automatic else (),
+                        continuation_checks=continuation_checks,
+                    )
+                    if automatic:
+                        accepted = {row["photo_id"] for row in verification.anchors}
+                        if any(
+                            outcome != "no_compatible_appearance"
+                            and any(anchor.photo_id not in accepted for anchor in group)
+                            for group, outcome in zip(
+                                sources, verification.group_outcomes, strict=True
+                            )
+                        ):
+                            raise ValueError("continuation appearance anchors changed")
             except (DatabaseError, ValueError):
                 logger.warning("apparel_expansion_unavailable")
                 raise _ApparelSearchUnavailable from None
-            apparel_spent_ms += ceil((perf_counter() - verification_started) * 1000)
+            apparel_spent_ms += timing.elapsed_ms
 
         if (
             ranking.photos
@@ -324,22 +356,33 @@ def process_face_search(task: FaceSearchTask) -> None:
         remaining_ms = timeout_ms - int((now - started_at).total_seconds() * 1000)
         remaining_apparel_ms = min(remaining_ms, APPAREL_TIMEOUT_MS - apparel_spent_ms)
         if remaining_apparel_ms <= 0:
+            apparel_telemetry.record(
+                "expansion",
+                search.pk,
+                0,
+                APPAREL_TIMEOUT_MS - apparel_spent_ms,
+                0,
+                "matching_deadline_exhausted" if remaining_ms <= 0 else "budget_exhausted",
+            )
             logger.warning("apparel_expansion_unavailable")
             raise _ApparelSearchUnavailable
         try:
-            with transaction.atomic():
-                _set_statement_timeout(remaining_apparel_ms)
-                expansion = expand_apparel(
-                    search,
-                    task.pk,
-                    expansion,
-                    embedding_model=task.embedding_model,
-                    verification=verification,
-                    continuation_groups=sources if automatic else (),
-                    prior_photo_ids=prior_photos(),
-                )
-                if expansion.apparel_evidence is None:
-                    raise ValueError("apparel expansion did not supply evidence")
+            with apparel_telemetry.stage(
+                "expansion", search.pk, APPAREL_TIMEOUT_MS - apparel_spent_ms, remaining_apparel_ms
+            ):
+                with transaction.atomic():
+                    _set_statement_timeout(remaining_apparel_ms)
+                    expansion = expand_apparel(
+                        search,
+                        task.pk,
+                        expansion,
+                        embedding_model=task.embedding_model,
+                        verification=verification,
+                        continuation_groups=sources if automatic else (),
+                        prior_photo_ids=prior_photos(),
+                    )
+                    if expansion.apparel_evidence is None:
+                        raise ValueError("apparel expansion did not supply evidence")
         except (DatabaseError, ValueError):
             logger.warning("apparel_expansion_unavailable")
             raise _ApparelSearchUnavailable from None

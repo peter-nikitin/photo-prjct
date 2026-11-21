@@ -12,8 +12,9 @@ from search_feedback.models import SearchFeedback
 from search_feedback.services import active_negative_reports, face_result_reports
 
 from selfie_search.models import SelfieSearch
+from selfie_search.services.face_history import MATCHED_FACE_EVIDENCE_SQL
 from selfie_search.services.ranking import RankingError, _configuration
-from selfie_search.services.results import eligible_saved_result_rows
+from selfie_search.services.results import eligible_saved_result_rows, ready_family_results
 
 _NEGATIVE_DISTANCE = 0.25
 _STRONG_POSITIVE_DISTANCE = 0.34
@@ -35,7 +36,7 @@ WITH visible_rows(id, photo_id, search_id, created_at, search_created_at) AS MAT
     {eligible_sql}
 ),
 first_results AS MATERIALIZED (
-    SELECT DISTINCT ON (photo_id) id, photo_id, search_id, created_at
+    SELECT DISTINCT ON (photo_id) id, photo_id, search_id, created_at, search_created_at
     FROM visible_rows
     ORDER BY photo_id, search_created_at, search_id
 ),
@@ -43,32 +44,25 @@ manual(photo_id, result_id, marked_at) AS (
     SELECT * FROM unnest(%(manual_photos)s::varchar[], %(manual_results)s::text[],
         %(manual_times)s::timestamptz[])
 ),
+report_rows(id, photo_id, search_id, created_at, search_created_at) AS MATERIALIZED (
+    {report_sql}
+),
 marked_results AS (
     SELECT DISTINCT ON (report.photo_id) report.photo_id, result.id, report.marked_at
     FROM manual report
-    JOIN first_results first USING (photo_id)
-    JOIN visible_rows result ON result.photo_id = report.photo_id
-        AND result.id::text = coalesce(report.result_id, first.id::text)
-    ORDER BY report.photo_id, report.marked_at, result.id
+    LEFT JOIN first_results first USING (photo_id)
+    JOIN report_rows result ON result.photo_id = report.photo_id
+        AND result.id::text = coalesce(report.result_id, first.id::text, result.id::text)
+    ORDER BY report.photo_id, report.marked_at, result.search_created_at, result.id
 ),
 evidence_rows AS MATERIALIZED (
-    SELECT id, photo_id FROM first_results
+    SELECT id, photo_id, search_id FROM first_results
     UNION
-    SELECT id, photo_id FROM marked_results
+    SELECT saved.id, saved.photo_id, saved.search_id
+    FROM marked_results reference JOIN report_rows saved USING (id, photo_id)
 ),
 matched_faces AS (
-    SELECT result.id, result.photo_id, direct.detection_id,
-        CASE WHEN direct.centroid_index IS NULL THEN direct.cosine_distance END AS direct_distance
-    FROM evidence_rows result
-    JOIN selfie_search_selfiesearchdirectevidence direct ON direct.result_id = result.id
-    UNION ALL
-    SELECT result.id, result.photo_id, anchor.detection_id, NULL
-    FROM evidence_rows result
-    JOIN selfie_search_selfiesearchanchorevidence anchor ON anchor.result_id = result.id
-    UNION ALL
-    SELECT result.id, result.photo_id, cluster.member_detection_id, NULL
-    FROM evidence_rows result
-    JOIN selfie_search_selfiesearchclusterevidence cluster ON cluster.result_id = result.id
+    {matched_face_sql}
 ),
 unambiguous_faces AS MATERIALIZED (
     SELECT match.id, match.photo_id, (array_agg(DISTINCT match.detection_id))[1] AS detection_id,
@@ -130,8 +124,18 @@ positive_vectors(photo_id, detection_id, vector, explicitly_selected) AS MATERIA
         LIMIT %(positive_limit)s
     ) strong
 ),
+history_positive_vectors AS MATERIALIZED (
+    SELECT face.photo_id, face.vector, result.search_created_at, result.search_id
+    FROM vectors face JOIN first_results result USING (id, photo_id)
+    WHERE NOT (face.photo_id = ANY(%(manual_photos)s::varchar[]))
+        AND NOT EXISTS (
+            SELECT 1 FROM negative_vectors negative
+            WHERE (face.vector <=> negative.vector) <= %(negative_distance)s
+        )
+),
 near_matches AS (
     SELECT candidate.photo_id, candidate.detection_id, candidate.vector,
+        result.search_created_at, result.search_id,
         match.distance, match.prior_distance
     FROM first_results result
     JOIN vectors candidate USING (id, photo_id)
@@ -146,17 +150,31 @@ near_matches AS (
     WHERE match.distance IS NOT NULL
         AND NOT (candidate.photo_id = ANY(%(manual_photos)s::varchar[]))
 )
-SELECT near.photo_id, near.prior_distance IS NOT NULL
-    AND (positive.distance IS NULL
-        OR positive.distance > near.prior_distance + %(ambiguity_margin)s) AS exclude_new
+SELECT near.photo_id, verdict.exclude_new
 FROM near_matches near
 CROSS JOIN LATERAL (
-    SELECT min(reference.vector <=> near.vector) AS distance
+    SELECT min(reference.vector <=> near.vector) AS distance,
+        min(reference.vector <=> near.vector) FILTER (WHERE reference.explicitly_selected)
+            AS explicit_distance
     FROM positive_vectors reference
     WHERE reference.photo_id <> near.photo_id
         OR (reference.explicitly_selected AND reference.detection_id = near.detection_id)
 ) positive
-WHERE positive.distance IS NULL OR positive.distance > near.distance + %(ambiguity_margin)s
+CROSS JOIN LATERAL (
+    SELECT min(reference.vector <=> near.vector) AS distance
+    FROM history_positive_vectors reference
+    WHERE near.prior_distance IS NOT NULL
+        AND (reference.search_created_at, reference.search_id) <
+            (near.search_created_at, near.search_id)
+) history
+CROSS JOIN LATERAL (
+    SELECT near.prior_distance IS NOT NULL
+        AND (least(positive.explicit_distance, history.distance) IS NULL
+            OR least(positive.explicit_distance, history.distance) >
+                near.prior_distance + %(ambiguity_margin)s) AS exclude_new
+) verdict
+WHERE verdict.exclude_new
+    OR positive.distance IS NULL OR positive.distance > near.distance + %(ambiguity_margin)s
 """
 
 
@@ -242,7 +260,14 @@ def _compare_negative_faces(search: SelfieSearch, eligible: QuerySet) -> Negativ
         .values("pk")
         .query.sql_with_params()
     )
+    report_sql, report_params = (
+        ready_family_results(search)
+        .filter(photo_id__in=manual)
+        .values_list("id", "photo_id", "search_id", "created_at", "search__created_at")
+        .query.sql_with_params()
+    )
     for name, sql, params in (
+        ("report", report_sql, report_params),
         ("eligible", eligible_sql, eligible_params),
         ("gallery", gallery_sql, gallery_params),
     ):
@@ -256,6 +281,8 @@ def _compare_negative_faces(search: SelfieSearch, eligible: QuerySet) -> Negativ
             _SIMILAR_FACE_SQL.format(
                 eligible_sql=query_params.pop("eligible_sql"),
                 gallery_sql=query_params.pop("gallery_sql"),
+                report_sql=query_params.pop("report_sql"),
+                matched_face_sql=MATCHED_FACE_EVIDENCE_SQL,
             ),
             query_params,
         )

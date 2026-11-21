@@ -159,6 +159,72 @@ class SearchContinuationTests(TestCase):
             set(faces.values_list("detection__attempt__photo_id", flat=True)), {saved.photo_id}
         )
 
+    def test_apparel_exclusion_applies_to_all_passes_of_the_same_search(self):
+        from selfie_search.services.continuation import ContinuationUnavailable, submit_continuation
+        from selfie_search.services.results import saved_ready_result_rows
+
+        root = self.root_search()
+        face = self.face("previously-shown")
+        shown = self.save_match(root, face, 1)
+        child = self.root_search()
+        child.parent_search = root
+        child.save(update_fields=["parent_search"])
+        veto = self.save_match(child, face, 1)
+        SelfieSearchResult.objects.filter(pk=veto.pk).update(excluded_by_apparel=True)
+        other = self.root_search()
+        self.save_match(other, face, 1)
+
+        self.assertFalse(saved_ready_result_rows(root).filter(photo_id=shown.photo_id).exists())
+        self.assertTrue(saved_ready_result_rows(other).filter(photo_id=shown.photo_id).exists())
+        with self.assertRaises(ContinuationUnavailable):
+            submit_continuation(search=root, user=self.user, photo_id=shown.photo_id)
+        self.assertEqual(root.results.get().pk, shown.pk)
+
+    def test_worker_checks_new_faces_against_the_whole_history_before_publication(self):
+        from selfie_search.services.continuation import submit_continuation
+        from selfie_search.services.direct_ranking import DirectRankingOutcome
+        from selfie_search.services.ranking import RankedPhoto
+        from selfie_search.services.results import saved_ready_result_rows
+
+        root = self.root_search()
+        source = self.save_match(root, self.face("history-source", primary=0), 1)
+        earlier = self.root_search()
+        earlier.parent_search = root
+        earlier.save(update_fields=["parent_search"])
+        self.save_match(earlier, self.face("history-other-angle", axis=2, primary=0), 1)
+        addition = self.face("supported-by-other-angle", axis=2, primary=0.1)
+        outsider = self.face("unsupported-face", axis=3, primary=0)
+
+        child = submit_continuation(search=root, user=self.user, photo_id=source.photo_id)
+        with patch(
+            "selfie_search.services.face_search_queue.rank_selected_direct",
+            return_value=DirectRankingOutcome(
+                photos=tuple(
+                    RankedPhoto(
+                        photo_id=face.detection.attempt.photo_id,
+                        detection_id=face.detection_id,
+                        cosine_distance=0.31,
+                    )
+                    for face in (addition, outsider)
+                ),
+                eligible_photo_count=4,
+                eligible_face_count=4,
+                has_vectors=True,
+                identity_ms=0,
+                build_ms=0,
+                ranking_ms=0,
+            ),
+        ):
+            self.assertTrue(run_once())
+
+        child.refresh_from_db()
+        self.assertEqual(child.published_matched_photo_count, 1)
+        self.assertTrue(child.results.get(photo_id="unsupported-face").excluded_by_face_history)
+        self.assertTrue(
+            saved_ready_result_rows(root).filter(photo_id="supported-by-other-angle").exists()
+        )
+        self.assertFalse(saved_ready_result_rows(root).filter(photo_id="unsupported-face").exists())
+
     def test_consumed_anchors_use_one_query_for_multiple_passes(self):
         from selfie_search.services.continuation import consumed_anchor_photo_ids
 

@@ -896,7 +896,13 @@ class ApparelQueueTests(TestCase):
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
 
         first = submit_continuation(search=root, user=self.user, photo_id=None)
-        assert run_once()
+        from selfie_search.services import apparel_expansion
+
+        with patch.object(
+            apparel_expansion, "_read_anchor_checks", wraps=apparel_expansion._read_anchor_checks
+        ) as read_checks:
+            assert run_once()
+            read_checks.assert_called_once()
         assert self.result_photos(first) == ["pink-addition"]
         assert first.apparel_evidence.decisions["centroid_anchor_outcomes"] == ["verified"]
         assert consumed_anchor_photo_ids(root) == {"initial-gallery-seed", "pink-reference"}

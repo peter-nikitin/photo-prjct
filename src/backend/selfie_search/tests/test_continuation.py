@@ -135,6 +135,30 @@ class SearchContinuationTests(TestCase):
             self.assertTrue(run_once())
             select.assert_called_once()
 
+    def test_automatic_anchor_query_is_scoped_to_saved_visible_results(self):
+        from selfie_search.services import continuation
+
+        root = self.root_search()
+        saved = self.save_match(root, self.face("visible-anchor"), 1)
+        hidden = self.save_match(root, self.face("hidden-anchor"), 2)
+        Photo.objects.filter(pk=hidden.photo_id).update(is_hidden=True)
+        self.face("not-in-results")
+        child = continuation.submit_continuation(search=root, user=self.user, photo_id=None)
+        with patch.object(
+            continuation, "_select_centroids", wraps=continuation._select_centroids
+        ) as select:
+            groups = continuation.select_continuation_centroids(
+                child, model=child.configuration["embedding_model"], check_apparel=None
+            )
+        self.assertEqual(
+            [anchor.photo_id for group in groups for anchor in group], [saved.photo_id]
+        )
+        self.assertEqual(select.call_args.kwargs["eligible_result_ids"], (saved.pk,))
+        faces = select.call_args.kwargs["faces"]
+        self.assertEqual(
+            set(faces.values_list("detection__attempt__photo_id", flat=True)), {saved.photo_id}
+        )
+
     def test_consumed_anchors_use_one_query_for_multiple_passes(self):
         from selfie_search.services.continuation import consumed_anchor_photo_ids
 

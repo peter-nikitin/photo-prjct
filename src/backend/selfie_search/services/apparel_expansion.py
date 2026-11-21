@@ -563,22 +563,33 @@ def _read_anchor_checks(
     return json.loads(checks), json.loads(comparisons)
 
 
-def continuation_apparel_neighbors(
+@dataclass(frozen=True, slots=True)
+class ContinuationApparelChecks:
+    checks: list[dict[str, Any]]
+    comparisons: list[dict[str, Any]]
+
+    def compatible_neighbors(self) -> dict[str, set[str]]:
+        unindexed = {
+            row["photo_id"] for row in self.checks if row["reason"] == "no_compatible_appearance"
+        }
+        neighbors = {photo_id: unindexed - {photo_id} for photo_id in unindexed}
+        neighbors.update({row["photo_id"]: set() for row in self.checks if not row["reason"]})
+        for comparison in self.comparisons:
+            if _compatible(comparison):
+                left, right = comparison["left_photo_id"], comparison["right_photo_id"]
+                neighbors[left].add(right)
+                neighbors[right].add(left)
+        return neighbors
+
+
+def check_continuation_apparel(
     search: SelfieSearch, candidates: tuple[Anchor, ...], model: str
-) -> dict[str, set[str]]:
-    """Identify eligible proposals and their compatible neighbors before limiting the groups."""
-    checks, comparisons = _read_anchor_checks(
-        search, [(anchor.photo_id, anchor.detection_id, 0.0) for anchor in candidates], model
+) -> ContinuationApparelChecks:
+    return ContinuationApparelChecks(
+        *_read_anchor_checks(
+            search, [(anchor.photo_id, anchor.detection_id, 0.0) for anchor in candidates], model
+        )
     )
-    unindexed = {row["photo_id"] for row in checks if row["reason"] == "no_compatible_appearance"}
-    neighbors: dict[str, set[str]] = {photo_id: unindexed - {photo_id} for photo_id in unindexed}
-    neighbors.update({row["photo_id"]: set() for row in checks if not row["reason"]})
-    for comparison in comparisons:
-        if _compatible(comparison):
-            left, right = comparison["left_photo_id"], comparison["right_photo_id"]
-            neighbors[left].add(right)
-            neighbors[right].add(left)
-    return neighbors
 
 
 def _select_continuation_anchors(
@@ -613,6 +624,7 @@ def verify_apparel_anchors(
     embedding_model: str,
     gallery: bool,
     continuation_groups: tuple[tuple[Anchor, ...], ...] = (),
+    continuation_checks: ContinuationApparelChecks | None = None,
 ) -> ApparelAnchorVerification:
     source = search.configuration.get("query_source")
     source_photo_id = None
@@ -624,12 +636,6 @@ def verify_apparel_anchors(
             raise ValueError("gallery appearance search requires a source detection")
         source_photo_id = source_photo
         proposed.append((source_photo, UUID(source_detection), 0.0))
-    if continuation_groups:
-        proposed = [
-            (anchor.photo_id, anchor.detection_id, 0.0)
-            for group in continuation_groups
-            for anchor in group
-        ]
     candidates = [
         row
         for row in direct
@@ -641,7 +647,21 @@ def verify_apparel_anchors(
     proposed.extend(
         (row.photo_id, row.detection_id, row.cosine_distance) for row in candidates[:limit]
     )
-    checks, comparisons = _read_anchor_checks(search, proposed, embedding_model)
+    if continuation_groups:
+        if continuation_checks is None:
+            raise ValueError("missing apparel checks for continuation anchors")
+        checked = {row["photo_id"]: row for row in continuation_checks.checks}
+        checks = [
+            dict(checked[anchor.photo_id]) for group in continuation_groups for anchor in group
+        ]
+        selected_ids = {row["photo_id"] for row in checks}
+        comparisons = [
+            dict(row)
+            for row in continuation_checks.comparisons
+            if row["left_photo_id"] in selected_ids and row["right_photo_id"] in selected_ids
+        ]
+    else:
+        checks, comparisons = _read_anchor_checks(search, proposed, embedding_model)
     group_outcomes: tuple[str, ...] = ()
     centroid_by_photo: dict[str, int] = {}
     if continuation_groups:

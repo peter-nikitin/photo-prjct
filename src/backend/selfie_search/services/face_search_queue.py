@@ -23,7 +23,8 @@ from selfie_search.models import (
 from selfie_search.observability import emit_selfie_observability_failure
 from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
 from selfie_search.services.apparel_expansion import (
-    continuation_apparel_neighbors,
+    ContinuationApparelChecks,
+    check_continuation_apparel,
     expand_apparel,
     verify_apparel_anchors,
 )
@@ -185,6 +186,7 @@ def process_face_search(task: FaceSearchTask) -> None:
     anchor_matches: tuple[AnchorMatch, ...] = ()
     verification = None
     apparel_spent_ms = 0
+    continuation_checks: ContinuationApparelChecks | None = None
     staff_eligible = search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True
     apparel_enabled = automatic and is_enabled_for_background_task(
         APPAREL_SEARCH_EXPANSION, staff_eligible=staff_eligible
@@ -203,7 +205,7 @@ def process_face_search(task: FaceSearchTask) -> None:
         if automatic:
 
             def check_apparel(anchors: tuple[Anchor, ...]) -> dict[str, set[str]]:
-                nonlocal apparel_spent_ms
+                nonlocal apparel_spent_ms, continuation_checks
                 started = perf_counter()
                 elapsed_ms = int((timezone.now() - started_at).total_seconds() * 1000)
                 remaining_ms = timeout_ms - elapsed_ms
@@ -211,13 +213,15 @@ def process_face_search(task: FaceSearchTask) -> None:
                     raise _ApparelSearchUnavailable
                 try:
                     _set_statement_timeout(min(remaining_ms, APPAREL_TIMEOUT_MS))
-                    result = continuation_apparel_neighbors(search, anchors, task.embedding_model)
+                    continuation_checks = check_continuation_apparel(
+                        search, anchors, task.embedding_model
+                    )
                 except (DatabaseError, ValueError):
                     logger.warning("apparel_expansion_unavailable")
                     raise _ApparelSearchUnavailable from None
                 apparel_spent_ms = ceil((perf_counter() - started) * 1000)
                 _set_statement_timeout(max(1, remaining_ms - apparel_spent_ms))
-                return result
+                return continuation_checks.compatible_neighbors()
 
             sources = select_continuation_centroids(
                 search,
@@ -260,6 +264,7 @@ def process_face_search(task: FaceSearchTask) -> None:
                     embedding_model=task.embedding_model,
                     gallery=task.source == FaceSearchTask.Source.GALLERY and not automatic,
                     continuation_groups=sources if automatic else (),
+                    continuation_checks=continuation_checks,
                 )
                 if automatic:
                     accepted = {row["photo_id"] for row in verification.anchors}

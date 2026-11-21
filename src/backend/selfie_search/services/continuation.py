@@ -152,6 +152,18 @@ def _single_gallery_vectors(
     )
 
 
+def _saved_face_attempt_ids(*, event_id: int, photo_ids: set[str]) -> tuple[UUID, ...]:
+    return tuple(
+        PhotoProcessingState.objects.filter(
+            photo_id__in=photo_ids,
+            processor_type="face_embedding",
+            accepted_attempt__event_id=event_id,
+            accepted_attempt__photo_id=F("photo_id"),
+            accepted_attempt__accepted=True,
+        ).values_list("accepted_attempt_id", flat=True)
+    )
+
+
 def available_manual_photo_ids(search: SelfieSearch, *, photo_ids: tuple[str, ...]) -> set[str]:
     """Return unused single-face anchors from a page of already eligible saved photos."""
     unused = set(photo_ids) - consumed_anchor_photo_ids(search, include_automatic=False)
@@ -160,15 +172,7 @@ def available_manual_photo_ids(search: SelfieSearch, *, photo_ids: tuple[str, ..
     model = _gallery_configuration(event=search.event)["embedding_model"]
     # The result rows already supplied the eligible photo IDs. Start from their
     # processing states so the embedding query does not scan the event's faces.
-    attempts = tuple(
-        PhotoProcessingState.objects.filter(
-            photo_id__in=unused,
-            processor_type="face_embedding",
-            accepted_attempt__event_id=search.event_id,
-            accepted_attempt__photo_id=F("photo_id"),
-            accepted_attempt__accepted=True,
-        ).values_list("accepted_attempt_id", flat=True)
-    )
+    attempts = _saved_face_attempt_ids(event_id=search.event_id, photo_ids=unused)
     return set(
         _single_gallery_vectors(attempts, model).values_list(
             "detection__attempt__photo_id", flat=True
@@ -179,7 +183,7 @@ def available_manual_photo_ids(search: SelfieSearch, *, photo_ids: tuple[str, ..
 # A weak match can join the pool only when two independently trusted saved faces support it.
 # The bounded proposals and trust cohorts keep pairwise comparisons at a fixed upper bound.
 _ANCHOR_SQL = """
-WITH current_faces(photo_id, detection_id, embedding) AS (
+WITH current_faces(photo_id, detection_id, embedding) AS MATERIALIZED (
     {faces_sql}
 ),
 saved AS (
@@ -194,7 +198,7 @@ saved AS (
         ON direct.result_id = result.id AND direct.detection_id = face.detection_id
     LEFT JOIN selfie_search_selfiesearchanchorevidence expanded
         ON expanded.result_id = result.id AND expanded.detection_id = face.detection_id
-    WHERE result.id IN ({eligible_sql})
+    WHERE result.id = ANY(%s::uuid[])
         AND (direct.id IS NOT NULL OR expanded.id IS NOT NULL)
         AND vector_norm(face.embedding) > 0
     ORDER BY result.photo_id, face.detection_id, strong DESC, distance
@@ -233,21 +237,20 @@ ORDER BY candidate.strong DESC, candidate.distance, candidate.photo_id
 def _select_centroids(
     *,
     faces: QuerySet[FaceEmbeddingVector],
-    eligible: QuerySet,
+    eligible_result_ids: tuple[UUID, ...],
     consumed: set[str],
     check_apparel: Callable[[tuple[Anchor, ...]], dict[str, set[str]]] | None,
 ) -> tuple[tuple[Anchor, ...], ...]:
     faces_sql, faces_params = faces.values_list(
         "detection__attempt__photo_id", "detection_id", "vector"
     ).query.sql_with_params()
-    eligible_sql, eligible_params = eligible.order_by().values("id").query.sql_with_params()
     with connection.wrap_database_errors, Cursor(connection.connection) as cursor:
         cursor.execute(
-            _ANCHOR_SQL.format(faces_sql=faces_sql, eligible_sql=eligible_sql),
+            _ANCHOR_SQL.format(faces_sql=faces_sql),
             [
                 *faces_params,
                 _STRONG_DISTANCE,
-                *eligible_params,
+                list(eligible_result_ids),
                 _MAX_CANDIDATES,
                 sorted(consumed),
                 _MAX_CANDIDATES,
@@ -409,11 +412,17 @@ def select_continuation_centroids(
             search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True
         ),
     ).exclude(photo_id__in=_negative_anchor_photo_ids(parent, automatic=True))
+    # Resolve the saved rows before joining vectors. An inlined subquery can lead PostgreSQL
+    # to scan detections across the event and apply the saved-result filter after the join.
+    saved_rows = tuple(eligible.order_by().values_list("pk", "photo_id"))
+    attempts = _saved_face_attempt_ids(
+        event_id=search.event_id, photo_ids={photo_id for _, photo_id in saved_rows}
+    )
+    if not attempts:
+        return ()
     return _select_centroids(
-        faces=_current_single_faces(
-            event=search.event, photo_ids=eligible.order_by().values("photo_id"), model=model
-        ),
-        eligible=eligible,
+        faces=_single_gallery_vectors(attempts, model),
+        eligible_result_ids=tuple(result_id for result_id, _ in saved_rows),
         consumed=consumed_anchor_photo_ids(parent),
         check_apparel=check_apparel,
     )

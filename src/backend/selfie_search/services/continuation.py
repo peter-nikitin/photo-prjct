@@ -1,4 +1,4 @@
-"""Queue one follow-up against currently visible, unambiguous saved faces."""
+"""Queue one follow-up against a currently visible, unambiguous saved person."""
 
 import secrets
 from collections.abc import Callable, Iterator
@@ -9,7 +9,8 @@ from uuid import UUID
 from django.db import connection, transaction
 from django.db.models import Exists, F, OuterRef, QuerySet, Subquery
 from django.views.decorators.debug import sensitive_variables
-from feature_flags.services import is_enabled_for_state
+from feature_flags.registry import APPAREL_SEARCH_EXPANSION
+from feature_flags.services import is_enabled, is_enabled_for_state
 from feature_flags.states import FEATURE_FLAG_STAFF
 from picflow.models import Event
 from processing.models import FaceEmbeddingVector, PhotoFaceDetection, PhotoProcessingState
@@ -20,6 +21,11 @@ from selfie_search.models import (
     ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY,
     FaceSearchTask,
     SelfieSearch,
+    SelfieSearchResult,
+)
+from selfie_search.services.apparel_expansion import (
+    ApparelAnchorVerification,
+    current_faceless_apparel_sources,
 )
 from selfie_search.services.jobs import enqueue_face_search
 from selfie_search.services.negative_feedback import negative_feedback_state
@@ -37,6 +43,7 @@ from selfie_search.services.submission import (
 
 _AUTO_SOURCE = "continuation_centroids"
 _MANUAL_SOURCE = "gallery_photo"
+_APPAREL_SOURCE = "continuation_apparel"
 _MAX_CENTROIDS = 3
 _MAX_MEMBERS = 5
 _MAX_CANDIDATES = 60
@@ -56,7 +63,7 @@ class Anchor:
 
 def _manual_source_photo_id(search: SelfieSearch) -> str | None:
     source = search.configuration.get("query_source")
-    if isinstance(source, dict) and source.get("kind") == _MANUAL_SOURCE:
+    if isinstance(source, dict) and source.get("kind") in (_MANUAL_SOURCE, _APPAREL_SOURCE):
         photo_id = source.get("photo_id")
         if isinstance(photo_id, str):
             return photo_id
@@ -164,7 +171,35 @@ def _saved_face_attempt_ids(*, event_id: int, photo_ids: set[str]) -> tuple[UUID
     )
 
 
-def available_manual_photo_ids(search: SelfieSearch, *, photo_ids: tuple[str, ...]) -> set[str]:
+def _saved_apparel_sources(
+    search: SelfieSearch, *, eligible: QuerySet, photo_ids: set[str], model: str
+) -> dict[str, int]:
+    if not photo_ids:
+        return {}
+    by_photo: dict[str, set[int]] = {}
+    rows = (
+        eligible.filter(
+            photo_id__in=photo_ids,
+            primary_source=SelfieSearchResult.PrimarySource.APPAREL_EXPANSION,
+        )
+        .order_by()
+        .values_list("photo_id", "search__apparel_evidence__decisions__added_people")
+    )
+    for photo_id, added_people in rows:
+        person_id = added_people.get(photo_id) if isinstance(added_people, dict) else None
+        if type(person_id) is int:
+            by_photo.setdefault(photo_id, set()).add(person_id)
+    sources = {photo_id: next(iter(ids)) for photo_id, ids in by_photo.items() if len(ids) == 1}
+    return current_faceless_apparel_sources(search, sources, model=model)
+
+
+def available_manual_photo_ids(
+    search: SelfieSearch,
+    *,
+    photo_ids: tuple[str, ...],
+    apparel_enabled: bool = False,
+    paid_watermarked_previews_enabled: bool = False,
+) -> set[str]:
     """Return single-face anchors from a page of already eligible saved photos."""
     if not photo_ids:
         return set()
@@ -172,10 +207,21 @@ def available_manual_photo_ids(search: SelfieSearch, *, photo_ids: tuple[str, ..
     # The result rows already supplied the eligible photo IDs. Start from their
     # processing states so the embedding query does not scan the event's faces.
     attempts = _saved_face_attempt_ids(event_id=search.event_id, photo_ids=set(photo_ids))
-    return set(
+    with_faces = set(
         _single_gallery_vectors(attempts, model).values_list(
             "detection__attempt__photo_id", flat=True
         )
+    )
+    if not apparel_enabled or not (without_faces := set(photo_ids) - with_faces):
+        return with_faces
+    eligible = eligible_saved_result_rows(
+        search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
+    )
+    return (
+        with_faces
+        | _saved_apparel_sources(
+            search, eligible=eligible, photo_ids=without_faces, model=str(model)
+        ).keys()
     )
 
 
@@ -359,17 +405,32 @@ def submit_continuation(
             .values_list("detection_id", flat=True)
             .first()
         )
-        if detection_id is None:
+        if detection_id is not None:
+            configuration["query_source"] = {
+                "kind": _MANUAL_SOURCE,
+                "photo_id": photo_id,
+                "detection_id": str(detection_id),
+            }
+            try:
+                payload = _gallery_source_vector(event=root.event, configuration=configuration)
+            except GallerySearchUnavailable:
+                raise ContinuationUnavailable from None
+        elif is_enabled(APPAREL_SEARCH_EXPANSION, user):
+            candidates = _saved_apparel_sources(
+                root,
+                eligible=eligible,
+                photo_ids={photo_id},
+                model=str(configuration["embedding_model"]),
+            )
+            if (person_id := candidates.get(photo_id)) is None:
+                raise ContinuationUnavailable
+            configuration["query_source"] = {
+                "kind": _APPAREL_SOURCE,
+                "photo_id": photo_id,
+                "person_id": person_id,
+            }
+        else:
             raise ContinuationUnavailable
-        configuration["query_source"] = {
-            "kind": _MANUAL_SOURCE,
-            "photo_id": photo_id,
-            "detection_id": str(detection_id),
-        }
-        try:
-            payload = _gallery_source_vector(event=root.event, configuration=configuration)
-        except GallerySearchUnavailable:
-            raise ContinuationUnavailable from None
     else:
         configuration["query_source"] = {"kind": _AUTO_SOURCE}
 
@@ -450,3 +511,47 @@ def validate_continuation_source(search: SelfieSearch, *, model: str) -> None:
     current = _current_single_faces(event=search.event, photo_ids=photo_ids, model=model)
     if not current.filter(detection_id=detection).exists():
         raise RankingError("continuation source is no longer eligible")
+
+
+def is_apparel_continuation(search: SelfieSearch) -> bool:
+    source = search.configuration.get("query_source")
+    return (
+        search.parent_search_id is not None
+        and isinstance(source, dict)
+        and (source.get("kind") == _APPAREL_SOURCE)
+    )
+
+
+def verify_apparel_continuation(search: SelfieSearch, *, model: str) -> ApparelAnchorVerification:
+    source = search.configuration["query_source"]
+    photo_id, person_id = source.get("photo_id"), source.get("person_id")
+    parent = search.parent_search
+    if not isinstance(photo_id, str) or type(person_id) is not int or parent is None:
+        raise ContinuationUnavailable
+    eligible = eligible_saved_result_rows(
+        parent,
+        paid_watermarked_previews_enabled=search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY)
+        is True,
+    ).exclude(photo_id__in=_negative_anchor_photo_ids(parent, automatic=False))
+    if (
+        _saved_apparel_sources(parent, eligible=eligible, photo_ids={photo_id}, model=model).get(
+            photo_id
+        )
+        != person_id
+    ):
+        raise ContinuationUnavailable
+    return ApparelAnchorVerification(
+        photo_id,
+        "verified",
+        (
+            {
+                "photo_id": photo_id,
+                "person_id": person_id,
+                "detection_id": None,
+                "anchor_position": 1,
+            },
+        ),
+        [],
+        [],
+        False,
+    )

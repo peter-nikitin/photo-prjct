@@ -1,13 +1,13 @@
 """Queue one follow-up against a currently visible, unambiguous saved person."""
 
 import secrets
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from django.db import connection, transaction
-from django.db.models import Exists, F, OuterRef, QuerySet, Subquery
+from django.db.models import Exists, F, OuterRef, QuerySet
 from django.views.decorators.debug import sensitive_variables
 from feature_flags.registry import APPAREL_SEARCH_EXPANSION
 from feature_flags.services import is_enabled, is_enabled_for_state
@@ -25,12 +25,17 @@ from selfie_search.models import (
 )
 from selfie_search.services.apparel_expansion import (
     ApparelAnchorVerification,
-    current_faceless_apparel_sources,
+    current_apparel_sources,
 )
+from selfie_search.services.face_history import MATCHED_FACE_EVIDENCE_SQL
 from selfie_search.services.jobs import enqueue_face_search
 from selfie_search.services.negative_feedback import negative_feedback_state
 from selfie_search.services.ranking import RankingError
-from selfie_search.services.results import eligible_saved_result_rows, has_ready_search_pass
+from selfie_search.services.results import (
+    eligible_saved_result_rows,
+    has_ready_search_pass,
+    saved_ready_result_rows,
+)
 from selfie_search.services.submission import (
     CONTINUATION_PAID_PREVIEWS_KEY,
     GallerySearchUnavailable,
@@ -129,25 +134,8 @@ def consumed_anchor_photo_ids(search: SelfieSearch) -> set[str]:
     return consumed
 
 
-def _current_single_faces(
-    *, event: Event, photo_ids: QuerySet, model: object
-) -> QuerySet[FaceEmbeddingVector]:
-    accepted_attempt_ids = (
-        PhotoProcessingState.objects.filter(
-            photo_id__in=Subquery(photo_ids),
-            processor_type="face_embedding",
-            accepted_attempt__event=event,
-            accepted_attempt__photo_id=F("photo_id"),
-            accepted_attempt__accepted=True,
-        )
-        .order_by()
-        .values("accepted_attempt_id")
-    )
-    return _single_gallery_vectors(Subquery(accepted_attempt_ids), model)
-
-
 def _single_gallery_vectors(
-    accepted_attempt_ids: Subquery | tuple[UUID, ...], model: object
+    accepted_attempt_ids: tuple[UUID, ...], model: object
 ) -> QuerySet[FaceEmbeddingVector]:
     second_detection = PhotoFaceDetection.objects.filter(
         attempt_id=OuterRef("detection__attempt_id")
@@ -172,11 +160,11 @@ def _saved_face_attempt_ids(*, event_id: int, photo_ids: set[str]) -> tuple[UUID
 
 
 def _saved_apparel_sources(
-    search: SelfieSearch, *, eligible: QuerySet, photo_ids: set[str], model: str
+    search: SelfieSearch, *, eligible: QuerySet, photo_ids: set[str]
 ) -> dict[str, int]:
     if not photo_ids:
         return {}
-    by_photo: dict[str, set[int]] = {}
+    sources: dict[str, int] = {}
     rows = (
         eligible.filter(
             photo_id__in=photo_ids,
@@ -188,39 +176,70 @@ def _saved_apparel_sources(
     for photo_id, added_people in rows:
         person_id = added_people.get(photo_id) if isinstance(added_people, dict) else None
         if type(person_id) is int:
-            by_photo.setdefault(photo_id, set()).add(person_id)
-    sources = {photo_id: next(iter(ids)) for photo_id, ids in by_photo.items() if len(ids) == 1}
-    return current_faceless_apparel_sources(search, sources, model=model)
+            sources[photo_id] = person_id
+    return current_apparel_sources(search, sources)
+
+
+_MANUAL_SAVED_FACES_SQL = """
+WITH evidence_rows AS MATERIALIZED (
+    SELECT id, photo_id, search_id FROM selfie_search_selfiesearchresult
+    WHERE id = ANY(%s::uuid[])
+),
+matched_faces AS ({matched_face_sql}),
+usable_faces(detection_id, photo_id) AS ({usable_sql})
+SELECT matched.photo_id, (array_agg(DISTINCT matched.detection_id))[1]
+FROM matched_faces matched
+JOIN usable_faces usable USING (photo_id, detection_id)
+GROUP BY matched.photo_id
+HAVING count(DISTINCT matched.detection_id) = 1
+"""
+
+
+def _saved_manual_faces(
+    search: SelfieSearch, *, result_ids: Sequence[UUID], photo_ids: set[str], model: object
+) -> dict[str, UUID]:
+    attempts = _saved_face_attempt_ids(event_id=search.event_id, photo_ids=photo_ids)
+    if not attempts:
+        return {}
+    usable_sql, usable_params = (
+        _usable_gallery_vectors(accepted_attempt_ids=attempts, model=model)
+        .order_by()
+        .values_list("detection_id", "detection__attempt__photo_id")
+        .query.sql_with_params()
+    )
+    with connection.wrap_database_errors, Cursor(connection.connection) as cursor:
+        cursor.execute(
+            _MANUAL_SAVED_FACES_SQL.format(
+                matched_face_sql=MATCHED_FACE_EVIDENCE_SQL, usable_sql=usable_sql
+            ),
+            [list(result_ids), *usable_params],
+        )
+        return dict(cursor.fetchall())
 
 
 def available_manual_photo_ids(
     search: SelfieSearch,
     *,
-    photo_ids: tuple[str, ...],
+    result_rows: Sequence[SelfieSearchResult],
     apparel_enabled: bool = False,
-    paid_watermarked_previews_enabled: bool = False,
 ) -> set[str]:
-    """Return single-face anchors from a page of already eligible saved photos."""
-    if not photo_ids:
+    """Resolve the person recorded for the exact result row rendered by each card."""
+    if not result_rows:
         return set()
     model = _gallery_configuration(event=search.event)["embedding_model"]
-    # The result rows already supplied the eligible photo IDs. Start from their
-    # processing states so the embedding query does not scan the event's faces.
-    attempts = _saved_face_attempt_ids(event_id=search.event_id, photo_ids=set(photo_ids))
+    photo_ids = {row.photo_id for row in result_rows}
+    result_ids = [row.pk for row in result_rows]
     with_faces = set(
-        _single_gallery_vectors(attempts, model).values_list(
-            "detection__attempt__photo_id", flat=True
-        )
+        _saved_manual_faces(search, result_ids=result_ids, photo_ids=photo_ids, model=model)
     )
-    if not apparel_enabled or not (without_faces := set(photo_ids) - with_faces):
+    if not apparel_enabled or not (without_faces := photo_ids - with_faces):
         return with_faces
-    eligible = eligible_saved_result_rows(
-        search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
-    )
     return (
         with_faces
         | _saved_apparel_sources(
-            search, eligible=eligible, photo_ids=without_faces, model=str(model)
+            search,
+            eligible=SelfieSearchResult.objects.filter(pk__in=result_ids),
+            photo_ids=without_faces,
         ).keys()
     )
 
@@ -375,18 +394,15 @@ def submit_continuation(
     )
     if root is None or not has_ready_search_pass(root):
         raise ContinuationUnavailable
-    eligible = eligible_saved_result_rows(
-        root, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
-    )
-    if photo_id is not None and (
-        not eligible.filter(photo_id=photo_id).exists()
-        or photo_id
-        in _negative_anchor_photo_ids(
-            root,
-            automatic=False,
+    result_id = None
+    if photo_id is not None:
+        if photo_id in _negative_anchor_photo_ids(root, automatic=False):
+            raise ContinuationUnavailable
+        result_id = _manual_result_id(
+            root, photo_id=photo_id, paid_previews=paid_watermarked_previews_enabled
         )
-    ):
-        raise ContinuationUnavailable
+        if result_id is None:
+            raise ContinuationUnavailable
     ongoing = root.continuation_passes.filter(
         status__in=(SelfieSearch.Status.QUEUED, SelfieSearch.Status.PROCESSING),
     ).first()
@@ -395,16 +411,13 @@ def submit_continuation(
 
     configuration = _gallery_configuration(event=root.event)
     payload = None
-    if photo_id is not None:
-        detection_id = (
-            _current_single_faces(
-                event=root.event,
-                photo_ids=eligible.filter(photo_id=photo_id).order_by().values("photo_id"),
-                model=configuration["embedding_model"],
-            )
-            .values_list("detection_id", flat=True)
-            .first()
-        )
+    if photo_id is not None and result_id is not None:
+        detection_id = _saved_manual_faces(
+            root,
+            result_ids=[result_id],
+            photo_ids={photo_id},
+            model=configuration["embedding_model"],
+        ).get(photo_id)
         if detection_id is not None:
             configuration["query_source"] = {
                 "kind": _MANUAL_SOURCE,
@@ -418,9 +431,8 @@ def submit_continuation(
         elif is_enabled(APPAREL_SEARCH_EXPANSION, user):
             candidates = _saved_apparel_sources(
                 root,
-                eligible=eligible,
+                eligible=SelfieSearchResult.objects.filter(pk=result_id),
                 photo_ids={photo_id},
-                model=str(configuration["embedding_model"]),
             )
             if (person_id := candidates.get(photo_id)) is None:
                 raise ContinuationUnavailable
@@ -486,30 +498,36 @@ def select_continuation_centroids(
     )
 
 
+def _manual_result_id(search: SelfieSearch, *, photo_id: str, paid_previews: bool) -> UUID | None:
+    return (
+        saved_ready_result_rows(search, paid_watermarked_previews_enabled=paid_previews)
+        .filter(photo_id=photo_id)
+        .values_list("pk", flat=True)
+        .first()
+    )
+
+
 def validate_continuation_source(search: SelfieSearch, *, model: str) -> None:
-    """Recheck the selected saved faces immediately before SQL ranking."""
+    """Recheck that the queued face still identifies the displayed person."""
     source = search.configuration.get("query_source")
     photo_id = _manual_source_photo_id(search)
     detection_id = source.get("detection_id") if isinstance(source, dict) else None
-    if photo_id is None or not isinstance(detection_id, str):
-        raise RankingError("invalid manual continuation source")
-    detection = UUID(detection_id)
     parent = search.parent_search
-    if parent is None:
-        raise RankingError("continuation has no parent")
-    paid_previews_enabled = search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True
-    photo_ids = (
-        eligible_saved_result_rows(
-            parent,
-            paid_watermarked_previews_enabled=paid_previews_enabled,
-        )
-        .filter(photo_id=photo_id)
-        .order_by()
-        .values("photo_id")
+    if photo_id is None or not isinstance(detection_id, str) or parent is None:
+        raise RankingError("invalid manual continuation source")
+    if photo_id in _negative_anchor_photo_ids(parent, automatic=False):
+        raise RankingError("continuation source is no longer eligible")
+    result_id = _manual_result_id(
+        parent,
+        photo_id=photo_id,
+        paid_previews=search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True,
     )
-    photo_ids = photo_ids.exclude(photo_id__in=_negative_anchor_photo_ids(parent, automatic=False))
-    current = _current_single_faces(event=search.event, photo_ids=photo_ids, model=model)
-    if not current.filter(detection_id=detection).exists():
+    if result_id is None or _saved_manual_faces(
+        parent,
+        result_ids=[result_id],
+        photo_ids={photo_id},
+        model=model,
+    ).get(photo_id) != UUID(detection_id):
         raise RankingError("continuation source is no longer eligible")
 
 
@@ -522,21 +540,26 @@ def is_apparel_continuation(search: SelfieSearch) -> bool:
     )
 
 
-def verify_apparel_continuation(search: SelfieSearch, *, model: str) -> ApparelAnchorVerification:
+def verify_apparel_continuation(search: SelfieSearch) -> ApparelAnchorVerification:
     source = search.configuration["query_source"]
     photo_id, person_id = source.get("photo_id"), source.get("person_id")
     parent = search.parent_search
     if not isinstance(photo_id, str) or type(person_id) is not int or parent is None:
         raise ContinuationUnavailable
-    eligible = eligible_saved_result_rows(
+    if photo_id in _negative_anchor_photo_ids(parent, automatic=False):
+        raise ContinuationUnavailable
+    result_id = _manual_result_id(
         parent,
-        paid_watermarked_previews_enabled=search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY)
-        is True,
-    ).exclude(photo_id__in=_negative_anchor_photo_ids(parent, automatic=False))
+        photo_id=photo_id,
+        paid_previews=search.configuration.get(CONTINUATION_PAID_PREVIEWS_KEY) is True,
+    )
     if (
-        _saved_apparel_sources(parent, eligible=eligible, photo_ids={photo_id}, model=model).get(
-            photo_id
-        )
+        result_id is None
+        or _saved_apparel_sources(
+            parent,
+            eligible=SelfieSearchResult.objects.filter(pk=result_id),
+            photo_ids={photo_id},
+        ).get(photo_id)
         != person_id
     ):
         raise ContinuationUnavailable

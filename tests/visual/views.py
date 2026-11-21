@@ -941,6 +941,11 @@ def _selfie_search_ready(
         if archive_available and len(photos) >= 2
         else None
     )
+    cart_photos = (
+        {item.photo.photo_id: item for item in cart_presentation.photos}
+        if cart_presentation
+        else {}
+    )
     return _render(
         request,
         "selfie_search/result.html",
@@ -967,7 +972,10 @@ def _selfie_search_ready(
             ),
             "continuation_photo_ids": {photos[0].photo_id} if photos else set(),
             "gallery_photos": photos,
-            "gallery_result_items": tuple(zip(results, photos, strict=True)),
+            "gallery_result_items": tuple(
+                (row, photo, cart_photos.get(photo.photo_id))
+                for row, photo in zip(results, photos, strict=True)
+            ),
             "result_feedback_url": reverse("search_feedback_submit", args=(event.slug,)),
             "is_terminal": True,
             "search": FixtureSelfieSearch(
@@ -1223,7 +1231,9 @@ def selfie_search_feedback_marking(request: HttpRequest) -> HttpResponse:
             **_selfie_upload_context("visual-feedback"),
             "event": EVENTS[0],
             "gallery_photos": photos,
-            "gallery_result_items": tuple(zip(results, photos, strict=True)),
+            "gallery_result_items": tuple(
+                (row, photo, None) for row, photo in zip(results, photos, strict=True)
+            ),
             "reported_photo_ids": {photos[0].photo_id},
             "similar_feedback_photo_ids": {photos[1].photo_id},
             "published_count": len(photos),

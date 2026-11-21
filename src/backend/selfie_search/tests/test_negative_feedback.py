@@ -1,7 +1,8 @@
 from math import cos, sin
+from unittest.mock import patch
 from uuid import uuid4
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import BULK_PHOTO_DOWNLOAD
@@ -15,6 +16,9 @@ from selfie_search.services.submission import _gallery_configuration, _token_dig
 from selfie_search.tests import test_submission as fixtures
 
 
+@override_settings(
+    STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}},
+)
 class NegativeFeedbackTests(TestCase):
     setUp = fixtures.GalleryPhotoSubmissionTests.setUp
     make_event = fixtures.GalleryPhotoSubmissionTests.make_event
@@ -101,6 +105,26 @@ class NegativeFeedbackTests(TestCase):
             self.report(token, "wrong", "mark", submission_id=action_id).json()["manual_photo_ids"],
             [],
         )
+
+    @override_settings(
+        STORAGES={
+            "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}
+        }
+    )
+    def test_result_and_archive_read_saved_flags_without_recomputing(self):
+        search, token = self.root()
+        self.save_photo(search, "wrong", 0.0)
+        self.save_photo(search, "near", 0.1)
+        self.assertEqual(self.report(token, "wrong", "mark").status_code, 201)
+        FeatureFlag.objects.create(key=BULK_PHOTO_DOWNLOAD.key, state=FEATURE_FLAG_ON)
+        with patch("selfie_search.services.negative_feedback.Cursor") as vector_cursor:
+            result = self.client.get(reverse("selfie_search:result", args=(self.event.slug, token)))
+            archive = self.client.post(
+                reverse("selfie_search:result_archive", args=(self.event.slug, token))
+            )
+            self.assertContains(result, 'data-negative-feedback="similar"')
+            self.assertEqual(archive.status_code, 202)
+            vector_cursor.assert_not_called()
 
     def test_retried_noop_unmark_does_not_withdraw_a_later_mark(self):
         search, token = self.root()
@@ -199,7 +223,7 @@ class NegativeFeedbackTests(TestCase):
         )
 
     def test_stale_negative_evidence_does_not_select_a_different_current_face(self):
-        from selfie_search.services.negative_feedback import negative_feedback_state
+        from selfie_search.services.negative_feedback import refresh_negative_feedback
 
         search, token = self.root()
         self.save_photo(search, "wrong", 0.0)
@@ -209,7 +233,8 @@ class NegativeFeedbackTests(TestCase):
             photo_id="wrong", processor_type="face_embedding"
         ).update(accepted_attempt=None)
 
-        state = negative_feedback_state(search)
+        search.refresh_from_db()
+        state = refresh_negative_feedback(search)
 
         self.assertEqual(state.manual_photo_ids, {"wrong"})
         self.assertEqual(state.similar_photo_ids, set())
@@ -230,6 +255,7 @@ class NegativeFeedbackTests(TestCase):
         self.assertTrue(run_once())
         row = child.results.get(photo_id="new-result")
 
+        search.refresh_from_db()
         state = negative_feedback_state(search)
         self.assertEqual(state.similar_photo_ids, {"earlier", "rerun-anchor"})
         self.assertEqual(state.excluded_photo_ids, {"new-result"})
@@ -247,8 +273,11 @@ class NegativeFeedbackTests(TestCase):
         self.save_photo(search, "near", 0.1)
         self.assertEqual(self.report(token, "wrong", "mark").status_code, 201)
 
-        with self.assertRaises(ContinuationUnavailable):
-            submit_continuation(search=search, user=self.user, photo_id=None)
+        automatic = submit_continuation(search=search, user=self.user, photo_id=None)
+        self.assertTrue(run_once())
+        automatic.refresh_from_db()
+        self.assertEqual(automatic.failure_code, "continuation_unavailable")
+        self.assertFalse(automatic.results.exists())
         with self.assertRaises(ContinuationUnavailable):
             submit_continuation(search=search, user=self.user, photo_id="wrong")
 

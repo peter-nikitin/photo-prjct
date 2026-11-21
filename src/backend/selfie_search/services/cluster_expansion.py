@@ -68,6 +68,8 @@ def expand_ranked_photos(
     direct: tuple[RankedPhoto, ...],
     query: object,
     activation: EventFaceClusterActivation | None,
+    *,
+    prior_photo_ids: tuple[str, ...] = (),
 ) -> RankedPhotoExpansion:
     """Return a complete immutable expansion plan, or the complete direct-only fallback.
 
@@ -154,7 +156,7 @@ def expand_ranked_photos(
             row.photo_id: [] for row in direct
         }
         appended: list[ExpandedRankedPhoto] = []
-        seen = set(direct_by_photo)
+        seen = set(direct_by_photo).union(prior_photo_ids)
         non_singleton_count = 0
         for source_order, (_position, anchor, anchor_member) in enumerate(selected, start=1):
             cluster_members = members_by_cluster.get(anchor_member.cluster_id, [])

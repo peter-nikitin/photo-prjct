@@ -87,6 +87,7 @@ class SelfieSearch(models.Model):  # noqa: DJ008
     configuration_hash = models.CharField(max_length=64, blank=True, default="")
     eligible_photo_count = models.PositiveIntegerField(default=0)
     eligible_face_count = models.PositiveIntegerField(default=0)
+    negative_feedback_photos = models.JSONField(default=dict, db_default={})
     matched_photo_count = models.PositiveIntegerField(default=0)
     final_matched_photo_count = models.PositiveIntegerField(null=True, blank=True)
     cluster_corpus = models.ForeignKey(
@@ -243,7 +244,7 @@ class FaceSearchTask(models.Model):  # noqa: DJ008
     event = models.ForeignKey(Event, on_delete=models.PROTECT)
     source = models.CharField(max_length=8, choices=Source)
     embedding_model = models.CharField(max_length=100)
-    vector = VectorField(dimensions=512)
+    vector = VectorField(dimensions=512, null=True)
     status = models.CharField(max_length=12, choices=Status, default=Status.QUEUED)
     attempt_count = models.PositiveSmallIntegerField(default=0)
     available_at = models.DateTimeField(default=timezone.now)

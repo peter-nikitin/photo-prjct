@@ -67,6 +67,7 @@ best_matches AS (
     CROSS JOIN kept_faces AS face
     WHERE (face.embedding <=> centroid.embedding) <= %s
       AND NOT EXISTS (SELECT 1 FROM direct_matches WHERE photo_id = face.photo_id)
+      AND NOT (face.photo_id = ANY(%s::varchar[]))
     ORDER BY face.photo_id, distance, face.detection_id
 )
 SELECT photo_id, anchor_photo_ids, detection_id, distance
@@ -83,6 +84,7 @@ def find_anchor_matches(
     embedding_model: str,
     source_photo_id: str | None,
     verified_detection_ids: tuple[UUID, ...] | None = None,
+    prior_photo_ids: tuple[str, ...] = (),
 ) -> tuple[AnchorMatch, ...]:
     if verified_detection_ids == ():
         return ()
@@ -113,6 +115,7 @@ def find_anchor_matches(
                 verified,
                 _ANCHOR_CONSISTENCY_DISTANCE,
                 _MATCH_DISTANCE,
+                list(prior_photo_ids),
             ),
         )
         return tuple(

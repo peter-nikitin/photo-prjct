@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta
-from functools import partial
+from functools import cache, partial
 from math import ceil
 from time import perf_counter
 
@@ -22,9 +22,18 @@ from selfie_search.models import (
 )
 from selfie_search.observability import emit_selfie_observability_failure
 from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
-from selfie_search.services.apparel_expansion import expand_apparel, verify_apparel_anchors
-from selfie_search.services.cluster_expansion import direct_only_ranked_photos
-from selfie_search.services.continuation import is_automatic_continuation, load_continuation_sources
+from selfie_search.services.apparel_expansion import (
+    continuation_apparel_neighbors,
+    expand_apparel,
+    verify_apparel_anchors,
+)
+from selfie_search.services.continuation import (
+    Anchor,
+    continuation_centroid_source,
+    is_automatic_continuation,
+    select_continuation_centroids,
+    validate_continuation_source,
+)
 from selfie_search.services.continuation_ranking import (
     original_gallery_seed,
     previous_matches,
@@ -35,8 +44,10 @@ from selfie_search.services.jobs import (
     expand_direct_ranking,
     prepare_search_result,
 )
+from selfie_search.services.negative_feedback import refresh_negative_feedback
 from selfie_search.services.ranking import AnchorMatch, RankingError, _configuration
-from selfie_search.services.read_selection import rank_selected_direct
+from selfie_search.services.read_selection import rank_selected_direct, report_direct_ranking
+from selfie_search.services.submission import _configuration_hash
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +173,22 @@ def process_face_search(task: FaceSearchTask) -> None:
     automatic = is_continuation and is_automatic_continuation(search)
     previous = previous_matches(search) if is_continuation else None
     gallery_seed = original_gallery_seed(search) if is_continuation else None
+
+    @cache
+    def prior_photos() -> tuple[str, ...]:
+        if previous is None:
+            return ()
+        return tuple(previous.values_list("photo_id", flat=True)) + (
+            (gallery_seed,) if gallery_seed is not None else ()
+        )
+
     anchor_matches: tuple[AnchorMatch, ...] = ()
     verification = None
     apparel_spent_ms = 0
+    staff_eligible = search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True
+    apparel_enabled = automatic and is_enabled_for_background_task(
+        APPAREL_SEARCH_EXPANSION, staff_eligible=staff_eligible
+    )
     with transaction.atomic():
         timeout_ms = RANKING_TIMEOUT_MS
         started_at = timezone.now()
@@ -175,38 +199,61 @@ def process_face_search(task: FaceSearchTask) -> None:
                 return
             timeout_ms = min(timeout_ms, remaining_ms)
         _set_statement_timeout(timeout_ms)
-        sources = (
-            load_continuation_sources(search, model=task.embedding_model)
-            if is_continuation and task.source == FaceSearchTask.Source.GALLERY
-            else ()
-        )
+        sources: tuple[tuple[Anchor, ...], ...] = ()
         if automatic:
+
+            def check_apparel(anchors: tuple[Anchor, ...]) -> dict[str, set[str]]:
+                nonlocal apparel_spent_ms
+                started = perf_counter()
+                elapsed_ms = int((timezone.now() - started_at).total_seconds() * 1000)
+                remaining_ms = timeout_ms - elapsed_ms
+                if remaining_ms <= 0:
+                    raise _ApparelSearchUnavailable
+                try:
+                    _set_statement_timeout(min(remaining_ms, APPAREL_TIMEOUT_MS))
+                    result = continuation_apparel_neighbors(search, anchors, task.embedding_model)
+                except (DatabaseError, ValueError):
+                    logger.warning("apparel_expansion_unavailable")
+                    raise _ApparelSearchUnavailable from None
+                apparel_spent_ms = ceil((perf_counter() - started) * 1000)
+                _set_statement_timeout(max(1, remaining_ms - apparel_spent_ms))
+                return result
+
+            sources = select_continuation_centroids(
+                search,
+                model=task.embedding_model,
+                check_apparel=check_apparel if apparel_enabled else None,
+            )
+            if not sources:
+                _fail(task, code="continuation_unavailable")
+                return
             ranking = rank_continuation_centroids(search, sources)
-        elif is_continuation:
+            report_direct_ranking(search, ranking)
+        else:
+            if is_continuation and task.source == FaceSearchTask.Source.GALLERY:
+                validate_continuation_source(search, model=task.embedding_model)
             ranking = rank_selected_direct(
                 search,
                 query,
                 exclude_photo_ids=previous,
                 original_gallery_seed=gallery_seed,
             )
-        else:
-            ranking = rank_selected_direct(search, query)
-        staff_eligible = search.configuration.get(ANCHOR_EXPANSION_STAFF_ELIGIBILITY_KEY) is True
-        apparel_enabled = ranking.has_vectors and is_enabled_for_background_task(
-            APPAREL_SEARCH_EXPANSION, staff_eligible=staff_eligible
-        )
+            apparel_enabled = ranking.has_vectors and is_enabled_for_background_task(
+                APPAREL_SEARCH_EXPANSION, staff_eligible=staff_eligible
+            )
         if apparel_enabled:
             now = timezone.now()
             if _expired(task, now):
                 _fail(task, code="matching_query_expired")
                 return
             remaining_ms = timeout_ms - int((now - started_at).total_seconds() * 1000)
-            if remaining_ms <= 0:
+            remaining_apparel_ms = min(remaining_ms, APPAREL_TIMEOUT_MS - apparel_spent_ms)
+            if remaining_apparel_ms <= 0:
                 logger.warning("apparel_expansion_unavailable")
                 raise _ApparelSearchUnavailable
             verification_started = perf_counter()
             try:
-                _set_statement_timeout(min(remaining_ms, APPAREL_TIMEOUT_MS))
+                _set_statement_timeout(remaining_apparel_ms)
                 verification = verify_apparel_anchors(
                     search,
                     ranking.photos,
@@ -225,11 +272,12 @@ def process_face_search(task: FaceSearchTask) -> None:
             except (DatabaseError, ValueError):
                 logger.warning("apparel_expansion_unavailable")
                 raise _ApparelSearchUnavailable from None
-            apparel_spent_ms = ceil((perf_counter() - verification_started) * 1000)
+            apparel_spent_ms += ceil((perf_counter() - verification_started) * 1000)
 
         if (
             ranking.photos
-            and not is_continuation
+            # Multiple prepared centroids already performed this stage in one cohort scan.
+            and not automatic
             and is_enabled_for_background_task(
                 FACE_SEARCH_ANCHOR_EXPANSION, staff_eligible=staff_eligible
             )
@@ -254,11 +302,10 @@ def process_face_search(task: FaceSearchTask) -> None:
                     verified_detection_ids=(
                         verification.centroid_detection_ids if verification is not None else None
                     ),
+                    prior_photo_ids=prior_photos(),
                 )
-    expansion = (
-        direct_only_ranked_photos(ranking.photos, outcome="disabled")
-        if is_continuation
-        else expand_direct_ranking(search=search, ranked=ranking.photos, query=query)
+    expansion = expand_direct_ranking(
+        search=search, ranked=ranking.photos, query=query, prior_photos=prior_photos
     )
     if anchor_matches:
         expansion = append_anchor_matches(expansion, anchor_matches)
@@ -282,12 +329,7 @@ def process_face_search(task: FaceSearchTask) -> None:
                     embedding_model=task.embedding_model,
                     verification=verification,
                     continuation_groups=sources if automatic else (),
-                    prior_photo_ids=(
-                        tuple(previous.values_list("photo_id", flat=True))
-                        if previous is not None
-                        else ()
-                    )
-                    + ((gallery_seed,) if gallery_seed is not None else ()),
+                    prior_photo_ids=prior_photos(),
                 )
                 if expansion.apparel_evidence is None:
                     raise ValueError("apparel expansion did not supply evidence")
@@ -297,6 +339,13 @@ def process_face_search(task: FaceSearchTask) -> None:
 
     try:
         with transaction.atomic():
+            parent = (
+                SelfieSearch.objects.select_for_update(of=("self",))
+                .select_related("event")
+                .get(pk=search.parent_search_id)
+                if is_continuation and ranking.has_vectors and expansion.results
+                else None
+            )
             locked_search = SelfieSearch.objects.select_for_update().get(pk=task.search_id)
             if locked_search.status != SelfieSearch.Status.PROCESSING:
                 _terminal(task)
@@ -318,9 +367,15 @@ def process_face_search(task: FaceSearchTask) -> None:
             )
             search.eligible_photo_count = ranking.eligible_photo_count
             search.eligible_face_count = ranking.eligible_face_count
+            if automatic:
+                search.configuration["query_source"] = continuation_centroid_source(sources)
+                search.configuration_hash = _configuration_hash(search.configuration)
+                search.save(update_fields=["configuration", "configuration_hash"])
             prepare_search_result(
                 search, intended_status=str(intended_status), failure_code="", expansion=expansion
             )
+            if parent is not None:
+                refresh_negative_feedback(parent)
             _terminal(task)
             if intended_status == SelfieSearch.Status.READY:
                 transaction.on_commit(

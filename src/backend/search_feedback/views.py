@@ -12,7 +12,10 @@ from picflow.forms import BibSearchForm
 from picflow.gallery import gallery_photo_queryset
 from picflow.models import Event
 from selfie_search.models import SelfieSearch
-from selfie_search.services.negative_feedback import negative_feedback_state
+from selfie_search.services.negative_feedback import (
+    negative_feedback_state,
+    refresh_negative_feedback,
+)
 from selfie_search.services.results import (
     PublicSearchNotFound,
     resolve_public_result,
@@ -99,7 +102,11 @@ def _submit_face_report(
         )
     except PublicSearchNotFound:
         raise Http404 from None
-    SelfieSearch.objects.select_for_update().only("pk").get(pk=search.pk)
+    search = (
+        SelfieSearch.objects.select_for_update(of=("self",))
+        .select_related("event")
+        .get(pk=search.pk)
+    )
     photo_id = form.cleaned_data["photo_id"]
     row = saved_ready_result_row(
         search=search,
@@ -108,13 +115,7 @@ def _submit_face_report(
     )
     if row is None:
         raise Http404
-    if (
-        row.search_id != search.pk
-        and photo_id
-        in negative_feedback_state(
-            search, paid_watermarked_previews_enabled=paid_previews_enabled
-        ).excluded_photo_ids
-    ):
+    if search.negative_feedback_photos.get(photo_id) == "excluded":
         raise Http404
 
     search_type = (
@@ -135,7 +136,7 @@ def _submit_face_report(
                     context[f"source_{key}"] = source[key]
 
     mark = form.cleaned_data["action"] == "mark"
-    set_result_report(
+    changed = set_result_report(
         search=search,
         photo_id=photo_id,
         submission_id=form.cleaned_data["submission_id"],
@@ -143,7 +144,7 @@ def _submit_face_report(
         search_context=context,
         mark=mark,
     )
-    state = negative_feedback_state(search, paid_watermarked_previews_enabled=paid_previews_enabled)
+    state = refresh_negative_feedback(search) if changed else negative_feedback_state(search)
     return JsonResponse(
         {
             "status": "saved",

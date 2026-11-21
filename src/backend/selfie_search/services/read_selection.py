@@ -31,6 +31,11 @@ def rank_selected_direct(
         raise
     except (MemoryError, ValueError) as error:
         raise RankingError("compatible cohort could not be ranked") from error
+    report_direct_ranking(search, outcome)
+    return outcome
+
+
+def report_direct_ranking(search: SelfieSearch, outcome: DirectRankingOutcome) -> None:
     emit_selfie_event(
         logger,
         event=SelfieEventName.DIRECT_READER_FINISHED,
@@ -42,4 +47,3 @@ def rank_selected_direct(
         matched_photo_count=len(outcome.photos),
         ranking_ms=min(MAX_BOUNDED_INTEGER, max(0, round(outcome.ranking_ms))),
     )
-    return outcome

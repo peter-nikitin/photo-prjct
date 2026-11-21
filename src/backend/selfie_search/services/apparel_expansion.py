@@ -229,7 +229,7 @@ SELECT
 
 _QUERY = (
     """
-WITH face_queries AS (
+WITH face_queries AS MATERIALIZED (
     SELECT vector FROM selfie_search_facesearchtask WHERE id = %(task)s
         AND cardinality(%(query_detection_ids)s::uuid[]) = 0
     UNION ALL

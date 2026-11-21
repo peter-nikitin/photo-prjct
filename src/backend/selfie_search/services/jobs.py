@@ -207,7 +207,7 @@ def enqueue_face_search(
     search: SelfieSearch,
     *,
     source: str,
-    query: tuple[float, ...] | UUID,
+    query: tuple[float, ...] | UUID | None,
     now: timezone.datetime,
     expires_at: timezone.datetime | None = None,
 ) -> None:
@@ -217,7 +217,7 @@ def enqueue_face_search(
         if isinstance(query, UUID)
         else "%s::vector"
     )
-    vector_param = query if isinstance(query, UUID) else Vector(list(query)).to_text()
+    vector_param = Vector(list(query)).to_text() if isinstance(query, tuple) else query
     # Django's PostgreSQL client cursor interpolates parameters into statement text.
     # A server cursor keeps this sensitive parameter out of both SQL text and Django SQL logs.
     model = _configuration(search).model
@@ -607,7 +607,11 @@ def _terminal_attempt(
 
 
 def expand_direct_ranking(
-    *, search: SelfieSearch, ranked: tuple, query: object
+    *,
+    search: SelfieSearch,
+    ranked: tuple,
+    query: object,
+    prior_photos: Callable[[], tuple[str, ...]] | None = None,
 ) -> RankedPhotoExpansion:
     """Read optional immutable corpus evidence before the publication transaction."""
     if settings.SELFIE_SEARCH_CLUSTER_EXPANSION_ENABLED is not True:
@@ -621,7 +625,13 @@ def expand_direct_ranking(
                 .filter(event=search.event, active=True)
                 .first()
             )
-            return expand_ranked_photos(search, ranked, query, activation)
+            return expand_ranked_photos(
+                search,
+                ranked,
+                query,
+                activation,
+                prior_photo_ids=prior_photos() if activation is not None and prior_photos else (),
+            )
     except DatabaseError:
         return direct_only_ranked_photos(ranked, outcome="corpus_unavailable")
 

@@ -869,6 +869,7 @@ class ApparelExclusionUpgradeTests(TransactionTestCase):
         upgraded = executor.loader.project_state(leaves).apps
         snapshots["SelfieSearch"][0]["apparel_excluded_photo_count"] = 0
         snapshots["SelfieSearch"][0]["parent_search_id"] = None
+        snapshots["SelfieSearch"][0]["negative_feedback_photos"] = {}
         snapshots["SelfieSearchDirectEvidence"][0]["centroid_index"] = None
         for result in snapshots["SelfieSearchResult"]:
             result["excluded_by_apparel"] = False

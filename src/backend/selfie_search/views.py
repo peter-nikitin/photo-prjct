@@ -241,14 +241,16 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
     )
     upload_count = selfie_upload_count(search) if is_terminal else 0
     is_gallery_origin = search.configuration.get("processor") == "gallery_photo_query"
-    negative_feedback = negative_feedback_state(
-        search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
-    )
-    result_rows = tuple(
+    negative_feedback = negative_feedback_state(search)
+    saved_rows = tuple(
         saved_ready_result_rows(
             search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
-        ).exclude(photo_id__in=negative_feedback.excluded_photo_ids)
+        )
     )
+    saved_photo_ids = {row.photo_id for row in saved_rows}
+    excluded_ids = negative_feedback.excluded_photo_ids & saved_photo_ids
+    reported_ids = negative_feedback.manual_photo_ids & saved_photo_ids
+    result_rows = tuple(row for row in saved_rows if row.photo_id not in excluded_ids)
     photos = tuple(row.photo for row in result_rows)
     gallery_photos = tuple(
         GalleryPhotoFactory.from_photo(
@@ -265,7 +267,6 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         )
         for photo in photos
     )
-    gallery_result_items = tuple(zip(result_rows, gallery_photos, strict=True))
     continuation_url = None
     usable_photo_ids: set[str] = set()
     if result_rows:
@@ -283,6 +284,15 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         photos=gallery_photos,
         watermarked_previews_enabled=paid_watermarked_previews_enabled,
         require_eligible_photo=True,
+    )
+    cart_photos = (
+        {item.photo.photo_id: item for item in cart_state.presentation.photos}
+        if cart_state is not None
+        else {}
+    )
+    gallery_result_items = tuple(
+        (row, photo, cart_photos.get(photo.photo_id))
+        for row, photo in zip(result_rows, gallery_photos, strict=True)
     )
     feedback_context = None
     feedback_submitted = False
@@ -315,19 +325,20 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
         and (
             last_pass.published_matched_photo_count == 0
             or (
-                bool(negative_feedback.excluded_photo_ids)
+                bool(excluded_ids)
                 and not last_pass.results.filter(excluded_by_apparel=False)
-                .exclude(photo_id__in=negative_feedback.excluded_photo_ids)
+                .exclude(photo_id__in=excluded_ids)
                 .exists()
             )
         )
     )
+    no_new_anchors = last_pass is not None and last_pass.failure_code == "continuation_unavailable"
     response = render(
         request,
         "selfie_search/result.html",
         {
-            "cart_presentation": cart_state.presentation if cart_state is not None else None,
             "event": search.event,
+            "cart_presentation": cart_state.presentation if cart_state is not None else None,
             "archive_action": archive_action,
             "archive_url": reverse(
                 "selfie_search:result_archive",
@@ -337,14 +348,15 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             else None,
             "published_count": published_count,
             "checked_photo_count": (latest_ready or search).eligible_photo_count,
-            "all_results_marked": published_count == len(negative_feedback.manual_photo_ids),
-            "feedback_excluded_photo_count": len(negative_feedback.excluded_photo_ids),
+            "all_results_marked": published_count == len(reported_ids),
+            "feedback_excluded_photo_count": len(excluded_ids),
             "continuation_url": continuation_url,
             "continuation_pending": pending,
-            "continuation_unavailable": request.GET.get("more") == "unavailable",
+            "continuation_unavailable": request.GET.get("more") == "unavailable" or no_new_anchors,
             "continuation_empty": continuation_empty,
             "continuation_failed": last_pass is not None
             and not last_is_selfie
+            and not no_new_anchors
             and last_pass.status
             in (
                 SelfieSearch.Status.FAILED,
@@ -357,7 +369,7 @@ def result(request, event_slug: str, public_token: str) -> HttpResponse:  # noqa
             "result_feedback_url": reverse(
                 "search_feedback_submit", kwargs={"event_slug": search.event.slug}
             ),
-            "reported_photo_ids": negative_feedback.manual_photo_ids,
+            "reported_photo_ids": reported_ids,
             "similar_feedback_photo_ids": negative_feedback.similar_photo_ids,
             "feedback_submitted": feedback_submitted,
             "selfie_feedback_enabled": bool(
@@ -570,11 +582,18 @@ def result_archive(request, event_slug: str, public_token: str) -> HttpResponseB
     if search is None or search.event.access_type != Event.AccessType.FREE:
         return _not_found_response()
     paid_previews = _paid_watermarked_previews_enabled(request)
-    feedback = negative_feedback_state(search, paid_watermarked_previews_enabled=paid_previews)
-    photos = saved_ready_result_photos(search, paid_watermarked_previews_enabled=paid_previews)
-    omitted = feedback.manual_photo_ids | feedback.excluded_photo_ids
-    entries = _archive_entries(tuple(photo for photo in photos if photo.pk not in omitted))
-    if not entries or len(photos) - len(feedback.excluded_photo_ids) < 2:
+    feedback = negative_feedback_state(search)
+    photos = tuple(
+        photo
+        for photo in saved_ready_result_photos(
+            search, paid_watermarked_previews_enabled=paid_previews
+        )
+        if photo.pk not in feedback.excluded_photo_ids
+    )
+    entries = _archive_entries(
+        tuple(photo for photo in photos if photo.pk not in feedback.manual_photo_ids)
+    )
+    if not entries or len(photos) < 2:
         return _not_found_response()
     return prepare_archive_response(
         scope=f"search:{search.pk}",

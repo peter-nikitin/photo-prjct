@@ -12,7 +12,7 @@ from selfie_search.services.direct_ranking import DirectRankingOutcome
 from selfie_search.services.ranking import RankedPhoto, RankingError, _configuration
 from selfie_search.services.results import eligible_saved_result_rows
 from selfie_search.services.submission import CONTINUATION_PAID_PREVIEWS_KEY
-from selfie_search.services.vector_ranking import accepted_kept_faces
+from selfie_search.services.vector_ranking import accepted_kept_faces, cohort_counts
 
 _CENTROID_RANKING_SQL = """
 WITH cohort(photo_id, attempt_id, detection_id, embedding) AS MATERIALIZED (
@@ -35,10 +35,6 @@ centroids AS (
       )
     GROUP BY input.centroid_index
 ),
-counts AS (
-    SELECT count(DISTINCT photo_id) AS photos, count(*) AS faces
-    FROM cohort
-),
 best_matches AS (
     SELECT DISTINCT ON (face.photo_id)
         face.photo_id, face.detection_id, centroid.centroid_index,
@@ -51,9 +47,8 @@ best_matches AS (
       AND face.photo_id NOT IN ({prior_matches_sql})
     ORDER BY face.photo_id, distance, centroid.centroid_index, face.detection_id
 )
-SELECT counts.photos, counts.faces, (SELECT sum(members) FROM centroids),
-    best.photo_id, best.detection_id, best.centroid_index, best.distance
-FROM counts
+SELECT validated.members, best.photo_id, best.detection_id, best.centroid_index, best.distance
+FROM (SELECT sum(members) AS members FROM centroids) validated
 LEFT JOIN best_matches best ON true
 ORDER BY best.distance, best.photo_id
 """
@@ -115,9 +110,9 @@ def rank_continuation_centroids(
             ],
         )
         rows = cursor.fetchall()
-    eligible_photo_count, eligible_face_count, used_members, *_ = rows[0]
-    if used_members != len(members):
+    if rows[0][0] != len(members):
         raise RankingError("continuation centroid sources changed before matching")
+    eligible_face_count, eligible_photo_count = cohort_counts(search, configuration.model)
     return DirectRankingOutcome(
         photos=tuple(
             RankedPhoto(
@@ -126,12 +121,12 @@ def rank_continuation_centroids(
                 cosine_distance=distance,
                 centroid_index=position,
             )
-            for _, _, _, photo_id, detection_id, position, distance in rows
+            for _, photo_id, detection_id, position, distance in rows
             if photo_id is not None
         ),
         eligible_face_count=eligible_face_count,
         eligible_photo_count=eligible_photo_count,
-        has_vectors=bool(eligible_face_count),
+        has_vectors=True,
         identity_ms=0.0,
         build_ms=0.0,
         ranking_ms=(perf_counter() - started) * 1_000,

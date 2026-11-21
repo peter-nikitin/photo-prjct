@@ -1,6 +1,5 @@
 from uuid import UUID
 
-from django.db import transaction
 from django.db.models import QuerySet
 from django.db.models.fields.json import KeyTextTransform
 from django.utils import timezone
@@ -43,7 +42,6 @@ def active_negative_reports(search: SelfieSearch) -> QuerySet[SearchFeedback]:
     )
 
 
-@transaction.atomic
 def set_result_report(
     *,
     search: SelfieSearch,
@@ -52,17 +50,15 @@ def set_result_report(
     search_type: SearchFeedback.SearchType,
     search_context: dict[str, str],
     mark: bool,
-) -> None:
-    """Journal each authorized action so retried no-ops cannot change a later decision."""
-    SelfieSearch.objects.select_for_update().only("pk").get(pk=search.pk)
+) -> bool:
+    """Journal each action under the caller's root-search lock."""
     if face_result_reports(search).filter(submission_id=submission_id).exists():
-        return
+        return False
 
     active = active_negative_reports(search).filter(photo_id=photo_id)
     now = timezone.now()
-    closed = not mark or active.exists()
-    if not mark:
-        active.update(withdrawn_at=now)
+    changed = not active.exists() if mark else bool(active.update(withdrawn_at=now))
+    closed = not mark or not changed
     SearchFeedback.objects.create(
         submission_id=submission_id,
         event_id=search.event_id,
@@ -72,3 +68,4 @@ def set_result_report(
         search_context=search_context,
         withdrawn_at=now if closed else None,
     )
+    return changed

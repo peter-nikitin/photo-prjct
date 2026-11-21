@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from django.db import connection
-from django.db.models import Subquery
+from django.db.models import QuerySet
 from django.db.models.fields.json import KeyTextTransform
 from picflow.gallery import retrieval_gallery_photo_queryset
 from psycopg import Cursor
@@ -160,17 +160,39 @@ WHERE positive.distance IS NULL OR positive.distance > near.distance + %(ambigui
 """
 
 
-def negative_feedback_state(
-    search: SelfieSearch,
-    *,
-    paid_watermarked_previews_enabled: bool = False,
-) -> NegativeFeedbackState:
-    eligible = eligible_saved_result_rows(
-        search, paid_watermarked_previews_enabled=paid_watermarked_previews_enabled
-    ).order_by()
+def negative_feedback_state(search: SelfieSearch) -> NegativeFeedbackState:
+    """Read saved decisions without comparing face vectors."""
+    manual = frozenset(active_negative_reports(search).values_list("photo_id", flat=True))
+    return NegativeFeedbackState(
+        manual_photo_ids=manual,
+        similar_photo_ids=frozenset(
+            photo_id
+            for photo_id, state in search.negative_feedback_photos.items()
+            if state == "similar"
+        ),
+        excluded_photo_ids=frozenset(
+            photo_id
+            for photo_id, state in search.negative_feedback_photos.items()
+            if state == "excluded"
+        ),
+    )
+
+
+def refresh_negative_feedback(search: SelfieSearch) -> NegativeFeedbackState:
+    """Recompute the photo flags while the caller holds the root search lock."""
+    eligible = eligible_saved_result_rows(search, paid_watermarked_previews_enabled=True).order_by()
+    state = _compare_negative_faces(search, eligible)
+    flags = {photo_id: "similar" for photo_id in state.similar_photo_ids}
+    flags.update({photo_id: "excluded" for photo_id in state.excluded_photo_ids})
+    if flags != search.negative_feedback_photos:
+        search.negative_feedback_photos = flags
+        search.save(update_fields=["negative_feedback_photos"])
+    return state
+
+
+def _compare_negative_faces(search: SelfieSearch, eligible: QuerySet) -> NegativeFeedbackState:
     reports = list(
         active_negative_reports(search)
-        .filter(photo_id__in=Subquery(eligible.values("photo_id")))
         .annotate(saved_result_id=KeyTextTransform("result_id", "search_context"))
         .values_list("photo_id", "saved_result_id", "created_at")
     )

@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from math import sqrt
 from threading import Barrier
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.db import close_old_connections
@@ -113,9 +114,39 @@ class SearchContinuationTests(TestCase):
             {"manual-addition", "auto-addition"},
         )
 
+    def test_automatic_post_leaves_anchor_selection_to_matching_worker(self):
+        token = uuid4().hex
+        root = self.root_search(token=token)
+        self.save_match(root, self.face("deferred-anchor"), 1)
+        uri = reverse("selfie_search:continue", args=(self.event.slug, token))
+        from selfie_search.services import continuation
+
+        with patch.object(
+            continuation, "_select_centroids", wraps=continuation._select_centroids
+        ) as select:
+            response = self.client.post(uri, HTTP_ACCEPT="application/json")
+            self.assertEqual(response.status_code, 200)
+            select.assert_not_called()
+            self.assertTrue(run_once())
+            select.assert_called_once()
+
+    def test_consumed_anchors_use_one_query_for_multiple_passes(self):
+        from selfie_search.services.continuation import consumed_anchor_photo_ids
+
+        root = self.root_search()
+        for index in range(5):
+            SelfieSearch.objects.create(
+                parent_search=root,
+                event=self.event,
+                status=SelfieSearch.Status.READY,
+                configuration={"query_source": {"kind": "gallery_photo", "photo_id": str(index)}},
+                public_token_digest=uuid4().hex,
+            )
+        with self.assertNumQueries(1):
+            self.assertEqual(consumed_anchor_photo_ids(root), set(map(str, range(5))))
+
     def test_automatic_batch_ranks_distinct_centroids_and_consumes_only_used_anchors(self):
         from selfie_search.services.continuation import (
-            ContinuationUnavailable,
             consumed_anchor_photo_ids,
             submit_continuation,
         )
@@ -154,8 +185,11 @@ class SearchContinuationTests(TestCase):
         second = submit_continuation(search=root, user=self.user, photo_id=None)
         self.assertTrue(run_once())
         self.assertEqual(list(second.results.values_list("photo_id", flat=True)), ["addition-4"])
-        with self.assertRaises(ContinuationUnavailable):
-            submit_continuation(search=root, user=self.user, photo_id=None)
+        exhausted = submit_continuation(search=root, user=self.user, photo_id=None)
+        self.assertTrue(run_once())
+        exhausted.refresh_from_db()
+        self.assertEqual(exhausted.failure_code, "continuation_unavailable")
+        self.assertFalse(exhausted.results.exists())
 
     def test_automatic_and_manual_refuse_photo_with_another_detected_face(self):
         from selfie_search.services.continuation import ContinuationUnavailable, submit_continuation
@@ -169,10 +203,13 @@ class SearchContinuationTests(TestCase):
             face_index=1,
             status=PhotoFaceDetection.Status.QUALITY_REJECTED,
         )
-        for photo_id in (None, row.photo_id):
-            with self.subTest(photo_id=photo_id), self.assertRaises(ContinuationUnavailable):
-                submit_continuation(search=root, user=self.user, photo_id=photo_id)
-        self.assertFalse(run_once())
+        with self.assertRaises(ContinuationUnavailable):
+            submit_continuation(search=root, user=self.user, photo_id=row.photo_id)
+        automatic = submit_continuation(search=root, user=self.user, photo_id=None)
+        self.assertTrue(run_once())
+        automatic.refresh_from_db()
+        self.assertEqual(automatic.failure_code, "continuation_unavailable")
+        self.assertFalse(automatic.results.exists())
 
     def test_centroid_anchor_remains_available_for_exact_manual_search(self):
         from selfie_search.services.continuation import (
@@ -199,7 +236,6 @@ class SearchContinuationTests(TestCase):
 
     def test_automatic_can_use_new_result_supported_by_two_trusted_faces(self):
         from selfie_search.services.continuation import (
-            ContinuationUnavailable,
             consumed_anchor_photo_ids,
             submit_continuation,
         )
@@ -222,8 +258,11 @@ class SearchContinuationTests(TestCase):
         self.assertTrue(run_once())
         self.assertEqual(second.results.get().photo_id, "later-addition")
         self.assertIn("supported", consumed_anchor_photo_ids(root))
-        with self.assertRaises(ContinuationUnavailable):
-            submit_continuation(search=root, user=self.user, photo_id=None)
+        exhausted = submit_continuation(search=root, user=self.user, photo_id=None)
+        self.assertTrue(run_once())
+        exhausted.refresh_from_db()
+        self.assertEqual(exhausted.failure_code, "continuation_unavailable")
+        self.assertFalse(exhausted.results.exists())
 
     def test_failed_pass_does_not_consume_manual_source(self):
         from selfie_search.services.continuation import submit_continuation

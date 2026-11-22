@@ -253,16 +253,6 @@
   transform: translateY(-1px);
 }
 
-.upload-start-button {
-  width: 100%;
-  margin-top: 14px;
-}
-
-.upload-start-button:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-
 .drop-target-icon {
   width: 40px;
   height: 40px;

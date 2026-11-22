@@ -11,7 +11,7 @@ from django.db import IntegrityError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from feature_flags.registry import PAID_EVENTS, PAID_WATERMARKED_PREVIEWS
+from feature_flags.registry import GALLERY_BIB_SEARCH, PAID_EVENTS, PAID_WATERMARKED_PREVIEWS
 from feature_flags.states import FEATURE_FLAG_OFF, FEATURE_FLAG_ON
 from feature_flags.testing import override_feature_flags
 from ingestion.storage import StorageUnavailable
@@ -511,6 +511,7 @@ class FeedbackSubmissionTests(TestCase):
         )
 
     @override_settings(SELFIE_FEEDBACK_ENABLED=False)
+    @override_feature_flags({GALLERY_BIB_SEARCH: FEATURE_FLAG_ON})
     def test_bib_search_marks_only_numbered_photos_in_current_event(self) -> None:
         self.event.bib_search_enabled = True
         self.event.save(update_fields=["bib_search_enabled"])
@@ -533,6 +534,12 @@ class FeedbackSubmissionTests(TestCase):
             count=1,
         )
         url = self.report_url()
+        with override_feature_flags({GALLERY_BIB_SEARCH: FEATURE_FLAG_OFF}):
+            self.assertEqual(
+                self.csrf_post(url, self.report_data(numbered.photo_id, bib="007")).status_code,
+                404,
+            )
+            self.assertFalse(SearchFeedback.objects.exists())
         self.assertEqual(
             self.csrf_post(url, self.report_data(unnumbered.photo_id, bib="007")).status_code, 404
         )

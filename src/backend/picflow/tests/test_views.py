@@ -32,6 +32,7 @@ from django.utils.cache import has_vary_header
 from django.views.debug import technical_500_response
 from feature_flags.models import FeatureFlag
 from feature_flags.registry import (
+    GALLERY_BIB_SEARCH,
     GALLERY_CDN_IMAGES,
     PAID_EVENTS,
     PAID_PHOTO_CART,
@@ -338,7 +339,7 @@ class PageTests(TestCase):
             )
         self.assertContains(response, 'data-web-vitals-page="gallery"')
 
-    @override_feature_flags({WEB_VITALS: FEATURE_FLAG_ON})
+    @override_feature_flags({WEB_VITALS: FEATURE_FLAG_ON, GALLERY_BIB_SEARCH: FEATURE_FLAG_ON})
     def test_web_vitals_tracks_detail_when_invalid_filter_hides_gallery(self) -> None:
         event = self.make_event(bib_search_enabled=True)
 
@@ -785,6 +786,60 @@ class GalleryPageTests(TestCase):
             evidence={"source": "accepted"},
         )
 
+    def test_bib_gate_controls_form_and_direct_queries_for_each_visitor(self) -> None:
+        event = self.make_event(bib_search_enabled=True)
+        numbered = self.make_private_photo(event, id="gate-numbered", original_filename="a.jpg")
+        unnumbered = self.make_private_photo(event, id="gate-unnumbered", original_filename="b.jpg")
+        self.publish_bib(numbered, number="007")
+        url = reverse("event_detail", kwargs={"slug": event.slug})
+        staff = get_user_model().objects.create_user(username="bib-staff", is_staff=True)
+        member = get_user_model().objects.create_user(username="bib-member")
+        inactive_staff = get_user_model().objects.create_user(
+            username="bib-inactive-staff", is_staff=True, is_active=False
+        )
+        for user in (None, member, staff, inactive_staff):
+            self.client.logout()
+            if user is not None:
+                self.client.force_login(user)
+            for state in (FEATURE_FLAG_OFF, FEATURE_FLAG_STAFF, FEATURE_FLAG_ON):
+                allowed = state == FEATURE_FLAG_ON or (
+                    state == FEATURE_FLAG_STAFF and user == staff
+                )
+                with (
+                    self.subTest(user=user, state=state),
+                    override_feature_flags({GALLERY_BIB_SEARCH: state}),
+                ):
+                    response = self.client.get(url, {"bib": "007"})
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(b"data-bib-search-form" in response.content, allowed)
+                    self.assertContains(response, "data-selfie-search-form")
+                    self.assertContains(response, "data-manual-time-filter-form")
+                    self.assertEqual(
+                        tuple(item.photo_id for item in response.context["gallery_photos"]),
+                        (numbered.pk,) if allowed else (numbered.pk, unnumbered.pk),
+                    )
+                    self.assertEqual(
+                        response.context["gallery_pagination_query_pairs"],
+                        (("bib", "007"),) if allowed else (),
+                    )
+                    self.assertEqual(response.context["gallery_filters_active"], allowed)
+
+    def test_missing_bib_gate_hides_form_and_ignores_invalid_query(self) -> None:
+        event = self.make_event(bib_search_enabled=True)
+        photo = self.make_private_photo(event)
+        FeatureFlag.objects.filter(key=GALLERY_BIB_SEARCH.key).delete()
+
+        response = self.client.get(
+            reverse("event_detail", kwargs={"slug": event.slug}), {"bib": "invalid"}
+        )
+
+        self.assertNotContains(response, "data-bib-search-form")
+        self.assertFalse(response.context["bib_search_invalid"])
+        self.assertEqual(
+            tuple(item.photo_id for item in response.context["gallery_photos"]), (photo.pk,)
+        )
+
+    @override_feature_flags({GALLERY_BIB_SEARCH: FEATURE_FLAG_ON})
     def test_bib_form_visibility_follows_event_and_stays_separate_from_selfie_upload(self) -> None:
         disabled = self.make_event(name="Bib disabled", slug="bib-disabled")
 
@@ -802,6 +857,7 @@ class GalleryPageTests(TestCase):
         self.assertNotIn(("bib", "text"), markup.inputs["selfie"])
         self.assertEqual(markup.inputs["bib"], [("bib", "text")])
 
+    @override_feature_flags({GALLERY_BIB_SEARCH: FEATURE_FLAG_ON})
     def test_bib_query_filters_exactly_and_invalid_or_blank_queries_do_not_filter(self) -> None:
         event = self.make_event(slug="bib-query", bib_search_enabled=True)
         leading_zero = self.make_private_photo(event, id="leading-zero", original_filename="a.jpg")
@@ -838,6 +894,7 @@ class GalleryPageTests(TestCase):
         self.assertIn(("bib", "hidden"), filtered_markup.inputs["manual"])
         self.assertNotIn(("bib", "hidden"), invalid_markup.inputs["manual"])
 
+    @override_feature_flags({GALLERY_BIB_SEARCH: FEATURE_FLAG_ON})
     def test_bib_pagination_preserves_number_and_existing_gallery_filters(self) -> None:
         event = self.make_event(
             slug="bib-pagination",

@@ -19,6 +19,7 @@ from feature_flags import services as feature_flag_services
 from feature_flags.registry import (
     APPAREL_SEARCH_EXPANSION,
     EVENT_COVER_CDN_IMAGES,
+    GALLERY_BIB_SEARCH,
     GALLERY_CDN_IMAGES,
     PAID_WATERMARKED_PREVIEWS,
 )
@@ -117,7 +118,9 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
     bib_search_form = None
     bib_search_invalid = False
     bib_number = None
-    if event.bib_search_enabled:
+    if event.bib_search_enabled and feature_flag_services.is_enabled(
+        GALLERY_BIB_SEARCH, request.user
+    ):
         bib_search_form = BibSearchForm(request.GET if "bib" in request.GET else None)
         if bib_search_form.is_bound:
             if bib_search_form.is_valid():

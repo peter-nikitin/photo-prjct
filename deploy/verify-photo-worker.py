@@ -1,7 +1,8 @@
-"""Validate the running photo-worker against the effective deployment configuration."""
+"""Validate every photo-worker replica against the effective deployment configuration."""
 
 import json
 import subprocess
+from typing import Any
 
 COMPOSE = (
     "docker",
@@ -25,14 +26,7 @@ def _output(*command: str) -> str:
     return subprocess.run(command, check=True, capture_output=True, text=True, timeout=30).stdout
 
 
-def _status() -> str:
-    service = json.loads(_output(*COMPOSE, "config", "--format", "json", "photo-worker"))[
-        "services"
-    ]["photo-worker"]
-    containers = _output(*COMPOSE, "ps", "--all", "-q", "photo-worker").split()
-    if len(containers) != 1:
-        return "container-mismatch"
-
+def _replica_status(container: str, service: dict[str, Any]) -> str:
     actual = json.loads(
         _output(
             "docker",
@@ -42,7 +36,7 @@ def _status() -> str:
             "--format",
             INSPECT_FORMAT,
             "--",
-            containers[0],
+            container,
         )
     )
     if actual["status"] != "running":
@@ -56,6 +50,35 @@ def _status() -> str:
     environment = dict(entry.split("=", 1) for entry in actual["environment"])
     if any(key not in environment or environment[key] != value for key, value in expected.items()):
         return "environment-mismatch"
+    return "ok"
+
+
+def _status() -> str:
+    services = json.loads(_output(*COMPOSE, "config", "--format", "json"))["services"]
+    workers = {
+        name: spec for name, spec in services.items() if "photo-worker" in spec.get("profiles", [])
+    }
+    if not workers:
+        return "unavailable"
+    for role, service in workers.items():
+        containers = _output(
+            "docker",
+            "ps",
+            "-a",
+            "-q",
+            "--filter",
+            "label=com.docker.compose.project=photo-prjct",
+            "--filter",
+            "label=com.docker.compose.oneoff=False",
+            "--filter",
+            f"label=com.docker.compose.service={role}",
+        ).split()
+        if len(containers) != service.get("scale", 1):
+            return "container-mismatch"
+        for container in containers:
+            status = _replica_status(container, service)
+            if status != "ok":
+                return status
     return "ok"
 
 

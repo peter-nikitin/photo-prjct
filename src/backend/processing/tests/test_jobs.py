@@ -1,15 +1,23 @@
 # mypy: disable-error-code=union-attr
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import date, timedelta
 from queue import Queue
 from threading import Barrier, Thread
+from threading import Event as ThreadEvent
 from unittest.mock import patch
 
 from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError, close_old_connections, transaction
+from django.db import (
+    IntegrityError,
+    OperationalError,
+    close_old_connections,
+    connection,
+    transaction,
+)
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -1677,6 +1685,105 @@ class ProcessingConcurrentCompletionTests(TransactionTestCase):
         self.assertTrue(failures.empty())
         photo.refresh_from_db()
         self.assertEqual(photo.capture_time_source_attempt_id, claimed.attempt.id)
+
+    def test_claims_in_independent_runs_share_event_while_fencing_lifecycle_writers(self) -> None:
+        capture = request_capture_metadata(self._photo("capture-claim"))
+        preview = request_processor(
+            self._photo("preview-claim"),
+            processor_type="generate_preview",
+            contract_version=2,
+            processor_version=1,
+            configuration=GENERATE_PREVIEW_CONFIGURATION,
+        )
+        self.assertNotEqual(capture.current_run_id, preview.current_run_id)
+
+        def claim_preview() -> ClaimedJob | EmptyClaim:
+            close_old_connections()
+            try:
+                with self.assertRaises(OperationalError) as blocked, transaction.atomic():
+                    Event.objects.select_for_update(nowait=True).get(pk=self.event.pk)
+                self.assertEqual(getattr(blocked.exception.__cause__, "sqlstate", None), "55P03")
+                with transaction.atomic():
+                    with connection.cursor() as cursor:
+                        cursor.execute("SET LOCAL lock_timeout = '2s'")
+                    return claim_job(
+                        contract_version=2, processor_type="generate_preview", processor_version=1
+                    )
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=1) as pool, transaction.atomic():
+            # Hold the first lease transaction open, just as the API does while signing its grant.
+            first = claim_job(
+                contract_version=1,
+                processor_type="capture_metadata",
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            )
+            self.assertEqual(first.job.pk, capture.current_job_id)
+            second = pool.submit(claim_preview).result(timeout=5)
+            self.assertEqual(second.job.pk, preview.current_job_id)
+
+    def test_racing_claim_releases_stale_run_before_signing_its_next_lease(self) -> None:
+        configuration = capture_metadata_configuration(self.event.timezone_name) | {
+            "max_cohort_size": 1
+        }
+        states = [
+            request_processor(
+                self._photo(suffix),
+                processor_type="capture_metadata",
+                contract_version=1,
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+                configuration=configuration,
+            )
+            for suffix in ("racing-first", "racing-next")
+        ]
+        self.assertNotEqual(states[0].current_run_id, states[1].current_run_id)
+        candidate_selected, grant_ready, release_grant = ThreadEvent(), ThreadEvent(), ThreadEvent()
+
+        def claim() -> ClaimedJob | EmptyClaim:
+            return claim_job(
+                contract_version=1,
+                processor_type="capture_metadata",
+                processor_version=CAPTURE_METADATA_PROCESSOR_VERSION,
+            )
+
+        lock_event = jobs_service._lock_claim_event
+
+        def lock_after_selection(event_id: int, processor_type: str) -> None:
+            candidate_selected.set()
+            lock_event(event_id, processor_type)
+
+        def racing_claim() -> ClaimedJob | EmptyClaim:
+            close_old_connections()
+            try:
+                with (
+                    transaction.atomic(),
+                    patch.object(
+                        jobs_service, "_lock_claim_event", side_effect=lock_after_selection
+                    ),
+                ):
+                    result = claim()
+                    grant_ready.set()
+                    self.assertTrue(release_grant.wait(timeout=10))
+                    return result
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            try:
+                with transaction.atomic():
+                    first = claim()
+                    future = pool.submit(racing_claim)
+                    self.assertTrue(candidate_selected.wait(timeout=5))
+                self.assertTrue(grant_ready.wait(timeout=5))
+                with transaction.atomic():
+                    EventProcessingRun.objects.select_for_update(nowait=True).get(
+                        pk=first.job.run_id
+                    )
+            finally:
+                release_grant.set()
+            self.assertEqual(future.result(timeout=5).job.pk, states[1].current_job_id)
+        self.assertEqual(ProcessingAttempt.objects.count(), 2)
 
     def test_simultaneous_claims_take_distinct_ready_jobs_instead_of_returning_empty(self) -> None:
         request_capture_metadata(self._photo("claim-one"))

@@ -1,3 +1,17 @@
+x-photo-worker: &photo-worker
+  image: ${PHOTO_WORKER_IMAGE:-}
+  profiles: [photo-worker]
+  environment: &photo-worker-environment
+    PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
+    PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
+    PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
+    PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
+    PHOTO_WORKER_HTTP_TIMEOUT_SECONDS: ${PHOTO_WORKER_HTTP_TIMEOUT_SECONDS:-900}
+  depends_on:
+    web:
+      condition: service_healthy
+  restart: unless-stopped
+
 services:
   db:
     shm_size: "256m"
@@ -193,21 +207,37 @@ services:
     restart: unless-stopped
 
   photo-worker:
-    image: ${PHOTO_WORKER_IMAGE:-}
-    profiles: [photo-worker]
+    <<: *photo-worker
+    scale: 1
+    cpus: "2"
     environment:
-      PHOTO_WORKER_API_URL: http://web:8000/internal/photo-processing/v1
-      PHOTO_WORKER_TOKEN: ${PHOTO_PROCESSING_WORKER_TOKEN:-}
-      PHOTO_WORKER_BUILD: ${PHOTO_WORKER_BUILD:-capture-metadata-v1}
-      PHOTO_WORKER_LEASE_SECONDS: ${PHOTO_WORKER_LEASE_SECONDS:-120}
-      PHOTO_WORKER_HTTP_TIMEOUT_SECONDS: ${PHOTO_WORKER_HTTP_TIMEOUT_SECONDS:-900}
+      <<: *photo-worker-environment
       PHOTO_WORKER_PROCESSOR_IDENTITIES: 1/selfie_query/2
       PHOTO_WORKER_PROCESSOR_TYPES: selfie_query
-    depends_on:
-      web:
-        condition: service_healthy
-    cpus: "2"
-    restart: unless-stopped
+
+  photo-worker-face:
+    <<: *photo-worker
+    scale: 0
+    environment:
+      <<: *photo-worker-environment
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: 3/face_embedding/5
+      PHOTO_WORKER_PROCESSOR_TYPES: face_embedding
+
+  photo-worker-appearance:
+    <<: *photo-worker
+    scale: 0
+    environment:
+      <<: *photo-worker-environment
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: 2/person_appearance/1
+      PHOTO_WORKER_PROCESSOR_TYPES: person_appearance
+
+  photo-worker-bib:
+    <<: *photo-worker
+    scale: 0
+    environment:
+      <<: *photo-worker-environment
+      PHOTO_WORKER_PROCESSOR_IDENTITIES: 1/bib_recognition/1
+      PHOTO_WORKER_PROCESSOR_TYPES: bib_recognition
 
   import-worker:
     image: ${IMPORT_WORKER_IMAGE:-}

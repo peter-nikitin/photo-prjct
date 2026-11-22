@@ -177,6 +177,12 @@
     return chunks;
   }
 
+  async function waitForTransfers(transfers) {
+    const results = await Promise.allSettled(transfers);
+    const failure = results.find(({ status }) => status === 'rejected');
+    if (failure) throw failure.reason;
+  }
+
   class ControlError extends Error {
     constructor(status, payload) {
       super(payload?.error?.message || 'Сервер временно недоступен.');
@@ -311,20 +317,20 @@
     return row;
   }
 
-  function renderQueue(root, coordinator) {
+  function renderQueue(root, coordinator, items) {
     const queue = root.querySelector('[data-upload-queue]');
     const groupTemplate = root.querySelector('#upload-queue-group-template');
     const rowTemplate = root.querySelector('#upload-queue-row-template');
     if (!queue || !groupTemplate || !rowTemplate) return;
-    if (!coordinator.items.length) return;
+    if (!items.length) return;
 
     const presentation = queuePresentation(coordinator);
     queue.replaceChildren();
-    for (const group of groupItems(coordinator.items)) {
+    for (const group of groupItems(items)) {
       const section = groupTemplate.content.firstElementChild.cloneNode(true);
       const content = section.querySelector('[data-queue-group-content]');
       const toggle = section.querySelector('[data-queue-group-toggle]');
-      const items = section.querySelector('[data-queue-group-items]');
+      const rows = section.querySelector('[data-queue-group-items]');
       const pagination = section.querySelector('[data-queue-pagination]');
       const maxOffset = Math.max(0, Math.floor((group.count - 1) / QUEUE_PAGE_SIZE) * QUEUE_PAGE_SIZE);
       const offset = Math.min(presentation.offsets[group.key] || 0, maxOffset);
@@ -342,7 +348,7 @@
 
       if (expanded) {
         for (const [index, item] of visibleGroupItems(group, offset, QUEUE_PAGE_SIZE).entries()) {
-          items.append(renderQueueRow(rowTemplate, item, group.key, offset + index + 1));
+          rows.append(renderQueueRow(rowTemplate, item, group.key, offset + index + 1));
         }
       }
 
@@ -363,19 +369,20 @@
   }
 
   function renderPage(root, coordinator, globalError = '') {
-    const summary = summarize(coordinator.items);
+    const items = coordinator.items;
+    const summary = summarize(items);
     const terminal = summary.uploaded + summary.failed === summary.total && summary.total > 0;
-    const waiting = coordinator.items.some((item) => item.status === 'waiting');
-    const needsAttention = coordinator.items.some((item) => item.status === 'needs_attention');
+    const waiting = items.some((item) => item.status === 'waiting');
+    const needsAttention = items.some((item) => item.status === 'needs_attention');
     const needsAction = waiting || needsAttention;
     const title = root.querySelector('#upload-summary-title');
     const message = root.querySelector('[data-summary-message]');
     const percent = root.querySelector('[data-summary-percent]');
     const progress = root.querySelector('[data-upload-progress]');
-    root.dataset.state = globalError
-      ? 'partial'
-      : coordinator.active
-        ? 'active'
+    root.dataset.state = coordinator.active
+      ? 'active'
+      : globalError
+        ? 'partial'
         : terminal && summary.failed
           ? 'partial'
           : terminal
@@ -384,10 +391,10 @@
               ? 'partial'
               : 'empty';
     if (title) {
-      title.textContent = globalError
-        ? 'Загрузка остановлена'
-        : coordinator.active
-          ? 'Идёт загрузка'
+      title.textContent = coordinator.active
+        ? 'Идёт загрузка'
+        : globalError
+          ? 'Загрузка остановлена'
           : terminal && summary.failed
             ? 'Загружено частично'
             : terminal
@@ -434,7 +441,7 @@
       if (node) node.textContent = String(value);
     }
 
-    renderQueue(root, coordinator);
+    renderQueue(root, coordinator, items);
   }
 
   function folderFromTarget(target) {
@@ -517,7 +524,18 @@
       registrationChunk: Number(root.dataset.registrationChunk),
       concurrency: Number(root.dataset.concurrency),
     };
-    const coordinator = new UploadCoordinator({
+    const batches = [];
+    let pendingOperations = 0;
+    let operations = Promise.resolve();
+    const coordinator = {
+      get items() { return batches.flatMap((batch) => batch.items); },
+      get active() { return pendingOperations > 0; },
+      shouldWarnBeforeUnload() {
+        return batches.some((batch) => batch.shouldWarnBeforeUnload());
+      },
+    };
+    const render = () => renderPage(root, coordinator, globalError);
+    const makeBatch = () => new UploadCoordinator({
       config,
       fetch: dependencies.fetch || globalScope.fetch.bind(globalScope),
       XMLHttpRequest: dependencies.XMLHttpRequest || globalScope.XMLHttpRequest,
@@ -526,67 +544,98 @@
       AbortController: dependencies.AbortController || globalScope.AbortController,
       setTimeout: dependencies.setTimeout || globalScope.setTimeout.bind(globalScope),
       clearTimeout: dependencies.clearTimeout || globalScope.clearTimeout.bind(globalScope),
-      onChange: () => {
-        renderPage(root, coordinator, globalError);
-        notifyActivity(coordinator);
+      onChange: (batch) => {
+        if (!batches.includes(batch)) return;
+        if (batch.batchId) {
+          const previous = batches.findIndex((other) => other !== batch && other.batchId === batch.batchId);
+          if (previous !== -1) batches.splice(previous, 1);
+        }
+        notifyActivity(batch);
+        render();
       },
     });
-    const resumeInput = root.querySelector('#resume-upload-files');
-    const startUpload = root.querySelector('[data-start-upload]');
-    let resumeManifest = null;
-    const stage = (files, folder) => {
-      globalError = '';
-      try {
-        coordinator.stage(files, folder);
-        if (startUpload) startUpload.disabled = !coordinator.items.length;
-      } catch (error) {
-        globalError = error instanceof SelectionError ? error.message : 'Не удалось продолжить загрузку. Повторите попытку.';
-        renderPage(root, coordinator, globalError);
-      }
+
+    const enqueue = (batch, run, onError) => {
+      pendingOperations += 1;
+      render();
+      operations = operations.then(async () => {
+        globalError = '';
+        try {
+          await run();
+        } catch (error) {
+          onError(error);
+        } finally {
+          pendingOperations -= 1;
+          batch.active = false;
+          notifyActivity(batch);
+          render();
+        }
+      });
+      return operations;
     };
-    bindFolderTargets(root, stage);
-    startUpload?.addEventListener('click', async () => {
-      if (startUpload.disabled) return;
-      startUpload.disabled = true;
-      globalError = '';
+    const reportBatchError = (batch, error) => {
+      const message = uploadErrorMessage(error);
+      for (const item of batch.items) {
+        if (['pending', 'registered', 'retry_pending', 'uploading'].includes(item.status)) {
+          item.status = batch.batchId ? 'needs_attention' : 'failed';
+          item.error = message;
+        }
+      }
+      if (batch.items.every((item) => item.status === 'uploaded')) globalError = message;
+    };
+    const start = (batch) => enqueue(batch, () => batch.start(eventId), (error) => reportBatchError(batch, error));
+
+    bindFolderTargets(root, (files, folder) => {
+      const batch = makeBatch();
       try {
-        await coordinator.start(eventId);
+        batch.stage(files, folder);
       } catch (error) {
         globalError = uploadErrorMessage(error);
-        coordinator.active = false;
-        notifyActivity(coordinator);
-        if (!coordinator.batchId) startUpload.disabled = false;
-        renderPage(root, coordinator, globalError);
+        render();
+        return;
       }
-    });
-    resumeInput?.addEventListener('change', async () => {
-      if (!resumeManifest || !resumeInput.files.length) return;
       globalError = '';
-      try {
-        await coordinator.resume(resumeInput.files, resumeManifest);
-      } catch (error) {
-        globalError = error instanceof SelectionError ? error.message : 'Не удалось продолжить загрузку. Повторите попытку.';
-        coordinator.active = false;
-        notifyActivity(coordinator);
-        renderPage(root, coordinator, globalError);
-      }
+      batches.push(batch);
+      start(batch);
+    });
+
+    const resumeInput = root.querySelector('#resume-upload-files');
+    let resumeManifest = null;
+    resumeInput?.addEventListener('change', () => {
+      if (!resumeManifest || !resumeInput.files.length) return;
+      const files = Array.from(resumeInput.files);
+      const manifest = resumeManifest;
+      resumeManifest = null;
+      const batch = makeBatch();
+      batches.push(batch);
+      return enqueue(batch, () => batch.resume(files, manifest), (error) => {
+        if (!batch.items.length) batches.splice(batches.indexOf(batch), 1);
+        reportBatchError(batch, error);
+      });
     });
     root.querySelector('[data-unfinished-uploads]')?.addEventListener('click', async (event) => {
       const resume = event.target.closest('[data-resume-batch]');
       if (!resume || coordinator.active) return;
       globalError = '';
       try {
-        if (coordinator.shouldWarnBeforeUnload() && !globalScope.confirm('Незавершённую очередь потребуется выбрать заново. Открыть другую загрузку?')) return;
-        const manifest = await coordinator.loadResumeManifest(resume.dataset.resumeBatchId);
+        const previous = batches.find((batch) => batch.batchId === resume.dataset.resumeBatchId);
+        if (previous?.shouldWarnBeforeUnload() &&
+          !globalScope.confirm('Незавершённую очередь потребуется выбрать заново. Продолжить загрузку?')) return;
+        const manifest = await makeBatch().loadResumeManifest(resume.dataset.resumeBatchId);
         if (Number(manifest.batch.event.id) !== eventId) throw new SelectionError('Другая загрузка.');
         resumeManifest = manifest;
         resumeInput.value = '';
         resumeInput.click();
       } catch (error) {
         globalError = 'Не удалось открыть незавершённую загрузку. Повторите попытку.';
-        renderPage(root, coordinator, globalError);
+        render();
       }
     });
+
+    const pendingRetries = new Set();
+    const batchForItem = (clientItemId) => batches.find(
+      (batch) => batch.items.some((item) => item.clientItemId === clientItemId),
+    );
     root.querySelector('[data-upload-queue]')?.addEventListener('click', async (event) => {
       const toggle = event.target.closest('[data-queue-group-toggle]');
       const previousPage = event.target.closest('[data-queue-previous-page]');
@@ -597,18 +646,36 @@
         const presentation = queuePresentation(coordinator);
         const key = toggle.dataset.queueGroupToggle;
         presentation.expanded[key] = !presentation.expanded[key];
-        renderPage(root, coordinator, globalError);
+        render();
       } else if (previousPage || nextPage) {
         const control = previousPage || nextPage;
         const presentation = queuePresentation(coordinator);
         const delta = nextPage ? QUEUE_PAGE_SIZE : -QUEUE_PAGE_SIZE;
         const key = control.dataset.queuePageGroup;
         presentation.offsets[key] = Math.max(0, (presentation.offsets[key] || 0) + delta);
-        renderPage(root, coordinator, globalError);
+        render();
       } else if (retry) {
-        await coordinator.manualRetry(retry.dataset.clientItemId);
+        const clientItemId = retry.dataset.clientItemId;
+        const batch = batchForItem(clientItemId);
+        if (!batch) return;
+        if (batch.batchId) {
+          if (pendingRetries.has(clientItemId)) return;
+          pendingRetries.add(clientItemId);
+          try {
+            await enqueue(batch, () => batch.manualRetry(clientItemId), (error) => reportBatchError(batch, error));
+          } finally {
+            pendingRetries.delete(clientItemId);
+          }
+        } else if (batch.items.every((item) => item.status === 'failed')) {
+          for (const item of batch.items) {
+            item.status = 'pending';
+            item.error = '';
+          }
+          await start(batch);
+        }
       } else if (cancel) {
-        coordinator.cancel(cancel.dataset.clientItemId);
+        const clientItemId = cancel.dataset.clientItemId;
+        batchForItem(clientItemId)?.cancel(clientItemId);
       }
     });
     globalScope.addEventListener?.('beforeunload', (event) => {
@@ -716,7 +783,7 @@
         this.onChange(this);
       }
       this.registeredAll = true;
-      await Promise.all(
+      await waitForTransfers(
         this.items.map((item) => this.enqueueTransfer(item, null, item.cycleToken)),
       );
       await this.finalizeIfReady();
@@ -797,7 +864,7 @@
       }
       this.active = true;
       this.onChange(this);
-      await Promise.all(this.items.flatMap((item) => {
+      await waitForTransfers(this.items.flatMap((item) => {
         if (item.status === 'registered') {
           return [this.enqueueTransfer(item, null, item.cycleToken)];
         }

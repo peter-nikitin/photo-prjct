@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 
 
 @require_POST
-def submit_gallery_face(request, event_slug: str, photo_id: str, detection_id):  # noqa: ARG001
+def submit_gallery_search(request, event_slug: str, photo_id: str, detection_id=None):
     event = get_object_or_404(Event.objects.site_visible_to(request.user), slug=event_slug)
     paid_watermarked_previews_enabled = _paid_watermarked_previews_enabled(request)
     photo = get_object_or_404(

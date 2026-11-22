@@ -17,6 +17,7 @@ from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET
 from feature_flags import services as feature_flag_services
 from feature_flags.registry import (
+    APPAREL_SEARCH_EXPANSION,
     EVENT_COVER_CDN_IMAGES,
     GALLERY_CDN_IMAGES,
     PAID_WATERMARKED_PREVIEWS,
@@ -51,6 +52,7 @@ from picflow.models import Event, EventFolder, Photo
 from prometheus_client import CONTENT_TYPE_LATEST
 from search_feedback.models import SearchFeedback
 from selfie_search.forms import SelfieSearchUploadForm
+from selfie_search.services.apparel_expansion import gallery_apparel_sources
 from selfie_search.services.submission import gallery_search_faces_by_photo
 
 from config.metrics import generate_metrics
@@ -110,6 +112,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
         selfie_search_form = SelfieSearchUploadForm()
     selfie_feedback_enabled = bool(settings.SELFIE_FEEDBACK_ENABLED)
     gallery_photos: tuple[GalleryPhoto, ...] = ()
+    gallery_apparel_search_ids: set[str] = set()
     gallery_page_data = None
     bib_search_form = None
     bib_search_invalid = False
@@ -217,6 +220,18 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
                 paid_watermarked_previews_enabled=paid_watermarked_previews_enabled,
             )
 
+            if feature_flag_services.is_enabled(APPAREL_SEARCH_EXPANSION, request.user):
+                gallery_apparel_search_ids = set(
+                    gallery_apparel_sources(
+                        event,
+                        photo_ids=[
+                            photo.pk
+                            for photo in gallery_page_photos
+                            if photo.pk not in faces_by_photo
+                        ],
+                    )
+                )
+
             def faces(photo: Photo):
                 return tuple(
                     replace(
@@ -279,6 +294,7 @@ def event_detail(request, slug: str, *, selfie_search_form=None):
             "bib_search_form": bib_search_form,
             "bib_search_invalid": bib_search_invalid,
             "gallery_photos": gallery_photos,
+            "gallery_apparel_search_ids": gallery_apparel_search_ids,
             "gallery_page": gallery_page_data,
             "manual_time_filter_form": manual_time_filter_form,
             "manual_time_filter_invalid": manual_time_filter_invalid,

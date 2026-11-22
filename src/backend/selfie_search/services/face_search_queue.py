@@ -24,6 +24,7 @@ from selfie_search.observability import emit_selfie_observability_failure
 from selfie_search.services import apparel_telemetry
 from selfie_search.services.anchor_expansion import append_anchor_matches, find_anchor_matches
 from selfie_search.services.apparel_expansion import (
+    ApparelAnchorVerification,
     ContinuationApparelChecks,
     check_continuation_apparel,
     expand_apparel,
@@ -54,7 +55,13 @@ from selfie_search.services.jobs import (
 from selfie_search.services.negative_feedback import refresh_negative_feedback
 from selfie_search.services.ranking import AnchorMatch, RankingError, _configuration
 from selfie_search.services.read_selection import rank_selected_direct, report_direct_ranking
-from selfie_search.services.submission import CONTINUATION_PAID_PREVIEWS_KEY, _configuration_hash
+from selfie_search.services.submission import (
+    CONTINUATION_PAID_PREVIEWS_KEY,
+    GALLERY_APPAREL_SOURCE,
+    GallerySearchUnavailable,
+    _configuration_hash,
+    verify_gallery_apparel_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +185,13 @@ def process_face_search(task: FaceSearchTask) -> None:
     query = Subquery(FaceSearchTask.objects.filter(pk=task.pk).values("vector"))
     is_continuation = search.parent_search_id is not None
     automatic = is_continuation and is_automatic_continuation(search)
-    apparel_only = is_apparel_continuation(search)
+    source = search.configuration.get("query_source")
+    gallery_apparel = (
+        not is_continuation
+        and isinstance(source, dict)
+        and source.get("kind") == GALLERY_APPAREL_SOURCE
+    )
+    apparel_only = gallery_apparel or is_apparel_continuation(search)
     previous = previous_matches(search) if is_continuation else None
     gallery_seed = original_gallery_seed(search) if is_continuation else None
 
@@ -199,7 +212,10 @@ def process_face_search(task: FaceSearchTask) -> None:
         APPAREL_SEARCH_EXPANSION, staff_eligible=staff_eligible
     )
     if apparel_only and not apparel_enabled:
-        _fail(task, code="continuation_unavailable")
+        _fail(
+            task,
+            code="apparel_search_unavailable" if gallery_apparel else "continuation_unavailable",
+        )
         return
     with transaction.atomic():
         timeout_ms = RANKING_TIMEOUT_MS
@@ -300,7 +316,11 @@ def process_face_search(task: FaceSearchTask) -> None:
                     started=verification_started,
                 ) as timing:
                     _set_statement_timeout(remaining_apparel_ms)
-                    if ranking is None:
+                    if gallery_apparel:
+                        verification = ApparelAnchorVerification.for_person(
+                            *verify_gallery_apparel_source(search)
+                        )
+                    elif ranking is None:
                         verification = verify_apparel_continuation(search)
                     else:
                         verification = verify_apparel_anchors(
@@ -321,6 +341,9 @@ def process_face_search(task: FaceSearchTask) -> None:
                             )
                         ):
                             raise ValueError("continuation appearance anchors changed")
+            except GallerySearchUnavailable:
+                _fail(task, code="apparel_search_unavailable")
+                return
             except ContinuationUnavailable:
                 _fail(task, code="continuation_unavailable")
                 return

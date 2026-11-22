@@ -303,12 +303,14 @@ async function installUploadStubs(
   page,
   {
     authorizeDelay = 0,
+    holdFirstTransfer = null,
     confirmFailureStatus = null,
     retryFailureStatus = null,
     storageStatuses = [204],
     storageDelay = 0,
   } = {},
 ) {
+  let batchSequence = 0;
   let itemSequence = 0;
   let activeTransfers = 0;
   let maxActiveTransfers = 0;
@@ -340,9 +342,9 @@ async function installUploadStubs(
     const body = request.postDataJSON();
     controlCalls.push({ path: url.pathname, body });
     if (url.pathname.endsWith('/batches/')) {
-      return route.fulfill({ json: { batch: { id: 'batch-1' } } });
+      return route.fulfill({ json: { batch: { id: `batch-${++batchSequence}` } } });
     }
-    if (url.pathname === '/photographer/uploads/batch-1/items/') {
+    if (/^\/photographer\/uploads\/batch-\d+\/items\/$/.test(url.pathname)) {
       return route.fulfill({
         json: {
           items: body.items.map((item) => ({
@@ -384,14 +386,16 @@ async function installUploadStubs(
       return route.fulfill({ json: { item: { id: item, status: 'failed' } } });
     }
     if (url.pathname.endsWith('/finalize/')) {
-      return route.fulfill({ json: { batch: { id: 'batch-1', status: 'complete' } } });
+      return route.fulfill({ json: { batch: { id: url.pathname.split('/')[3], status: 'complete' } } });
     }
     return route.abort();
   });
   await page.route('http://storage.test/**', async (route) => {
     storageCalls.push(new URL(route.request().url()).pathname);
+    const firstTransfer = storageCalls.length === 1;
     activeTransfers += 1;
     maxActiveTransfers = Math.max(maxActiveTransfers, activeTransfers);
+    if (firstTransfer && holdFirstTransfer) await holdFirstTransfer;
     if (storageDelay) {
       await new Promise((resolve) => setTimeout(resolve, storageDelay));
     }
@@ -410,7 +414,6 @@ async function selectUnfiledUploadFiles(page, files) {
   await page
     .locator('[data-folder-targets]:not([hidden]) [data-folder-target][data-folder-id=""] [data-folder-target-input]')
     .setInputFiles(files);
-  await page.locator('[data-start-upload]').click();
 }
 
 function workspaceStatus({
@@ -603,6 +606,40 @@ test('zero-photo import progress wakes management when the first photo appears w
     warns: document.querySelector('[data-upload-root]').uploadCoordinator.shouldWarnBeforeUnload(),
   }))).toEqual({ localActive: false, warns: false });
 });
+
+for (const action of ['hide', 'show', 'move']) {
+  test(`photo ${action} posts to the form URL despite controls named action`, async ({ page }) => {
+    await page.goto('/__visual__/workspace/photos/');
+    const form = page.locator('[data-photo-action-form]');
+    const checkbox = page.locator('[data-photo-select]').first();
+    const photoId = await checkbox.inputValue();
+    const fragment = await page.locator('[data-event-photo-fragment]').evaluate((node) => node.outerHTML);
+    let submitted = null;
+    await page.route('**/*', async (route) => {
+      const request = route.request();
+      if (request.method() === 'POST') {
+        submitted = { url: request.url(), body: request.postData() };
+        await route.fulfill({ json: { changed_count: 1 } });
+      } else if (new URL(request.url()).pathname === '/manage/events/42/photos/results/') {
+        await route.fulfill({
+          contentType: 'text/html',
+          headers: { 'X-Event-Photo-Canonical-Url': '/manage/events/42/photos/' },
+          body: fragment,
+        });
+      } else {
+        await route.continue();
+      }
+    });
+    await checkbox.check();
+    await form.locator(`button[value="${action}"]`).click();
+    await expect.poll(() => submitted).not.toBeNull();
+    expect(new URL(submitted.url).pathname).toBe('/manage/events/42/photos/actions/');
+    expect(submitted.body).toContain(`name="action"\r\n\r\n${action}`);
+    expect(submitted.body).toContain(`name="photo_id"\r\n\r\n${photoId}`);
+    await expect(page.locator('[data-selection-summary]')).toHaveText('Ничего не выбрано');
+    await expect(page.locator('[data-photo-select]').first()).not.toBeChecked();
+  });
+}
 
 test('status list refresh preserves canonical selection, filter focus, scroll, and upload state', async ({ page }) => {
   let resultRequests = 0;
@@ -823,25 +860,18 @@ test('admin explicit selection survives canonical numbered pages', async ({ page
 });
 
 test('two-author filtering and folder creation preserve an active upload queue', async ({ page }) => {
+  let releaseTransfer;
+  const holdFirstTransfer = new Promise((resolve) => { releaseTransfer = resolve; });
+  const stubs = await installUploadStubs(page, { holdFirstTransfer });
   await page.goto('/__visual__/workspace/interaction/');
+  await selectUnfiledUploadFiles(page, {
+    name: 'active.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('active'),
+  });
+  await expect.poll(() => stubs.storageCalls.length).toBe(1);
   await page.evaluate(() => {
     const root = document.querySelector('[data-upload-root]');
-    const coordinator = root.uploadCoordinator;
-    coordinator.active = true;
-    coordinator.items = [
-      {
-        clientItemId: 'active-queue-item',
-        file: { name: 'active.jpg', size: 10 },
-        folderId: 8,
-        folderLabel: 'Финиш',
-        status: 'uploading',
-        progress: 42,
-        error: '',
-      },
-    ];
-    window.FindMeUpload.renderPage(root, coordinator);
     window.__task6UploadRoot = root;
-    window.__task6UploadCoordinator = coordinator;
+    window.__task6UploadCoordinator = root.uploadCoordinator;
     window.__task6Queue = root.querySelector('[data-upload-queue]');
   });
 
@@ -862,6 +892,8 @@ test('two-author filtering and folder creation preserve an active upload queue',
       && root.querySelector('[data-upload-queue]') === window.__task6Queue
       && root.uploadCoordinator.active;
   })).toBe(true);
+  releaseTransfer();
+  await expect(page.locator('[data-uploaded-count]')).toHaveText('1');
 });
 
 test.describe('desktop visual regression', () => {
@@ -2487,12 +2519,60 @@ test('browser coordinator completes a successful upload and announces progress',
   expect(stubs.pageErrors).toEqual([]);
 });
 
+test('file selections upload automatically during and after an existing batch', async ({ page }) => {
+  let releaseTransfer;
+  const holdFirstTransfer = new Promise((resolve) => { releaseTransfer = resolve; });
+  const stubs = await installUploadStubs(page, { holdFirstTransfer });
+  await page.goto('/__visual__/upload/empty/');
+  await expect(page.getByRole('button', { name: 'Начать загрузку' })).toHaveCount(0);
+  const jpeg = (name) => ({ name, mimeType: 'image/jpeg', buffer: Buffer.from(name) });
+  const uploaded = page.locator('[data-uploaded-count]');
+  const batchCreates = () => stubs.controlCalls.filter(({ path }) => path.endsWith('/batches/'));
+
+  await selectUnfiledUploadFiles(page, jpeg('first.jpg'));
+  await expect.poll(() => stubs.storageCalls.length).toBe(1);
+  try {
+    await page.locator(
+      '[data-folder-targets]:not([hidden]) [data-folder-target][data-folder-name="Финиш"] [data-folder-target-input]',
+    ).setInputFiles(jpeg('second.jpg'));
+    await expect(page.locator('[data-total-count]')).toHaveText('2');
+    await expect(uploaded).toHaveText('0');
+    expect(batchCreates()).toHaveLength(1);
+  } finally {
+    releaseTransfer();
+  }
+
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+  await expect(uploaded).toHaveText('2');
+  await selectUnfiledUploadFiles(page, jpeg('third.jpg'));
+  await expect(uploaded).toHaveText('3');
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
+
+  expect(batchCreates().map(({ body }) => body)).toEqual(
+    Array.from({ length: 3 }, () => ({ event_id: 42, expected_item_count: 1 })),
+  );
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/items/')).map(({ path, body }) => ({
+    path,
+    files: body.items.map(({ filename, folder_id }) => [filename, folder_id]),
+  }))).toEqual([
+    { path: '/photographer/uploads/batch-1/items/', files: [['first.jpg', null]] },
+    { path: '/photographer/uploads/batch-2/items/', files: [['second.jpg', 8]] },
+    { path: '/photographer/uploads/batch-3/items/', files: [['third.jpg', null]] },
+  ]);
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/finalize/')).map(({ path }) => path)).toEqual([
+    '/photographer/uploads/batch-1/finalize/',
+    '/photographer/uploads/batch-2/finalize/',
+    '/photographer/uploads/batch-3/finalize/',
+  ]);
+  expect(stubs.pageErrors).toEqual([]);
+});
+
 test('upload queue prioritizes groups, discloses them from the keyboard, and pages ten thousand files', async ({ page }) => {
   await page.goto('/__visual__/upload/empty/');
   await page.evaluate(() => {
     const root = document.querySelector('[data-upload-root]');
     const coordinator = root.uploadCoordinator;
-    coordinator.items = [
+    const items = [
       {
         clientItemId: 'failed', file: { name: 'failed.jpg', size: 10 }, status: 'failed', progress: 50,
         error: 'Файл требует повторной отправки.',
@@ -2510,6 +2590,7 @@ test('upload queue prioritizes groups, discloses them from the keyboard, and pag
         status: 'uploaded', progress: 100, error: '',
       })),
     ];
+    Object.defineProperty(coordinator, 'items', { value: items });
     window.FindMeUpload.renderPage(root, coordinator);
   });
 
@@ -2611,13 +2692,11 @@ test('incomplete resumed selections tell the photographer what action is needed'
   await page.goto('/__visual__/upload/empty/');
   await page.evaluate(() => {
     const root = document.querySelector('[data-upload-root]');
-    const coordinator = root.uploadCoordinator;
-    coordinator.active = false;
-    coordinator.items = [
+    const items = [
       { clientItemId: 'waiting', file: { name: 'missing.jpg', size: 4 }, status: 'waiting', progress: 0 },
       { clientItemId: 'attention', file: { name: 'extra.jpg', size: 4 }, status: 'needs_attention', progress: 0 },
     ];
-    window.FindMeUpload.renderPage(root, coordinator);
+    window.FindMeUpload.renderPage(root, { active: false, items });
   });
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Требуется действие');
@@ -2652,7 +2731,6 @@ test('browser coordinator accepts a dropped JPEG when the browser omits its MIME
       new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }),
     );
   });
-  await page.locator('[data-start-upload]').click();
 
   await expect(page.locator('#upload-summary-title')).toHaveText('Загрузка завершена');
   const registration = stubs.controlCalls.find(({ path }) => path.endsWith('/items/'));

@@ -29,31 +29,45 @@ catalog = _load("monitoring_queue_catalog", HERE.parents[2] / "src/backend/confi
 CONFIG = {key: control.load_config()[key] for key in ("folder_id", "workspace_id", "dashboard_id")}
 
 
-def dashboard() -> dict:
-    content = (HERE / "single-vm-dashboard.json").read_text()
-    result = json.loads(content.replace("{{workspace_id}}", CONFIG["workspace_id"]))
-    widgets = queue_panels.panels(catalog.QUEUES, CONFIG["workspace_id"])
-    offset = sum(int(w["position"]["h"]) for w in widgets)
-    for widget in result["widgets"]:
-        widget["position"]["y"] = str(int(widget["position"].get("y", 0)) + offset)
-    result["widgets"] = widgets + result["widgets"]
-    return result
+layout = _load("monitoring_dashboard_layout", HERE / "dashboard_layout.py")
+
+
+def dashboards() -> dict[str, dict]:
+    return layout.render(CONFIG, catalog.QUEUES, queue_panels.panels)
 
 
 def reconcile(transport, backup: Path) -> None:
-    desired = dashboard()
-    current = transport.dashboard_get(CONFIG["dashboard_id"])
-    request = control.dashboard_request(current, desired, CONFIG)
-    if all(current.get(key) == value for key, value in desired.items()):
-        return
-    backup.mkdir(mode=0o700, parents=True, exist_ok=False)
-    (backup / "dashboard.json").write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n")
-    transport.dashboard_update(request)
-    readback = transport.dashboard_get(CONFIG["dashboard_id"])
-    if readback.get("folderId") != CONFIG["folder_id"] or any(
-        readback.get(key) != value for key, value in desired.items()
-    ):
-        raise control.ControlError("dashboard read-back mismatch; inspect backup")
+    desired = dashboards()
+    child_names = {value["name"] for key, value in desired.items() if key != "overview"}
+    existing = {
+        item["name"]: item["id"]
+        for item in transport.dashboard_list()
+        if item.get("name") in child_names
+    }
+    # Publish destinations first; the existing landing page is replaced last.
+    for key in (*[key for key in desired if key != "overview"], "overview"):
+        content = desired[key]
+        dashboard_id = (
+            CONFIG["dashboard_id"] if key == "overview" else existing.get(content["name"])
+        )
+        if dashboard_id:
+            current = transport.dashboard_get(dashboard_id)
+            config = {**CONFIG, "dashboard_id": dashboard_id}
+            request = control.dashboard_request(current, content, config)
+            if all(current.get(field) == value for field, value in content.items()):
+                continue
+            backup.mkdir(mode=0o700, parents=True, exist_ok=True)
+            (backup / f"{key}.json").write_text(
+                json.dumps(current, ensure_ascii=False, indent=2) + "\n"
+            )
+            transport.dashboard_update(request)
+        else:
+            dashboard_id = transport.dashboard_create({"folderId": CONFIG["folder_id"], **content})
+        readback = transport.dashboard_get(dashboard_id)
+        if readback.get("folderId") != CONFIG["folder_id"] or any(
+            readback.get(field) != value for field, value in content.items()
+        ):
+            raise control.ControlError("dashboard read-back mismatch; inspect backup")
 
 
 def main() -> int:
@@ -68,47 +82,47 @@ def main() -> int:
             from google.protobuf.json_format import MessageToDict, ParseDict
             from yandex.cloud.monitoring.v3.dashboard_service_pb2 import UpdateDashboardRequest
 
-            desired = dashboard()
-            control._validate_dashboard({"dashboard.json": json.dumps(desired)}, CONFIG)
-            parsed = ParseDict(
-                {"dashboardId": CONFIG["dashboard_id"], **desired}, UpdateDashboardRequest()
-            )
-            canonical = MessageToDict(parsed)
-            if any(canonical.get(key) != value for key, value in desired.items()):
-                raise control.ControlError("dashboard must use canonical SDK representation")
-            if args.promtool:
-                import yaml
+            for key, desired in dashboards().items():
+                control._validate_dashboard({"dashboard.json": json.dumps(desired)}, CONFIG)
+                parsed = ParseDict(
+                    {"dashboardId": CONFIG["dashboard_id"], **desired}, UpdateDashboardRequest()
+                )
+                canonical = MessageToDict(parsed)
+                if any(canonical.get(key) != value for key, value in desired.items()):
+                    raise control.ControlError("dashboard must use canonical SDK representation")
+                if args.promtool:
+                    import yaml
 
-                charts = control._dashboard_charts(desired)
-                defaults = control.dashboard_parameter_defaults(desired)
-                rules = [
-                    {
-                        "record": f"findme_dashboard_query_{i}_{j}",
-                        "expr": control.dashboard_validation_query(
-                            target["prometheusTarget"]["query"], defaults
-                        ),
-                    }
-                    for i, chart in enumerate(charts)
-                    for j, target in enumerate(chart["targets"])
-                    if "prometheusTarget" in target
-                ]
-                for parameter in desired.get("parametrization", {}).get("parameters", []):
-                    matches = parameter.get("query", {}).get("prometheus", {}).get("match", [])
-                    for i, match in enumerate(matches):
-                        rules.append(
-                            {
-                                "record": f"findme_dashboard_parameter_{parameter['name']}_{i}",
-                                "expr": match,
-                            }
+                    charts = control._dashboard_charts(desired)
+                    defaults = control.dashboard_parameter_defaults(desired)
+                    rules = [
+                        {
+                            "record": f"findme_dashboard_query_{key}_{i}_{j}",
+                            "expr": control.dashboard_validation_query(
+                                target["prometheusTarget"]["query"], defaults
+                            ),
+                        }
+                        for i, chart in enumerate(charts)
+                        for j, target in enumerate(chart["targets"])
+                        if "prometheusTarget" in target
+                    ]
+                    for parameter in desired.get("parametrization", {}).get("parameters", []):
+                        matches = parameter.get("query", {}).get("prometheus", {}).get("match", [])
+                        for i, match in enumerate(matches):
+                            rules.append(
+                                {
+                                    "record": f"findme_dashboard_parameter_{parameter['name']}_{i}",
+                                    "expr": match,
+                                }
+                            )
+                    with tempfile.TemporaryDirectory(
+                        prefix=".monitoring-queries-", dir=Path.cwd()
+                    ) as directory:
+                        path = Path(directory) / "queries.yml"
+                        path.write_text(
+                            yaml.safe_dump({"groups": [{"name": "dashboard", "rules": rules}]})
                         )
-                with tempfile.TemporaryDirectory(
-                    prefix=".monitoring-queries-", dir=Path.cwd()
-                ) as directory:
-                    path = Path(directory) / "queries.yml"
-                    path.write_text(
-                        yaml.safe_dump({"groups": [{"name": "dashboard", "rules": rules}]})
-                    )
-                    subprocess.run([args.promtool, "check", "rules", str(path)], check=True)
+                        subprocess.run([args.promtool, "check", "rules", str(path)], check=True)
             return 0
         if args.backup is None or args.oidc_config is None:
             parser.error("--backup and --oidc-config are required for reconciliation")

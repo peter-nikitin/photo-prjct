@@ -180,6 +180,45 @@ class CloudTransport:
                 raise ControlError("Monitoring read failed") from None
         raise AssertionError("unreachable Monitoring read retry state")
 
+    def dashboard_list(self) -> list[dict[str, Any]]:
+        from google.protobuf.json_format import MessageToDict
+        from yandex.cloud.monitoring.v3.dashboard_service_pb2 import ListDashboardsRequest
+
+        result = []
+        token = ""
+        try:
+            while True:
+                response = self.dashboard.List(
+                    ListDashboardsRequest(
+                        folder_id=self.config["folder_id"], page_size=100, page_token=token
+                    ),
+                    timeout=30,
+                )
+                result.extend(MessageToDict(item) for item in response.dashboards)
+                token = response.next_page_token
+                if not token:
+                    return result
+        except Exception:
+            raise ControlError("DashboardService List failed") from None
+
+    def dashboard_create(self, request: dict[str, Any]) -> str:
+        from google.protobuf.json_format import ParseDict
+        from yandex.cloud.monitoring.v3.dashboard_pb2 import Dashboard
+        from yandex.cloud.monitoring.v3.dashboard_service_pb2 import CreateDashboardRequest
+
+        try:
+            operation = self.dashboard.Create(
+                ParseDict(request, CreateDashboardRequest()), timeout=30
+            )
+            if not operation.done or operation.HasField("error"):
+                raise ControlError("dashboard creation incomplete or failed")
+            created = Dashboard()
+            if not operation.response.Unpack(created) or not created.id:
+                raise ControlError("dashboard creation response missing identity")
+            return created.id
+        except Exception:
+            raise ControlError("DashboardService Create failed") from None
+
     def dashboard_get(self, dashboard_id: str) -> dict[str, Any]:
         from google.protobuf.json_format import MessageToDict
         from yandex.cloud.monitoring.v3.dashboard_service_pb2 import GetDashboardRequest

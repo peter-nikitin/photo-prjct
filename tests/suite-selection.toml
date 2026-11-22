@@ -80,6 +80,7 @@ suites = ["visual"]
 [[categories]]
 name = "product-flow"
 patterns = [
+  "src/agent_client/tests/test_upload_flow.py",
   "tests/processing/test_pipeline_e2e.py",
   "src/backend/ingestion/tests/test_import_flow.py",
   "tests/processing/test_selfie_search_e2e.py",

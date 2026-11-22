@@ -106,7 +106,16 @@ can submit it for processing.
   Yandex Disk import retains its server-owned lifecycle.
   This is local automated evidence only; CI, canonical deployment, and customer validation are not
   recorded.
-- Last updated: 2026-09-07
+- Last updated: 2026-11-22
+
+Локальные инструменты агента добавляют путь загрузки в существующее мероприятие без
+открытой браузерной страницы: персональный токен существующей учётки, stdio MCP для чтения
+назначения и состояния, CLI с независимым процессом, остановкой и возобновлением.
+Первый выпуск ограничен активными администраторами и сохраняет текущие permissions и
+владение пакетами. Передача оригиналов и последующая обработка показываются раздельно.
+Установка и команды: [загрузка агентом](runbooks/agent-photo-upload.md).
+Это возможность кода репозитория; выпуск в production и реальная загрузка фотографом
+в рамках этой задачи не подтверждены.
 
 ### PJ-005 — Visitor — Browse an event gallery
 

@@ -57,6 +57,9 @@ function form(selector, formEntries = []) {
   const errors = { textContent: '' };
   return {
     action: '/manage/events/42/photos/actions/',
+    getAttribute(name) {
+      return name === 'action' ? this.action : null;
+    },
     formEntries,
     matches(requested) {
       return selectorMatches(selector, requested);

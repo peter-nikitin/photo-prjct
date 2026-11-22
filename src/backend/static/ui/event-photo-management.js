@@ -390,7 +390,7 @@
           data.append(name, value);
         }
       }
-      const response = await this.request(form.action, { method: 'POST', body: data });
+      const response = await this.request(form.getAttribute('action'), { method: 'POST', body: data });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
         this.showFormError(form, errorText(result));

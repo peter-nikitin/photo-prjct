@@ -47,7 +47,7 @@ class UploadTemplateTests(TestCase):
         self.assertContains(response, 'accept="image/jpeg,.jpg,.jpeg"')
         self.assertContains(response, "multiple")
         self.assertContains(response, "data-folder-target")
-        self.assertContains(response, "data-start-upload")
+        self.assertNotContains(response, "Начать загрузку")
         self.assertContains(response, "<progress", html=False)
         self.assertContains(response, 'aria-live="polite"')
         self.assertContains(response, "data-upload-queue")

@@ -163,7 +163,7 @@ def test_fresh_preflight_rejects_future_observation_value():
                     (
                         now - 60,
                         now + 10
-                        if selector["__name__"] == "findme_queue_observed_timestamp_seconds"
+                        if selector["__name__"] == "findme_queue_due_observed_timestamp_seconds"
                         else now - 60,
                     )
                 ]
@@ -172,7 +172,7 @@ def test_fresh_preflight_rejects_future_observation_value():
         ]
 
     transport.read_samples = samples
-    with pytest.raises(module.MissingSource, match="findme_queue_observed"):
+    with pytest.raises(module.MissingSource, match="findme_queue_due_observed"):
         module.check_sources(transport, now=1000)
 
 
@@ -191,7 +191,7 @@ def test_missing_gallery_search_observation_blocks_publication(tmp_path, monkeyp
     transport = Transport(b"old rules")
     read_samples = transport.read_samples
     missing_selector = {
-        "__name__": "findme_queue_observed_timestamp_seconds",
+        "__name__": "findme_queue_due_observed_timestamp_seconds",
         "queue": "gallery-search",
         "instance": "findme-photo-app",
     }

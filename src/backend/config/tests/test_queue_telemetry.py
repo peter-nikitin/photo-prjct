@@ -6,7 +6,7 @@ from prometheus_client import CollectorRegistry, generate_latest
 from prometheus_client.parser import text_string_to_metric_families
 
 
-def event(queue="another_queue", segments=None, **overrides):
+def event(queue="gallery_search", segments=None, **overrides):
     return json.dumps(
         {
             "event": "queue.task.completed",
@@ -26,7 +26,7 @@ def samples(registry):
     }
 
 
-def test_learns_new_queue_and_preserves_first_segment_set():
+def test_journey_preserves_first_accepted_segment_set():
     from config.queue_telemetry import QueueTelemetry
 
     telemetry = QueueTelemetry()
@@ -37,16 +37,19 @@ def test_learns_new_queue_and_preserves_first_segment_set():
     telemetry.record(event(segments={"work": 1000}))
     telemetry.record(event(segments={"wait": 1000, "work": 1000, "extra": 1000}))
 
-    assert samples(registry) == {
-        ("findme_queue_telemetry_listening", ()): 0,
-        ("findme_queue_completed_total", (("queue", "another_queue"),)): 2,
+    assert {
+        key: value
+        for key, value in samples(registry).items()
+        if key[0].startswith("findme_journey_")
+    } == {
+        ("findme_journey_completed_total", (("queue", "gallery_search"),)): 2,
         (
-            "findme_queue_segment_duration_seconds_total",
-            (("queue", "another_queue"), ("segment", "wait")),
+            "findme_journey_segment_duration_seconds_total",
+            (("queue", "gallery_search"), ("segment", "wait")),
         ): 2,
         (
-            "findme_queue_segment_duration_seconds_total",
-            (("queue", "another_queue"), ("segment", "work")),
+            "findme_journey_segment_duration_seconds_total",
+            (("queue", "gallery_search"), ("segment", "work")),
         ): 5,
     }
 
@@ -85,27 +88,17 @@ def test_malformed_event_does_not_occupy_a_queue_or_change_metrics(payload):
     registry = CollectorRegistry()
     registry.register(telemetry)
     telemetry.record(payload)
-    assert samples(registry) == {("findme_queue_telemetry_listening", ()): 0}
+    assert not any(metric.startswith("findme_journey_") for metric, _ in samples(registry))
 
 
-def test_full_collector_keeps_counting_existing_queues():
+def test_unknown_journey_does_not_create_a_series():
     from config.queue_telemetry import QueueTelemetry
 
     telemetry = QueueTelemetry()
     registry = CollectorRegistry()
     registry.register(telemetry)
-    for index in range(33):
-        telemetry.record(event(queue=f"queue_{index}"))
-    telemetry.record(event(queue="queue_0"))
-
-    counts = {
-        dict(labels)["queue"]: value
-        for (metric, labels), value in samples(registry).items()
-        if metric == "findme_queue_completed_total"
-    }
-    assert len(counts) == 32
-    assert "queue_32" not in counts
-    assert counts["queue_0"] == 2
+    telemetry.record(event(queue="unknown"))
+    assert not any(metric.startswith("findme_journey_") for metric, _ in samples(registry))
 
 
 def test_scrape_uses_one_snapshot_for_count_and_timing_series():
@@ -130,11 +123,17 @@ def test_scrape_uses_one_snapshot_for_count_and_timing_series():
         for _ in range(100):
             count = wait = work = None
             for (metric, labels), value in samples(registry).items():
-                if metric == "findme_queue_completed_total":
+                if metric == "findme_journey_completed_total":
                     count = value
-                elif dict(labels).get("segment") == "wait":
+                elif (
+                    metric == "findme_journey_segment_duration_seconds_total"
+                    and dict(labels).get("segment") == "wait"
+                ):
                     wait = value
-                elif dict(labels).get("segment") == "work":
+                elif (
+                    metric == "findme_journey_segment_duration_seconds_total"
+                    and dict(labels).get("segment") == "work"
+                ):
                     work = value
             assert count is not None and wait == count and work == 2 * count
     finally:

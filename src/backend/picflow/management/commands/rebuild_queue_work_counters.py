@@ -7,9 +7,11 @@ from typing import Any
 from commerce.models import EmailDelivery, PaymentAttempt
 from config.queue_work import (
     ARCHIVE,
-    COMMERCE,
+    CATALOG_KEYS,
+    EMAIL,
     IMPORT,
     MATCHING_QUEUES,
+    PAYMENT,
     PHOTO,
     QUEUES,
     SELFIE_RECOGNITION,
@@ -18,7 +20,7 @@ from config.queue_work import (
 )
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, connection, transaction
-from django.db.models import Count, Model, QuerySet
+from django.db.models import Count, Model, Q, QuerySet
 from ingestion.models import ImportBatch
 from picflow.models import PhotoArchiveJob
 from processing.models import ProcessingJob, QueueWorkCounter
@@ -37,12 +39,27 @@ def _active_groups(rows: QuerySet[Model], *dimensions: str) -> Iterable[dict[str
 
 def _active_work() -> Totals:
     totals: Totals = {(queue, ""): Counter() for queue in QUEUES}
+    totals.update(
+        {
+            (PHOTO, key.removeprefix("photo_")): Counter()
+            for key in CATALOG_KEYS
+            if key.startswith("photo_") and key != ARCHIVE
+        }
+    )
     for row in _active_groups(
-        FaceSearchTask.objects.filter(status__in=("queued", "processing")), "source", "status"
+        FaceSearchTask.objects.filter(status__in=("queued", "processing")),
+        "source",
+        "status",
+        "attempt_count",
     ):
         queue = MATCHING_QUEUES.get(row["source"])
         if queue is not None:
-            totals[queue, ""][WORK_STATE[row["status"]]] += row["total"]
+            state = (
+                "retry_wait"
+                if row["status"] == "queued" and row["attempt_count"]
+                else WORK_STATE[row["status"]]
+            )
+            totals[queue, ""][state] += row["total"]
     for row in _active_groups(
         ProcessingJob.objects.filter(status__in=("queued", "processing", "retry_wait")),
         "status",
@@ -66,16 +83,26 @@ def _active_work() -> Totals:
             "status",
         ),
         (
-            COMMERCE,
+            EMAIL,
             EmailDelivery.objects.filter(state__in=("pending", "processing", "retry_wait")),
             "state",
         ),
-        # The pending predicate matches commerce_payment_attempt_one_pending_uniq.
-        (COMMERCE, PaymentAttempt.objects.filter(status="pending"), "reconciliation_state"),
         (ARCHIVE, PhotoArchiveJob.objects.filter(status__in=("queued", "running")), "status"),
     ):
         for row in _active_groups(rows, field):
             totals[queue, ""][WORK_STATE[row[field]]] += row["total"]
+    # Use the partial pending index and classify deferred checks from the first claim.
+    for row in _active_groups(
+        PaymentAttempt.objects.filter(
+            status="pending", reconciliation_next_attempt_at__isnull=False
+        ).annotate(ever_claimed=Q(queue_first_claimed_at__isnull=False)),
+        "reconciliation_state",
+        "ever_claimed",
+    ):
+        state = WORK_STATE[row["reconciliation_state"]]
+        if state == "waiting" and row["ever_claimed"]:
+            state = "retry_wait"
+        totals[PAYMENT, ""][state] += row["total"]
     return totals
 
 
@@ -99,7 +126,7 @@ def _replace_counters(totals: Totals) -> None:
                     processing=counts["processing"],
                     retry_wait=counts["retry_wait"],
                     paused=counts["paused"],
-                    initialized=not processor,
+                    initialized=True,
                 )
                 for (queue, processor), counts in sorted(totals.items())
             ],

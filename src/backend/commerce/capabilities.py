@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from config.queue_work import COMMERCE, schedule_transition
+from config.queue_work import EMAIL, schedule_transition
 from django.db import transaction
 from django.db.models import Max, QuerySet
 from django.utils import timezone
@@ -208,7 +208,7 @@ def revoke_order_access_grant(
                     "updated_at",
                 ]
             )
-            schedule_transition(COMMERCE, previous_state, delivery.state)
+            schedule_transition(EMAIL, previous_state, delivery.state)
     return locked_grant
 
 

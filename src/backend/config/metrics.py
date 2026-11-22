@@ -65,20 +65,6 @@ WHERE status = 'ready'
 GROUP BY 1
 """
 
-_GALLERY_SEARCH_SQL = """
-SELECT count(*) FROM selfie_search_facesearchtask
-WHERE source = 'gallery' AND status = 'queued'
-"""
-
-_SELFIE_SEARCH_SQL = """
-SELECT
-    (SELECT count(*) FROM selfie_search_selfiesearchjob
-        WHERE status IN ('queued', 'retry_wait')),
-    (SELECT count(*) FROM selfie_search_facesearchtask
-        WHERE source = 'selfie' AND status = 'queued')
-"""
-
-
 HTTP_REQUESTS = Counter(
     "findme_http_requests",
     "HTTP requests by route, method, and response status class.",
@@ -124,6 +110,12 @@ WEB_VITALS_TTFB = Histogram(
 )
 
 
+def collect_ready_samples() -> dict[str, tuple[int, float | None, float]]:
+    from config.queue_metrics import collect_ready_samples as collect
+
+    return collect()
+
+
 def collect_queue_samples() -> dict[str, tuple[int, float, float, float]]:
     # Metrics are imported by Gunicorn before Django has populated its app registry.
     from config.queue_metrics import collect_queue_samples as collect
@@ -150,8 +142,6 @@ def generate_metrics() -> bytes:
     activity = None
     vacuum = None
     wal_bytes = None
-    gallery = None
-    selfie = None
     face_search_p75 = []
     try:
         with psycopg.connect(
@@ -172,14 +162,6 @@ def generate_metrics() -> bytes:
                     wal_row = connection.execute(_DB_WAL_SQL).fetchone()
                     if wal_row is not None:
                         wal_bytes = wal_row[0]
-                except psycopg.Error:
-                    pass
-                try:
-                    gallery = connection.execute(_GALLERY_SEARCH_SQL).fetchone()
-                except psycopg.Error:
-                    pass
-                try:
-                    selfie = connection.execute(_SELFIE_SEARCH_SQL).fetchone()
                 except psycopg.Error:
                     pass
                 try:
@@ -244,24 +226,6 @@ def generate_metrics() -> bytes:
                 f"findme_db_wal_bytes_total {wal_bytes}",
             )
         )
-    if gallery is not None:
-        lines.extend(
-            (
-                "# HELP findme_gallery_search_queue_depth "
-                "Gallery searches waiting, including retries.",
-                "# TYPE findme_gallery_search_queue_depth gauge",
-                f"findme_gallery_search_queue_depth {gallery[0]}",
-            )
-        )
-    if selfie is not None:
-        recognition, matching = selfie
-        lines.extend(
-            (
-                "# TYPE findme_selfie_search_queue_depth gauge",
-                f'findme_selfie_search_queue_depth{{stage="recognition"}} {recognition}',
-                f'findme_selfie_search_queue_depth{{stage="matching"}} {matching}',
-            )
-        )
     if face_search_p75:
         lines.append("# TYPE findme_face_search_total_duration_p75_seconds gauge")
         lines.extend(
@@ -270,10 +234,10 @@ def generate_metrics() -> bytes:
         )
     lines.extend(
         (
-            "# TYPE findme_queue_ready_count gauge",
-            "# TYPE findme_queue_oldest_ready_age_seconds gauge",
+            "# TYPE findme_queue_due_count gauge",
+            "# TYPE findme_queue_oldest_due_age_seconds gauge",
             "# TYPE findme_queue_last_success_timestamp_seconds gauge",
-            "# TYPE findme_queue_observed_timestamp_seconds gauge",
+            "# TYPE findme_queue_due_observed_timestamp_seconds gauge",
         )
     )
     for queue, (count, age, success_at, observed_at) in (
@@ -281,12 +245,27 @@ def generate_metrics() -> bytes:
     ):
         lines.extend(
             (
-                f'findme_queue_ready_count{{queue="{queue}"}} {count}',
-                f'findme_queue_oldest_ready_age_seconds{{queue="{queue}"}} {age}',
+                f'findme_queue_due_count{{queue="{queue}"}} {count}',
+                f'findme_queue_oldest_due_age_seconds{{queue="{queue}"}} {age}',
                 f'findme_queue_last_success_timestamp_seconds{{queue="{queue}"}} {success_at}',
-                f'findme_queue_observed_timestamp_seconds{{queue="{queue}"}} {observed_at}',
+                f'findme_queue_due_observed_timestamp_seconds{{queue="{queue}"}} {observed_at}',
             )
         )
+    lines.extend(
+        (
+            "# TYPE findme_queue_ready_count gauge",
+            "# TYPE findme_queue_ready_observed_timestamp_seconds gauge",
+            "# TYPE findme_queue_oldest_ready_age_seconds gauge",
+        )
+    )
+    if success:
+        for queue, (count, full_age, observed_at) in collect_ready_samples().items():
+            lines.append(f'findme_queue_ready_count{{queue="{queue}"}} {count}')
+            lines.append(
+                f'findme_queue_ready_observed_timestamp_seconds{{queue="{queue}"}} {observed_at}'
+            )
+            if full_age is not None:
+                lines.append(f'findme_queue_oldest_ready_age_seconds{{queue="{queue}"}} {full_age}')
     return generate_latest(registry) + ("\n".join(lines) + "\n").encode()
 
 

@@ -452,6 +452,8 @@ class PhotoArchiveJob(models.Model):  # noqa: DJ008
     page = models.PositiveIntegerField()
     status = models.CharField(max_length=7, choices=Status, default=Status.QUEUED)
     object_id = models.UUIDField(default=uuid4)
+    queue_enqueued_at = models.DateTimeField(null=True)
+    queue_first_claimed_at = models.DateTimeField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     expires_at = models.DateTimeField(null=True)

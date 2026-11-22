@@ -27,6 +27,7 @@ from ingestion.models import (
     ImportManifestPage,
     ImportScope,
 )
+from ingestion.services import import_queue_timings
 from ingestion.storage import UploadGrant
 
 MAX_MANIFEST_ENTRIES = 10_000
@@ -118,6 +119,8 @@ def create_import(
                 "event": event,
                 "folder": folder,
                 "submitted_source_key": submitted_source_key,
+                "queue_enqueued_at": timezone.now(),
+                "queue_timings": {},
             },
         )
         if created:
@@ -283,8 +286,8 @@ def _finish_manifest(
                 "completed_at",
             ]
         )
-        schedule_transition(IMPORT, previous_status, batch.status)
-        _finish_attempt(attempt, "succeeded", now=now)
+        _finish_attempt(batch, attempt, "succeeded", now=now)
+        _schedule_batch_transition(batch, previous_status, now)
         _derive_batch(batch, now=now)
         return _result(batch)
 
@@ -337,6 +340,7 @@ def claim_import_work(*, lease_seconds: int = 120, now: datetime | None = None) 
                     batch.last_activity_at = now
                     batch.save(update_fields=["status", "last_activity_at"])
                     schedule_transition(IMPORT, previous_status, batch.status)
+                    import_queue_timings.paused(batch, now)
                 continue
             if not batch.manifest_complete:
                 if batch.manifest_attempts >= MAX_OPERATION_ATTEMPTS:
@@ -516,7 +520,7 @@ def prepare_import_upload(
                             "completed_at",
                         ]
                     )
-                    _finish_attempt(attempt, "succeeded", now=now)
+                    _finish_attempt(batch, attempt, "succeeded", now=now, duplicate=True)
                     _derive_batch(batch, now=now)
                     return PreparedImportUpload(status="duplicate", item_id=item.id)
                 if item.upload_attempts >= MAX_OPERATION_ATTEMPTS:
@@ -525,6 +529,7 @@ def prepare_import_upload(
                 item.status = ImportItem.Status.UPLOADING
                 item.error_code = ""
                 item.save(update_fields=["upload_attempts", "status", "error_code"])
+                attempt.queue_upload_started_at = now
                 attempt.content_sha256 = content_sha256
                 attempt.byte_size = byte_size
                 attempt.incoming_key = f"incoming/{batch.id}/{attempt.id}"
@@ -535,6 +540,7 @@ def prepare_import_upload(
                     update_fields=[
                         "content_sha256",
                         "byte_size",
+                        "queue_upload_started_at",
                         "incoming_key",
                         "final_key",
                         "oriented_width",
@@ -608,8 +614,9 @@ def _record_import_failure(
                 item.completed_at = now
             item.error_code = code
             item.save(update_fields=["status", "completed_at", "error_code"])
+        _finish_attempt(batch, attempt, "failed", now=now, error_code=code)
+        if operation != "manifest":
             _derive_batch(batch, now=now)
-        _finish_attempt(attempt, "failed", now=now, error_code=code)
         return _result(batch)
 
 
@@ -671,9 +678,14 @@ def retry_import_errors(
             batch.status = ImportBatch.Status.TRANSFERRING
             batch.completed_at = None
             batch.error_code = ""
+        if previous_status in (ImportBatch.Status.PARTIAL, ImportBatch.Status.FAILED):
+            batch.queue_enqueued_at = now
+            batch.queue_timings = {}
         batch.last_activity_at = now
         batch.save(
             update_fields=[
+                "queue_enqueued_at",
+                "queue_timings",
                 "manifest_attempts",
                 "error_code",
                 "status",
@@ -783,6 +795,7 @@ def _persist_paused_batch(*, attempt_id: UUID, now: datetime) -> None:
             batch.last_activity_at = now
             batch.save(update_fields=["status", "last_activity_at"])
             schedule_transition(IMPORT, previous_status, batch.status)
+            import_queue_timings.paused(batch, now)
 
 
 def _persist_expired_attempt(*, attempt_id: UUID, now: datetime) -> None:
@@ -804,7 +817,7 @@ def _persist_failed_item(*, attempt_id: UUID, item_id: UUID, code: str, now: dat
             item=item,
         )
         if attempt.status == ImportAttempt.Status.ACTIVE:
-            _fail_item(item, attempt, code=code, now=now)
+            _fail_item(batch, item, attempt, code=code, now=now)
             _derive_batch(batch, now=now)
 
 
@@ -860,7 +873,7 @@ def _expire_attempt(attempt: ImportAttempt, now: datetime) -> None:
         if item.status in {ImportItem.Status.CLAIMED, ImportItem.Status.UPLOADING}:
             item.status = ImportItem.Status.PENDING
             item.save(update_fields=["status"])
-    _finish_attempt(attempt, "expired", now=now)
+    _save_attempt_terminal(attempt, "expired", now=now)
 
 
 def _create_claim(
@@ -872,6 +885,7 @@ def _create_claim(
     lease_seconds: int,
 ) -> ClaimedImport:
     expires_at = now + timedelta(seconds=lease_seconds)
+    import_queue_timings.claim(batch, now)
     attempt = ImportAttempt.objects.create(
         batch=batch,
         item=item,
@@ -890,6 +904,21 @@ def _create_claim(
 
 
 def _finish_attempt(
+    batch: ImportBatch,
+    attempt: ImportAttempt,
+    status: str,
+    *,
+    now: datetime,
+    error_code: str = "",
+    duplicate: bool = False,
+) -> None:
+    _save_attempt_terminal(attempt, status, now=now, error_code=error_code)
+    import_queue_timings.finish(
+        batch, attempt, now, succeeded=status == "succeeded", duplicate=duplicate
+    )
+
+
+def _save_attempt_terminal(
     attempt: ImportAttempt, status: str, *, now: datetime, error_code: str = ""
 ) -> None:
     attempt.status = status
@@ -898,12 +927,14 @@ def _finish_attempt(
     attempt.save(update_fields=["status", "terminal_at", "error_code"])
 
 
-def _fail_item(item: ImportItem, attempt: ImportAttempt, *, code: str, now: datetime) -> None:
+def _fail_item(
+    batch: ImportBatch, item: ImportItem, attempt: ImportAttempt, *, code: str, now: datetime
+) -> None:
     item.status = ImportItem.Status.ERROR
     item.error_code = code
     item.completed_at = now
     item.save(update_fields=["status", "error_code", "completed_at"])
-    _finish_attempt(attempt, "failed", now=now, error_code=code)
+    _finish_attempt(batch, attempt, "failed", now=now, error_code=code)
 
 
 def _derive_batch(batch: ImportBatch, *, now: datetime) -> None:
@@ -928,7 +959,18 @@ def _derive_batch(batch: ImportBatch, *, now: datetime) -> None:
     )
     batch.last_activity_at = now
     batch.save(update_fields=["status", "completed_at", "last_activity_at"])
-    schedule_transition(IMPORT, previous_status, batch.status)
+    _schedule_batch_transition(batch, previous_status, now)
+
+
+def _schedule_batch_transition(batch: ImportBatch, previous_status: str, now: datetime) -> None:
+    schedule_transition(
+        IMPORT,
+        previous_status,
+        batch.status,
+        segments_ms=import_queue_timings.completed(batch, now)
+        if batch.status == ImportBatch.Status.COMPLETED
+        else None,
+    )
 
 
 def _result(batch: ImportBatch) -> ImportResult:

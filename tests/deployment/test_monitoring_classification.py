@@ -20,6 +20,8 @@ def classifier():
     "path",
     [
         "deploy/monitoring/prometheus/single_vm_dashboard.py",
+        "deploy/monitoring/prometheus/queue_panels.py",
+        "src/backend/config/queue_catalog.py",
         "deploy/monitoring/prometheus/single-vm-dashboard.json",
         "deploy/monitoring/prometheus/control.py",
         "deploy/monitoring/prometheus/environment.json",

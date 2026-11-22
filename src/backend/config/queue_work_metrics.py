@@ -1,14 +1,15 @@
 """Scrape committed work counts independently of queue execution and completion events."""
 
 import logging
-from collections import Counter
+import time
 from collections.abc import Iterator
 
 from django.db import DatabaseError, connection, transaction
 from processing.models import QueueWorkCounter
 from prometheus_client.core import GaugeMetricFamily, Metric
 
-from config.queue_work import PHOTO, QUEUES, STATES
+from config.queue_catalog import QUEUES
+from config.queue_work import PHOTO, STATES, queue_key
 
 logger = logging.getLogger(__name__)
 
@@ -23,44 +24,40 @@ class QueueWorkCounters:
             logger.warning("Could not read queue work counters")
             rows = []
         finally:
-            # Prometheus runs each HTTP scrape in its own thread.
             connection.close()
 
-        available = {row.queue for row in rows if not row.processor and row.initialized}
+        ready = {row.queue for row in rows if not row.processor and row.initialized}
+        counts = {
+            queue_key(row.queue, row.processor): row
+            for row in rows
+            if row.queue in ready and (row.queue != PHOTO or row.processor)
+        }
         availability = GaugeMetricFamily(
             "findme_queue_work_available",
             "Whether queue work counts are initialized and readable.",
             labels=["queue"],
         )
-        for queue in QUEUES:
-            availability.add_metric([queue], int(queue in available))
-        yield availability
-
+        observed = GaugeMetricFamily(
+            "findme_queue_work_observed_timestamp_seconds",
+            "Time of the queue work scrape, including unavailable reads.",
+            labels=["queue"],
+        )
         work = GaugeMetricFamily(
             "findme_queue_work_count",
             "Approximate count of unfinished tasks by queue and state.",
             labels=["queue", "state"],
         )
-        processing = GaugeMetricFamily(
-            "findme_processing_queue_work_count",
-            "Approximate count of unfinished photo tasks by processor and state.",
-            labels=["processor", "state"],
-        )
-        photo_totals: Counter[str] = Counter()
-        for row in rows:
-            if row.queue not in available:
-                continue
-            for state in STATES:
-                value = max(0, getattr(row, state))
-                if row.queue != PHOTO and not row.processor:
-                    work.add_metric([row.queue, state], value)
-                elif row.queue == PHOTO and row.processor:
-                    processing.add_metric([row.processor, state], value)
-                    photo_totals[state] += value
-        if PHOTO in available:
-            # The aggregate agrees with the displayed processor counts even if a missed
-            # delta leaves one processor negative while others still have work.
-            for state in STATES:
-                work.add_metric([PHOTO, state], photo_totals[state])
+        at = time.time()
+        for queue in QUEUES:
+            key = queue.key
+            mapped_photo = key.startswith("photo_") and key != "photo_archive"
+            row = counts.get(key)
+            available = row is not None or (mapped_photo and PHOTO in ready)
+            availability.add_metric([key], int(available))
+            observed.add_metric([key], at)
+            if available:
+                for state in STATES:
+                    work.add_metric([key, state], max(0, getattr(row, state, 0)))
+        yield availability
+        yield observed
         yield work
-        yield processing

@@ -18,15 +18,14 @@ spec.loader.exec_module(control)
 CONFIG = control.load_config()
 COUNTERS_READY = "findme_photo_import_counters_ready"
 WORK_AVAILABLE = "findme_queue_work_available"
-WORK_QUEUES = (
-    "gallery-search",
-    "selfie",
-    "selfie_face_search",
-    "photo",
-    "import",
-    "commerce",
-    "photo_archive",
+catalog_spec = importlib.util.spec_from_file_location(
+    "release_queue_catalog", HERE.parents[2] / "src/backend/config/queue_catalog.py"
 )
+assert catalog_spec and catalog_spec.loader
+catalog = importlib.util.module_from_spec(catalog_spec)
+sys.modules[catalog_spec.name] = catalog
+catalog_spec.loader.exec_module(catalog)
+WORK_QUEUES = tuple(queue.key for queue in catalog.QUEUES)
 WORK_STATES = ("waiting", "processing", "retry_wait", "paused")
 SOURCES = {
     "vm": (
@@ -41,14 +40,9 @@ SOURCES = {
     "application": (
         {"__name__": "findme_http_requests_total", "job": "findme-http"},
         {"__name__": "pg_up", "job": "findme-postgres"},
-        {"__name__": "findme_gallery_search_queue_depth", "job": "findme-http"},
-        *(
-            {"__name__": "findme_selfie_search_queue_depth", "job": "findme-http", "stage": stage}
-            for stage in ("recognition", "matching")
-        ),
     ),
     "queue-telemetry": (
-        {"__name__": "findme_queue_telemetry_listening", "job": "findme-queue-telemetry"},
+        {"__name__": "findme_queue_results_listener_connected", "job": "findme-queue-telemetry"},
         {"__name__": COUNTERS_READY, "job": "findme-queue-telemetry"},
         *(
             {
@@ -61,6 +55,37 @@ SOURCES = {
         ),
     ),
     "queue-work": (
+        *(
+            {"__name__": metric, "job": job, "queue": queue}
+            for metric, job in (
+                ("findme_queue_work_observed_timestamp_seconds", "findme-queue-telemetry"),
+                ("findme_queue_ready_observed_timestamp_seconds", "findme-http"),
+                ("findme_queue_ready_count", "findme-http"),
+                ("findme_queue_results_observed_timestamp_seconds", "findme-queue-telemetry"),
+                ("findme_queue_duration_observations_total", "findme-queue-telemetry"),
+            )
+            for queue in WORK_QUEUES
+        ),
+        *(
+            {
+                "__name__": "findme_queue_results_total",
+                "job": "findme-queue-telemetry",
+                "queue": queue,
+                "outcome": outcome,
+            }
+            for queue in WORK_QUEUES
+            for outcome in ("success", "failed", "canceled")
+        ),
+        *(
+            {
+                "__name__": "findme_queue_segment_duration_seconds_total",
+                "job": "findme-queue-telemetry",
+                "queue": queue.key,
+                "segment": segment.key,
+            }
+            for queue in catalog.QUEUES
+            for segment in queue.segments
+        ),
         *(
             {"__name__": WORK_AVAILABLE, "job": "findme-queue-telemetry", "queue": queue}
             for queue in WORK_QUEUES
@@ -97,9 +122,14 @@ def check(transport, scope: str, *, now: float | None = None) -> None:
             timestamp, value = max(series, key=lambda point: point[0])
             if not math.isfinite(value) or not 0 <= observed_at - timestamp <= 180:
                 raise control.ControlError(f"sample stale/nonfinite: {key}")
+            if (
+                selector["__name__"].endswith("_observed_timestamp_seconds")
+                and not 0 <= observed_at - value <= 150
+            ):
+                raise control.ControlError(f"sample stale/nonfinite: {key}")
             if selector["__name__"] == "pg_up" and value != 1:
                 raise control.ControlError("PostgreSQL exporter cannot connect")
-            if selector["__name__"] == "findme_queue_telemetry_listening" and value != 1:
+            if selector["__name__"] == "findme_queue_results_listener_connected" and value != 1:
                 raise control.ControlError("Queue telemetry listener is disconnected")
             if selector["__name__"] == COUNTERS_READY and value != 1:
                 raise control.ControlError("Photo import counters are uninitialized or unavailable")

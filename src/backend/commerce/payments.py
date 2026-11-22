@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import cast
 from uuid import UUID
 
-from config.queue_work import COMMERCE, schedule_transition
+from config.queue_timings import elapsed_ms
+from config.queue_work import EMAIL, PAYMENT, schedule_transition
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -27,6 +29,7 @@ from commerce.payment_gateway import (
     PaymentGatewayErrorCategory,
     PaymentObservation,
 )
+from commerce.payment_queue import record_phases, segments, work_state
 from commerce.tbank_gateway import (
     TBANK_ADAPTER_KEY,
     TBankAuthenticatedNotificationError,
@@ -40,6 +43,10 @@ class PaymentTransitionRejected(Exception):
 
 class PaymentReconciliationUnavailable(PaymentTransitionRejected):
     """A due provider payment could not be safely reconciled."""
+
+    def __init__(self, category: str, *, gateway_ms: int = 0) -> None:
+        super().__init__(category)
+        self.gateway_ms = gateway_ms
 
 
 def apply_authenticated_notification(
@@ -116,6 +123,7 @@ def reconcile_payment_attempt(
     ):
         raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
     observation: PaymentObservation | None
+    fetching_at = _current_time(now)
     try:
         if attempt.provider_payment_id:
             observation = gateway.fetch_payment(attempt.provider_payment_id)
@@ -132,9 +140,13 @@ def reconcile_payment_attempt(
             payment_attempt=attempt,
             now=unavailable_at,
         )
-        raise PaymentReconciliationUnavailable(error.category.value) from None
+        raise PaymentReconciliationUnavailable(
+            error.category.value,
+            gateway_ms=max(0, elapsed_ms(fetching_at, unavailable_at)),
+        ) from None
 
     completed_at = _current_time(now)
+    observation_started = monotonic()
     order = apply_payment_observation(
         attempt_id=attempt.pk,
         adapter_key=gateway.adapter_key,
@@ -142,6 +154,8 @@ def reconcile_payment_attempt(
         observation=observation,
         now=completed_at,
         expected_reconciliation_lease_id=expected_reconciliation_lease_id,
+        gateway_ms=max(0, elapsed_ms(fetching_at, completed_at)),
+        observation_started=observation_started,
     )
     resolve_open_attention_automatically(
         kind="payment_reconciliation_overdue",
@@ -152,6 +166,7 @@ def reconcile_payment_attempt(
         attempt_id=attempt.pk,
         now=completed_at,
         expected_reconciliation_lease_id=expected_reconciliation_lease_id,
+        observation_started=observation_started,
     )
     return order
 
@@ -164,6 +179,9 @@ def apply_payment_observation(
     observation: PaymentObservation,
     now: datetime | None = None,
     expected_reconciliation_lease_id: UUID | None = None,
+    gateway_ms: int = 0,
+    observation_started: float | None = None,
+    administrative_cancel: bool = False,
 ) -> Order:
     """Serialize every normalized callback and fetch through one authoritative transition."""
     if source not in PaymentEvidence.Source.values:
@@ -171,6 +189,7 @@ def apply_payment_observation(
     if not isinstance(observation, PaymentObservation):
         raise PaymentTransitionRejected("Payment evidence must be normalized.")
     current_time = _current_time(now)
+    observation_started = monotonic() if observation_started is None else observation_started
 
     event_id, cart_digest, order_id = _payment_identity_for_attempt(attempt_id=attempt_id)
     with transaction.atomic():
@@ -235,6 +254,15 @@ def apply_payment_observation(
             observation=observation,
             observed_at=current_time,
         )
+        finished_at = _observation_end(current_time, observation_started)
+        if work_state(attempt) is not None and attempt.queue_first_claimed_at is not None:
+            record_phases(
+                attempt,
+                gateway=gateway_ms if expected_reconciliation_lease_id is not None else 0,
+                accept=max(
+                    0, elapsed_ms(max(current_time, attempt.queue_first_claimed_at), finished_at)
+                ),
+            )
         if observation.status == NormalizedPaymentStatus.SUCCEEDED:
             if order.status == Order.Status.CANCELED:
                 _set_attempt_terminal(
@@ -255,6 +283,7 @@ def apply_payment_observation(
                 attempt=attempt,
                 status="succeeded",
                 terminal_at=current_time,
+                observed_at=finished_at,
             )
             _fulfill_paid_order(order=order, paid_at=current_time)
             resolve_open_attention_automatically(
@@ -296,6 +325,8 @@ def apply_payment_observation(
             attempt=attempt,
             status=terminal_status,
             terminal_at=current_time,
+            observed_at=finished_at,
+            administrative_cancel=administrative_cancel,
         )
         if order.status == Order.Status.PAID and (
             was_succeeded
@@ -452,6 +483,7 @@ def cancel_unusable_bank_attempt(
                 source="status_fetch",
                 observation=observation,
                 now=now,
+                administrative_cancel=True,
             )
             _write_manual_order_audit(
                 actor=locked_actor,
@@ -643,12 +675,12 @@ def _set_attempt_terminal(
     attempt: PaymentAttempt,
     status: str,
     terminal_at: datetime,
+    observed_at: datetime | None = None,
+    administrative_cancel: bool = False,
 ) -> None:
     if attempt.status == status:
         return
-    previous_state = (
-        attempt.reconciliation_state if attempt.status == PaymentAttempt.Status.PENDING else None
-    )
+    previous_state = work_state(attempt)
     attempt.status = status
     attempt.terminal_at = terminal_at
     attempt.reconciliation_state = PaymentAttempt.ReconciliationState.PENDING
@@ -666,7 +698,18 @@ def _set_attempt_terminal(
             "updated_at",
         ]
     )
-    schedule_transition(COMMERCE, previous_state, None)
+    outcome = (
+        "failed"
+        if status == PaymentAttempt.Status.CONFLICT
+        else ("canceled" if administrative_cancel else "success")
+    )
+    schedule_transition(
+        PAYMENT,
+        previous_state,
+        None,
+        outcome=outcome,
+        segments_ms=segments(attempt, observed_at or terminal_at) if outcome == "success" else None,
+    )
 
 
 def _fulfill_paid_order(*, order: Order, paid_at: datetime) -> None:
@@ -698,8 +741,9 @@ def _create_initial_delivery(*, order: Order, now: datetime) -> None:
         recipient_email=order.delivery_email,
         access_grant=grant,
         next_attempt_at=now,
+        queue_enqueued_at=now,
     )
-    schedule_transition(COMMERCE, None, delivery.state)
+    schedule_transition(EMAIL, None, delivery.state)
 
 
 def _expire_after_current_fetch(
@@ -707,6 +751,7 @@ def _expire_after_current_fetch(
     attempt_id: int,
     now: datetime,
     expected_reconciliation_lease_id: UUID | None,
+    observation_started: float,
 ) -> None:
     event_id, cart_digest, order_id = _payment_identity_for_attempt(attempt_id=attempt_id)
     with transaction.atomic():
@@ -727,7 +772,11 @@ def _expire_after_current_fetch(
         ):
             raise PaymentTransitionRejected("Payment reconciliation lease is no longer current.")
         if attempt.adapter_key == TBANK_ADAPTER_KEY:
-            previous_state = attempt.reconciliation_state
+            previous_state = work_state(attempt)
+            if previous_state is None:
+                attempt.queue_enqueued_at = now
+                attempt.queue_gateway_ms = 0
+                attempt.queue_accept_ms = 0
             attempt.reconciliation_state = PaymentAttempt.ReconciliationState.PENDING
             attempt.reconciliation_lease_id = None
             attempt.reconciliation_lease_expires_at = None
@@ -738,10 +787,13 @@ def _expire_after_current_fetch(
                     "reconciliation_lease_id",
                     "reconciliation_lease_expires_at",
                     "reconciliation_next_attempt_at",
+                    "queue_enqueued_at",
+                    "queue_gateway_ms",
+                    "queue_accept_ms",
                     "updated_at",
                 ]
             )
-            schedule_transition(COMMERCE, previous_state, attempt.reconciliation_state)
+            schedule_transition(PAYMENT, previous_state, work_state(attempt))
             return
         due_at = attempt.expires_at or attempt.created_at + timedelta(hours=24)
         if now < due_at:
@@ -750,6 +802,7 @@ def _expire_after_current_fetch(
             attempt=attempt,
             status="expired",
             terminal_at=now,
+            observed_at=_observation_end(now, observation_started),
         )
         if order.status == Order.Status.PAID:
             open_attention(
@@ -774,6 +827,12 @@ def _reconciliation_lease_is_current(
         and attempt.reconciliation_lease_expires_at is not None
         and attempt.reconciliation_lease_expires_at > now
     )
+
+
+def _observation_end(business_at: datetime, started: float) -> datetime:
+    # Business time is frozen for evidence and leases. Measure the accepted observation
+    # against an independent clock while retaining the same cycle's calendar origin.
+    return business_at + timedelta(seconds=monotonic() - started)
 
 
 def _current_time(now: datetime | None) -> datetime:

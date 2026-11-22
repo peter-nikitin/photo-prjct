@@ -1205,6 +1205,9 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
                     result=self._result(object),
                     storage=FakePreviewStorage(object),
                     clock=lambda: first_start + timedelta(seconds=3),
+                    download_duration_ms=250,
+                    compute_duration_ms=750,
+                    total_duration_ms=2000,
                 )
                 counter.refresh_from_db()
                 self.assertEqual(counter.pending, 0)
@@ -1217,10 +1220,18 @@ class PreviewPublicationConcurrencyTests(_PreviewPublicationFixture, Transaction
             [json.loads(note.payload) for note in notifications],
             [
                 {
-                    "event": "queue.task.completed",
+                    "event": "queue.work.result",
                     "version": 1,
-                    "queue": "processing_generate_preview",
-                    "segments_ms": {"waiting": 1000, "processing": 3000},
+                    "queue": "photo_generate_preview",
+                    "outcome": "success",
+                    "count": 1,
+                    "segments_ms": {
+                        "wait": 1000,
+                        "retry": 0,
+                        "download": 250,
+                        "compute": 750,
+                        "accept": 2000,
+                    },
                 },
                 {
                     "event": "queue.task.completed",

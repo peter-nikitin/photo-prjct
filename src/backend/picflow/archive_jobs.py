@@ -14,7 +14,7 @@ from time import monotonic, monotonic_ns
 from uuid import UUID, uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
-from config.queue_events import notify_queue_completion
+from config.queue_timings import elapsed_ms
 from config.queue_work import ARCHIVE, schedule_transition
 from django.db import connection, transaction
 from django.utils import timezone
@@ -107,6 +107,7 @@ def enqueue_archive_job(
     request_key = sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
     with transaction.atomic():
+        queued_at = timezone.now()
         job, created = PhotoArchiveJob.objects.select_for_update().get_or_create(
             request_key=request_key,
             defaults={
@@ -114,6 +115,7 @@ def enqueue_archive_job(
                 "filename": filename,
                 "context": observation.context,
                 "page": observation.page,
+                "queue_enqueued_at": queued_at,
             },
         )
         previous_status = None if created else job.status
@@ -121,7 +123,18 @@ def enqueue_archive_job(
             job.status = PhotoArchiveJob.Status.QUEUED
             job.public_id = uuid4()
             job.expires_at = None
-            job.save(update_fields=["status", "public_id", "expires_at", "updated_at"])
+            job.queue_enqueued_at = queued_at
+            job.queue_first_claimed_at = None
+            job.save(
+                update_fields=[
+                    "status",
+                    "public_id",
+                    "expires_at",
+                    "updated_at",
+                    "queue_enqueued_at",
+                    "queue_first_claimed_at",
+                ]
+            )
         schedule_transition(ARCHIVE, previous_status, job.status)
     return job
 
@@ -174,7 +187,9 @@ def prune_archive_jobs() -> None:
         )
         removed = cursor.fetchone()
     if removed is not None:
-        schedule_transition(ARCHIVE, str(PhotoArchiveJob.Status.QUEUED), None, amount=removed[0])
+        schedule_transition(
+            ARCHIVE, str(PhotoArchiveJob.Status.QUEUED), None, amount=removed[0], outcome="canceled"
+        )
 
 
 def process_next_archive() -> bool:
@@ -187,15 +202,17 @@ def process_next_archive() -> bool:
         )
         if job is None:
             return False
-        wait_ms = max(0, round((timezone.now() - job.updated_at).total_seconds() * 1000))
+        claimed_at = timezone.now()
+        claimed_ns = monotonic_ns()
+        if job.queue_first_claimed_at is None:
+            job.queue_first_claimed_at = claimed_at
         job.status = PhotoArchiveJob.Status.RUNNING
         job.object_id = uuid4()
-        job.save(update_fields=["status", "object_id", "updated_at"])
+        job.save(update_fields=["status", "object_id", "updated_at", "queue_first_claimed_at"])
         schedule_transition(ARCHIVE, str(PhotoArchiveJob.Status.QUEUED), job.status)
 
     try:
-        with _reserve_archive_space(job.entries) as reservation_wait_ms:
-            wait_ms += reservation_wait_ms
+        with _reserve_archive_space(job.entries):
             started_ns = monotonic_ns()
             built_ns = _build_and_upload(job)
     except (ArchiveSourceMissing, ArchiveSourceUnavailable, StorageUnavailable, OSError) as error:
@@ -209,16 +226,23 @@ def process_next_archive() -> bool:
         )
         _finish(job)
     else:
-        built_ms = round((built_ns - started_ns) / 1_000_000)
-        elapsed_ms = round((monotonic_ns() - started_ns) / 1_000_000)
-        _finish(
-            job,
-            segments_ms={
-                "archive_wait": wait_ms,
-                "zip_build": built_ms,
-                "storage_upload": elapsed_ms - built_ms,
-            },
-        )
+        capacity_ms = round((started_ns - claimed_ns) / 1_000_000)
+        built_ms = round((built_ns - claimed_ns) / 1_000_000)
+        finished_ms = round((monotonic_ns() - claimed_ns) / 1_000_000)
+        submitted, first = job.queue_enqueued_at, job.queue_first_claimed_at
+        segments = None
+        if submitted is not None and first is not None and submitted <= first <= claimed_at:
+            wait = elapsed_ms(submitted, first)
+            until_claim = elapsed_ms(submitted, claimed_at)
+            if 0 <= capacity_ms <= built_ms <= finished_ms:
+                segments = {
+                    "wait": wait,
+                    "retry": until_claim - wait,
+                    "capacity": capacity_ms,
+                    "build": built_ms - capacity_ms,
+                    "upload": finished_ms - built_ms,
+                }
+        _finish(job, ready=True, segments_ms=segments)
     return True
 
 
@@ -268,8 +292,9 @@ def _archive_storage() -> PrivateUploadStorage:
 
 
 @transaction.atomic
-def _finish(job: PhotoArchiveJob, *, segments_ms: dict[str, int] | None = None) -> None:
-    ready = segments_ms is not None
+def _finish(
+    job: PhotoArchiveJob, *, ready: bool = False, segments_ms: dict[str, int] | None = None
+) -> None:
     finished_at = timezone.now()
     updated = PhotoArchiveJob.objects.filter(
         pk=job.pk, status=PhotoArchiveJob.Status.RUNNING, object_id=job.object_id
@@ -279,9 +304,9 @@ def _finish(job: PhotoArchiveJob, *, segments_ms: dict[str, int] | None = None) 
         expires_at=finished_at + _RETENTION if ready else None,
     )
     if updated:
-        schedule_transition(ARCHIVE, str(PhotoArchiveJob.Status.RUNNING), None, amount=updated)
-    if updated and segments_ms is not None:
-        transaction.on_commit(
-            partial(notify_queue_completion, "photo_archive", segments_ms),
-            robust=True,
+        schedule_transition(
+            ARCHIVE,
+            str(PhotoArchiveJob.Status.RUNNING),
+            str(PhotoArchiveJob.Status.READY if ready else PhotoArchiveJob.Status.FAILED),
+            segments_ms=segments_ms,
         )

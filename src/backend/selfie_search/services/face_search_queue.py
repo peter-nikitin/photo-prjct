@@ -7,6 +7,7 @@ from functools import cache, partial
 from time import perf_counter
 
 from config.queue_events import notify_queue_completion
+from config.queue_timings import elapsed_ms
 from config.queue_work import MATCHING_QUEUES, schedule_transition
 from django.db import DatabaseError, connection, transaction
 from django.db.models import Q, Subquery
@@ -147,12 +148,11 @@ def claim() -> FaceSearchTask | None:
         )
         if task is None:
             return None
+        previous_state = _queued_state(task)
         task.status = FaceSearchTask.Status.PROCESSING
         task.attempt_count += 1
         task.save(update_fields=["status", "attempt_count"])
-        schedule_transition(
-            MATCHING_QUEUES.get(task.source), str(FaceSearchTask.Status.QUEUED), task.status
-        )
+        schedule_transition(MATCHING_QUEUES.get(task.source), previous_state, task.status)
         search = task.search
         search.status = SelfieSearch.Status.PROCESSING
         search.state_changed_at = now
@@ -160,6 +160,10 @@ def claim() -> FaceSearchTask | None:
             search.matching_started_at = now
         search.save(update_fields=["status", "state_changed_at", "matching_started_at"])
         return task
+
+
+def _queued_state(task: FaceSearchTask) -> str:
+    return "retry_wait" if task.attempt_count else "queued"
 
 
 def _expired(task: FaceSearchTask, now: datetime) -> bool:
@@ -181,6 +185,7 @@ def process_face_search(task: FaceSearchTask) -> None:
     if task.event_id != search.event_id or task.embedding_model != _configuration(search).model:
         raise RankingError("matching payload does not match the search")
 
+    claimed_at = search.state_changed_at
     # Resolve the vector inside PostgreSQL so it is never included in the SQL text or worker logs.
     query = Subquery(FaceSearchTask.objects.filter(pk=task.pk).values("vector"))
     is_continuation = search.parent_search_id is not None
@@ -383,6 +388,7 @@ def process_face_search(task: FaceSearchTask) -> None:
                     ),
                     prior_photo_ids=prior_photos(),
                 )
+    expanded_at = timezone.now()
     expansion = (
         direct_only_ranked_photos((), outcome="disabled")
         if ranking is None
@@ -453,6 +459,7 @@ def process_face_search(task: FaceSearchTask) -> None:
                     ),
                 ),
             )
+    publishing_at = timezone.now()
     try:
         with transaction.atomic():
             parent = (
@@ -464,7 +471,7 @@ def process_face_search(task: FaceSearchTask) -> None:
             )
             locked_search = SelfieSearch.objects.select_for_update().get(pk=task.search_id)
             if locked_search.status != SelfieSearch.Status.PROCESSING:
-                _terminal(task)
+                _terminal(task, outcome="canceled")
                 return
             if (
                 locked_search.event_id != search.event_id
@@ -491,7 +498,10 @@ def process_face_search(task: FaceSearchTask) -> None:
             )
             if parent is not None:
                 refresh_negative_feedback(parent)
-            _terminal(task)
+            measured = _matching_timings(
+                search, claimed_at, expanded_at, publishing_at, timezone.now()
+            )
+            _terminal(task, outcome="success" if can_publish else "failed", segments_ms=measured)
             if intended_status == SelfieSearch.Status.READY:
                 transaction.on_commit(
                     partial(_publish_completion, search, task.source), robust=True
@@ -562,11 +572,44 @@ def _publish_completion(search: SelfieSearch, source: str) -> None:
     notify_queue_completion(queue, segments_ms)
 
 
-def _terminal(task: FaceSearchTask) -> None:
+def _matching_timings(
+    search: SelfieSearch,
+    claimed: datetime,
+    expanded: datetime,
+    publishing: datetime,
+    finished: datetime,
+) -> dict[str, int] | None:
+    submitted, first = search.matching_enqueued_at, search.matching_started_at
+    if (
+        submitted is None
+        or first is None
+        or not submitted <= first <= claimed <= expanded <= publishing <= finished
+    ):
+        return None
+    boundaries = (first, claimed, expanded, publishing, finished)
+    offsets = [0, *(elapsed_ms(submitted, boundary) for boundary in boundaries)]
+    return dict(
+        zip(
+            ("wait", "retry", "query", "expand", "publish"),
+            (right - left for left, right in zip(offsets[:-1], offsets[1:], strict=True)),
+            strict=True,
+        )
+    )
+
+
+def _terminal(
+    task: FaceSearchTask, *, outcome: str, segments_ms: dict[str, int] | None = None
+) -> None:
     previous_status = task.status
     task.status = FaceSearchTask.Status.TERMINAL
     task.save(update_fields=["status"])
-    schedule_transition(MATCHING_QUEUES.get(task.source), previous_status, task.status)
+    schedule_transition(
+        MATCHING_QUEUES.get(task.source),
+        previous_status,
+        task.status,
+        outcome=outcome,
+        segments_ms=segments_ms,
+    )
 
 
 def _fail(task: FaceSearchTask, *, code: str) -> None:
@@ -580,7 +623,7 @@ def _fail(task: FaceSearchTask, *, code: str) -> None:
             failure_code=code,
             now=timezone.now(),
         )
-        _terminal(task)
+        _terminal(task, outcome="canceled" if code == "matching_query_expired" else "failed")
 
 
 def retry(task: FaceSearchTask, *, apparel_failure: bool = False) -> None:
@@ -603,7 +646,9 @@ def retry(task: FaceSearchTask, *, apparel_failure: bool = False) -> None:
             task.status = FaceSearchTask.Status.QUEUED
             task.available_at = now + RETRY_DELAY
             task.save(update_fields=["status", "available_at"])
-            schedule_transition(MATCHING_QUEUES.get(task.source), previous_status, task.status)
+            schedule_transition(
+                MATCHING_QUEUES.get(task.source), previous_status, _queued_state(task)
+            )
 
 
 def run_once() -> bool:

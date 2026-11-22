@@ -27,7 +27,7 @@ SOURCE_SELECTORS = (
     },
     *(
         {
-            "__name__": "findme_queue_observed_timestamp_seconds",
+            "__name__": "findme_queue_due_observed_timestamp_seconds",
             "queue": queue,
             "instance": INSTANCE,
         }
@@ -51,7 +51,7 @@ SOURCE_SELECTORS = (
 )
 EXPLICIT_OBSERVATION_NAMES = {
     "findme_probe_observed_timestamp_seconds",
-    "findme_queue_observed_timestamp_seconds",
+    "findme_queue_due_observed_timestamp_seconds",
     "findme_db_check_timestamp_seconds",
 }
 

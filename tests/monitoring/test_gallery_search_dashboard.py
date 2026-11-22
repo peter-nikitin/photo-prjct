@@ -26,7 +26,6 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
     expressions = []
     idle_expressions = []
     for queue, segments in (
-        ("photo_archive", {"archive_wait": 6, "zip_build": 10, "storage_upload": 4}),
         ("gallery_search", {"matching_wait": 5, "matching_elapsed": 15}),
         (
             "photo_import_gallery",
@@ -58,14 +57,15 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
             for target in chart["targets"]
             if "prometheusTarget" in target
             and f'queue="{queue}"' in target["prometheusTarget"]["query"]
-            and "findme_queue_segment_duration_seconds_total" in target["prometheusTarget"]["query"]
+            and "findme_journey_segment_duration_seconds_total"
+            in target["prometheusTarget"]["query"]
         }
         stack = by_visualization["VISUALIZATION_TYPE_STACK", "Секунды"]
         share = by_visualization["VISUALIZATION_TYPE_STACK", "%"]
         pie = by_visualization["VISUALIZATION_TYPE_PIE", None]
         labels = f'job="findme-queue-telemetry",queue="{queue}"'
         series.append(
-            {"series": f"findme_queue_completed_total{{{labels}}}", "values": "0+1x10 10+0x5"}
+            {"series": f"findme_journey_completed_total{{{labels}}}", "values": "0+1x10 10+0x5"}
         )
         later_segments = {
             name: value * (2 if name.endswith("_wait") else 1) for name, value in segments.items()
@@ -75,7 +75,7 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
             series.append(
                 {
                     "series": (
-                        f'findme_queue_segment_duration_seconds_total{{{labels},segment="{segment}"}}'
+                        f'findme_journey_segment_duration_seconds_total{{{labels},segment="{segment}"}}'
                     ),
                     "values": (
                         f"0+{seconds}x5 "
@@ -167,13 +167,13 @@ def test_queue_queries_show_durations_and_changing_shares_for_the_same_cohort(tm
     _test_promql(tmp_path, series, expressions + idle_expressions)
 
 
-def _test_promql(tmp_path, series, expressions):
+def _test_promql(tmp_path, series, expressions, *, interval="1m"):
     tests = {
         "evaluation_interval": "1m",
         "fuzzy_compare": True,
         "tests": [
             {
-                "interval": "1m",
+                "interval": interval,
                 "input_series": series,
                 "promql_expr_test": expressions,
             },
@@ -203,170 +203,3 @@ def _test_promql(tmp_path, series, expressions):
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-
-
-def test_all_queue_queries_include_pending_work_and_new_processor_stages(tmp_path):
-    from tests.monitoring.test_single_vm_monitoring import load
-
-    module = load()
-    dashboard = module.dashboard()
-    processor = "a_new_photo_processor_with_a_long_name"
-    (parameter,) = dashboard.get("parametrization", {}).get("parameters", [])
-    assert parameter["name"] == "processor"
-    assert parameter["query"]["prometheus"] == {
-        "labelKey": "processor",
-        "match": ['findme_processing_queue_work_count{job="findme-queue-telemetry"}'],
-        "workspaceId": module.CONFIG["workspace_id"],
-    }
-    queries = {
-        (chart["title"]): target["prometheusTarget"]["query"]
-        for chart in charts(dashboard["widgets"])
-        for target in chart["targets"]
-        if "prometheusTarget" in target
-    }
-    queue_states = {
-        "gallery-search": ("waiting", 2),
-        "selfie": ("processing", 3),
-        "selfie_face_search": ("waiting", 4),
-        "photo": ("processing", 5),
-        "import": ("paused", 6),
-        "commerce": ("retry_wait", 7),
-        "photo_archive": ("processing", 8),
-    }
-    job = 'job="findme-queue-telemetry"'
-    series = [
-        {
-            "series": f'findme_queue_work_count{{{job},queue="{queue}",state="{state}"}}',
-            "values": f"{value} 0+0x4" if queue == "photo_archive" else f"{value}+0x5",
-        }
-        for queue, (state, value) in queue_states.items()
-    ]
-    availability_values = {
-        "photo_archive": "1 0+0x4",
-        "photo": "1+0x5 0+0x4",
-    }
-    series.extend(
-        {
-            "series": f'findme_queue_work_available{{{job},queue="{queue}"}}',
-            "values": availability_values.get(queue, "1+0x5"),
-        }
-        for queue in queue_states
-    )
-    series.extend(
-        [
-            {
-                "series": (
-                    f'findme_processing_queue_work_count{{{job},processor="{processor}",'
-                    'state="processing"}'
-                ),
-                "values": "5+0x5 0+0x4",
-            },
-            {
-                "series": f'findme_queue_completed_total{{{job},queue="processing_{processor}"}}',
-                "values": "0+1x5 5+0x5",
-            },
-        ]
-    )
-    for stage, duration in (("waiting", 2), ("processing", 8)):
-        series.append(
-            {
-                "series": (
-                    f"findme_queue_segment_duration_seconds_total{{{job},"
-                    f'queue="processing_{processor}",segment="{stage}"}}'
-                ),
-                "values": f"0+{duration}x5 {duration * 5}+0x5",
-            }
-        )
-    series += [
-        {
-            "series": f'findme_queue_completed_total{{{job},queue="processing_another_kind"}}',
-            "values": "0+2x5 10+0x5",
-        },
-        {
-            "series": (
-                f"findme_queue_segment_duration_seconds_total{{{job},"
-                'queue="processing_another_kind",segment="waiting"}'
-            ),
-            "values": "0+80x5 400+0x5",
-        },
-    ]
-    available = {
-        queue: state_count
-        for queue, state_count in queue_states.items()
-        if queue != "photo_archive"
-    }
-    expressions = [
-        {
-            "expr": queries["Незавершённые задачи по очередям"],
-            "eval_time": "0m",
-            "exp_samples": [
-                {"labels": f'{{queue="{queue}"}}', "value": value}
-                for queue, (_, value) in queue_states.items()
-            ],
-        },
-        {
-            "expr": queries["Незавершённые задачи по очередям"],
-            "eval_time": "5m",
-            "exp_samples": [
-                {"labels": f'{{queue="{queue}"}}', "value": value}
-                for queue, (_, value) in available.items()
-            ],
-        },
-        {
-            "expr": queries["Состояния задач по очередям"],
-            "eval_time": "5m",
-            "exp_samples": [
-                {"labels": f'{{queue="{queue}",state="{state}"}}', "value": value}
-                for queue, (state, value) in available.items()
-            ],
-        },
-        {
-            "expr": queries["Доступность счётчиков очередей"],
-            "eval_time": "5m",
-            "exp_samples": [
-                {"labels": f'{{queue="{queue}"}}', "value": int(queue != "photo_archive")}
-                for queue in queue_states
-            ],
-        },
-        {
-            "expr": queries["Незавершённые задачи по обработчикам фото"],
-            "eval_time": "5m",
-            "exp_samples": [
-                {"labels": f'{{processor="{processor}",state="processing"}}', "value": 5}
-            ],
-        },
-        {
-            "expr": queries["Незавершённые задачи по обработчикам фото"],
-            "eval_time": "6m",
-            "exp_samples": [],
-        },
-    ]
-    for title, operator, sample_values in (
-        ("Длительность этапов обработки фото, с", "", {"waiting": 2, "processing": 8}),
-        ("Доли этапов обработки фото, %", "", {"waiting": 20, "processing": 80}),
-        ("Пирог этапов обработки фото", "sum", {"": 50}),
-    ):
-        expression = queries[title].replace("{{ processor }}", processor)
-        if operator:
-            expression = f"{operator}({expression})"
-        expressions.append(
-            {
-                "expr": expression,
-                "eval_time": "5m",
-                "exp_samples": [
-                    {"labels": f'{{segment="{key}"}}' if key else "{}", "value": value}
-                    for key, value in sample_values.items()
-                ],
-            }
-        )
-        expressions.append({"expr": expression, "eval_time": "10m", "exp_samples": []})
-    expressions.append(
-        {
-            "expr": "sum("
-            + queries["Доли этапов обработки фото, %"].replace("{{ processor }}", processor)
-            + ")",
-            "eval_time": "5m",
-            "exp_samples": [{"labels": "{}", "value": 100}],
-        }
-    )
-    _test_promql(tmp_path, series, expressions)

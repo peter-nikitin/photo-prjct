@@ -8,13 +8,16 @@ import logging
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
+from functools import partial
 from typing import Any, Protocol
 from uuid import UUID
 
+from config.queue_timings import worker_cycle
 from config.queue_work import MATCHING_QUEUES, SELFIE_RECOGNITION, schedule_transition
 from django.conf import settings
 from django.db import DatabaseError, connection, transaction
+from django.db.models import Min
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
 from ingestion.storage import StorageUnavailable
@@ -305,7 +308,18 @@ def complete_search_attempt(
         job.status = SelfieSearchJob.Status.SUCCEEDED
         job.completed_at = now
         job.save(update_fields=["status", "completed_at"])
-        schedule_transition(SELFIE_RECOGNITION, str(SelfieSearchJob.Status.PROCESSING), job.status)
+
+        def first_claim() -> datetime | None:
+            return SelfieSearchAttempt.objects.filter(job_id=job.pk).aggregate(
+                first=Min("claimed_at")
+            )["first"]
+
+        schedule_transition(
+            SELFIE_RECOGNITION,
+            str(SelfieSearchJob.Status.PROCESSING),
+            job.status,
+            segments_ms=partial(worker_cycle, job.created_at, attempt, now, first_claim),
+        )
         return SearchAttemptCompletion(attempt=attempt)
 
 

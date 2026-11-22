@@ -63,13 +63,13 @@ def test_counter_scrapes_survive_listener_disconnect_and_restart():
 
         payload = (
             '{"event":"queue.task.completed","version":1,'
-            '"queue":"test_queue","segments_ms":{"execution":1500}}'
+            '"queue":"gallery_search","segments_ms":{"execution":1500}}'
         )
         gallery_queue = "photo_import_gallery"
         pending_metric = "findme_photo_import_pending_count"
         readiness = "findme_photo_import_counters_ready"
         try:
-            wait_for_sample("findme_queue_telemetry_listening", 1)
+            wait_for_sample("findme_queue_results_listener_connected", 1)
             wait_for_sample(readiness, 0)
             model = apps.get_model("processing", "PhotoImportCounter")
             for queue in (gallery_queue, "photo_import_face"):
@@ -79,14 +79,14 @@ def test_counter_scrapes_survive_listener_disconnect_and_restart():
             wait_for_sample(pending_metric, 7, queue=gallery_queue)
             with psycopg.connect(**connection.get_connection_params(), autocommit=True) as sender:
                 sender.execute("SELECT pg_notify('queue_telemetry', %s)", [payload])
-                wait_for_sample("findme_queue_completed_total", 1)
+                wait_for_sample("findme_journey_completed_total", 1)
                 with psycopg.connect(**connection.get_connection_params()) as blocker:
                     blocker.execute(
                         "LOCK TABLE processing_photoimportcounter IN ACCESS EXCLUSIVE MODE"
                     )
                     wait_for_sample(readiness, 0)
                     sender.execute("SELECT pg_notify('queue_telemetry', %s)", [payload])
-                    wait_for_sample("findme_queue_completed_total", 2)
+                    wait_for_sample("findme_journey_completed_total", 2)
                 wait_for_sample(pending_metric, 7, queue=gallery_queue)
                 result = sender.execute(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
@@ -94,13 +94,13 @@ def test_counter_scrapes_survive_listener_disconnect_and_restart():
                     "AND datname = current_database()"
                 ).fetchall()
                 assert result == [(True,)]
-                wait_for_sample("findme_queue_telemetry_listening", 0)
+                wait_for_sample("findme_queue_results_listener_connected", 0)
                 wait_for_sample(pending_metric, 7, queue=gallery_queue)
-                wait_for_sample("findme_queue_telemetry_listening", 1)
+                wait_for_sample("findme_queue_results_listener_connected", 1)
                 wait_for_sample(pending_metric, 7, queue=gallery_queue)
                 sender.execute("SELECT pg_notify('queue_telemetry', %s)", [payload])
-                wait_for_sample("findme_queue_completed_total", 3)
-                wait_for_sample("findme_queue_segment_duration_seconds_total", 4.5)
+                wait_for_sample("findme_journey_completed_total", 3)
+                wait_for_sample("findme_journey_segment_duration_seconds_total", 4.5)
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -112,7 +112,7 @@ def test_counter_scrapes_survive_listener_disconnect_and_restart():
 
     with subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True) as process:
         try:
-            wait_for_sample("findme_queue_telemetry_listening", 1)
+            wait_for_sample("findme_queue_results_listener_connected", 1)
             wait_for_sample(pending_metric, 7, queue=gallery_queue)
         finally:
             process.terminate()

@@ -155,6 +155,9 @@ def _load_checkpoint(
             raise ImportConflict(
                 "missing_checkpoint", "The import upload checkpoint is incomplete."
             )
+        if attempt.queue_publish_started_at is None:
+            attempt.queue_publish_started_at = clock()
+            attempt.save(update_fields=["queue_publish_started_at"])
         return _UploadCheckpoint(
             incoming_key=attempt.incoming_key,
             final_key=attempt.final_key,
@@ -331,7 +334,7 @@ def _publish_checkpointed_item(
         item.error_code = ""
         item.completed_at = completed_at
         item.save(update_fields=["content_sha256", "status", "photo", "error_code", "completed_at"])
-        _finish_attempt(attempt, "succeeded", now=completed_at)
+        _finish_attempt(batch, attempt, "succeeded", now=completed_at)
         _derive_batch(batch, now=completed_at)
         result = ImportCompletion(item.status, item.id, photo.id)
     return result, duplicate

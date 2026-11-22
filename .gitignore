@@ -63,3 +63,6 @@ var/adaface-critical-path/
 **/*.auto.tfvars.json
 **/terraform.tfvars
 infra/terraform/public-probe.zip
+
+/src/agent_client/build/
+/src/agent_client/*.egg-info/

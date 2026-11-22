@@ -1,5 +1,6 @@
 -r src/backend/requirements.txt
 -r deploy/worker-pools/telemetry-requirements.txt
+./src/agent_client
 
 mypy>=1.15,<2
 pre-commit>=4,<5

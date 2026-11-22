@@ -79,6 +79,7 @@ jobs:
             src/backend/requirements.txt
             src/worker/requirements.txt
             requirements-dev.txt
+            src/agent_client/pyproject.toml
       - name: Install dependencies
         run: pip install -r requirements-dev.txt -r src/worker/requirements.txt
       - name: Static analysis
@@ -128,6 +129,7 @@ jobs:
             src/backend/requirements.txt
             src/worker/requirements.txt
             requirements-dev.txt
+            src/agent_client/pyproject.toml
       - name: Install dependencies
         if: needs.select-test-suites.outputs.operational == 'true'
         run: pip install -r requirements-dev.txt -r src/worker/requirements.txt
@@ -185,6 +187,7 @@ jobs:
             src/backend/requirements.txt
             src/worker/requirements.txt
             requirements-dev.txt
+            src/agent_client/pyproject.toml
       - name: Install dependencies
         if: needs.select-test-suites.outputs.migrations == 'true'
         run: pip install -r requirements-dev.txt -r src/worker/requirements.txt

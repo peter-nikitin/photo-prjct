@@ -106,3 +106,4 @@ ADR фиксирует долговременный архитектурный �
 | 0082 | [Ограничить защиту кадра от непригодной фоновой фигуры](0082-limit-background-figure-protection.md) | Accepted |
 | 0083 | [Подтверждать добавление по внешности цветом](0083-require-color-for-apparel-additions.md) | Accepted |
 | 0084 | [Продолжать поиск под одной ссылкой](0084-continue-search-under-one-result-link.md) | Accepted |
+| 0085 | [Персональные токены и локальная загрузка агентом](0085-personal-tokens-and-local-agent-upload.md) | Accepted |

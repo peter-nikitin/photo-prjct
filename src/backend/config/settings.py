@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "commerce.apps.CommerceConfig",
     "feature_flags.apps.FeatureFlagsConfig",
     "ingestion.apps.IngestionConfig",
+    "agent_api",
     "picflow.apps.PicflowConfig",
     "processing.apps.ProcessingConfig",
     "selfie_search.apps.SelfieSearchConfig",

@@ -1,0 +1,8 @@
+{% extends "admin/base_site.html" %}
+{% block title %}Персональный токен{% endblock %}
+{% block content %}
+  <h1>Персональный токен</h1>
+  <p>Скопируйте токен сейчас. После закрытия страницы его нельзя будет посмотреть снова.</p>
+  <p><code>{{ secret }}</code></p>
+  <p><a href="{% url 'admin:agent_api_agenttoken_changelist' %}">К списку токенов</a></p>
+{% endblock %}

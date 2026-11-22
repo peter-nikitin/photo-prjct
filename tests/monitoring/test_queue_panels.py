@@ -179,8 +179,9 @@ def test_pie_keeps_both_jittered_scrapes_and_the_peak_before_a_reset(tmp_path):
     # Actual scrapes at 0, 61, 119 seconds, chart evaluations at 0, 60, 120.
     # The second case resets between the two new observations; the third resets
     # before the first, then grows beyond the previous snapshot in the same bucket.
+    # The cold-start pair has no earlier sample and contributes only its observed change.
     for index, (initial, first, last, expected) in enumerate(
-        ((0, 10, 30, 30), (0, 10, 3, 13), (100, 5, 110, 110))
+        ((0, 10, 30, 30), (0, 10, 3, 13), (100, 5, 110, 110), ("_", 10, 30, 20))
     ):
         segment = queue.segments[index]
         series.append(
@@ -202,3 +203,29 @@ def test_pie_keeps_both_jittered_scrapes_and_the_peak_before_a_reset(tmp_path):
             },
         ]
     _test_promql(tmp_path, series, expressions, interval="1s")
+
+
+def test_all_pie_targets_fit_a_monium_get_request():
+    from urllib.parse import quote, urlencode
+
+    path = "/monitoring/v2/prometheus/workspaces/workspace01234567890/api/v1/query_range"
+    for panel in load().panels(QUEUES, "workspace"):
+        chart = next(
+            widget["multiSourceChart"]
+            for widget in panel["group"]["widgets"]
+            if widget["multiSourceChart"]["visualizationSettings"]["type"]
+            == "VISUALIZATION_TYPE_PIE"
+        )
+        for target in chart["targets"]:
+            encoded = urlencode(
+                {
+                    "query": target["prometheusTarget"]["query"],
+                    "start": "2026-11-22T14:00:00.000Z",
+                    "end": "2026-11-22T15:00:00.000Z",
+                    "step": 60,
+                },
+                quote_via=quote,
+            )
+            request_line = f"GET {path}?{encoded} HTTP/1.1\r\n"
+            # Leave room for the dashboard proxy's request framing.
+            assert len(request_line.encode()) <= 4096, panel["group"]["title"]

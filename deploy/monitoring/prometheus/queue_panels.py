@@ -33,8 +33,8 @@ def _selector(metric: str, queue: str, job: str = "findme-queue-telemetry", **la
 def _fresh(queue: str, source: str) -> str:
     job = "findme-http" if source == "ready" else "findme-queue-telemetry"
     observed = _selector(f"findme_queue_{source}_observed_timestamp_seconds", queue, job)
-    age = f"(time() - max({observed}))"
-    return f"(({age} >= 0) and ({age} <= 150))"
+    # Center the allowed age interval [0, 150] at 75 to use the selector once.
+    return f"(abs(time() - max({observed}) - 75) <= 75)"
 
 
 def _gate(expression: str, queue: str, source: str) -> str:
@@ -50,8 +50,8 @@ def _gate(expression: str, queue: str, source: str) -> str:
 
 
 def _reset_difference(last: str, first: str) -> str:
-    difference = f"(({last}) - ({first}))"
-    return f"(({difference} >= 0) or (({last}) and ({difference} < 0)))"
+    # A filter comparison keeps the left-hand value, which is the new value after a reset.
+    return f"(({last}-{first}>=0) or ({last}<{first}))"
 
 
 def _interval_increment(counter: str) -> str:
@@ -63,15 +63,14 @@ def _interval_increment(counter: str) -> str:
     """
     count = f"count_over_time({counter}[1m])"
     previous = counter + " offset 1m"
-    one = f"({_reset_difference(counter, previous)}) and ({count} == 1)"
-    first = f"({counter} - idelta({counter}[1m]))"
-    preceding = f"({_reset_difference(first, previous)}) or ((0 * {first}) unless {previous})"
-    two = f"(({preceding}) + {_reset_difference(counter, first)}) and ({count} == 2)"
-    return (
-        f"sum((({one}) or ({two})) "
-        f"and ((timestamp({counter}) > timestamp({counter} @ start())) "
-        f"or (timestamp({counter}) unless {counter} @ start())))"
-    )
+    one = f"{_reset_difference(counter, previous)} and ({count}==1)"
+    difference = f"idelta({counter}[1m])"
+    first = f"({counter} - {difference})"
+    preceding = f"{_reset_difference(first, previous)} or (0*{counter})"
+    last_increment = f"({difference}>=0) or ({counter} and ({difference}<0))"
+    two = f"(({preceding}) + ({last_increment})) and ({count}==2)"
+    before_range = f"timestamp({counter})<=timestamp({counter} @ start())"
+    return f"sum((({one}) or ({two})) unless ({before_range}))"
 
 
 def _chart(

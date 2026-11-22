@@ -106,7 +106,7 @@ def main():
         compose("up", "-d", "--build", "--wait", "web", timeout=900)
         for _ in range(10):
             baseline_latencies.append(health())
-        compose("up", "-d", "worker-bulk")
+        compose("up", "-d", "--build", "worker-bulk", timeout=900)
         worker_id = compose("ps", "-q", "worker-bulk").strip()
         image = json.loads(subprocess.check_output(["docker", "inspect", worker_id], text=True))[0]
         write_immutable(

@@ -21,6 +21,45 @@ workers were idle at about 28.6 MiB each under 2 GiB limits. Inventory is not co
 an arm64 local image digest cannot identify a rebuilt amd64 release image. The current deployed
 worker configuration remains bib-free at 1 CPU and 2 GiB per worker.
 
+## Локальный запуск отдельного валидатора
+
+В локальном Compose очередь номеров обслуживает `worker-bib`. Воркер выполняет OCR и передаёт
+только кроп кандидата в `bib-validator` по `PHOTO_WORKER_BIB_VALIDATOR_URL`. В нём одна копия
+Qwen с одним слотом. Модель загружается при старте контейнера, кэш запросов отключён. Compose
+ждёт готовности валидатора перед запуском воркеров. У валидатора нет опубликованного порта и
+учётных данных приложения.
+
+```sh
+docker compose --profile worker up --build -d worker-bib
+docker compose --profile worker up -d --no-deps --scale worker-bib=4 worker-bib
+docker compose --profile worker logs -f worker-bib bib-validator
+```
+
+Масштабирование `worker-bib` сохраняет запущенный контейнер валидатора. Число воркеров задаёт
+параллелизм OCR, общую скорость визуальной проверки ограничивают CPU и число слотов валидатора.
+Сетевой сбой записывается как ошибка распознавания в существующем статусе задания.
+
+В production группы фотоворкеров размещены на одной ВМ. Только `photo-worker-bib` входит
+в сеть `bib-validation` вместе с валидатором и обращается к `http://bib-validator:8180`.
+Deploy публикует отдельный образ валидатора и передаёт его по digest. При ненулевом
+`scale` группы номеров выпуск ждёт готовности валидатора перед запуском воркеров.
+В профиле публичного поиска группа номеров имеет `scale: 0`, и Deploy останавливает
+валидатор после сверки остановленных воркеров.
+
+Если на ВМ нужно временно изменить число реплик номеров, сначала поднимите валидатор с
+проверкой готовности и затем меняйте только воркеры. Команды запускайте из `/opt/photo-prjct`
+после выпуска, который доставил `BIB_VALIDATOR_IMAGE`.
+
+```sh
+sudo docker compose -p photo-prjct --env-file .env -f docker-compose.deployment.yml \
+  --profile bib-validation up -d --wait --wait-timeout 180 --no-deps bib-validator
+sudo docker compose -p photo-prjct --env-file .env -f docker-compose.deployment.yml \
+  --profile photo-worker up -d --no-deps --scale photo-worker-bib=2 photo-worker-bib
+```
+
+Для паузы установите временное число реплик номеров в ноль той же командой, затем
+остановите `bib-validator`. Следующий штатный выпуск применит `scale` из Compose.
+
 ## Fixed boundaries
 
 - Every event starts with `bib_search_enabled=false`. Deploying code, changing worker identity, or

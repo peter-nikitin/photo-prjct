@@ -29,22 +29,34 @@ SEARCH_ROLES = {
     "photo-worker": (1, ("1/selfie_query/2",)),
     **{name: (0, identities) for name, (_, identities) in ROLES.items() if name != "photo-worker"},
 }
+VALIDATOR_IMAGE = "ghcr.io/example/bib-validator@sha256:" + "b" * 64
 DESIRED_TOKEN = "private-desired-worker-token"
 RUNNING_TOKEN = "private-running-worker-token"
 
 
 def test_deployment_enables_only_selfie_processing_despite_stale_overrides(tmp_path):
-    services = render_compose(
+    config = render_compose(
         tmp_path,
         "docker-compose.deployment.yml",
-        profiles=("photo-worker",),
+        profiles=("photo-worker", "bib-validation"),
         environment={
             "PHOTO_WORKER_IMAGE": WORKER_IMAGE,
+            "BIB_VALIDATOR_IMAGE": VALIDATOR_IMAGE,
             "PHOTO_PROCESSING_WORKER_TOKEN": DESIRED_TOKEN,
             "PHOTO_WORKER_PROCESSOR_IDENTITIES": "3/face_embedding/5,1/bib_recognition/1",
             "PHOTO_WORKER_PROCESSOR_TYPES": "face_embedding,bib_recognition",
         },
-    )["services"]
+    )
+    services = config["services"]
+    validator = services["bib-validator"]
+    assert validator["image"] == VALIDATOR_IMAGE
+    assert validator["profiles"] == ["bib-validation"]
+    assert set(validator["networks"]) == {"bib-validation"}
+    assert config["networks"]["bib-validation"]["internal"] is True
+    assert validator["healthcheck"]["test"]
+    assert not {"ports", "volumes", "environment", "env_file"} & validator.keys()
+    assert set(services["photo-worker-bib"]["networks"]) == {"default", "bib-validation"}
+    assert {"bib-validation"}.isdisjoint(services["web"]["networks"])
     assert {
         name for name, service in services.items() if "photo-worker" in service.get("profiles", [])
     } == set(SEARCH_ROLES)
@@ -54,7 +66,11 @@ def test_deployment_enables_only_selfie_processing_despite_stale_overrides(tmp_p
         assert worker["image"] == WORKER_IMAGE
         assert "volumes" not in worker and "ports" not in worker
         environment = worker["environment"]
-        assert set(environment) == {
+        validator_keys = set()
+        if name == "photo-worker-bib":
+            validator_keys = {"PHOTO_WORKER_BIB_VALIDATOR_URL"}
+            assert environment["PHOTO_WORKER_BIB_VALIDATOR_URL"] == "http://bib-validator:8180"
+        assert set(environment) == validator_keys | {
             "PHOTO_WORKER_API_URL",
             "PHOTO_WORKER_TOKEN",
             "PHOTO_WORKER_BUILD",
@@ -129,6 +145,14 @@ elif args[0] == "compose" and "--profile" in args:
             print("\n".join(["web", *desired]))
         else:
             print(json.dumps({"services": desired}))
+    if subcommand == "up" and rest[-1] == "bib-validator":
+        if state["validator_unhealthy"]:
+            sys.exit(1)
+        containers["validator"] = {
+            "service": "bib-validator", "status": "running", "image": state["validator_image"],
+        }
+    if subcommand == "stop" and rest[-1] == "bib-validator":
+        containers["validator"]["status"] = "exited"
     if subcommand == "up":
         for name in (s for s in rest if s in desired):
             for cid in list(containers):
@@ -164,6 +188,7 @@ def run_release(
     retire=False,
     corruption=None,
     missing=None,
+    validator_unhealthy=False,
 ):
     roles = SEARCH_ROLES if search else ROLES
     desired = {
@@ -183,6 +208,7 @@ def run_release(
         "legacy": {"service": "photo-worker", "status": "running" if active else "exited"}
     }
     if search:
+        containers["validator"] = {"service": "bib-validator", "status": "running"}
         if retire:
             desired = {"photo-worker": desired["photo-worker"]}
             del desired["photo-worker"]["scale"]
@@ -208,6 +234,8 @@ def run_release(
                 "containers": containers,
                 "corruption": corruption or {},
                 "missing": missing,
+                "validator_unhealthy": validator_unhealthy,
+                "validator_image": VALIDATOR_IMAGE,
             }
         )
     )
@@ -228,12 +256,26 @@ def run_release(
     return result, (release / "commands").read_text(), json.loads(state.read_text())["containers"]
 
 
+def test_unhealthy_bib_validator_blocks_worker_rollout(release):
+    result, calls, _ = run_release(release, worker=True, validator_unhealthy=True)
+
+    assert result.returncode != 0
+    assert "--wait-timeout 180 --no-deps --pull missing bib-validator" in calls
+    assert "--no-deps --pull never --timeout 180 photo-worker" not in calls
+
+
 @pytest.mark.parametrize("worker", [True, False])
 def test_active_release_reconciles_all_replicas_with_one_image(release, worker):
     result, calls, actual = run_release(release, web=not worker, worker=worker)
     assert result.returncode == 0, result.stderr
-    assert set(actual) == {f"{name}-{i}" for name, (n, _) in ROLES.items() for i in range(1, n + 1)}
-    assert all(c["image"] == WORKER_IMAGE for c in actual.values())
+    assert set(actual) == {"validator"} | {
+        f"{name}-{i}" for name, (n, _) in ROLES.items() for i in range(1, n + 1)
+    }
+    assert calls.index("--wait-timeout 180 --no-deps --pull missing bib-validator") < calls.index(
+        "--no-deps --pull never --timeout 180 photo-worker"
+    )
+    assert actual["validator"]["image"] == VALIDATOR_IMAGE
+    assert all(c["image"] == WORKER_IMAGE for name, c in actual.items() if name != "validator")
     assert calls.count("pull photo-worker") == int(worker)
     up = calls.index("up -d --no-deps --pull never --timeout 180 photo-worker")
     if worker:
@@ -265,7 +307,10 @@ def test_search_release_stops_upload_workers_and_keeps_selfie(release, retire):
         "other-service",
         "other-project",
         "run-command",
+        "validator",
     }
+    assert actual["validator"]["status"] == "exited"
+    assert calls.index("--no-deps --pull never --timeout 180") < calls.index("stop bib-validator")
     assert "PHOTO_WORKER_PROCESSOR_TYPES=selfie_query" in actual["photo-worker-1"]["environment"]
     if retire:
         assert "stop --time 180 face-a face-b" in calls

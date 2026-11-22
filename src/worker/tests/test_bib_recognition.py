@@ -14,11 +14,11 @@ from photo_worker.bib_recognition import (
     tile_starts,
     verify_runtime_versions,
 )
+from photo_worker.bib_validation_service import verify_model_files
 from photo_worker.bib_visual import (
     VisualBoundsError,
     VisualReading,
     parse_visual_response,
-    verify_model_files,
 )
 from PIL import Image
 

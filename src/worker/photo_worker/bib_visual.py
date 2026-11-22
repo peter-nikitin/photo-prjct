@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 # ruff: noqa: E501 -- the frozen prompt and artifact digests are complete literals.
-import hashlib
+import base64
 import json
-import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.error import URLError
+from urllib.request import ProxyHandler, Request, build_opener
 
 PROMPT = (  # noqa: E501 - exact frozen prompt from the accepted experiment
     'Look at the runner\'s paper race bib in this crop. Read the MAIN COMPETITOR NUMBER printed prominently on the bib. Ignore the red outline. Exclude telephone/contact details, race distance, year, sponsor text, logos and body parts. Do not guess digits hidden by blur or occlusion. If no main competitor number is visibly readable, return an empty list. If multiple bibs are visible, include only their clearly readable main competitor numbers. Reply only with a JSON object: {"numbers": ["digits"]}. Keep leading zeros if actually printed.'
@@ -81,17 +83,6 @@ def parse_visual_response(raw_response: str) -> tuple[str, ...]:
     return result
 
 
-def verify_model_files(model_path: Path, expected_hashes: dict[str, str]) -> None:
-    for name, expected_hash in sorted(expected_hashes.items()):
-        path = model_path / name
-        if not path.is_file():
-            raise RuntimeError(f"missing model file: {name}")
-        with path.open("rb") as stream:
-            actual_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-        if actual_hash != expected_hash:
-            raise RuntimeError(f"model hash mismatch: {name}")
-
-
 def _validate_raw(raw_response: str) -> None:
     if len(raw_response.encode("utf-8")) > MAX_RAW_RESPONSE_BYTES:
         raise VisualBoundsError("visual raw response exceeds 512 UTF-8 bytes")
@@ -107,116 +98,20 @@ def _validate_numbers(numbers: tuple[str, ...]) -> None:
             raise VisualBoundsError("visual digit string exceeds 16 digits")
 
 
-def server_command(*, model_path: Path, port: int) -> list[str]:
-    """The model's packaged chat template and CPU configuration are identity-owned."""
-    return [
-        "/worker/llama/llama-server",
-        "--model",
-        str(model_path / "Qwen3VL-2B-Instruct-Q4_K_M.gguf"),
-        "--mmproj",
-        str(model_path / "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf"),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(port),
-        "--parallel",
-        "1",
-        "--threads",
-        "2",
-        "--threads-batch",
-        "2",
-        "--ctx-size",
-        "4096",
-        "--n-gpu-layers",
-        "0",
-        "--no-mmproj-offload",
-        "--jinja",
-        "--no-webui",
-        "--offline",
-    ]
+class HTTPVisualReader:
+    """Ask the standalone validator to inspect a crop."""
 
-
-class LlamaVisualReader:
-    """Start one loopback server on demand and close it at the end of the photo."""
-
-    def __init__(self, *, model_path: Path) -> None:
-        self._model_path = model_path
-        self._process: subprocess.Popen[bytes] | None = None
-        self._port = 0
-        self._active = False
-
-    def __enter__(self) -> LlamaVisualReader:
-        self._active = True
-        return self
-
-    def _start(self) -> None:
-        import socket
-        import subprocess
-        import time
-        from urllib.error import URLError
-        from urllib.request import ProxyHandler, build_opener
-
-        verify_model_files(self._model_path, MODEL_FILE_HASHES)
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            self._port = listener.getsockname()[1]
+    def __init__(self, base_url: str) -> None:
+        self._url = f"{base_url.rstrip('/')}/v1/chat/completions"
         self._opener = build_opener(ProxyHandler({}))
-        # Inherit the inference child's process group so the parent can kill the entire tree.
-        self._process = subprocess.Popen(
-            server_command(model_path=self._model_path, port=self._port),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        try:
-            started = time.monotonic()
-            while time.monotonic() - started < 90:
-                if self._process.poll() is not None:
-                    raise RuntimeError("llama_server_exited")
-                try:
-                    with self._opener.open(
-                        f"http://127.0.0.1:{self._port}/health", timeout=0.5
-                    ) as response:
-                        if response.status == 200:
-                            return
-                except (URLError, TimeoutError):
-                    time.sleep(0.1)
-            raise TimeoutError("llama_server_start_timeout")
-        except BaseException:
-            self.close()
-            raise
-
-    def __exit__(self, *args: object) -> None:
-        self._active = False
-        self.close()
-
-    def close(self) -> None:
-        import subprocess
-
-        if self._process is not None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=2)
-            self._process = None
 
     def read(self, *, image_id: str, image_path: Path) -> VisualReading:
-        import base64
-        import time
-        from urllib.request import Request
-
         del image_id
-        if not self._active:
-            raise RuntimeError("llama_server_not_started")
         # Crops are <=640px; cap encoded input independently of image dimensions.
         with image_path.open("rb") as stream:
             encoded = stream.read(2 * 1024 * 1024 + 1)
         if len(encoded) > 2 * 1024 * 1024:
             raise VisualBoundsError("visual input exceeds 2 MiB")
-        if self._process is None:
-            self._start()
         body = {
             "messages": [
                 {
@@ -237,17 +132,23 @@ class LlamaVisualReader:
             "seed": SEED,
             "max_tokens": MAX_TOKENS,
             "stream": False,
+            "cache_prompt": False,
             "response_format": {"type": "json_object"},
         }
         request = Request(
-            f"http://127.0.0.1:{self._port}/v1/chat/completions",
+            self._url,
             data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         started = time.perf_counter()
-        with self._opener.open(request, timeout=120) as response:
-            data = response.read(SERVER_RESPONSE_MAX_BYTES + 1)
+        try:
+            with self._opener.open(request, timeout=120) as response:
+                data = response.read(SERVER_RESPONSE_MAX_BYTES + 1)
+        except URLError as error:
+            if isinstance(error.reason, TimeoutError):
+                raise error.reason from error
+            raise
         if len(data) > SERVER_RESPONSE_MAX_BYTES:
             raise VisualBoundsError("server response exceeds 16 KiB")
         try:
@@ -255,7 +156,7 @@ class LlamaVisualReader:
             if not isinstance(raw, str):
                 raise ValueError("invalid content")
         except (ValueError, KeyError, IndexError, TypeError) as error:
-            raise RuntimeError("invalid_llama_response") from error
+            raise RuntimeError("invalid_bib_validation_response") from error
         try:
             numbers = parse_visual_response(raw)
         except VisualResponseError:

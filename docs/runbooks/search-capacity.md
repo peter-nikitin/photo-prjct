@@ -15,7 +15,8 @@
 | `photo-worker` | 10 реплик для метаданных, чистых и защищённых превью и селфи | Один экземпляр только для селфи, 2 слота по одному потоку, 2 vCPU |
 | `photo-worker-face` | 2 реплики для лиц | 0 реплик |
 | `photo-worker-appearance` | 2 реплики для внешности | 0 реплик |
-| `photo-worker-bib` | 1 реплика для номеров | 0 реплик |
+| `photo-worker-bib` | 1 реплика OCR номеров | 0 реплик |
+| `bib-validator` | Одна копия Qwen, 1 слот, 2 vCPU, лимит 3 GiB | Остановлен |
 | `import-worker`, `archive-worker` | По 0,5 vCPU и 256 MiB | По 0,5 vCPU и 256 MiB |
 | `db` | PostgreSQL 16 / pgvector, `pg_stat_statements`, без контейнерных квот CPU и RAM | Те же параметры |
 

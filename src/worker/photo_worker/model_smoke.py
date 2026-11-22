@@ -159,7 +159,6 @@ def _assert_bib_models(path: Path) -> None:
         RapidOCREngine,
         verify_runtime_versions,
     )
-    from photo_worker.bib_visual import LlamaVisualReader
     from photo_worker.contracts import BIB_INFERENCE_CONFIGURATION_SHA256
 
     if BIB_CONFIGURATION_SHA256 != BIB_INFERENCE_CONFIGURATION_SHA256:
@@ -167,16 +166,7 @@ def _assert_bib_models(path: Path) -> None:
     verify_runtime_versions()
     ocr = RapidOCREngine.from_experiment_config(OCR_CONFIG, repository=MODEL_DIRECTORY)
     ocr.infer(path)
-    with LlamaVisualReader(model_path=MODEL_DIRECTORY) as reader:
-        from PIL import Image
-
-        crop = path.with_suffix(".png")
-        with Image.open(path) as image:
-            image.save(crop)
-        reading = reader.read(image_id="synthetic-smoke", image_path=crop)
-        if reading.status != "complete" or reading.numbers != ():
-            raise RuntimeError("bib_model_smoke_expected_empty_numbers")
-    print("bib-model-smoke-ok")
+    print("bib-ocr-model-smoke-ok")
 
 
 if __name__ == "__main__":

@@ -132,7 +132,9 @@ def classify(paths):
             "src/worker/requirements.cpu.txt",
         }:
             worker = base = True
-        elif path == "Dockerfile.worker" or path.startswith("src/worker/photo_worker/"):
+        elif path in {"Dockerfile.worker", "Dockerfile.bib-validator"} or path.startswith(
+            "src/worker/photo_worker/"
+        ):
             worker = True
         elif path == "Dockerfile.import-worker" or path.startswith("src/import_worker/"):
             importer = True

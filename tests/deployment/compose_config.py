@@ -43,6 +43,9 @@ def render_compose(
         )
     )
     command = ["docker", "compose", "--env-file", str(env_file)]
+    if {"docker-compose.yml", "docker-compose.bib-local.yml"}.intersection(filenames):
+        validator = "docker-compose.bib-validator.yml"
+        (directory / validator).write_bytes((ROOT / validator).read_bytes())
     for filename in filenames:
         copied = directory / filename
         copied.write_bytes((ROOT / filename).read_bytes())

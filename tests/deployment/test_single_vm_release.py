@@ -143,6 +143,7 @@ def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch, caps
         "GHCR_USERNAME": "reader",
         "APP_IMAGE": f"ghcr.io/example/app@sha256:{digest}",
         "PHOTO_WORKER_IMAGE": f"ghcr.io/example/worker@sha256:{digest}",
+        "BIB_VALIDATOR_IMAGE": f"ghcr.io/example/bib-validator@sha256:{digest}",
         "IMPORT_WORKER_IMAGE": f"ghcr.io/example/import@sha256:{digest}",
         "DEPLOY_WEB": "true",
         "DEPLOY_WORKER": "true",
@@ -177,6 +178,7 @@ def test_transport_sends_secrets_only_in_stdin(tmp_path: Path, monkeypatch, caps
     monkeypatch.setenv("DEPLOY_WORKER", "false")
     module["main"]()
     assert "PHOTO_WORKER_IMAGE" not in captured["payload"]["environment"]
+    assert "BIB_VALIDATOR_IMAGE" not in captured["payload"]["environment"]
 
 
 def test_transport_rejects_public_private_key_before_connecting(
@@ -249,6 +251,7 @@ esac
         "GHCR_USERNAME": "reader",
         "APP_IMAGE": f"ghcr.io/example/app@sha256:{digest}",
         "PHOTO_WORKER_IMAGE": f"ghcr.io/example/worker@sha256:{digest}",
+        "BIB_VALIDATOR_IMAGE": f"ghcr.io/example/bib-validator@sha256:{digest}",
         "IMPORT_WORKER_IMAGE": f"ghcr.io/example/import@sha256:{digest}",
         "DEPLOY_WEB": "true",
         "DEPLOY_WORKER": "true",
@@ -298,6 +301,24 @@ esac
     assert f'APP_IMAGE="ghcr.io/example/app@sha256:{digest}"' in existing
     assert f'IMPORT_WORKER_IMAGE="ghcr.io/example/import@sha256:{digest}"' in existing
     assert f'PHOTO_WORKER_IMAGE="ghcr.io/example/worker@sha256:{"b" * 64}"' in existing
+    assert f'BIB_VALIDATOR_IMAGE="ghcr.io/example/bib-validator@sha256:{digest}"' in existing
+    web_only = subprocess.run(
+        ["python3", str(ROOT / "deploy/run-single-vm.py")],
+        env={
+            **os.environ,
+            **values,
+            "DEPLOY_WEB": "true",
+            "DEPLOY_WORKER": "false",
+            "APP_IMAGE": f"ghcr.io/example/app@sha256:{digest}",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert web_only.returncode == 0, web_only.stderr
+    assert (
+        f'BIB_VALIDATOR_IMAGE="ghcr.io/example/bib-validator@sha256:{digest}"'
+        in (tmp_path / "remote/.env").read_text()
+    )
     (tmp_path / "remote/.env").write_text(existing.replace(f"sha256:{digest}", "latest"))
     failed = subprocess.run(
         ["python3", str(ROOT / "deploy/run-single-vm.py")],

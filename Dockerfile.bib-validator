@@ -1,0 +1,20 @@
+FROM debian:bookworm-slim AS llama-build
+RUN apt-get update && apt-get install -y --no-install-recommends cmake g++ make ca-certificates && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:2de0d87eda4696e9f6bbd771d4c623267f4e95856cce6f99793f91522f993e43 https://github.com/ggml-org/llama.cpp/archive/5266f24da75dc449bd56cbed7addb9c8e4a6a73e.tar.gz /tmp/llama.tar.gz
+RUN mkdir /src && tar -xzf /tmp/llama.tar.gz -C /src --strip-components=1 \
+    && cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON \
+    && cmake --build /build --target llama-server -j 2 \
+    && mkdir /runtime && cp /build/bin/llama-server /build/bin/*.so* /runtime/
+
+FROM python:3.12-slim
+WORKDIR /worker
+
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /worker/models/bib
+COPY --from=llama-build /runtime /worker/llama
+ENV LD_LIBRARY_PATH=/worker/llama PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ADD --chmod=444 --checksum=sha256:089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/d38d39f5972e27cd58023f9b1e9f994b0c85ca47/Qwen3VL-2B-Instruct-Q4_K_M.gguf /worker/models/bib/Qwen3VL-2B-Instruct-Q4_K_M.gguf
+ADD --chmod=444 --checksum=sha256:f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82 https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/d38d39f5972e27cd58023f9b1e9f994b0c85ca47/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf /worker/models/bib/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf
+COPY src/worker/photo_worker/bib_visual.py src/worker/photo_worker/bib_validation_service.py ./photo_worker/
+USER 10001:10001
+ENTRYPOINT ["python", "-m", "photo_worker.bib_validation_service"]

@@ -252,10 +252,10 @@ def test_worker_compose_profile_is_opt_in_and_receives_only_its_narrow_contract(
         assert "PHOTO_WORKER_CONCURRENCY" not in worker["environment"]
     assert bulk["environment"]["PHOTO_WORKER_PROCESSOR_IDENTITIES"].endswith(
         "1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,"
-        "3/face_embedding/5,1/bib_recognition/1,2/person_appearance/1}"
+        "3/face_embedding/5,2/person_appearance/1}"
     )
     assert bulk["environment"]["PHOTO_WORKER_PROCESSOR_TYPES"].endswith(
-        "bib_recognition,face_embedding,capture_metadata,generate_preview,"
+        "face_embedding,capture_metadata,generate_preview,"
         "generate_watermarked_preview,person_appearance}"
     )
     assert bulk["environment"]["PHOTO_WORKER_HTTP_TIMEOUT_SECONDS"].endswith("180}")
@@ -325,7 +325,7 @@ def test_worker_compose_hostname_is_accepted_by_django_tracked_defaults() -> Non
 
 
 def _copy_compose_inputs(destination: Path) -> None:
-    for name in ("docker-compose.yml", ".env.example"):
+    for name in ("docker-compose.yml", "docker-compose.bib-validator.yml", ".env.example"):
         copy2(ROOT / name, destination / name)
 
 
@@ -347,10 +347,9 @@ def _dotenv_values(path: Path) -> dict[str, str]:
     )
 
 
-def test_bib_image_pins_linux_runtime_and_runs_offline_smokes():
-    dockerfile = (ROOT / "Dockerfile.worker-base").read_text() + (
-        ROOT / "Dockerfile.worker"
-    ).read_text()
+def test_validator_image_owns_pinned_model_and_linux_runtime():
+    validator = (ROOT / "Dockerfile.bib-validator").read_text()
+    worker = (ROOT / "Dockerfile.worker-base").read_text()
     for token in (
         "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
         "2de0d87eda4696e9f6bbd771d4c623267f4e95856cce6f99793f91522f993e43",
@@ -358,13 +357,7 @@ def test_bib_image_pins_linux_runtime_and_runs_offline_smokes():
         "d38d39f5972e27cd58023f9b1e9f994b0c85ca47",
         "089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae",
         "f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82",
-        "RUN --network=none python -m photo_worker.model_smoke",
+        "LD_LIBRARY_PATH=/worker/llama",
     ):
-        assert token in dockerfile
-
-
-def test_bib_runtime_loader_finds_the_packaged_shared_libraries():
-    dockerfile = (ROOT / "Dockerfile.worker-base").read_text() + (
-        ROOT / "Dockerfile.worker"
-    ).read_text()
-    assert "LD_LIBRARY_PATH=/worker/llama" in dockerfile
+        assert token in validator
+        assert token not in worker

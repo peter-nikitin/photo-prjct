@@ -329,6 +329,9 @@ def test_real_compose_merge_excludes_checkout_deployment_only_environment(
     assert result.returncode == 0, result.stderr
     captures = Path(local_launcher_environment["COMPOSE_CAPTURE"])
     shutil.copyfile(Path(local_launcher_environment["CHECKOUT"], ".env"), captures / ".env")
+    shutil.copyfile(
+        ROOT / "docker-compose.bib-validator.yml", captures / "docker-compose.bib-validator.yml"
+    )
     rendered = subprocess.run(
         [
             DOCKER,

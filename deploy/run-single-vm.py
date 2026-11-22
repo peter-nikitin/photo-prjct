@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_LOG_PATTERN = (
     r"DEPLOY_STAGE=(?:stop-workers|pull-images|commerce-check|database|migrate|"
-    r"sync-feature-flags|static|web|photo-worker|image-prune)"
+    r"sync-feature-flags|static|web|photo-worker|bib-validator|image-prune)"
     r"|DEPLOY_IMAGE_PRUNE_RESULT=(?:success|failure)"
     r"|QUEUE_TELEMETRY_START=failed"
     r"|PHOTO_WORKER_VERIFY=(?:ok|unavailable|container-mismatch|not-running|"
@@ -32,7 +32,7 @@ os.umask(0o077)
 with (root / '.deployment.lock').open('w') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     env = payload['environment']
-    images = ('APP_IMAGE', 'PHOTO_WORKER_IMAGE', 'IMPORT_WORKER_IMAGE')
+    images = ('APP_IMAGE', 'PHOTO_WORKER_IMAGE', 'IMPORT_WORKER_IMAGE', 'BIB_VALIDATOR_IMAGE')
     missing = [name for name in images if not env.get(name)]
     if missing:
         existing = {}
@@ -44,6 +44,8 @@ with (root / '.deployment.lock').open('w') as lock:
                 ):
                     existing[name] = value[1:-1]
         for name in missing:
+            if name == 'BIB_VALIDATOR_IMAGE' and name not in existing:
+                continue
             env[name] = existing[name]
     with tarfile.open(fileobj=io.BytesIO(base64.b64decode(payload['archive']))) as archive:
         archive.extractall(root, filter='data')
@@ -150,7 +152,11 @@ def main() -> None:
     names = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)", compose)) | {"GHCR_USERNAME"}
     environment = {name: os.environ[name] for name in names if name in os.environ}
     environment.update(secrets)
-    for name in () if monitoring else ("APP_IMAGE", "PHOTO_WORKER_IMAGE", "IMPORT_WORKER_IMAGE"):
+    for name in (
+        ()
+        if monitoring
+        else ("APP_IMAGE", "PHOTO_WORKER_IMAGE", "IMPORT_WORKER_IMAGE", "BIB_VALIDATOR_IMAGE")
+    ):
         if not re.fullmatch(
             r"ghcr\.io/[a-z0-9_.\-/]+@sha256:[0-9a-f]{64}", environment.get(name, "")
         ) and environment.get(name, ""):
@@ -168,10 +174,12 @@ def main() -> None:
     if not monitoring:
         if selection["DEPLOY_WORKER"] == "false":
             environment.pop("PHOTO_WORKER_IMAGE", None)
+            environment.pop("BIB_VALIDATOR_IMAGE", None)
         for flag, name in (
             ("DEPLOY_WEB", "APP_IMAGE"),
             ("DEPLOY_COMMERCE", "APP_IMAGE"),
             ("DEPLOY_WORKER", "PHOTO_WORKER_IMAGE"),
+            ("DEPLOY_WORKER", "BIB_VALIDATOR_IMAGE"),
             ("DEPLOY_IMPORT", "IMPORT_WORKER_IMAGE"),
         ):
             if selection[flag] == "true" and not environment.get(name):

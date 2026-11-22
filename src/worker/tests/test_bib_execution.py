@@ -69,16 +69,17 @@ def test_parent_returns_json_only_after_child_exits():
     assert result == {"candidates": []}
 
 
-def test_visual_command_is_loopback_only_and_single_slot(tmp_path: Path):
-    from photo_worker.bib_visual import server_command
+def test_validation_service_listens_on_its_container_and_has_one_slot(tmp_path: Path):
+    from photo_worker.bib_validation_service import server_command
 
     command = server_command(model_path=tmp_path, port=12345)
-    assert command[command.index("--host") + 1] == "127.0.0.1"
+    assert command[command.index("--host") + 1] == "0.0.0.0"
     assert command[command.index("--parallel") + 1] == "1"
     assert command[command.index("--threads") + 1] == "2"
     assert "--no-mmproj-offload" in command
     assert "--jinja" in command
     assert "--offline" in command
+    assert command[command.index("--cache-ram") + 1] == "0"
 
 
 def test_rejects_downloaded_fingerprint_before_model_loading(tmp_path: Path):
@@ -96,11 +97,12 @@ def test_visual_adapter_preserves_leading_zeros_without_sending_ocr_text(
 ):
     import io
 
-    from photo_worker.bib_visual import PROMPT, LlamaVisualReader
+    from photo_worker.bib_visual import PROMPT, HTTPVisualReader
 
     class Opener:
         def open(self, request, timeout):
             assert timeout == 120
+            assert request.full_url == "http://bib-validator:8180/v1/chat/completions"
             payload = json.loads(request.data)
             assert payload["messages"][0]["content"][0]["text"] == PROMPT
             assert "candidate-number" not in request.data.decode()
@@ -111,18 +113,16 @@ def test_visual_adapter_preserves_leading_zeros_without_sending_ocr_text(
 
     crop = tmp_path / "crop.png"
     crop.write_bytes(b"image")
-    reader = LlamaVisualReader(model_path=tmp_path)
-    monkeypatch.setattr(reader, "_start", lambda: None)
-    reader._opener = Opener()
-    with reader:
-        result = reader.read(image_id="candidate-number", image_path=crop)
+    monkeypatch.setattr("photo_worker.bib_visual.build_opener", lambda *a: Opener())
+    reader = HTTPVisualReader("http://bib-validator:8180")
+    result = reader.read(image_id="candidate-number", image_path=crop)
     assert result.numbers == ("0012",)
 
 
 def test_visual_adapter_reads_only_bounded_server_response(tmp_path: Path, monkeypatch):
     import io
 
-    from photo_worker.bib_visual import LlamaVisualReader, VisualBoundsError
+    from photo_worker.bib_visual import HTTPVisualReader, VisualBoundsError
 
     class Opener:
         def open(self, request, timeout):
@@ -130,10 +130,9 @@ def test_visual_adapter_reads_only_bounded_server_response(tmp_path: Path, monke
 
     crop = tmp_path / "crop.png"
     crop.write_bytes(b"image")
-    reader = LlamaVisualReader(model_path=tmp_path)
-    monkeypatch.setattr(reader, "_start", lambda: None)
-    reader._opener = Opener()
-    with reader, pytest.raises(VisualBoundsError, match="16 KiB"):
+    monkeypatch.setattr("photo_worker.bib_visual.build_opener", lambda *a: Opener())
+    reader = HTTPVisualReader("http://bib-validator:8180")
+    with pytest.raises(VisualBoundsError, match="16 KiB"):
         reader.read(image_id="id", image_path=crop)
 
 
@@ -154,63 +153,21 @@ def test_missing_claim_sha_uses_digest_of_verified_download(tmp_path, monkeypatc
     assert run_bib_recognition(source, source_sha256=None)["source_sha256"] == expected
 
 
-def test_visual_server_starts_on_first_read_and_stops_on_photo_failure(tmp_path, monkeypatch):
-    import io
+def test_visual_timeout_is_reported_as_timeout(tmp_path, monkeypatch):
+    from urllib.error import URLError
 
-    from photo_worker.bib_visual import LlamaVisualReader
-
-    processes = []
-
-    class Process:
-        def __init__(self, command, **kwargs):
-            self.command = command
-            self.terminated = False
-            self.waited = False
-            processes.append(self)
-
-        def poll(self):
-            return None
-
-        def terminate(self):
-            self.terminated = True
-
-        def wait(self, timeout):
-            self.waited = True
-
-    class Health(io.BytesIO):
-        status = 200
+    from photo_worker.bib_visual import HTTPVisualReader
 
     class Opener:
         def open(self, request, timeout):
-            if isinstance(request, str):
-                assert request.startswith("http://127.0.0.1:")
-                return Health(b"{}")
-            return io.BytesIO(
-                json.dumps({"choices": [{"message": {"content": '{"numbers":["12"]}'}}]}).encode()
-            )
-
-    verified = []
-    monkeypatch.setattr("photo_worker.bib_visual.verify_model_files", lambda *a: verified.append(a))
-    monkeypatch.setattr("subprocess.Popen", Process)
-    monkeypatch.setattr("urllib.request.build_opener", lambda *a: Opener())
-
-    with LlamaVisualReader(model_path=tmp_path):
-        pass
-    assert not processes
-    assert not verified
+            raise URLError(TimeoutError())
 
     crop = tmp_path / "crop.png"
     crop.write_bytes(b"image")
-    for photo_index in range(2):
-        with pytest.raises(ValueError, match="photo failure"):
-            with LlamaVisualReader(model_path=tmp_path) as reader:
-                assert len(processes) == photo_index
-                for candidate in ("first", "second"):
-                    assert reader.read(image_id=candidate, image_path=crop).numbers == ("12",)
-                assert len(processes) == len(verified) == photo_index + 1
-                raise ValueError("photo failure")
-    assert len(processes) == 2
-    assert all(p.terminated and p.waited for p in processes)
+    monkeypatch.setattr("photo_worker.bib_visual.build_opener", lambda *a: Opener())
+    reader = HTTPVisualReader("http://bib-validator:8180")
+    with pytest.raises(TimeoutError):
+        reader.read(image_id="id", image_path=crop)
 
 
 def test_terminal_size_uses_the_same_utf8_bytes_as_http_client():

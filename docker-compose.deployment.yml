@@ -238,6 +238,25 @@ services:
       <<: *photo-worker-environment
       PHOTO_WORKER_PROCESSOR_IDENTITIES: 1/bib_recognition/1
       PHOTO_WORKER_PROCESSOR_TYPES: bib_recognition
+      PHOTO_WORKER_BIB_VALIDATOR_URL: http://bib-validator:8180
+    networks: [default, bib-validation]
+
+  bib-validator:
+    image: ${BIB_VALIDATOR_IMAGE:-}
+    profiles: [bib-validation]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8180/health', timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [bib-validation]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "2"
+    mem_limit: 3g
+    pids_limit: 64
+    restart: unless-stopped
 
   import-worker:
     image: ${IMPORT_WORKER_IMAGE:-}
@@ -389,3 +408,7 @@ volumes:
 secrets:
   postgres_exporter_password:
     file: /opt/photo-prjct/secrets/postgres-exporter-password
+
+networks:
+  bib-validation:
+    internal: true

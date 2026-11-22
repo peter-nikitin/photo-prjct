@@ -52,6 +52,7 @@ def test_independent_image_and_running_service_selection(path, images, services)
         (["src/worker/requirements.cpu.txt"], (False, True, True)),
         (["Dockerfile.worker-base"], (False, True, True)),
         (["Dockerfile.worker"], (False, True, False)),
+        (["Dockerfile.bib-validator"], (False, True, False)),
         ([".dockerignore"], (True, True, True)),
         (
             ["src/backend/processing/views.py", "src/worker/photo_worker/client.py"],

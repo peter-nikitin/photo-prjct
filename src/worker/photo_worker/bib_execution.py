@@ -1,4 +1,4 @@
-"""Bounded per-photo process isolation, including the nested llama.cpp server."""
+"""Bounded per-photo OCR and visual validation client process."""
 
 from __future__ import annotations
 
@@ -176,7 +176,7 @@ def _child(source_path: str, source_sha256: str, working_directory: str) -> None
         recognize_photo,
         verify_runtime_versions,
     )
-    from .bib_visual import LlamaVisualReader, VisualBoundsError
+    from .bib_visual import HTTPVisualReader, VisualBoundsError
 
     result: dict[str, Any]
     # Third-party logs cannot enter the bounded JSON result stream or reveal image evidence.
@@ -188,10 +188,10 @@ def _child(source_path: str, source_sha256: str, working_directory: str) -> None
         try:
             verify_runtime_versions()
             ocr = RapidOCREngine.from_experiment_config(OCR_CONFIG, repository=MODEL_DIRECTORY)
-            with LlamaVisualReader(model_path=MODEL_DIRECTORY) as visual:
-                result = recognize_photo(
-                    Path(source_path), source_sha256=source_sha256, ocr=ocr, visual=visual
-                ).as_dict()
+            visual = HTTPVisualReader(os.environ["PHOTO_WORKER_BIB_VALIDATOR_URL"])
+            result = recognize_photo(
+                Path(source_path), source_sha256=source_sha256, ocr=ocr, visual=visual
+            ).as_dict()
         except (BibBoundsError, VisualBoundsError):
             result = {"error_code": "output_contract_violation"}
         except UnidentifiedImageError:

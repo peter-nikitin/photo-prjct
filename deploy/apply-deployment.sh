@@ -68,6 +68,15 @@ if [ -n "$active_photo_worker" ]; then
         fi
     done
     [ "$#" -gt 0 ]
+    bib_replicas="$(compose --profile photo-worker config --format json | python3 -c '
+import json, sys
+bib = json.load(sys.stdin)["services"].get("photo-worker-bib")
+print(bib.get("scale", 1) if bib is not None else 0)
+')"
+    if [ "$bib_replicas" -gt 0 ]; then
+        printf '%s\n' 'DEPLOY_STAGE=bib-validator'
+        compose --profile bib-validation up -d --wait --wait-timeout 180 --no-deps --pull missing bib-validator
+    fi
     compose --profile photo-worker up -d --no-deps --pull never --timeout 180 "$@"
     python3 deploy/verify-photo-worker.py
     for role in $retired_roles; do
@@ -77,6 +86,9 @@ if [ -n "$active_photo_worker" ]; then
             docker rm $ids
         fi
     done
+    if [ "$bib_replicas" -eq 0 ] && printf '%s\n' "$running_services" | grep -Fxq bib-validator; then
+        compose --profile bib-validation stop bib-validator
+    fi
 fi
 [ "$DEPLOY_IMPORT" = false ] || update_worker import import-worker
 [ "$DEPLOY_COMMERCE" = false ] || update_worker commerce commerce-worker

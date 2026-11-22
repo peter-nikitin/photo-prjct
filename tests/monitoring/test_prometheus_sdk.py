@@ -96,3 +96,34 @@ class DashboardTransportTests(unittest.TestCase):
         with self.assertRaises(self.control.ControlError):
             transport.dashboard_update({"dashboardId": "dashboard1", "etag": "2"})
         transport.sdk.wait_operation_and_get_result.assert_not_called()
+
+    def test_dashboard_list_reads_every_page(self):
+        from yandex.cloud.monitoring.v3.dashboard_pb2 import Dashboard
+        from yandex.cloud.monitoring.v3.dashboard_service_pb2 import ListDashboardsResponse
+
+        transport = self.control.CloudTransport.__new__(self.control.CloudTransport)
+        transport.config = {"folder_id": "folder1"}
+        transport.dashboard = SimpleNamespace(
+            List=Mock(
+                side_effect=[
+                    ListDashboardsResponse(
+                        dashboards=[Dashboard(id="first")], next_page_token="next"
+                    ),
+                    ListDashboardsResponse(dashboards=[Dashboard(id="second")]),
+                ]
+            )
+        )
+        self.assertEqual([d["id"] for d in transport.dashboard_list()], ["first", "second"])
+        self.assertEqual(transport.dashboard.List.call_args.args[0].page_token, "next")
+
+    def test_dashboard_create_decodes_identity_from_completed_operation(self):
+        from yandex.cloud.monitoring.v3.dashboard_pb2 import Dashboard
+        from yandex.cloud.operation.operation_pb2 import Operation
+
+        operation = Operation(done=True)
+        operation.response.Pack(Dashboard(id="created"))
+        transport = self.control.CloudTransport.__new__(self.control.CloudTransport)
+        transport.dashboard = SimpleNamespace(Create=Mock(return_value=operation))
+        self.assertEqual(
+            transport.dashboard_create({"folderId": "folder1", "name": "child"}), "created"
+        )

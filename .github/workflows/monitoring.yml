@@ -56,6 +56,7 @@ jobs:
       - run: |
           python -m venv /tmp/monitoring-tools
           /tmp/monitoring-tools/bin/pip install -r deploy/monitoring/prometheus/requirements.txt
+          /tmp/monitoring-tools/bin/python -m unittest discover -s tests/monitoring -p test_prometheus_sdk.py
           /tmp/monitoring-tools/bin/python -m unittest discover -s tests/monitoring -p test_remote_read_sdk.py
           /tmp/monitoring-tools/bin/python -m unittest discover -s tests/monitoring -p test_public_probe_function.py
           cat > /tmp/promtool <<'SCRIPT'

@@ -347,17 +347,27 @@ class ApparelQueueTests(TestCase):
         assert candidate["color_cosine_similarity"] == 0.70
         assert candidate["veto"] == ""
 
-    def test_initial_gallery_centroid_includes_the_verified_source(self):
+    def test_initial_gallery_centroid_uses_verified_faces_on_group_photos(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
         FeatureFlag.objects.create(key="face-search-anchor-expansion", state="on")
-        _, source = self.index_appearance("gallery-source", face_similarity=1.0)
-        _, anchor = self.index_appearance("direct-anchor", face_similarity=0.74)
+        bystander = _rejected_person([65, 0, 100, 300], head=[65, 20, 95, 50])
+        _, source = self.index_appearance(
+            "gallery-source", face_similarity=1.0, extra_people=(bystander,)
+        )
+        _, anchor = self.index_appearance(
+            "direct-anchor", face_similarity=0.74, extra_people=(bystander,)
+        )
+        for face in (source, anchor):
+            self.make_additional_face(
+                embedding=face,
+                vector=[0.0, 0.0, 0.0, 1.0] + [0.0] * 508,
+                geometry=face.detection.geometry | {"bbox": [65, 20, 30, 30]},
+            )
         # Cosine similarity is 0.55 to both individual faces and above 0.58 to their centroid.
         second = 0.55 * (1 - 0.74) / sqrt(1 - 0.74**2)
         face_vector = [0.55, second, sqrt(1 - 0.55**2 - second**2)] + [0.0] * 509
-        # Keep the photo outside apparel retrieval, without qualifying it for exclusion.
-        self.index_appearance("combined-only", face_vector=face_vector, reid_similarity=0.6)
+        self.index_appearance("combined-only", face_vector=face_vector, reid_similarity=0.75)
 
         search = self.submit_gallery(source)
 
@@ -476,24 +486,43 @@ class ApparelQueueTests(TestCase):
         page = self.client.get(result_url)
         assert "new-no-face" in page.context["continuation_photo_ids"]
 
-    def test_centroid_face_result_stays_in_baseline_with_quality_recommendation(self):
+    def test_centroid_requires_apparel_confirmation_of_the_matched_figure(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
         FeatureFlag.objects.create(key="face-search-anchor-expansion", state="on")
         _, source = self.index_appearance("apparel-source", face_similarity=1.0)
         self.index_appearance("direct-anchor", face_similarity=0.75)
-        self.index_appearance("centroid-match", face_similarity=0.5, reason="strong_blur")
-        search = self.submit_gallery(source)
-        assert run_once()
-        assert self.result_photos(search) == ["apparel-source", "direct-anchor", "centroid-match"]
-        assert (
-            search.results.get(photo_id="centroid-match").primary_source == "face_anchor_expansion"
+        self.index_appearance("blurred-centroid", face_similarity=0.5, reason="strong_blur")
+        _, different = self.index_appearance(
+            "group-centroid",
+            face_similarity=0.5,
+            reid_similarity=0.65,
+            headless_bystander_matches=True,
         )
+        self.make_eligible_embedding(
+            event=self.event,
+            photo_id="unindexed-centroid",
+            vector=[0.5, sqrt(0.75)] + [0.0] * 510,
+        )
+        search = self.submit_gallery(source)
+
+        assert run_once()
+        search.refresh_from_db()
+        assert search.status == SelfieSearch.Status.READY
+        assert search.published_matched_photo_count == 2
+        results = {row.photo_id: row for row in search.results.all()}
+        assert not results["direct-anchor"].excluded_by_apparel
+        for photo_id in ("blurred-centroid", "group-centroid", "unindexed-centroid"):
+            assert results[photo_id].primary_source == "face_anchor_expansion"
+            assert results[photo_id].excluded_by_apparel
         decisions = search.apparel_evidence.decisions
-        assert "centroid-match" not in {a["photo_id"] for a in decisions["anchors"]}
-        assert [(row["result_rank"], row["reason"]) for row in decisions["recommendations"]] == [
-            (3, "strong_blur")
-        ]
+        exclusions = {row["photo_id"]: row for row in decisions["exclusions"]}
+        assert set(exclusions) == {"blurred-centroid", "group-centroid", "unindexed-centroid"}
+        assert all(row["reason"] == "centroid_apparel_unconfirmed" for row in exclusions.values())
+        assert exclusions["group-centroid"]["matches"][0]["detection_id"] == str(
+            different.detection_id
+        )
+        assert decisions["recommendations"][0]["reason"] == "strong_blur"
 
     def test_cross_signal_checks_keep_incompatible_anchors_out_of_both_expansions(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
@@ -524,13 +553,15 @@ class ApparelQueueTests(TestCase):
         autosuppressed = search.results.get(photo_id="white-anchor")
         assert autosuppressed.excluded_by_apparel
         assert autosuppressed.direct_evidence.detection_id == white.detection_id
-        assert search.apparel_excluded_photo_count == 2
+        assert centroid.excluded_by_apparel
+        assert search.apparel_excluded_photo_count == 3
         decisions = search.apparel_evidence.decisions
         assert [row["photo_id"] for row in decisions["anchors"]] == ["grey-source", "grey-anchor"]
         assert decisions["recommendations_truncated"]
-        assert {row["photo_id"] for row in decisions["exclusions"]} == {
-            "pink-anchor",
-            "white-anchor",
+        assert {row["photo_id"]: row["reason"] for row in decisions["exclusions"]} == {
+            "grey-centroid": "centroid_apparel_unconfirmed",
+            "pink-anchor": "all_matched_figures_disagree",
+            "white-anchor": "all_matched_figures_disagree",
         }
         assert {
             row["photo_id"] for row in decisions["anchor_checks"] if row["decision"] == "rejected"
@@ -687,7 +718,7 @@ class ApparelQueueTests(TestCase):
             PersonAppearanceDetection.objects.filter(attempt__photo=photo).order_by("ordinal")
         )
         decisions = search.apparel_evidence.decisions
-        assert decisions["policy"]["version"] == 3
+        assert decisions["policy"]["version"] == 4
         excluded = decisions["exclusions"][0]
         assert excluded["photo_id"] == photo.pk
         expected_background = [

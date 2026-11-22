@@ -8,6 +8,8 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.cache import cache_control
 from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 from django.views.decorators.http import require_POST
+from feature_flags import services as feature_flag_services
+from feature_flags.registry import GALLERY_BIB_SEARCH
 from picflow.forms import BibSearchForm
 from picflow.gallery import gallery_photo_queryset
 from picflow.models import Event
@@ -60,6 +62,8 @@ def submit(request, event_slug: str) -> JsonResponse:
             paid_previews_enabled=paid_previews_enabled,
         )
 
+    if not feature_flag_services.is_enabled(GALLERY_BIB_SEARCH, request.user):
+        raise Http404
     event = get_object_or_404(
         Event.objects.site_visible_to(request.user), slug=event_slug, bib_search_enabled=True
     )

@@ -46,6 +46,9 @@ BULK_PHOTO_DOWNLOAD: Final = FeatureDefinition(
 YANDEX_DISK_IMPORT: Final = FeatureDefinition(
     "yandex-disk-import", "Allow server-side photo import from Yandex Disk"
 )
+GALLERY_BIB_SEARCH: Final = FeatureDefinition(
+    "gallery-bib-search", "Allow bib-number search in event galleries"
+)
 GALLERY_CDN_IMAGES: Final = FeatureDefinition(
     "gallery-cdn-images", "Deliver gallery grid images through CDN"
 )
@@ -78,6 +81,7 @@ FEATURE_DEFINITIONS: Final = (
     PAID_PHOTO_PAYMENT_SIMULATOR,
     BULK_PHOTO_DOWNLOAD,
     YANDEX_DISK_IMPORT,
+    GALLERY_BIB_SEARCH,
     GALLERY_CDN_IMAGES,
     EVENT_COVER_CDN_IMAGES,
     WEB_VITALS,

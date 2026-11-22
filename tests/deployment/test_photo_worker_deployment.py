@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKER_IMAGE = "ghcr.io/example/photo-worker@sha256:" + "a" * 64
 ROLES = {
     "photo-worker": (
-        2,
+        10,
         (
             "1/capture_metadata/2",
             "2/generate_preview/1",
@@ -273,10 +273,10 @@ def test_standalone_package_runs_worker_verification_after_extraction(release):
         ),
         ({"corruption": {"status": "exited"}}, "not-running"),
         ({"corruption": {"image": "ghcr.io/example/wrong-reference"}}, "image-mismatch"),
-        ({"missing": "photo-worker-face-2"}, "container-mismatch"),
+        ({"missing": "photo-worker-10"}, "container-mismatch"),
     ],
 )
-def test_release_detects_missing_or_broken_second_replica_without_disclosing_secrets(
+def test_release_detects_missing_or_broken_replica_without_disclosing_secrets(
     release, kwargs, status
 ):
     result, calls, _ = run_release(release, **kwargs)

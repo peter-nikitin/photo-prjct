@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from selfie_search.services.continuation import Anchor
 
 POLICY: dict[str, int | float] = {
-    "version": 3,
+    "version": 4,
     "anchor_distance": 0.38,
     "anchor_consistency_distance": 0.35,
     "max_anchors": 5,
@@ -403,6 +403,9 @@ person_assessments AS MATERIALIZED (
 face_assessments AS MATERIALIZED (
     SELECT found.photo_id, found.detection_id, found.result_rank, p.person_id,
         coalesce(p.confident_mismatch AND p.face_verified, false) AS confident_mismatch,
+        found.photo_id = ANY(%(centroid_photos)s::varchar[]) AS requires_apparel_confirmation,
+        coalesce(p.reason = '' AND p.face_verified AND p.has_descriptors AND p.agrees, false)
+            AS apparel_confirmed,
         p.comparisons,
         CASE WHEN p.reason <> '' AND p.reason <> 'descriptor_limit' THEN p.reason
              WHEN (p.comparisons->0->>'reid_cosine_similarity')::float8 <
@@ -465,14 +468,19 @@ recommendations AS (
     ORDER BY f.result_rank, f.detection_id LIMIT %(recommendation_probe)s
 ),
 exclusions AS (
-    SELECT f.photo_id, f.result_rank, 'all_matched_figures_disagree' AS reason,
+    SELECT f.photo_id, f.result_rank,
+        CASE WHEN f.requires_apparel_confirmation AND NOT bool_or(f.apparel_confirmed)
+             THEN 'centroid_apparel_unconfirmed'
+             ELSE 'all_matched_figures_disagree' END AS reason,
         jsonb_agg(jsonb_build_object(
             'detection_id', f.detection_id, 'person_id', f.person_id, 'comparisons', f.comparisons
         ) ORDER BY f.detection_id) AS matches, g.ignored_background_people
-    FROM face_assessments f JOIN group_assessments g USING (photo_id)
-    WHERE g.protection = ''
-    GROUP BY f.photo_id, f.result_rank, g.ignored_background_people
-    HAVING bool_and(f.confident_mismatch)
+    FROM face_assessments f LEFT JOIN group_assessments g USING (photo_id)
+    WHERE f.requires_apparel_confirmation OR g.protection = ''
+    GROUP BY f.photo_id, f.result_rank, f.requires_apparel_confirmation,
+        g.protection, g.ignored_background_people
+    HAVING (f.requires_apparel_confirmation AND NOT bool_or(f.apparel_confirmed))
+        OR (g.protection = '' AND bool_and(f.confident_mismatch))
 )
 SELECT
     COALESCE((SELECT jsonb_agg(to_jsonb(a) ORDER BY
@@ -892,6 +900,9 @@ def expand_apparel(
                 "found_detections": [row[1] for row in found_faces],
                 "found_ranks": [row[2] for row in found_faces],
                 "found_centroid_indices": [row[3] for row in found_faces],
+                "centroid_photos": [
+                    row.photo_id for row in expansion.results if row.anchor_evidence is not None
+                ],
                 "source_photo": verification.source_photo_id,
                 "anchor_photo_ids": [row["photo_id"] for row in verification.anchors],
                 "anchor_person_ids": [row["person_id"] for row in verification.anchors],

@@ -57,6 +57,14 @@ def test_bulk_parallel_slots_each_use_one_native_cpu_thread():
         ("200000 100000", "selfie_query", "1/selfie_query/2", 2, 1),
         ("100000 100000", "selfie_query", "1/selfie_query/2", 1, 1),
         ("max 100000", "selfie_query", "1/selfie_query/2", 1, 1),
+        ("max 100000", "bib_recognition", "1/bib_recognition/1", 1, 1),
+        (
+            "max 100000",
+            "bib_recognition,capture_metadata,generate_preview",
+            "1/bib_recognition/1,1/capture_metadata/2,2/generate_preview/1",
+            2,
+            1,
+        ),
         (
             "200000 100000",
             "capture_metadata,selfie_query",

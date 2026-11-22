@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -51,7 +51,7 @@ from photo_worker.lifecycle import DrainController, FleetLifecycle
 from photo_worker.metadata import InputTooLarge, MetadataError, extract_capture_metadata
 from photo_worker.observability import SelfieWorkerEventName, emit_selfie_worker_event
 from photo_worker.preview import PreviewError, PreviewResult, generate_preview
-from photo_worker.runtime_threads import worker_slot_count
+from photo_worker.runtime_threads import has_mixed_bib_types, worker_slot_count
 from photo_worker.telemetry import Outcome, RuntimeTelemetry
 from photo_worker.transport import POOL_IDENTITIES, validate_remote_config
 from photo_worker.watermark import (
@@ -179,10 +179,14 @@ class WorkerConfig:
             and types == (PROCESSOR_TYPE_SELFIE_QUERY,)
             and self.processor_identities == (POOL_IDENTITIES["selfie"],)
         )
+        local_mixed_bib = self.remote_pool is None and has_mixed_bib_types(types)
         if self.concurrency not in {1, 2} or (
-            self.concurrency == 2 and self.remote_pool != "bulk" and not local_selfie_only
+            self.concurrency == 2
+            and self.remote_pool != "bulk"
+            and not local_selfie_only
+            and not local_mixed_bib
         ):
-            raise ValueError("worker concurrency must be 1, or 2 for remote bulk or local selfie")
+            raise ValueError("unsupported worker concurrency for this processor selection")
         object.__setattr__(self, "processor_types", types)
         object.__setattr__(
             self,
@@ -194,6 +198,43 @@ class WorkerConfig:
             and _finite_positive(self.maximum_backoff_seconds)
         ) or (self.minimum_delay_seconds > self.maximum_backoff_seconds):
             raise ValueError("backoff delays must be finite, positive, and ordered")
+
+    def slot_configs(self) -> tuple[WorkerConfig, ...]:
+        """Partition both the declared types and the explicit claim identities."""
+        if (
+            self.concurrency != 2
+            or self.remote_pool is not None
+            or not has_mixed_bib_types(self.processor_types)
+        ):
+            return (self,) * self.concurrency
+
+        bib = PROCESSOR_TYPE_BIB_RECOGNITION
+        general_identities = []
+        bib_identities = []
+        for identity in self.processor_identities:
+            if _parse_processor_identity(identity)[1] == bib:
+                bib_identities.append(identity)
+            else:
+                general_identities.append(identity)
+
+        return (
+            replace(
+                self,
+                processor_type=None,
+                processor_types=tuple(
+                    processor for processor in self.processor_types if processor != bib
+                ),
+                processor_identities=tuple(general_identities),
+                concurrency=1,
+            ),
+            replace(
+                self,
+                processor_type=None,
+                processor_types=(bib,),
+                processor_identities=tuple(bib_identities),
+                concurrency=1,
+            ),
+        )
 
     @classmethod
     def from_env(cls) -> tuple[WorkerConfig, HttpClient]:

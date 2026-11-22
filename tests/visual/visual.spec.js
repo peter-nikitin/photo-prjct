@@ -607,6 +607,40 @@ test('zero-photo import progress wakes management when the first photo appears w
   }))).toEqual({ localActive: false, warns: false });
 });
 
+for (const action of ['hide', 'show', 'move']) {
+  test(`photo ${action} posts to the form URL despite controls named action`, async ({ page }) => {
+    await page.goto('/__visual__/workspace/photos/');
+    const form = page.locator('[data-photo-action-form]');
+    const checkbox = page.locator('[data-photo-select]').first();
+    const photoId = await checkbox.inputValue();
+    const fragment = await page.locator('[data-event-photo-fragment]').evaluate((node) => node.outerHTML);
+    let submitted = null;
+    await page.route('**/*', async (route) => {
+      const request = route.request();
+      if (request.method() === 'POST') {
+        submitted = { url: request.url(), body: request.postData() };
+        await route.fulfill({ json: { changed_count: 1 } });
+      } else if (new URL(request.url()).pathname === '/manage/events/42/photos/results/') {
+        await route.fulfill({
+          contentType: 'text/html',
+          headers: { 'X-Event-Photo-Canonical-Url': '/manage/events/42/photos/' },
+          body: fragment,
+        });
+      } else {
+        await route.continue();
+      }
+    });
+    await checkbox.check();
+    await form.locator(`button[value="${action}"]`).click();
+    await expect.poll(() => submitted).not.toBeNull();
+    expect(new URL(submitted.url).pathname).toBe('/manage/events/42/photos/actions/');
+    expect(submitted.body).toContain(`name="action"\r\n\r\n${action}`);
+    expect(submitted.body).toContain(`name="photo_id"\r\n\r\n${photoId}`);
+    await expect(page.locator('[data-selection-summary]')).toHaveText('Ничего не выбрано');
+    await expect(page.locator('[data-photo-select]').first()).not.toBeChecked();
+  });
+}
+
 test('status list refresh preserves canonical selection, filter focus, scroll, and upload state', async ({ page }) => {
   let resultRequests = 0;
   await page.route('**/__visual__/workspace/status-api/**', async (route) => {

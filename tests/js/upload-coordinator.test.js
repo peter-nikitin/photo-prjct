@@ -140,6 +140,7 @@ function summaryRoot() {
 
 function makeHarness({
   xhrResults = [],
+  onCreateControl = null,
   onAuthorizeControl = null,
   onConfirmControl = null,
   onRetryControl = null,
@@ -149,6 +150,7 @@ function makeHarness({
 } = {}) {
   const calls = [];
   const delays = [];
+  let batchSequence = 0;
   let itemSequence = 0;
   let active = 0;
   let maxActive = 0;
@@ -159,9 +161,10 @@ function makeHarness({
     const body = JSON.parse(options.body);
     calls.push({ url, body, headers: options.headers });
     if (url === '/batches/') {
-      return response(201, { batch: { id: 'batch-1' } });
+      const id = `batch-${++batchSequence}`;
+      return onCreateControl ? onCreateControl({ id, body }) : response(201, { batch: { id } });
     }
-    if (url === '/batch-1/items/') {
+    if (/^\/batch-\d+\/items\/$/.test(url)) {
       return response(201, {
         items: body.items.map((item) => ({
           id: `item-${++itemSequence}`,
@@ -200,11 +203,11 @@ function makeHarness({
       }
       return response(200, { item: { id: url.split('/')[3], status: 'failed' } });
     }
-    if (url === '/batch-1/finalize/') {
+    if (/^\/batch-\d+\/finalize\/$/.test(url)) {
       if (onFinalizeControl) {
         return onFinalizeControl({ body, url });
       }
-      return response(200, { batch: { id: 'batch-1', status: 'complete' } });
+      return response(200, { batch: { id: url.split('/')[1], status: 'complete' } });
     }
     throw new Error(`Unexpected control URL ${url}`);
   };
@@ -1307,7 +1310,6 @@ test('departure warning covers selected and recoverable files but clears after c
 function mountedUpload(harness = makeHarness(), nodes = {}) {
   const listeners = new Map();
   const events = [];
-  const start = { disabled: true, addEventListener(type, callback) { listeners.set(`start:${type}`, callback); } };
   const root = {
     dataset: {
       eventId: '42', createBatchUrl: '/batches/', registerUrlTemplate: '/{batch}/items/',
@@ -1317,27 +1319,130 @@ function mountedUpload(harness = makeHarness(), nodes = {}) {
       maxFiles: '220', maxFileBytes: '10', registrationChunk: '100', concurrency: '4',
     },
     ownerDocument: { dispatchEvent(event) { events.push(event); } },
-    querySelector(selector) { return nodes[selector] || (selector === '[data-start-upload]' ? start : null); },
+    querySelector(selector) { return nodes[selector] || null; },
+    contains() { return true; },
     querySelectorAll() { return []; },
     addEventListener(type, callback) { listeners.set(type, callback); },
   };
   const coordinator = bindUploadPage(root, harness.coordinator);
-  return { root, coordinator, events, listeners, start, harness };
+  const select = (files, folder = {}) => {
+    const target = { dataset: folder };
+    const input = { files, closest: () => target, matches: () => true };
+    listeners.get('change')({ target: input });
+    assert.equal(input.value, '');
+  };
+  return { root, coordinator, events, select, harness };
 }
 
-test('fixed workspace emits pre-registration activity, new batch identity and final completion once', async () => {
+test('fixed workspace starts selections automatically and emits activity for each actual batch', async () => {
   const mounted = mountedUpload();
   assert.equal(bindUploadPage(mounted.root, mounted.harness.coordinator), mounted.coordinator);
-  mounted.coordinator.stage([file('one.jpg', 4)]);
-  mounted.start.disabled = false;
-  const completion = mounted.listeners.get('start:click')();
-  assert.equal(mounted.events[0].detail.active, true);
+  mounted.select([file('one.jpg', 4)], { folderId: '8', folderName: 'Финиш' });
+  assert.equal(mounted.coordinator.shouldWarnBeforeUnload(), true);
+  await new Promise(setImmediate);
+  assert.equal(mounted.events[0]?.detail.active, true);
   assert.equal(mounted.events[0].detail.batchId, null);
-  await completion;
   assert.equal(mounted.harness.calls[0].body.event_id, 42);
+  assert.equal(mounted.harness.calls[1].body.items[0].folder_id, 8);
   assert.ok(mounted.events.some((event) => event.detail.active && event.detail.batchId === 'batch-1'));
   assert.deepEqual(mounted.events.at(-1).detail, { active: false, batchId: 'batch-1' });
   assert.ok(mounted.events.every((event) => event.type === 'findme:event-photo-upload-activity'));
+
+  mounted.select([file('two.jpg', 4)]);
+  await new Promise(setImmediate);
+  assert.deepEqual(mounted.coordinator.items.map((item) => item.status), ['uploaded', 'uploaded']);
+  assert.deepEqual(mounted.events.at(-1).detail, { active: false, batchId: 'batch-2' });
+});
+
+test('upload activity identifies a new batch only after its first files are registered', async () => {
+  let releaseRegistration;
+  const registrationGate = new Promise((resolve) => { releaseRegistration = resolve; });
+  const harness = makeHarness();
+  const fetch = harness.coordinator.fetch;
+  harness.coordinator.fetch = async (url, options) => {
+    if (url === '/batch-1/items/') await registrationGate;
+    return fetch(url, options);
+  };
+  const mounted = mountedUpload(harness);
+  mounted.select([file('one.jpg', 4)]);
+  await new Promise(setImmediate);
+  const activityBeforeRegistration = mounted.events.map((event) => event.detail);
+  releaseRegistration();
+  await new Promise(setImmediate);
+  assert.deepEqual(activityBeforeRegistration, [{ active: true, batchId: null }]);
+  assert.deepEqual(mounted.events[1].detail, { active: true, batchId: 'batch-1' });
+});
+
+test('a queued selection follows the active batch and an old item retries against its own batch', async () => {
+  let releaseFirstBatch;
+  const firstBatchGate = new Promise((resolve) => { releaseFirstBatch = resolve; });
+  const harness = makeHarness({
+    xhrResults: [{ type: 'load', status: 400 }],
+    onAuthorizeControl: async ({ url }) => {
+      if (url.includes('/batch-1/')) await firstBatchGate;
+      return response(200, { grant: { url: 'https://storage.example/', fields: {} } });
+    },
+  });
+  let queueClick;
+  const mounted = mountedUpload(harness, {
+    '[data-upload-queue]': { addEventListener(_type, callback) { queueClick = callback; } },
+  });
+  mounted.select(Array.from({ length: 5 }, (_, index) => file(`first-${index}.jpg`, 4)));
+  await new Promise(setImmediate);
+  mounted.select([file('second.jpg', 4)]);
+  assert.equal(mounted.coordinator.items.length, 6);
+  await new Promise(setImmediate);
+  assert.equal(harness.calls.filter(({ url }) => url === '/batches/').length, 1);
+  releaseFirstBatch();
+  await new Promise(setImmediate);
+  assert.equal(harness.getMaxActive(), 4);
+  assert.equal(mounted.coordinator.items.at(-1).status, 'uploaded');
+  const failed = mounted.coordinator.items.find((item) => item.status === 'failed');
+  const retry = { dataset: { clientItemId: failed.clientItemId } };
+  await queueClick({ target: { closest: (selector) => selector === '[data-retry-item]' ? retry : null } });
+  assert.ok(harness.calls.some(({ url }) => url === `/batch-1/items/${failed.id}/retry/`));
+  assert.equal(failed.status, 'uploaded');
+});
+
+test('a control failure in one item waits for the other transfers before starting the next batch', async () => {
+  let releaseFirstBatch;
+  const firstBatchGate = new Promise((resolve) => { releaseFirstBatch = resolve; });
+  const harness = makeHarness({
+    onAuthorizeControl: async ({ url }) => {
+      if (url === '/batch-1/items/item-1/authorize/') return response(503);
+      if (url === '/batch-1/items/item-2/authorize/') await firstBatchGate;
+      return response(200, { grant: { url: 'https://storage.example/', fields: {} } });
+    },
+  });
+  const mounted = mountedUpload(harness);
+  mounted.select([file('first.jpg', 4), file('other.jpg', 4)]);
+  mounted.select([file('next.jpg', 4)]);
+  await new Promise(setImmediate);
+  const createdWhileHeld = harness.calls.filter(({ url }) => url === '/batches/').length;
+  releaseFirstBatch();
+  await new Promise(setImmediate);
+  assert.equal(createdWhileHeld, 1);
+  assert.deepEqual(mounted.coordinator.items.map((item) => item.status), ['needs_attention', 'uploaded', 'uploaded']);
+});
+
+test('a failed batch creation allows the next selection and can be retried afterwards', async () => {
+  const harness = makeHarness({
+    onCreateControl: ({ id }) => id === 'batch-1' ? response(503) : response(201, { batch: { id } }),
+  });
+  let queueClick;
+  const mounted = mountedUpload(harness, {
+    '[data-upload-queue]': { addEventListener(_type, callback) { queueClick = callback; } },
+  });
+  mounted.select([file('first.jpg', 4)]);
+  mounted.select([file('second.jpg', 4)]);
+  await new Promise(setImmediate);
+  assert.ok(harness.calls.some(({ url }) => url === '/batch-2/finalize/'));
+  assert.deepEqual(mounted.coordinator.items.map((item) => item.status), ['failed', 'uploaded']);
+
+  const retry = { dataset: { clientItemId: mounted.coordinator.items[0].clientItemId } };
+  await queueClick({ target: { closest: (selector) => selector === '[data-retry-item]' ? retry : null } });
+  assert.ok(harness.calls.some(({ url }) => url === '/batch-3/finalize/'));
+  assert.deepEqual(mounted.coordinator.items.map((item) => item.status), ['uploaded', 'uploaded']);
 });
 
 test('success copy requires confirmation, never transfer progress or terminal failure', () => {
@@ -1376,6 +1481,5 @@ test('fixed workspace rejects another event resume manifest before opening files
   });
   await resumeClick({ target: { closest: () => ({ dataset: { resumeBatchId: 'other' } }) } });
   assert.equal(pickerOpened, false);
-  assert.equal(mounted.coordinator.batchId, null);
   assert.deepEqual(mounted.coordinator.items, []);
 });

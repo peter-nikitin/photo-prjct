@@ -29,6 +29,7 @@
             <div class="upload-source-heading">
               <p class="eyebrow">С устройства</p>
               <h3 id="local-upload-source-title">Выберите фотографии</h3>
+              <p>Загрузка начнётся сразу после выбора. Можно добавлять фотографии, пока идёт передача.</p>
             </div>
             <div class="folder-target-collections" data-folder-target-collections>
             <section class="folder-targets" data-folder-targets data-event-id="{{ event.pk }}" aria-label="Папки события {{ event.name }}">
@@ -49,8 +50,6 @@
                   {% endfor %}
             </section>
             </div>
-            <button class="button upload-start-button" type="button" data-start-upload disabled>Начать загрузку</button>
-
             <p class="close-warning">
               <svg class="icon" aria-hidden="true"><use href="{{ ui_icons }}#alert"></use></svg>
               <span>Закрытие или перезагрузка страницы остановит незавершённые передачи. Уже загруженные фотографии сохранятся.</span>

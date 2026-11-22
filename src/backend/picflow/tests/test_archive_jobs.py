@@ -357,25 +357,122 @@ class ArchiveSpaceTests(TransactionTestCase):
         assert archive_jobs._reserved_archive_bytes == 0
 
 
-class ArchiveWorkerIdleTests(TestCase):
-    def test_idle_slot_rechecks_after_half_second_and_stops_without_another_claim(self):
+class ArchiveWorkerIdleTests(TransactionTestCase):
+    def test_idle_slot_waits_without_sql_rechecks_and_stops(self):
         from threading import Event
 
         from picflow.management.commands import run_archive_worker as worker
 
         stopping = Event()
-        delays = []
+        waits = []
 
-        def wait(seconds):
-            delays.append(seconds)
-            stopping.set()
+        def wait(listener, *, timeout):
+            waits.append(timeout)
+            if len(waits) == 3:
+                stopping.set()
+            return []
 
         with (
             patch.object(worker, "process_next_archive", return_value=False) as process,
-            patch.object(stopping, "wait", side_effect=wait),
+            patch.object(worker, "wait_for_notifications", side_effect=wait, create=True),
             patch.object(worker.connections, "close_all") as close,
         ):
             worker._run_slot(stopping)
-        assert delays == [0.5]
+        assert len(waits) == 3
         process.assert_called_once_with()
         close.assert_called_once_with()
+
+
+class ArchiveWakeupTests(TransactionTestCase):
+    _job = ArchiveJobTests._job
+
+    def test_enqueue_retry_and_recovery_notify_only_on_commit(self):
+        import psycopg
+        from django.db import connection, transaction
+
+        with psycopg.connect(**connection.get_connection_params(), autocommit=True) as listener:
+            listener.execute("LISTEN archive_jobs")
+            with transaction.atomic():
+                job = self._job()
+                assert list(listener.notifies(timeout=0.02)) == []
+            assert len(list(listener.notifies(timeout=0.05))) == 1
+            with self.assertRaises(ValueError), transaction.atomic():
+                self._job(scope="rolled-back")
+                raise ValueError()
+            assert list(listener.notifies(timeout=0.02)) == []
+            PhotoArchiveJob.objects.filter(pk=job.pk).update(status="failed")
+            with self.assertRaises(ValueError), transaction.atomic():
+                self._job()
+                raise ValueError()
+            assert list(listener.notifies(timeout=0.02)) == []
+            self._job()
+            assert len(list(listener.notifies(timeout=0.05))) == 1
+            PhotoArchiveJob.objects.filter(pk=job.pk).update(status="running")
+            from picflow.archive_jobs import recover_interrupted_archives
+
+            recover_interrupted_archives()
+            assert len(list(listener.notifies(timeout=0.05))) == 1
+
+
+class ArchiveLockWakeupTests(TransactionTestCase):
+    _job = ArchiveJobTests._job
+
+    def test_queued_job_locked_by_rolled_back_duplicate_is_retried_without_new_notify(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        from django.db import connections, transaction
+
+        from picflow.archive_jobs import process_next_archive
+        from picflow.management.commands import run_archive_worker as worker
+
+        job = self._job()
+        locked, release, waiting, processed, stopping = (Event() for _ in range(5))
+
+        def duplicate():
+            try:
+                with transaction.atomic():
+                    self._job()  # Existing production duplicate enqueue takes this row lock.
+                    locked.set()
+                    assert release.wait(5)
+                    raise ValueError("audit rollback")
+            except ValueError:
+                pass
+            finally:
+                connections.close_all()
+
+        def scan():
+            result = process_next_archive()
+            if result:
+                processed.set()
+                stopping.set()
+            return result
+
+        def wait(listener, *, timeout):
+            waiting.set()
+            from config.queue_notifications import wait_for_notifications
+
+            return wait_for_notifications(listener, timeout=timeout)
+
+        with (
+            patch.object(worker, "process_next_archive", side_effect=scan),
+            patch.object(worker, "wait_for_notifications", side_effect=wait),
+            patch("picflow.archive_jobs._build_and_upload", return_value=0),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            duplicate_future = pool.submit(duplicate)
+            slot = None
+            try:
+                assert locked.wait(5)
+                slot = pool.submit(worker._run_slot, stopping)
+                assert waiting.wait(5)
+                release.set()
+                duplicate_future.result(timeout=5)
+                assert processed.wait(2), "rolled-back duplicate left committed queued work asleep"
+            finally:
+                release.set()
+                stopping.set()
+                if slot is not None:
+                    slot.result(timeout=5)
+        job.refresh_from_db()
+        assert job.status == PhotoArchiveJob.Status.READY

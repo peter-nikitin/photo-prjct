@@ -251,23 +251,32 @@ class GalleryQueueTests(TestCase):
         self.assertEqual(events, ["recover", "recover", "claim"])
         sleep.assert_called_once_with(0.5)
 
-    def test_gallery_worker_uses_fixed_idle_polling_delay(self):
-        from unittest.mock import call, patch
+    def test_gallery_worker_drains_work_then_waits_with_watchdog_disarmed(self):
+        from unittest.mock import patch
 
-        from django.core.management import call_command
         from selfie_search.management.commands import run_gallery_search_worker as worker
 
+        events = []
+
+        def scan():
+            events.append("scan")
+            return len(events) < 3
+
+        def wait(listener, *, timeout):
+            self.assertEqual(events, ["scan", "scan", "scan"])
+            alarm.assert_called_with(0)
+            self.assertIsNone(timeout)
+            raise EOFError()
+
         with (
-            patch.object(worker, "recover_processing"),
-            patch.object(worker, "recover_missing_payloads"),
-            patch.object(worker, "run_once", side_effect=[False, False, True, False, EOFError]),
-            patch.object(worker.time, "sleep") as sleep,
+            patch.object(worker, "run_once", side_effect=scan),
+            patch.object(worker, "next_wakeup_delay", return_value=None, create=True),
+            patch.object(worker, "wait_for_notifications", side_effect=wait, create=True),
             patch.object(worker.signal, "signal"),
-            patch.object(worker.signal, "alarm"),
+            patch.object(worker.signal, "alarm") as alarm,
             self.assertRaises(EOFError),
         ):
-            call_command("run_gallery_search_worker")
-        self.assertEqual(sleep.call_args_list, [call(0.5), call(0.5), call(0.5)])
+            worker.run_worker()
 
     make_photo = fixtures.GalleryPhotoSubmissionTests.make_photo
     publish_watermark = fixtures.GalleryPhotoSubmissionTests.publish_watermark
@@ -636,3 +645,235 @@ with patch('selfie_search.services.face_search_queue.rank_selected_direct', paus
                 SelfieSearch.objects.filter(pk=ready.pk).values().get(), ready_snapshot
             )
             self.assertEqual(list(ready.results.values()), ready_results)
+
+
+class MatchingWakeupTests(TransactionTestCase):
+    setUp = GalleryWorkerRestartTests.setUp
+    make_event = GalleryWorkerRestartTests.make_event
+    make_eligible_embedding = GalleryWorkerRestartTests.make_eligible_embedding
+    create_search = GalleryWorkerRestartTests.create_search
+    worker = GalleryWorkerRestartTests.worker
+    wait_for_search = GalleryWorkerRestartTests.wait_for_search
+
+    def test_submission_retry_and_recovery_are_transactional_wakeups(self):
+        import psycopg
+        from django.db import connection, transaction
+        from selfie_search.services.face_search_queue import claim, recover_processing, retry
+
+        with psycopg.connect(**connection.get_connection_params(), autocommit=True) as listener:
+            listener.execute("LISTEN face_search_jobs")
+            with transaction.atomic():
+                search = self.create_search()
+                self.assertEqual(list(listener.notifies(timeout=0.02)), [])
+            self.assertEqual(len(list(listener.notifies(timeout=0.05))), 1)
+            with self.assertRaises(ValueError), transaction.atomic():
+                self.create_search()
+                raise ValueError()
+            self.assertEqual(list(listener.notifies(timeout=0.02)), [])
+            task = claim()
+            with self.assertRaises(ValueError), transaction.atomic():
+                retry(task)
+                raise ValueError()
+            self.assertEqual(list(listener.notifies(timeout=0.02)), [])
+            retry(task)
+            self.assertEqual(len(list(listener.notifies(timeout=0.05))), 1)
+            FaceSearchTask.objects.filter(search=search).update(status="processing")
+            recover_processing()
+            self.assertEqual(len(list(listener.notifies(timeout=0.05))), 1)
+
+    def test_worker_stays_idle_without_sql_and_wakes_for_committed_batch(self):
+        import time
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            code = f"""
+import django
+import os
+from pathlib import Path
+from unittest.mock import patch
+django.setup()
+from django.core.management import call_command
+from django.db import connection
+from selfie_search.management.commands import run_gallery_search_worker as worker
+wait = worker.wait_for_notifications
+output = Path({directory!r})
+
+def observe(execute, sql, params, many, context):
+    with (output / f'{{os.getpid()}}.sql').open('a') as stream:
+        stream.write(sql + chr(10))
+    return execute(sql, params, many, context)
+
+def idle(*args, **kwargs):
+    (output / f'{{os.getpid()}}.idle').touch()
+    return wait(*args, **kwargs)
+
+with connection.execute_wrapper(observe), patch.object(worker, 'wait_for_notifications', idle):
+    call_command('run_gallery_search_worker', '--concurrency', '2')
+"""
+            with self.worker(code) as worker:
+                deadline = time.monotonic() + 10
+                while len(list(output.glob("*.idle"))) != 2:
+                    if worker.poll() is not None:
+                        self.fail(worker.stderr.read())
+                    if time.monotonic() >= deadline:
+                        self.fail("both executors did not reach idle")
+                    time.sleep(0.02)
+                before = {path.name: path.read_text() for path in output.glob("*.sql")}
+                time.sleep(1.2)  # More than two iterations of the previous idle SQL polling.
+                self.assertEqual(
+                    {path.name: path.read_text() for path in output.glob("*.sql")}, before
+                )
+                searches = [self.create_search() for _ in range(3)]
+                for search in searches:
+                    self.wait_for_search(search, worker)
+
+    def test_delayed_retry_wakes_without_new_submission(self):
+        code = """
+import django
+from unittest.mock import patch
+django.setup()
+from datetime import timedelta
+from django.core.management import call_command
+from django.db import DatabaseError
+from selfie_search.services import face_search_queue as queue
+process = queue.process_face_search
+first = True
+
+def transient(task):
+    global first
+    if first:
+        first = False
+        raise DatabaseError()
+    return process(task)
+
+with (
+    patch.object(queue, 'process_face_search', transient),
+    patch.object(queue, 'RETRY_DELAY', timedelta(seconds=0.2)),
+):
+    call_command('run_gallery_search_worker')
+"""
+        search = self.create_search()
+        with self.worker(code) as worker:
+            self.wait_for_search(search, worker)
+            self.assertEqual(search.matching_task.attempt_count, 2)
+
+    def test_next_wakeup_uses_retry_or_expiry_and_ignores_terminal_rows(self):
+        from unittest.mock import patch
+
+        from selfie_search.services.face_search_queue import next_wakeup_delay
+
+        self.assertIsNone(next_wakeup_delay())
+        search = self.create_search()
+        now = timezone.now()
+        FaceSearchTask.objects.filter(search=search).update(
+            available_at=now + timedelta(seconds=30), expires_at=now + timedelta(seconds=2)
+        )
+        with patch("selfie_search.services.face_search_queue.timezone.now", return_value=now):
+            self.assertEqual(next_wakeup_delay(), 2)
+            FaceSearchTask.objects.filter(search=search).update(expires_at=None)
+            self.assertEqual(next_wakeup_delay(), 30)
+            FaceSearchTask.objects.filter(search=search).update(status="terminal")
+            self.assertIsNone(next_wakeup_delay())
+
+    def test_continuation_uses_same_committed_wakeup_channel(self):
+        import psycopg
+        from django.db import connection, transaction
+        from selfie_search.services.continuation import submit_continuation
+        from selfie_search.tests.test_continuation import SearchContinuationTests
+
+        root = SearchContinuationTests.root_search(self)
+        face = self.make_eligible_embedding(
+            event=self.event, photo_id="continuation-wakeup", vector=[1.0] + [0.0] * 511
+        )
+        source = SearchContinuationTests.save_match(self, root, face, 1)
+        with psycopg.connect(**connection.get_connection_params(), autocommit=True) as listener:
+            listener.execute("LISTEN face_search_jobs")
+            with transaction.atomic():
+                child = submit_continuation(search=root, user=self.user, photo_id=source.photo_id)
+                self.assertEqual(list(listener.notifies(timeout=0.02)), [])
+            signals = list(listener.notifies(timeout=0.05))
+            self.assertEqual([signal.payload for signal in signals], [""])
+            self.assertEqual(child.matching_task.status, "queued")
+
+    def test_listener_disconnect_exits_and_restart_reads_pending_work(self):
+        import time
+
+        import psycopg
+        from django.db import connection
+
+        with self.worker() as worker:
+            with psycopg.connect(**connection.get_connection_params(), autocommit=True) as sender:
+                deadline = time.monotonic() + 10
+                while True:
+                    rows = sender.execute(
+                        "SELECT pid FROM pg_stat_activity "
+                        "WHERE application_name = 'findme-matching-worker' "
+                        "AND datname = current_database()"
+                    ).fetchall()
+                    if rows:
+                        break
+                    if worker.poll() is not None:
+                        self.fail(worker.stderr.read())
+                    if time.monotonic() >= deadline:
+                        self.fail("matching listener did not subscribe")
+                    time.sleep(0.02)
+                sender.execute("SELECT pg_terminate_backend(%s)", [rows[0][0]])
+            worker.wait(timeout=5)
+            self.assertEqual(worker.returncode, 1)
+        search = self.create_search()
+        with self.worker() as restarted:
+            self.wait_for_search(search, restarted)
+
+    def test_locked_search_retries_without_tight_sql_loop(self):
+        import time
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        import psycopg
+        from django.db import connection
+
+        search = self.create_search()
+        with TemporaryDirectory() as directory:
+            scans = Path(directory) / "scans"
+            code = f"""
+import django
+from pathlib import Path
+from unittest.mock import patch
+django.setup()
+from django.core.management import call_command
+from selfie_search.management.commands import run_gallery_search_worker as worker
+run_once = worker.run_once
+scans = Path({str(scans)!r})
+
+def scan():
+    result = run_once()
+    with scans.open('a') as stream:
+        stream.write('scan' + chr(10))
+    return result
+
+with patch.object(worker, 'run_once', scan):
+    call_command('run_gallery_search_worker')
+"""
+            with psycopg.connect(**connection.get_connection_params()) as blocker:
+                blocker.execute(
+                    "SELECT id FROM selfie_search_selfiesearch WHERE id = %s FOR UPDATE",
+                    [search.pk],
+                )
+                with self.worker(code) as worker:
+                    deadline = time.monotonic() + 10
+                    while not scans.exists():
+                        if worker.poll() is not None:
+                            self.fail(worker.stderr.read())
+                        if time.monotonic() >= deadline:
+                            self.fail("worker did not check the locked queued search")
+                        time.sleep(0.02)
+                    time.sleep(0.25)
+                    self.assertLessEqual(
+                        len(scans.read_text().splitlines()),
+                        3,
+                        "locked queued work must not cause a tight SQL scan loop",
+                    )
+                    blocker.rollback()
+                    self.wait_for_search(search, worker)

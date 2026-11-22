@@ -4,13 +4,13 @@ import time
 
 import psycopg
 from config.photo_import_metrics import PhotoImportCounters
+from config.queue_notifications import listen, wait_for_notifications
 from config.queue_telemetry import QueueTelemetry
 from config.queue_telemetry_protocol import CHANNEL
 from config.queue_work_metrics import QueueWorkCounters
 from django.core.management.base import BaseCommand, CommandParser
 from django.db import connection
 from prometheus_client import CollectorRegistry, start_http_server
-from psycopg import sql
 
 logger = logging.getLogger(__name__)
 
@@ -30,22 +30,16 @@ class Command(BaseCommand):
         registry.register(PhotoImportCounters())
         registry.register(QueueWorkCounters())
         connection.settings_dict["OPTIONS"] |= {"connect_timeout": 2}
-        params = connection.get_connection_params() | {
-            "autocommit": True,
-            "application_name": "findme-queue-telemetry",
-            "connect_timeout": 2,
-            "options": "-c statement_timeout=2000",
-        }
 
         server, _thread = start_http_server(options["port"], registry=registry)
         try:
             while True:
                 try:
-                    with psycopg.connect(**params) as listener:
-                        listener.execute(sql.SQL("LISTEN {}").format(sql.Identifier(CHANNEL)))
+                    with listen(CHANNEL, application_name="findme-queue-telemetry") as listener:
                         telemetry.set_listening(True)
-                        for notification in listener.notifies():
-                            telemetry.record(notification.payload)
+                        while True:
+                            for notification in wait_for_notifications(listener):
+                                telemetry.record(notification.payload)
                 except (psycopg.Error, OSError):
                     logger.warning("Queue telemetry PostgreSQL connection unavailable; retrying")
                 finally:

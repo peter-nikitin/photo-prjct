@@ -13,6 +13,7 @@ from functools import partial
 from typing import Any, Protocol
 from uuid import UUID
 
+from config.queue_notifications import MATCHING_CHANNEL, notify_work
 from config.queue_timings import worker_cycle
 from config.queue_work import MATCHING_QUEUES, SELFIE_RECOGNITION, schedule_transition
 from django.conf import settings
@@ -243,6 +244,7 @@ def enqueue_face_search(
                 expires_at,
             ),
         )
+    notify_work(MATCHING_CHANNEL)
     schedule_transition(MATCHING_QUEUES.get(source), None, str(FaceSearchTask.Status.QUEUED))
     search.stage = SelfieSearch.Stage.MATCHING
     search.status = SelfieSearch.Status.QUEUED

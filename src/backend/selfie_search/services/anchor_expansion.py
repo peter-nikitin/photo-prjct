@@ -30,13 +30,12 @@ anchor_candidates AS (
     FROM direct_matches AS direct
     JOIN kept_faces AS face USING (photo_id, detection_id)
     WHERE direct.distance <= %s
-      AND (%s::uuid[] IS NULL OR direct.detection_id = ANY(%s::uuid[]))
-      AND NOT EXISTS (
+      AND CASE WHEN %s::uuid[] IS NULL THEN NOT EXISTS (
           SELECT 1
           FROM processing_photofacedetection AS other_face
           WHERE other_face.attempt_id = face.attempt_id
             AND other_face.id <> face.detection_id
-      )
+      ) ELSE direct.detection_id = ANY(%s::uuid[]) END
 ),
 -- Require a supporting direct match before the source can contribute.
 first_anchor AS (

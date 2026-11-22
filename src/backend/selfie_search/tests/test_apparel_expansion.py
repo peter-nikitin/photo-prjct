@@ -347,12 +347,23 @@ class ApparelQueueTests(TestCase):
         assert candidate["color_cosine_similarity"] == 0.70
         assert candidate["veto"] == ""
 
-    def test_initial_gallery_centroid_includes_the_verified_source(self):
+    def test_initial_gallery_centroid_uses_verified_faces_on_group_photos(self):
         FeatureFlag.objects.create(key="person-appearance-processing", state="on")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
         FeatureFlag.objects.create(key="face-search-anchor-expansion", state="on")
-        _, source = self.index_appearance("gallery-source", face_similarity=1.0)
-        _, anchor = self.index_appearance("direct-anchor", face_similarity=0.74)
+        bystander = _rejected_person([65, 0, 100, 300], head=[65, 20, 95, 50])
+        _, source = self.index_appearance(
+            "gallery-source", face_similarity=1.0, extra_people=(bystander,)
+        )
+        _, anchor = self.index_appearance(
+            "direct-anchor", face_similarity=0.74, extra_people=(bystander,)
+        )
+        for face in (source, anchor):
+            self.make_additional_face(
+                embedding=face,
+                vector=[0.0, 0.0, 0.0, 1.0] + [0.0] * 508,
+                geometry=face.detection.geometry | {"bbox": [65, 20, 30, 30]},
+            )
         # Cosine similarity is 0.55 to both individual faces and above 0.58 to their centroid.
         second = 0.55 * (1 - 0.74) / sqrt(1 - 0.74**2)
         face_vector = [0.55, second, sqrt(1 - 0.55**2 - second**2)] + [0.0] * 509

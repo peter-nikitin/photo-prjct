@@ -207,11 +207,7 @@ checks AS MATERIALIZED (
              WHEN p.reid IS NULL OR p.color IS NULL THEN 'appearance_unknown'
              WHEN vector_norm(regions.head_color) = 0
                 OR vector_norm(regions.torso_color) = 0 THEN 'color_region_unknown'
-             WHEN p.person_count <> 1 OR p.head_count <> 1 OR p.people_incomplete
-                OR EXISTS (
-                    SELECT 1 FROM processing_photofacedetection other
-                    WHERE other.attempt_id = p.face_attempt AND other.id <> p.face_id
-                ) THEN 'multiple_people'
+             WHEN p.people_incomplete THEN 'incomplete_people'
              ELSE '' END AS reason
     FROM anchor_input proposed
     LEFT JOIN appearance_inputs input USING (photo_id)

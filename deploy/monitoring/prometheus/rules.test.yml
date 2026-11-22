@@ -217,13 +217,13 @@ tests:
               description: На /var/lib/findme-photo свободно менее 1 GiB или менее 5%.
   - interval: 1m
     input_series:
-      - series: 'findme_queue_ready_count{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="gallery-search",instance="findme-photo-app"}'
         values: '1+0x12'
-      - series: 'findme_queue_oldest_ready_age_seconds{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="gallery-search",instance="findme-photo-app"}'
         values: '0+60x12'
       - series: 'findme_queue_last_success_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_observed_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
         values: '0+60x12'
     alert_rule_test:
       - eval_time: 12m
@@ -241,13 +241,13 @@ tests:
               description: Готовая работа ожидает дольше порога без успешного прогресса.
   - interval: 1m
     input_series:
-      - series: 'findme_queue_ready_count{queue="selfie_face_search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="selfie_face_search",instance="findme-photo-app"}'
         values: '1+0x12'
-      - series: 'findme_queue_oldest_ready_age_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
         values: '0+60x12'
       - series: 'findme_queue_last_success_timestamp_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_observed_timestamp_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
         values: '0+60x12'
     alert_rule_test:
       - eval_time: 12m
@@ -265,13 +265,13 @@ tests:
               description: Готовая работа ожидает дольше порога без успешного прогресса.
   - interval: 1m
     input_series:
-      - series: 'findme_queue_ready_count{queue="selfie",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="selfie",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_oldest_ready_age_seconds{queue="selfie",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="selfie",instance="findme-photo-app"}'
         values: '0+0x12'
       - series: 'findme_queue_last_success_timestamp_seconds{queue="selfie",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_observed_timestamp_seconds{queue="selfie",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="selfie",instance="findme-photo-app"}'
         values: '0+60x12'
     alert_rule_test:
       - eval_time: 12m
@@ -279,13 +279,13 @@ tests:
         exp_alerts: []
   - interval: 1m
     input_series:
-      - series: 'findme_queue_ready_count{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="gallery-search",instance="findme-photo-app"}'
         values: '1+0x12'
-      - series: 'findme_queue_oldest_ready_age_seconds{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="gallery-search",instance="findme-photo-app"}'
         values: '0+60x12'
       - series: 'findme_queue_last_success_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_observed_timestamp_seconds{queue="gallery-search",instance="other"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="gallery-search",instance="other"}'
         values: '0+60x12'
     alert_rule_test:
       - eval_time: 12m
@@ -293,13 +293,13 @@ tests:
         exp_alerts: []
   - interval: 1m
     input_series:
-      - series: 'findme_queue_ready_count{queue="photo",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="photo",instance="findme-photo-app"}'
         values: '1+0x22'
-      - series: 'findme_queue_oldest_ready_age_seconds{queue="photo",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="photo",instance="findme-photo-app"}'
         values: '0+60x22'
       - series: 'findme_queue_last_success_timestamp_seconds{queue="photo",instance="findme-photo-app"}'
         values: '0+60x22'
-      - series: 'findme_queue_observed_timestamp_seconds{queue="photo",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="photo",instance="findme-photo-app"}'
         values: '0+60x22'
     alert_rule_test:
       - eval_time: 22m
@@ -307,13 +307,13 @@ tests:
         exp_alerts: []
   - interval: 1m
     input_series:
-      - series: 'findme_queue_ready_count{queue="import",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="import",instance="findme-photo-app"}'
         values: '1+0x22'
-      - series: 'findme_queue_oldest_ready_age_seconds{queue="import",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="import",instance="findme-photo-app"}'
         values: '0+60x22'
       - series: 'findme_queue_last_success_timestamp_seconds{queue="import",instance="findme-photo-app"}'
         values: '0+0x22'
-      - series: 'findme_queue_observed_timestamp_seconds{queue="import",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="import",instance="findme-photo-app"}'
         values: '0+60x22'
     alert_rule_test:
       - eval_time: 22m

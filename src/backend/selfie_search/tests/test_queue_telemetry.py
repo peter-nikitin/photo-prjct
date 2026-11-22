@@ -37,13 +37,16 @@ class SearchCompletionTelemetryTests(TransactionTestCase):
         selfie = self.make_search()
         origin = timezone.now() - timedelta(seconds=10)
         SelfieSearch.objects.filter(pk=selfie.pk).update(created_at=origin)
-        SelfieSearchJob.objects.filter(search=selfie).update(available_at=origin)
+        SelfieSearchJob.objects.filter(search=selfie).update(created_at=origin, available_at=origin)
         claimed = self.claim(selfie, now=origin + timedelta(milliseconds=1500.6))
         self.assertFalse(claimed.empty)
         complete_search_attempt(
             claimed.attempt.id,
             result=self.result(),
             now=origin + timedelta(milliseconds=3000.4),
+            download_duration_ms=250,
+            compute_duration_ms=750,
+            total_duration_ms=1200,
         )
         self.assertTrue(run_once())
         self.assertFalse(run_once())
@@ -55,8 +58,8 @@ class SearchCompletionTelemetryTests(TransactionTestCase):
         self.assertEqual(selfie.results.count(), 2)
         self.assertIsNone(selfie.cleanup_confirmed_at)
 
-        notifications = list(listener.notifies(timeout=2, stop_after=2))
-        self.assertEqual(len(notifications), 2)
+        notifications = list(listener.notifies(timeout=2, stop_after=5))
+        self.assertEqual(len(notifications), 5)
         self.assertNotEqual(notifications[0].pid, listener.info.backend_pid)
 
         from config.queue_telemetry import QueueTelemetry
@@ -67,17 +70,32 @@ class SearchCompletionTelemetryTests(TransactionTestCase):
         for notification in notifications:
             telemetry.record(notification.payload)
 
+        measured = {}
+        outcomes = {}
         counts = {}
         durations: dict[str, dict[str, float]] = {}
         for family in text_string_to_metric_families(generate_latest(registry).decode()):
             for sample in family.samples:
-                if sample.name == "findme_queue_completed_total":
+                if (
+                    sample.name == "findme_queue_results_total"
+                    and sample.labels["outcome"] == "success"
+                    and sample.value
+                ):
+                    outcomes[sample.labels["queue"]] = sample.value
+                if sample.name == "findme_queue_duration_observations_total" and sample.value:
+                    measured[sample.labels["queue"]] = sample.value
+                if sample.name == "findme_journey_completed_total":
                     counts[sample.labels["queue"]] = sample.value
-                if sample.name == "findme_queue_segment_duration_seconds_total":
+                if sample.name == "findme_journey_segment_duration_seconds_total":
                     durations.setdefault(sample.labels["queue"], {})[sample.labels["segment"]] = (
                         sample.value
                     )
         self.assertEqual(counts, {"gallery_search": 1, "selfie_search": 1})
+        self.assertEqual(
+            outcomes, {"gallery_matching": 1, "selfie_recognition": 1, "selfie_matching": 1}
+        )
+
+        self.assertEqual(measured, outcomes)
 
         gallery_wait = round(
             (gallery.matching_started_at - gallery.created_at).total_seconds() * 1000
@@ -126,7 +144,7 @@ class SearchCompletionTelemetryTests(TransactionTestCase):
 
         with connection.execute_wrapper(fail_pg_notify):
             self.assertTrue(run_once())
-        self.assertEqual(publish_attempts, [True])
+        self.assertEqual(publish_attempts, [True, True])
         gallery.refresh_from_db()
         self.assertEqual(gallery.status, SelfieSearch.Status.READY)
         self.assertEqual(gallery.results.count(), 1)

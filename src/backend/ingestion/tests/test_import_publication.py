@@ -2,6 +2,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from threading import Barrier
+from unittest.mock import patch
 
 from config.queue_telemetry_protocol import FACE_QUEUE, GALLERY_QUEUE
 from django.contrib.auth import get_user_model
@@ -169,7 +170,11 @@ class ImportPublicationTests(TestCase):
 
         metric = "findme_imported_photos_total"
         before = REGISTRY.get_sample_value(metric) or 0.0
-        with override_feature_flags(self.flags), self.captureOnCommitCallbacks(execute=True):
+        with (
+            override_feature_flags(self.flags),
+            patch("config.queue_work.notify_queue_result") as notify,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             first = complete_import_item(
                 attempt_id=claim.attempt_id,
                 item_id=item.id,
@@ -182,6 +187,18 @@ class ImportPublicationTests(TestCase):
                 clock=lambda: claim.lease_expires_at + timedelta(days=1),
             )
 
+        [call] = [call for call in notify.call_args_list if call.args[0] == "disk_import"]
+        self.assertEqual(call.args[:2], ("disk_import", "success"))
+        timings = call.args[2]
+        cycle = ImportBatch.objects.get(pk=batch.id)
+        assert cycle.queue_enqueued_at is not None and cycle.completed_at is not None
+        self.assertEqual(
+            sum(timings.values()),
+            round((cycle.completed_at - cycle.queue_enqueued_at).total_seconds() * 1000),
+        )
+        self.assertGreaterEqual(
+            timings["manifest"] + timings["download"] + timings["upload"] + timings["publish"], 1
+        )
         self.assertEqual(REGISTRY.get_sample_value(metric), before + 1)
         self.assertEqual(first.photo_id, replay.photo_id)
         self.assertEqual(Photo.objects.filter(import_items__batch_id=batch.id).count(), 1)

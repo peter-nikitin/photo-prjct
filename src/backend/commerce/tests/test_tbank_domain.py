@@ -77,12 +77,14 @@ class BankCheckoutTests(TransactionTestCase):
         with (
             self.purchasable(self.first_photo),
             patch.object(gateway, "create_payment", side_effect=ValueError("invalid receipt")),
+            patch("config.queue_work.notify_queue_result") as notify,
         ):
             with self.assertRaises(CheckoutPaymentUnavailable):
                 self.checkout(gateway=gateway, adapter_key=TBANK_ADAPTER_KEY)
         attempt = PaymentAttempt.objects.get()
         self.assertEqual(attempt.status, PaymentAttempt.Status.FAILED)
         self.assertEqual(Order.objects.count(), 1)
+        notify.assert_called_once_with("commerce_payment", "failed", None, count=1)
 
     def test_concurrent_submission_cannot_repeat_in_flight_init(self):
         gateway = BankRecordingGateway(
@@ -187,6 +189,41 @@ class BankTransitionTests(TransactionTestCase):
         self.assertEqual(self.attempt.provider_payment_id, "bank-payment-1")
         self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertEqual(EmailDelivery.objects.count(), 1)
+
+    def test_reconcile_measures_evidence_acceptance_with_fixed_product_time(self):
+        self.bank_attempt()
+        submitted = self.now - timedelta(seconds=5)
+        PaymentAttempt.objects.filter(pk=self.attempt.pk).update(
+            queue_enqueued_at=submitted,
+            queue_gateway_ms=0,
+            queue_accept_ms=0,
+        )
+        [claim] = claim_due_payment_reconciliations(
+            now=self.now,
+            limit=1,
+            adapter_key=TBANK_ADAPTER_KEY,
+        )
+        with (
+            patch("commerce.payments.monotonic", side_effect=[10.0, 10.125], create=True),
+            patch("config.queue_work.notify_queue_result") as notify,
+        ):
+            reconcile_payment_attempt(
+                attempt_id=self.attempt.pk,
+                gateway=self.gateway_for(),
+                now=self.now,
+                expected_reconciliation_lease_id=claim.lease_id,
+            )
+
+        self.attempt.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(self.attempt.terminal_at, self.now)
+        self.assertEqual(self.order.paid_at, self.now)
+        notify.assert_called_once_with(
+            "commerce_payment",
+            "success",
+            {"wait": 5000, "gateway": 0, "accept": 125, "interval": 0},
+            count=1,
+        )
 
     def test_pending_bank_fetch_never_expires_locally_and_reschedules(self):
         self.bank_attempt()

@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import timedelta
 from math import sqrt
-from unittest.mock import call, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -1179,7 +1179,9 @@ class ApparelQueueTests(TestCase):
         _, source = self.index_appearance("apparel-source", face_similarity=1.0)
         self.index_appearance("good-no-face")
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
-        search = self.submit_gallery(source)
+        with self.captureOnCommitCallbacks(execute=True):
+            search = self.submit_gallery(source)
+        self.assert_gallery_backlog(waiting=1)
         task = search.matching_task
         vector = list(task.vector)
 
@@ -1190,23 +1192,18 @@ class ApparelQueueTests(TestCase):
 
         with (
             patch("selfie_search.services.face_search_queue.expand_apparel", side_effect=time_out),
-            patch.object(
-                face_search_queue,
-                "schedule_transition",
-                wraps=face_search_queue.schedule_transition,
-            ) as transitions,
+            self.captureOnCommitCallbacks(execute=True),
         ):
             assert run_once()
-        assert transitions.call_args_list == [
-            call("gallery-search", "queued", "processing"),
-            call("gallery-search", "processing", "queued"),
-        ]
+        self.assert_gallery_backlog(retry_wait=1)
         task = self.assert_retry_pending(search)
         assert list(task.vector) == vector
         assert not run_once()
 
         self.make_retry_available(task)
-        assert run_once()
+        with self.captureOnCommitCallbacks(execute=True):
+            assert run_once()
+        self.assert_gallery_backlog()
         assert self.result_photos(search) == ["apparel-source", "good-no-face"]
         assert search.failure_code == ""
         assert search.apparel_evidence.decisions["added_people"]
@@ -1222,9 +1219,10 @@ class ApparelQueueTests(TestCase):
     def test_apparel_second_failure_ends_search_without_publishing_baseline(self):
         photo, source = self.index_source_with_processing_enabled()
         FeatureFlag.objects.create(key="apparel-search-expansion", state="on")
-        created = submit_gallery_photo_search(
-            event=self.event, photo=photo, detection_id=source.detection_id, user=self.user
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            created = submit_gallery_photo_search(
+                event=self.event, photo=photo, detection_id=source.detection_id, user=self.user
+            )
         search = created.search
         with (
             patch(
@@ -1233,19 +1231,18 @@ class ApparelQueueTests(TestCase):
             ),
             self.assertLogs(face_search_queue.logger, level="WARNING") as logs,
         ):
-            assert run_once()
-            task = self.assert_retry_pending(search)
-            self.make_retry_available(task)
-            with patch.object(
-                face_search_queue,
-                "schedule_transition",
-                wraps=face_search_queue.schedule_transition,
-            ) as transitions:
+            with self.captureOnCommitCallbacks(execute=True):
                 assert run_once()
-        assert transitions.call_args_list == [
-            call("gallery-search", "queued", "processing"),
-            call("gallery-search", "processing", "terminal"),
-        ]
+            task = self.assert_retry_pending(search)
+            self.assert_gallery_backlog(retry_wait=1)
+            self.make_retry_available(task)
+            with (
+                patch("config.queue_work.notify_queue_result") as publish,
+                self.captureOnCommitCallbacks(execute=True),
+            ):
+                assert run_once()
+        self.assert_gallery_backlog()
+        publish.assert_called_once_with("gallery_matching", "failed", None, count=1)
         assert all("unsafe" not in line for line in logs.output)
         search.refresh_from_db()
         task.refresh_from_db()
@@ -1343,6 +1340,10 @@ class ApparelQueueTests(TestCase):
         assert not search.results.exists()
         assert not SelfieSearchApparelEvidence.objects.filter(search=search).exists()
 
+    def assert_gallery_backlog(self, *, waiting=0, retry_wait=0):
+        counter = QueueWorkCounter.objects.get(queue="gallery-search", processor="")
+        assert (counter.waiting, counter.processing, counter.retry_wait) == (waiting, 0, retry_wait)
+
     def assert_retry_pending(self, search):
         search.refresh_from_db()
         task = search.matching_task
@@ -1373,7 +1374,7 @@ class ApparelPublicationCommitTests(TransactionTestCase):
         task = search.matching_task
         prepare_result = face_search_queue.prepare_search_result
         counter = QueueWorkCounter.objects.get(queue="gallery-search", processor="")
-        assert (counter.waiting, counter.processing) == (1, 0)
+        assert (counter.waiting, counter.processing, counter.retry_wait) == (1, 0, 0)
 
         def write_bad_result_at_commit(current_search, **kwargs):
             prepare_result(current_search, **kwargs)
@@ -1395,7 +1396,7 @@ class ApparelPublicationCommitTests(TransactionTestCase):
             counter.refresh_from_db()
             assert search.status == SelfieSearch.Status.QUEUED
             assert task.status == FaceSearchTask.Status.QUEUED
-            assert (counter.waiting, counter.processing) == (1, 0)
+            assert (counter.waiting, counter.processing, counter.retry_wait) == (0, 0, 1)
             assert not search.results.exists()
             assert not SelfieSearchApparelEvidence.objects.filter(search=search).exists()
 
@@ -1408,6 +1409,6 @@ class ApparelPublicationCommitTests(TransactionTestCase):
         assert search.status == SelfieSearch.Status.FAILED
         assert search.failure_code == "apparel_search_unavailable"
         assert task.status == FaceSearchTask.Status.TERMINAL
-        assert (counter.waiting, counter.processing) == (0, 0)
+        assert (counter.waiting, counter.processing, counter.retry_wait) == (0, 0, 0)
         assert not search.results.exists()
         assert not SelfieSearchApparelEvidence.objects.filter(search=search).exists()

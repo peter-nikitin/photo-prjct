@@ -20,9 +20,6 @@ def test_application_check_succeeds_without_completion_traffic():
     samples = {
         ("findme_http_requests_total", "findme-http", None): 1,
         ("pg_up", "findme-postgres", None): 1,
-        ("findme_gallery_search_queue_depth", "findme-http", None): 0,
-        ("findme_selfie_search_queue_depth", "findme-http", "recognition"): 0,
-        ("findme_selfie_search_queue_depth", "findme-http", "matching"): 0,
     }
 
     class Transport:
@@ -63,7 +60,7 @@ def test_queue_telemetry_requires_initialized_counter_series(listening, ready, c
             for selector in selectors:
                 assert selector["job"] == "findme-queue-telemetry"
                 value = {
-                    "findme_queue_telemetry_listening": listening,
+                    "findme_queue_results_listener_connected": listening,
                     "findme_photo_import_counters_ready": ready,
                     "findme_photo_import_pending_count": counts,
                     "findme_photo_import_failed_count": counts,
@@ -199,7 +196,7 @@ def test_cli_waits_for_fresh_samples_with_a_bounded_retry(
             rows = []
             for selector in selectors:
                 name = selector["__name__"]
-                if elapsed < available_at and name != "findme_queue_telemetry_listening":
+                if elapsed < available_at and name != "findme_queue_results_listener_connected":
                     rows.append([])
                     continue
                 timestamp = 2000 + elapsed
@@ -221,20 +218,15 @@ def test_cli_waits_for_fresh_samples_with_a_bounded_retry(
 @pytest.mark.parametrize("failure", [None, "unavailable", "missing", "stale"])
 def test_queue_work_requires_a_fresh_series_for_every_queue_and_state(failure):
     checker = load("release_queue_work", "deploy/monitoring/prometheus/verify_metrics.py")
-    queues = {
-        "gallery-search",
-        "selfie",
-        "selfie_face_search",
-        "photo",
-        "import",
-        "commerce",
-        "photo_archive",
-    }
+    queues = set(checker.WORK_QUEUES)
     states = {"waiting", "processing", "retry_wait", "paused"}
 
     class Transport:
         def read_samples(self, selectors, *, now):
-            assert {selector["job"] for selector in selectors} == {"findme-queue-telemetry"}
+            assert {selector["job"] for selector in selectors} == {
+                "findme-queue-telemetry",
+                "findme-http",
+            }
             assert {
                 selector["queue"]
                 for selector in selectors
@@ -248,15 +240,23 @@ def test_queue_work_requires_a_fresh_series_for_every_queue_and_state(failure):
             results = []
             for selector in selectors:
                 availability = selector["__name__"] == "findme_queue_work_available"
-                if availability and selector["queue"] == "photo" and failure == "unavailable":
+                if (
+                    availability
+                    and selector["queue"] == "photo_face_embedding"
+                    and failure == "unavailable"
+                ):
                     results.append([[(1995, 0)]])
-                elif selector.get("state") == "processing" and selector["queue"] == "commerce":
+                elif (
+                    selector.get("state") == "processing"
+                    and selector["queue"] == "commerce_payment"
+                ):
                     if failure == "missing":
                         results.append([])
                     else:
                         results.append([[(1600 if failure == "stale" else 1995, 1)]])
                 else:
-                    results.append([[(1995, 1 if availability else 0)]])
+                    observed = selector["__name__"].endswith("_observed_timestamp_seconds")
+                    results.append([[(1995, 1995 if observed else 1 if availability else 0)]])
             return results
 
     if failure is None:

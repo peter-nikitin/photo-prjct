@@ -12,16 +12,32 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("monitoring_control", HERE / "control.py")
-assert spec and spec.loader
-control = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(control)
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+control = _load("monitoring_control", HERE / "control.py")
+queue_panels = _load("monitoring_queue_panels", HERE / "queue_panels.py")
+catalog = _load("monitoring_queue_catalog", HERE.parents[2] / "src/backend/config/queue_catalog.py")
 CONFIG = {key: control.load_config()[key] for key in ("folder_id", "workspace_id", "dashboard_id")}
 
 
 def dashboard() -> dict:
     content = (HERE / "single-vm-dashboard.json").read_text()
-    return json.loads(content.replace("{{workspace_id}}", CONFIG["workspace_id"]))
+    result = json.loads(content.replace("{{workspace_id}}", CONFIG["workspace_id"]))
+    widgets = queue_panels.panels(catalog.QUEUES, CONFIG["workspace_id"])
+    offset = sum(int(w["position"]["h"]) for w in widgets)
+    for widget in result["widgets"]:
+        widget["position"]["y"] = str(int(widget["position"].get("y", 0)) + offset)
+    result["widgets"] = widgets + result["widgets"]
+    return result
 
 
 def reconcile(transport, backup: Path) -> None:

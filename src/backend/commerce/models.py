@@ -301,6 +301,10 @@ class PaymentAttempt(models.Model):
     reconciliation_lease_id = models.UUIDField(null=True, blank=True)
     reconciliation_lease_expires_at = models.DateTimeField(null=True, blank=True)
     reconciliation_next_attempt_at = models.DateTimeField(null=True, blank=True)
+    queue_enqueued_at = models.DateTimeField(null=True)
+    queue_first_claimed_at = models.DateTimeField(null=True)
+    queue_gateway_ms = models.PositiveBigIntegerField(null=True)
+    queue_accept_ms = models.PositiveBigIntegerField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -568,6 +572,9 @@ class EmailDelivery(models.Model):
     last_failure_category = models.CharField(max_length=64, blank=True)
     lease_id = models.UUIDField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
+    queue_enqueued_at = models.DateTimeField(null=True)
+    queue_first_claimed_at = models.DateTimeField(null=True)
+    queue_claimed_at = models.DateTimeField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

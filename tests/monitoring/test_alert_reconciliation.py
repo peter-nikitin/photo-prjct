@@ -59,7 +59,7 @@ class Transport:
 def test_changed_rule_file_is_backed_up_then_read_back(tmp_path):
     module = load()
     transport = Transport(b"old rules")
-    desired = (module.HERE / "rules.yml").read_bytes()
+    desired = module.render_rules()
     module.reconcile_rules(transport, desired, tmp_path / "backup")
     assert (tmp_path / "backup/findme-photo.yml").read_bytes() == b"old rules"
     assert transport.calls == [
@@ -72,7 +72,7 @@ def test_changed_rule_file_is_backed_up_then_read_back(tmp_path):
 
 def test_matching_rule_file_is_not_rewritten(tmp_path):
     module = load()
-    desired = (module.HERE / "rules.yml").read_bytes()
+    desired = module.render_rules()
     transport = Transport(desired)
     module.reconcile_rules(transport, desired, tmp_path / "backup")
     assert transport.calls == [("get", "findme-photo.yml"), ("snapshots", "findme-photo.yml")]
@@ -84,9 +84,7 @@ def test_failed_readback_preserves_backup(tmp_path):
     transport = Transport(b"old rules")
     transport.put_rule_file = lambda name, content: transport.calls.append(("put", name))
     with pytest.raises(module.control.ControlError, match="read-back"):
-        module.reconcile_rules(
-            transport, (module.HERE / "rules.yml").read_bytes(), tmp_path / "backup"
-        )
+        module.reconcile_rules(transport, module.render_rules(), tmp_path / "backup")
     assert (tmp_path / "backup/findme-photo.yml").read_bytes() == b"old rules"
 
 
@@ -135,7 +133,7 @@ def test_preflight_accepts_fresh_observations():
 
 def test_partial_snapshot_does_not_validate_matching_rule_file(tmp_path, monkeypatch):
     module = load()
-    desired = (module.HERE / "rules.yml").read_bytes()
+    desired = module.render_rules()
     transport = Transport(desired)
     original = transport.rule_snapshots
 
@@ -163,7 +161,7 @@ def test_fresh_preflight_rejects_future_observation_value():
                     (
                         now - 60,
                         now + 10
-                        if selector["__name__"] == "findme_queue_observed_timestamp_seconds"
+                        if selector["__name__"] == "findme_queue_due_observed_timestamp_seconds"
                         else now - 60,
                     )
                 ]
@@ -172,7 +170,7 @@ def test_fresh_preflight_rejects_future_observation_value():
         ]
 
     transport.read_samples = samples
-    with pytest.raises(module.MissingSource, match="findme_queue_observed"):
+    with pytest.raises(module.MissingSource, match="findme_queue_due_observed"):
         module.check_sources(transport, now=1000)
 
 
@@ -191,7 +189,7 @@ def test_missing_gallery_search_observation_blocks_publication(tmp_path, monkeyp
     transport = Transport(b"old rules")
     read_samples = transport.read_samples
     missing_selector = {
-        "__name__": "findme_queue_observed_timestamp_seconds",
+        "__name__": "findme_queue_due_observed_timestamp_seconds",
         "queue": "gallery-search",
         "instance": "findme-photo-app",
     }
@@ -206,7 +204,5 @@ def test_missing_gallery_search_observation_blocks_publication(tmp_path, monkeyp
     monkeypatch.setattr(transport, "read_samples", samples_without_gallery_search)
     monkeypatch.setattr(module.time, "monotonic", Mock(side_effect=[0, 601]))
     with pytest.raises(module.control.ControlError, match="old rules retained"):
-        module.publish_alerts(
-            transport, (module.HERE / "rules.yml").read_bytes(), b"route", tmp_path / "backup"
-        )
+        module.publish_alerts(transport, module.render_rules(), b"route", tmp_path / "backup")
     assert transport.calls == [("read_samples",)]

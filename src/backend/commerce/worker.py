@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from config.queue_work import COMMERCE, schedule_transition
+from config.queue_work import PAYMENT, schedule_transition
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
 from django.utils import timezone
@@ -14,6 +14,7 @@ from commerce.delivery import claim_due_email_deliveries, send_claimed_email_del
 from commerce.email_sender import EmailMessage, EmailSender, EmailSendResult
 from commerce.models import CommerceAttention, EmailDelivery, OrderAccessGrant, PaymentAttempt
 from commerce.payment_gateway import PaymentGateway, PaymentGatewayError
+from commerce.payment_queue import record_phases, work_state
 from commerce.payments import (
     PaymentReconciliationUnavailable,
     PaymentTransitionRejected,
@@ -155,6 +156,7 @@ class CommerceWorker:
                 _release_payment_reconciliation_claim(
                     claim=claim,
                     now=now or timezone.now(),
+                    gateway_ms=error.gateway_ms,
                 )
                 logger.warning(
                     "commerce_worker_reconciliation_unavailable",
@@ -343,6 +345,9 @@ def claim_due_payment_reconciliations(
         )
         claims: list[PaymentReconciliationClaim] = []
         for attempt in attempts:
+            previous_state = work_state(attempt)
+            if attempt.queue_first_claimed_at is None:
+                attempt.queue_first_claimed_at = now
             lease_id = uuid4()
             attempt.reconciliation_state = PaymentAttempt.ReconciliationState.PROCESSING
             attempt.reconciliation_lease_id = lease_id
@@ -352,13 +357,14 @@ def claim_due_payment_reconciliations(
                     "reconciliation_state",
                     "reconciliation_lease_id",
                     "reconciliation_lease_expires_at",
+                    "queue_first_claimed_at",
                     "updated_at",
                 ]
             )
             schedule_transition(
-                COMMERCE,
-                str(PaymentAttempt.ReconciliationState.PENDING),
-                attempt.reconciliation_state,
+                PAYMENT,
+                previous_state,
+                work_state(attempt),
             )
             claims.append(PaymentReconciliationClaim(attempt_id=attempt.pk, lease_id=lease_id))
     return tuple(claims)
@@ -389,9 +395,9 @@ def _recover_expired_payment_reconciliation_leases(*, now: datetime, limit: int)
             ]
         )
         schedule_transition(
-            COMMERCE,
+            PAYMENT,
             str(PaymentAttempt.ReconciliationState.PROCESSING),
-            attempt.reconciliation_state,
+            work_state(attempt),
         )
 
 
@@ -399,6 +405,7 @@ def _release_payment_reconciliation_claim(
     *,
     claim: PaymentReconciliationClaim,
     now: datetime,
+    gateway_ms: int = 0,
 ) -> bool:
     """Fence a failed fetch and schedule its one bounded automatic retry."""
     with transaction.atomic():
@@ -415,6 +422,7 @@ def _release_payment_reconciliation_claim(
         )
         if attempt is None:
             return False
+        record_phases(attempt, gateway=gateway_ms)
         original_due_at = attempt.expires_at or attempt.created_at + _PAYMENT_FALLBACK_EXPIRY
         already_retried = (
             attempt.reconciliation_next_attempt_at is not None
@@ -440,9 +448,10 @@ def _release_payment_reconciliation_claim(
             ]
         )
         schedule_transition(
-            COMMERCE,
+            PAYMENT,
             str(PaymentAttempt.ReconciliationState.PROCESSING),
-            attempt.reconciliation_state,
+            work_state(attempt),
+            outcome="failed" if attempt.reconciliation_next_attempt_at is None else None,
         )
     return True
 

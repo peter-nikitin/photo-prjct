@@ -190,13 +190,17 @@ class ImportQueueWorkTests(TestCase):
                 claimed = claim_import_work()
             assert claimed.attempt_id is not None
             assert work("import") == (0, 1, 0, 0)
-            with self.captureOnCommitCallbacks(execute=True):
+            with (
+                patch("config.queue_work.notify_queue_result") as notify,
+                self.captureOnCommitCallbacks(execute=True),
+            ):
                 record_import_failure(
                     attempt_id=claimed.attempt_id,
                     operation="manifest",
                     code="provider_error",
                     retryable=False,
                 )
+        notify.assert_called_once_with("disk_import", "failed", None, count=1)
         assert work("import") == (0, 0, 0, 0)
 
 
@@ -235,10 +239,10 @@ class EmailQueueWorkTests(TransactionTestCase):
     support_contact = test_delivery.EmailDeliveryServiceTests.support_contact
 
     def test_resend_remains_visible_while_only_a_future_retry_exists(self):
-        resend_order_access(order_id=self.order.pk, now=self.now)
-        assert work("commerce") == (1, 0, 0, 0)
+        delivery = resend_order_access(order_id=self.order.pk, now=self.now)
+        assert work("commerce_email") == (1, 0, 0, 0)
         [claimed] = claim_due_email_deliveries(now=self.now, limit=1)
-        assert work("commerce") == (0, 1, 0, 0)
+        assert work("commerce_email") == (0, 1, 0, 0)
         send_claimed_email_delivery(
             claim=claimed,
             email_sender=test_delivery._RecordingSender((EmailSendOutcome.RETRYABLE_FAILURE,)),
@@ -249,7 +253,28 @@ class EmailQueueWorkTests(TransactionTestCase):
             now=self.now,
         )
         assert claim_due_email_deliveries(now=self.now, limit=1) == ()
-        assert work("commerce") == (0, 0, 1, 0)
+        assert work("commerce_email") == (0, 0, 1, 0)
+        assert work("commerce_payment") == (0, 0, 0, 0)
+        delivery.refresh_from_db()
+        later = delivery.next_attempt_at
+        [retry] = claim_due_email_deliveries(now=later, limit=1)
+        with patch("config.queue_work.notify_queue_result") as publish:
+            for _ in range(2):
+                send_claimed_email_delivery(
+                    claim=retry,
+                    email_sender=test_delivery._RecordingSender((EmailSendOutcome.SUCCEEDED,)),
+                    order_access_url_for_grant=test_delivery._AccessUrlBuilder(),
+                    order_access_signing_secret=self.signing_secret,
+                    timeout_seconds=5,
+                    support_contact=self.support_contact,
+                    now=later + timedelta(seconds=3),
+                )
+        publish.assert_called_once_with(
+            "commerce_email",
+            "success",
+            {"wait": 0, "retry": 60_000, "prepare": 3000, "send": 0},
+            count=1,
+        )
 
 
 class PaymentQueueWorkTests(TransactionTestCase):
@@ -263,35 +288,40 @@ class PaymentQueueWorkTests(TransactionTestCase):
         gateway = self.gateway()
         with self.purchasable(self.first_photo):
             result = self.checkout(gateway=gateway)
-        assert work("commerce") == (1, 0, 0, 0)
+        assert work("commerce_payment") == (1, 0, 0, 0)
         attempt = result.payment_attempt
         now = attempt.expires_at
         assert now is not None
         [claimed] = claim_due_payment_reconciliations(
             now=now, limit=1, adapter_key=attempt.adapter_key
         )
-        assert work("commerce") == (0, 1, 0, 0)
+        assert work("commerce_payment") == (0, 1, 0, 0)
         now += timedelta(minutes=6)
         [recovered] = claim_due_payment_reconciliations(
             now=now, limit=1, adapter_key=attempt.adapter_key
         )
         assert recovered.lease_id != claimed.lease_id
-        assert work("commerce") == (0, 1, 0, 0)
-        reconcile_payment_attempt(
-            attempt_id=attempt.pk,
-            gateway=gateway,
-            now=now,
-            expected_reconciliation_lease_id=recovered.lease_id,
-        )
+        assert work("commerce_payment") == (0, 1, 0, 0)
+        with patch("config.queue_work.notify_queue_result") as publish:
+            reconcile_payment_attempt(
+                attempt_id=attempt.pk,
+                gateway=gateway,
+                now=now,
+                expected_reconciliation_lease_id=recovered.lease_id,
+            )
+        [call] = publish.call_args_list
+        assert call.args[:2] == ("commerce_payment", "success")
+        segments = call.args[2]
+        assert segments["wait"] > 0 and segments["interval"] >= 360_000
         attempt.refresh_from_db()
         assert attempt.status == PaymentAttempt.Status.EXPIRED
-        assert work("commerce") == (0, 0, 0, 0)
+        assert work("commerce_payment") == (0, 0, 0, 0)
 
 
 class QueueWorkObservationTests(TransactionTestCase):
     setUp = photo_fixtures.ProcessingJobServiceTests.setUp
     private_photo = photo_fixtures.ProcessingJobServiceTests.private_photo
-    processor = "a_new_photo_processor_with_a_long_name"
+    processor = "capture_metadata"
 
     def enqueue(self):
         photo = self.private_photo("queue-observation")
@@ -345,9 +375,20 @@ class QueueWorkObservationTests(TransactionTestCase):
                 "SELECT 1 FROM processing_queueworkcounter "
                 "WHERE queue = 'photo' AND processor = '' FOR UPDATE"
             )
-            completed = complete_attempt(last.attempt.id, result={}, now=completed_at)
+
+            def complete():
+                return complete_attempt(
+                    last.attempt.id,
+                    result={},
+                    now=completed_at,
+                    download_duration_ms=1000,
+                    compute_duration_ms=2000,
+                    total_duration_ms=4000,
+                )
+
+            completed = complete()
             assert completed.attempt.accepted
-            duplicate = complete_attempt(last.attempt.id, result={}, now=completed_at)
+            duplicate = complete()
             assert duplicate.idempotent
             notifications = list(listener.notifies(timeout=0.2))
 
@@ -359,25 +400,30 @@ class QueueWorkObservationTests(TransactionTestCase):
             telemetry.record(notification.payload)
         registry = CollectorRegistry()
         registry.register(telemetry)
-        assert samples(registry) == {
-            ("findme_queue_telemetry_listening", ()): 0,
-            ("findme_queue_completed_total", (("queue", f"processing_{self.processor}"),)): 1,
-            (
-                "findme_queue_segment_duration_seconds_total",
-                (("queue", f"processing_{self.processor}"), ("segment", "waiting")),
-            ): 2,
-            (
-                "findme_queue_segment_duration_seconds_total",
-                (("queue", f"processing_{self.processor}"), ("segment", "processing")),
-            ): 38,
+        observed = {
+            (name, dict(labels).get("outcome") or dict(labels).get("segment")): value
+            for (name, labels), value in samples(registry).items()
+            if dict(labels).get("queue") == "photo_capture_metadata"
         }
+        assert observed["findme_queue_results_total", "success"] == 1
+        assert observed["findme_queue_results_total", "failed"] == 0
+        assert observed["findme_queue_duration_observations_total", None] == 1
+        duration = "findme_queue_segment_duration_seconds_total"
+        assert observed[duration, "wait"] == 2
+        assert observed[duration, "download"] == 1
+        assert observed[duration, "compute"] == 2
+        assert observed[duration, "retry"] > 0
+        assert sum(value for (name, _), value in observed.items() if name == duration) == 40
 
     def test_scrape_only_reads_counters_and_survives_a_reader_restart(self):
         job = self.enqueue()
         self.claim(job.created_at + timedelta(seconds=2))
         uninitialized = self.scrape()
-        assert uninitialized["findme_queue_work_available", (("queue", "photo"),)] == 0
-        assert len(uninitialized) == 7
+        assert (
+            uninitialized["findme_queue_work_available", (("queue", "photo_capture_metadata"),)]
+            == 0
+        )
+        assert len(uninitialized) == 26
 
         call_command("rebuild_queue_work_counters", stdout=StringIO())
         # A lost addition for a different processor must leave durable signed counts
@@ -394,26 +440,22 @@ class QueueWorkObservationTests(TransactionTestCase):
         with connection.execute_wrapper(observe_reads):
             first = self.scrape()
             second = self.scrape()
-        assert first == second
+        assert {
+            key: value for key, value in first.items() if "observed_timestamp" not in key[0]
+        } == {key: value for key, value in second.items() if "observed_timestamp" not in key[0]}
         assert len(selects) == 2
         assert all('FROM "processing_queueworkcounter"' in sql for sql in selects)
         assert connection.connection is None
-        assert first["findme_queue_work_available", (("queue", "photo"),)] == 1
-        assert first["findme_queue_work_count", (("queue", "photo"), ("state", "processing"))] == 1
-        assert (
-            first[
-                "findme_processing_queue_work_count",
-                (("processor", self.processor), ("state", "processing")),
-            ]
-            == 1
-        )
-        assert (
-            first[
-                "findme_processing_queue_work_count",
-                (("processor", "missed"), ("state", "processing")),
-            ]
-            == 0
-        )
+        assert first["findme_queue_work_available", (("queue", "photo_capture_metadata"),)] == 1
+        states = {
+            (dict(labels)["queue"], dict(labels)["state"]): value
+            for (name, labels), value in first.items()
+            if name == "findme_queue_work_count"
+        }
+        assert states["photo_capture_metadata", "processing"] == 1
+        assert states["photo_face_embedding", "processing"] == 0
+        assert all(queue != "photo_missed" for queue, state in states)
+        assert len(states) == 13 * 4
         assert work("photo", "missed") == (0, -1, 0, 0)
 
     def test_unavailable_counter_table_does_not_hide_the_completion_listener(self):
@@ -427,8 +469,18 @@ class QueueWorkObservationTests(TransactionTestCase):
 
         with connection.execute_wrapper(fail_read):
             exported = self.scrape(telemetry)
-        assert exported.pop(("findme_queue_telemetry_listening", ())) == 1
-        assert len(exported) == 7
+        assert exported["findme_queue_results_listener_connected", ()] == 1
+        assert (
+            exported[
+                "findme_queue_results_observed_timestamp_seconds",
+                (("queue", "photo_capture_metadata"),),
+            ]
+            > 0
+        )
+        exported = {
+            key: value for key, value in exported.items() if key[0] == "findme_queue_work_available"
+        }
+        assert len(exported) == 13
         assert all(
             name == "findme_queue_work_available" and value == 0
             for (name, _labels), value in exported.items()

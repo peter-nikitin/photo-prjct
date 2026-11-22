@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
-from config.queue_work import COMMERCE, schedule_transition
+from config.queue_work import PAYMENT, schedule_transition
 from django import forms
 from django.conf import settings
 from django.db import connection, transaction
@@ -27,6 +27,7 @@ from commerce.payment_gateway import (
     PaymentReceiptLine,
     PaymentRequest,
 )
+from commerce.payment_queue import work_state
 from commerce.payments import PaymentTransitionRejected, reconcile_payment_attempt
 from commerce.services import _lock_digest, consume_cart
 from commerce.tbank_gateway import TBANK_ADAPTER_KEY
@@ -150,14 +151,20 @@ def initiate_payment(
     current_time = now
     if adapter_key == TBANK_ADAPTER_KEY:
         # Commit the claim before network I/O. A crash at any later point requires CheckOrder.
-        claimed = PaymentAttempt.objects.filter(
-            pk=attempt_id,
-            status=PaymentAttempt.Status.PENDING,
-            initiation_started_at__isnull=True,
-        ).update(
-            initiation_started_at=current_time,
-            reconciliation_next_attempt_at=current_time + timedelta(minutes=5),
-        )
+        with transaction.atomic():
+            claimed = PaymentAttempt.objects.filter(
+                pk=attempt_id,
+                status=PaymentAttempt.Status.PENDING,
+                initiation_started_at__isnull=True,
+            ).update(
+                initiation_started_at=current_time,
+                queue_enqueued_at=current_time,
+                queue_gateway_ms=0,
+                queue_accept_ms=0,
+                reconciliation_next_attempt_at=current_time + timedelta(minutes=5),
+            )
+            if claimed:
+                schedule_transition(PAYMENT, None, "pending")
         if not claimed:
             try:
                 reconcile_payment_attempt(attempt_id=attempt_id, gateway=gateway)
@@ -173,7 +180,11 @@ def initiate_payment(
                 cursor.execute(
                     """
                     WITH previous AS (
-                        SELECT id, reconciliation_state FROM commerce_paymentattempt
+                        SELECT id, CASE WHEN reconciliation_next_attempt_at IS NULL THEN NULL
+                            WHEN reconciliation_state = 'processing' THEN 'processing'
+                            WHEN queue_first_claimed_at IS NOT NULL THEN 'retry_wait'
+                            ELSE 'pending' END AS queue_state
+                        FROM commerce_paymentattempt
                         WHERE id = %s AND status = 'pending'
                         FOR UPDATE
                     )
@@ -183,13 +194,13 @@ def initiate_payment(
                         reconciliation_next_attempt_at = NULL
                     FROM previous
                     WHERE attempt.id = previous.id
-                    RETURNING previous.reconciliation_state
+                    RETURNING previous.queue_state
                     """,
                     [attempt_id, timezone.now()],
                 )
                 previous = cursor.fetchone()
             if previous is not None:
-                schedule_transition(COMMERCE, previous[0], None)
+                schedule_transition(PAYMENT, previous[0], None, outcome="failed")
         raise CheckoutPaymentUnavailable() from None
     except PaymentGatewayError:
         raise CheckoutPaymentUnavailable() from None
@@ -392,7 +403,6 @@ def _create_attempt(*, order: Order, adapter_key: str) -> PaymentAttempt:
         adapter_key=adapter_key,
         idempotency_key=secrets.token_urlsafe(32),
     )
-    schedule_transition(COMMERCE, None, attempt.reconciliation_state)
     return attempt
 
 
@@ -466,6 +476,11 @@ def _reconcile_created_payment(
             ):
                 raise CheckoutPaymentUnavailable()
 
+        previous_state = work_state(attempt)
+        if attempt.reconciliation_next_attempt_at is None:
+            attempt.queue_enqueued_at = timezone.now()
+            attempt.queue_gateway_ms = 0
+            attempt.queue_accept_ms = 0
         attempt.provider_payment_id = created.provider_payment_id
         attempt.confirmation_url = created.confirmation_url
         attempt.expires_at = created.expires_at
@@ -476,6 +491,9 @@ def _reconcile_created_payment(
         )
         attempt.save(
             update_fields=[
+                "queue_enqueued_at",
+                "queue_gateway_ms",
+                "queue_accept_ms",
                 "provider_payment_id",
                 "confirmation_url",
                 "expires_at",
@@ -483,6 +501,7 @@ def _reconcile_created_payment(
                 "updated_at",
             ]
         )
+        schedule_transition(PAYMENT, previous_state, work_state(attempt))
         return attempt
 
 

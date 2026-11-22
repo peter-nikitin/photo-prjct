@@ -12,7 +12,13 @@ from photo_worker.runner import _assert_terminal_size, _success_payload, _timest
 
 from processing.appearance import appearance_metadata, valid_appearance_result
 from processing.contracts import ClaimedJob
-from processing.models import PersonAppearanceDetection, PhotoDerivative, PhotoProcessingState
+from processing.models import (
+    PersonAppearanceDetection,
+    PhotoDerivative,
+    PhotoProcessingState,
+    ProcessingAttempt,
+    ProcessingJob,
+)
 from processing.services.jobs import claim_job
 from processing.services.previews import complete_preview_attempt
 from processing.tests import test_previews
@@ -107,7 +113,13 @@ class AppearanceContractTests(test_previews._PreviewPublicationFixture, TestCase
         result = maximum_result()
         assert valid_appearance_result(result)
         now = _timestamp()
-        payload = _success_payload(job, now, now, result, 0, 0, 0)
+        payload = _success_payload(job, now, now, result, 1, 2, 4)
+        submitted = timezone.now() - timedelta(seconds=4)
+        state = photo.processing_states.get(processor_type="person_appearance")
+        ProcessingJob.objects.filter(pk=state.current_job_id).update(created_at=submitted)
+        ProcessingAttempt.objects.filter(pk=state.current_attempt_id).update(
+            claimed_at=submitted + timedelta(seconds=2)
+        )
         _assert_terminal_size(payload, 384 * 1024)
         assert len(json.dumps(payload).encode()) < 384 * 1024
         assert len(json.dumps(appearance_metadata(result)).encode()) < 128 * 1024
@@ -129,11 +141,21 @@ class AppearanceContractTests(test_previews._PreviewPublicationFixture, TestCase
             assert response.status_code == 200, response.json()
             assert self.worker_post(attempt_url, payload).json()["idempotent"]
         [completed] = events
-        assert completed["queue"] == "processing_person_appearance"
-        assert set(completed["segments_ms"]) == {"waiting", "processing"}
+        assert (completed["queue"], completed["outcome"]) == ("photo_person_appearance", "success")
+        timings = completed["segments_ms"]
+        assert set(timings) == {"wait", "download", "compute", "accept", "retry"}
+        assert (timings["wait"], timings["download"], timings["compute"], timings["retry"]) == (
+            2000,
+            1,
+            2,
+            0,
+        )
         state = photo.processing_states.get(processor_type="person_appearance")
         assert state.accepted_attempt_id is not None
         assert state.accepted_attempt.result == appearance_metadata(result)
+        assert sum(timings.values()) == round(
+            (state.accepted_attempt.terminal_at - submitted).total_seconds() * 1000
+        )
         assert (
             PersonAppearanceDetection.objects.filter(attempt=state.accepted_attempt).count() == 32
         )

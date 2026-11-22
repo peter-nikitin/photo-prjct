@@ -344,56 +344,12 @@
       "position": {
         "y": "32",
         "w": "24",
-        "h": "24"
+        "h": "16"
       },
       "group": {
         "id": "21267d26-2b21-5007-afd9-1936ab183f84",
-        "title": "Поиск по фотографии галереи",
+        "title": "Пользовательский путь — поиск по фотографии галереи",
         "widgets": [
-          {
-            "id": "ef309b88-9fb8-5a4e-861c-5fc0189b431b",
-            "multiSourceChart": {
-              "id": "ef309b88-9fb8-5a4e-861c-5fc0189b431b",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "0ef8cfff-34d1-5f48-8197-3ec87511def6",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum(findme_gallery_search_queue_depth{job=\"findme-http\"})",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "0ef8cfff-34d1-5f48-8197-3ec87511def6",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Поиски в очереди",
-              "description": "Число ожидающих поисков по фотографии галереи, включая отложенные повторы. Выполняемые поиски и загрузки селфи не входят. Ноль означает пустую очередь; отсутствие линии — отсутствие данных."
-            },
-            "position": {
-              "w": "12",
-              "h": "8"
-            }
-          },
           {
             "id": "3a2f81da-8853-5574-a84c-b7f991043725",
             "multiSourceChart": {
@@ -403,7 +359,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) > 0)",
+                    "query": "sum by (segment) (rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) / on () group_left() (sum(rate(findme_journey_completed_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
                   }
@@ -438,8 +394,7 @@
             },
             "position": {
               "w": "12",
-              "h": "8",
-              "x": "12"
+              "h": "8"
             }
           },
           {
@@ -483,7 +438,7 @@
               "description": "От постановки до готового результата. 75-й перцентиль успешных поисков за последние 24 часа. При пустой выборке точек нет."
             },
             "position": {
-              "y": "8",
+              "x": "12",
               "w": "12",
               "h": "8"
             }
@@ -497,7 +452,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "bdc430df-8f37-5c29-8a74-26bb00e80a1a",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m] @ end()))",
+                    "query": "sum by (segment) (increase(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m] @ end()))",
                     "textMode": true,
                     "name": "A"
                   }
@@ -525,8 +480,7 @@
             "position": {
               "y": "8",
               "w": "12",
-              "h": "8",
-              "x": "12"
+              "h": "8"
             }
           },
           {
@@ -538,7 +492,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) > 0)",
+                    "query": "100 * sum by (segment) (rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) / on () group_left() (sum(rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"gallery_search\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
                   }
@@ -574,8 +528,9 @@
               "displayLegend": true
             },
             "position": {
-              "y": "16",
-              "w": "24",
+              "x": "12",
+              "y": "8",
+              "w": "12",
               "h": "8"
             }
           }
@@ -584,94 +539,14 @@
     },
     {
       "position": {
-        "y": "56",
+        "y": "48",
         "w": "24",
-        "h": "24"
+        "h": "16"
       },
       "group": {
         "id": "8122fe84-8afa-409c-9f88-2a05edfd2db7",
-        "title": "Поиск по селфи",
+        "title": "Пользовательский путь — поиск по селфи",
         "widgets": [
-          {
-            "id": "4f85956b-36cc-424b-a1be-eacec5b98a4f",
-            "multiSourceChart": {
-              "id": "4f85956b-36cc-424b-a1be-eacec5b98a4f",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "7fa93085-e923-4d29-bf27-298fa18ba54c",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum(findme_selfie_search_queue_depth{job=\"findme-http\",stage=\"recognition\"})",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                },
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "7fa93085-e923-4d29-bf27-298fa18ba54c",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum(findme_selfie_search_queue_depth{job=\"findme-http\",stage=\"matching\"})",
-                    "textMode": true,
-                    "name": "B"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "7fa93085-e923-4d29-bf27-298fa18ba54c",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Селфи в очередях",
-              "description": "Ожидающие селфи по этапам распознавания и поиска совпадений, включая отложенные повторы.",
-              "displayLegend": true,
-              "seriesOverrides": [
-                {
-                  "matcher": {
-                    "query": {
-                      "names": [
-                        "A"
-                      ]
-                    }
-                  },
-                  "settings": {
-                    "name": "Распознавание"
-                  }
-                },
-                {
-                  "matcher": {
-                    "query": {
-                      "names": [
-                        "B"
-                      ]
-                    }
-                  },
-                  "settings": {
-                    "name": "Поиск совпадений"
-                  }
-                }
-              ]
-            },
-            "position": {
-              "w": "12",
-              "h": "8"
-            }
-          },
           {
             "id": "f51f892d-7c6d-47ae-bbc2-3bc4dc07ae53",
             "multiSourceChart": {
@@ -681,7 +556,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) > 0)",
+                    "query": "sum by (segment) (rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) / on () group_left() (sum(rate(findme_journey_completed_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
                   }
@@ -716,8 +591,7 @@
             },
             "position": {
               "w": "12",
-              "h": "8",
-              "x": "12"
+              "h": "8"
             }
           },
           {
@@ -761,7 +635,7 @@
               "description": "От постановки до готового результата. 75-й перцентиль успешных поисков за последние 24 часа. При пустой выборке точек нет."
             },
             "position": {
-              "y": "8",
+              "x": "12",
               "w": "12",
               "h": "8"
             }
@@ -775,7 +649,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "79660805-d9d3-5620-a83f-8f0c50521706",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m] @ end()))",
+                    "query": "sum by (segment) (increase(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m] @ end()))",
                     "textMode": true,
                     "name": "A"
                   }
@@ -803,8 +677,7 @@
             "position": {
               "y": "8",
               "w": "12",
-              "h": "8",
-              "x": "12"
+              "h": "8"
             }
           },
           {
@@ -816,7 +689,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "15e79d62-fb1c-4891-a7f4-11991dac479d",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) > 0)",
+                    "query": "100 * sum by (segment) (rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) / on () group_left() (sum(rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"selfie_search\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
                   }
@@ -852,8 +725,9 @@
               "displayLegend": true
             },
             "position": {
-              "y": "16",
-              "w": "24",
+              "x": "12",
+              "y": "8",
+              "w": "12",
               "h": "8"
             }
           }
@@ -862,7 +736,7 @@
     },
     {
       "position": {
-        "y": "80",
+        "y": "64",
         "w": "24",
         "h": "16"
       },
@@ -1009,7 +883,7 @@
     },
     {
       "position": {
-        "y": "96",
+        "y": "80",
         "w": "24",
         "h": "32"
       },
@@ -1438,7 +1312,7 @@
     },
     {
       "position": {
-        "y": "128",
+        "y": "112",
         "w": "24",
         "h": "32"
       },
@@ -1564,7 +1438,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "8b307ef9-cdaa-5c04-adef-c1e471cbc876",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) > 0)",
+                    "query": "sum by (segment) (rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) / on () group_left() (sum(rate(findme_journey_completed_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
                   }
@@ -1612,7 +1486,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "98758b01-8d7a-5408-b923-dfccd8de6de9",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) > 0)",
+                    "query": "sum by (segment) (rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) / on () group_left() (sum(rate(findme_journey_completed_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
                   }
@@ -1661,7 +1535,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "6200107c-b99c-5f6e-ab25-1cc70a77f99c",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m] @ end()))",
+                    "query": "sum by (segment) (increase(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m] @ end()))",
                     "textMode": true,
                     "name": "A"
                   }
@@ -1701,7 +1575,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "c939afe3-86a2-5b76-b3eb-58ca9d9e855c",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m] @ end()))",
+                    "query": "sum by (segment) (increase(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m] @ end()))",
                     "textMode": true,
                     "name": "A"
                   }
@@ -1742,7 +1616,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "25dce951-90b7-5adc-8a21-00254707fbce",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) > 0)",
+                    "query": "100 * sum by (segment) (rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) / on () group_left() (sum(rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_gallery\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
                   }
@@ -1792,7 +1666,7 @@
                   "prometheusTarget": {
                     "dataSourceId": "0c2fd883-4021-5a66-83a4-b9cadef96732",
                     "workspaceId": "{{workspace_id}}",
-                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) > 0)",
+                    "query": "100 * sum by (segment) (rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) / on () group_left() (sum(rate(findme_journey_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_import_face\"}[5m])) > 0)",
                     "textMode": true,
                     "name": "A"
                   }
@@ -1839,154 +1713,7 @@
     },
     {
       "position": {
-        "y": "160",
-        "w": "24",
-        "h": "16"
-      },
-      "group": {
-        "id": "ee3aeb91-90a8-5d0e-b72c-e89417c945af",
-        "title": "Импорт с Яндекс Диска",
-        "widgets": [
-          {
-            "id": "d21e8ede-4c50-5771-bc3f-b126d22764c8",
-            "multiSourceChart": {
-              "id": "d21e8ede-4c50-5771-bc3f-b126d22764c8",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "db6f0615-f923-5356-b17b-f460fe880e17",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "findme_queue_ready_count{job=\"findme-http\",queue=\"import\"}",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "db6f0615-f923-5356-b17b-f460fe880e17",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Готовые к обработке партии",
-              "description": "Число партий импорта с работой, которую воркер может взять сейчас. Партии с активной обработкой не входят. Ноль означает, что готовых партий нет. Отсутствие линии означает отсутствие данных."
-            },
-            "position": {
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "ab490744-34f7-5e53-96cb-ae04e8f97347",
-            "multiSourceChart": {
-              "id": "ab490744-34f7-5e53-96cb-ae04e8f97347",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "53d69af7-f0ff-54ea-866e-e351e21b8e2a",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "findme_queue_oldest_ready_age_seconds{job=\"findme-http\",queue=\"import\"}",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "53d69af7-f0ff-54ea-866e-e351e21b8e2a",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Возраст самой старой готовой партии, с",
-              "description": "Секунды с последней активности самой давно ожидающей партии. Для файла с истёкшим сроком обработки время отсчитывается с истечения этого срока. Ноль означает, что готовых партий нет. Отсутствие линии означает отсутствие данных."
-            },
-            "position": {
-              "w": "12",
-              "h": "8",
-              "x": "12"
-            }
-          },
-          {
-            "id": "77625c0c-08ca-5a24-8f9d-44bd4706bf42",
-            "multiSourceChart": {
-              "id": "77625c0c-08ca-5a24-8f9d-44bd4706bf42",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "f17c4c74-cd0a-5dc0-b7bb-306a40597c95",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum(rate(findme_imported_photos_total{job=\"findme-http\"}[5m])) * 60",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "f17c4c74-cd0a-5dc0-b7bb-306a40597c95",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Импортировано фото в минуту",
-              "description": "Среднее число новых фотографий, успешно импортированных за последние 5 минут, в пересчёте на минуту. Дубликаты, ошибки и повторные подтверждения не учитываются. Отсутствие линии означает, что данных для расчёта пока недостаточно."
-            },
-            "position": {
-              "w": "24",
-              "h": "8",
-              "y": "8"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "position": {
-        "y": "176",
+        "y": "144",
         "w": "24",
         "h": "32"
       },
@@ -2358,611 +2085,7 @@
           }
         ]
       }
-    },
-    {
-      "position": {
-        "y": "208",
-        "w": "24",
-        "h": "24"
-      },
-      "group": {
-        "id": "a81b7d63-36cf-4212-88dc-90855adaba98",
-        "title": "Подготовка архивов",
-        "widgets": [
-          {
-            "id": "5e63367f-5445-4c85-b75b-15f1e19b9698",
-            "multiSourceChart": {
-              "id": "5e63367f-5445-4c85-b75b-15f1e19b9698",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "db6f0615-f923-5356-b17b-f460fe880e17",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "findme_queue_ready_count{job=\"findme-http\",queue=\"photo_archive\"}",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "db6f0615-f923-5356-b17b-f460fe880e17",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Архивы в очереди",
-              "description": "Задания, готовые к сборке. Уже выполняемые задания не входят."
-            },
-            "position": {
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "da891d30-7981-4862-8b58-ff5a9b3bdff4",
-            "multiSourceChart": {
-              "id": "da891d30-7981-4862-8b58-ff5a9b3bdff4",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "53d69af7-f0ff-54ea-866e-e351e21b8e2a",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "findme_queue_oldest_ready_age_seconds{job=\"findme-http\",queue=\"photo_archive\"}",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "53d69af7-f0ff-54ea-866e-e351e21b8e2a",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Возраст старейшего задания, с",
-              "description": "Сколько старейшее задание ждёт начала сборки."
-            },
-            "position": {
-              "x": "12",
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "1c0d178c-5f3b-4015-910b-70d81f1bca53",
-            "multiSourceChart": {
-              "id": "1c0d178c-5f3b-4015-910b-70d81f1bca53",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m])) > 0)",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR",
-                    "title": "Секунды"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                },
-                "type": "VISUALIZATION_TYPE_STACK"
-              },
-              "title": "Среднее время подготовки архива, с",
-              "description": "Ожидание, сборка ZIP и загрузка в S3 за последние 5 минут по успешным заданиям.",
-              "displayLegend": true
-            },
-            "position": {
-              "y": "8",
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "871c3e46-ed49-4a27-a7c4-1f05215d69a2",
-            "multiSourceChart": {
-              "id": "871c3e46-ed49-4a27-a7c4-1f05215d69a2",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "bdc430df-8f37-5c29-8a74-26bb00e80a1a",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m] @ end()))",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "bdc430df-8f37-5c29-8a74-26bb00e80a1a",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "type": "VISUALIZATION_TYPE_PIE",
-                "aggregation": "SERIES_AGGREGATION_LAST"
-              },
-              "title": "Доли времени подготовки",
-              "description": "Доли этапов успешных заданий за 5 минут к концу периода.",
-              "displayLegend": true
-            },
-            "position": {
-              "x": "12",
-              "y": "8",
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "a223189c-04ef-4f88-954d-ccd956282f1a",
-            "multiSourceChart": {
-              "id": "a223189c-04ef-4f88-954d-ccd956282f1a",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"photo_archive\"}[5m])) > 0)",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "bc9dd9fb-cbfc-5dad-ae9a-60a094cfe55f",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR",
-                    "title": "%",
-                    "min": "0",
-                    "max": "100"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                },
-                "type": "VISUALIZATION_TYPE_STACK"
-              },
-              "title": "Доли времени подготовки в динамике, %",
-              "description": "Доли ожидания, сборки ZIP и загрузки в S3 в скользящем окне 5 минут.",
-              "displayLegend": true
-            },
-            "position": {
-              "y": "16",
-              "w": "24",
-              "h": "8"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "position": {
-        "y": "232",
-        "w": "24",
-        "h": "16"
-      },
-      "group": {
-        "id": "720bef0f-0844-5d56-8f5d-3d88d1e36bd4",
-        "title": "Все очереди",
-        "widgets": [
-          {
-            "id": "36ca2cf2-4737-55f6-8100-2b2c0c987fe1",
-            "multiSourceChart": {
-              "id": "36ca2cf2-4737-55f6-8100-2b2c0c987fe1",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "f972c825-78d3-53dc-84b7-f43c6e16f08a",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (queue) (findme_queue_work_count{job=\"findme-queue-telemetry\"}) and on (queue) (min by (queue) (findme_queue_work_available{job=\"findme-queue-telemetry\"}) == 1)",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "f972c825-78d3-53dc-84b7-f43c6e16f08a",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Незавершённые задачи по очередям",
-              "description": "Все ожидающие, обрабатываемые, отложенные и приостановленные задачи.",
-              "displayLegend": true
-            },
-            "position": {
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "0db97114-53ee-58a3-8be8-c9f23ad1014e",
-            "multiSourceChart": {
-              "id": "0db97114-53ee-58a3-8be8-c9f23ad1014e",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "d166f9b0-a1d2-52f9-839f-fa03028b812e",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "min by (queue) (findme_queue_work_available{job=\"findme-queue-telemetry\"})",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "d166f9b0-a1d2-52f9-839f-fa03028b812e",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Доступность счётчиков очередей",
-              "description": "1 — счётчик доступен, 0 — наблюдение недоступно.",
-              "displayLegend": true
-            },
-            "position": {
-              "x": "12",
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "1873757a-2311-58ba-a4dc-7c2d33576327",
-            "multiSourceChart": {
-              "id": "1873757a-2311-58ba-a4dc-7c2d33576327",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "9167714b-1168-5abf-be45-acb683b7c9b3",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (queue, state) (findme_queue_work_count{job=\"findme-queue-telemetry\"}) and on (queue) (min by (queue) (findme_queue_work_available{job=\"findme-queue-telemetry\"}) == 1)",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "9167714b-1168-5abf-be45-acb683b7c9b3",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Состояния задач по очередям",
-              "description": "Количество задач в каждом незавершённом состоянии.",
-              "displayLegend": true
-            },
-            "position": {
-              "y": "8",
-              "w": "24",
-              "h": "8"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "position": {
-        "y": "248",
-        "w": "24",
-        "h": "24"
-      },
-      "group": {
-        "id": "2bdd0c99-bdad-528f-8a73-8c93bb57068a",
-        "title": "Обработка фотографий",
-        "widgets": [
-          {
-            "id": "2cdf7bc6-1c1c-5a09-acdb-b0cc61519e77",
-            "multiSourceChart": {
-              "id": "2cdf7bc6-1c1c-5a09-acdb-b0cc61519e77",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "72d8bb15-e653-591b-b459-e48d6310b8c8",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (processor, state) (findme_processing_queue_work_count{job=\"findme-queue-telemetry\"}) and on () (min(findme_queue_work_available{job=\"findme-queue-telemetry\",queue=\"photo\"}) == 1)",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "72d8bb15-e653-591b-b459-e48d6310b8c8",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                }
-              },
-              "title": "Незавершённые задачи по обработчикам фото",
-              "description": "Остатки по всем типам обработчиков и состояниям задач.",
-              "displayLegend": true
-            },
-            "position": {
-              "w": "24",
-              "h": "8"
-            }
-          },
-          {
-            "id": "9c6c2232-9552-5290-b400-ba2f72e83201",
-            "multiSourceChart": {
-              "id": "9c6c2232-9552-5290-b400-ba2f72e83201",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "e777ddc5-6ca9-5ba4-acd6-d06f144fea2c",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m])) / on () group_left() (sum(rate(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m])) > 0)",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "e777ddc5-6ca9-5ba4-acd6-d06f144fea2c",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR",
-                    "title": "Секунды"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                },
-                "type": "VISUALIZATION_TYPE_STACK"
-              },
-              "title": "Длительность этапов обработки фото, с",
-              "description": "Среднее время этапов на успешную задачу выбранного обработчика за 5 минут.",
-              "displayLegend": true
-            },
-            "position": {
-              "y": "8",
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "634970e3-ad44-5a26-9e3b-1774b40d901a",
-            "multiSourceChart": {
-              "id": "634970e3-ad44-5a26-9e3b-1774b40d901a",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "329cbfb7-bab8-5163-a1f6-a2430d35f8c2",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "sum by (segment) (increase(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m] @ end())) and on () (sum(increase(findme_queue_completed_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m] @ end())) > 0)",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "329cbfb7-bab8-5163-a1f6-a2430d35f8c2",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "type": "VISUALIZATION_TYPE_PIE"
-              },
-              "title": "Пирог этапов обработки фото",
-              "description": "Распределение времени выбранного обработчика за 5 минут к концу периода.",
-              "displayLegend": true
-            },
-            "position": {
-              "x": "12",
-              "y": "8",
-              "w": "12",
-              "h": "8"
-            }
-          },
-          {
-            "id": "5d68be5d-21a4-5f57-8e9d-b0a6f9bdd8fb",
-            "multiSourceChart": {
-              "id": "5d68be5d-21a4-5f57-8e9d-b0a6f9bdd8fb",
-              "targets": [
-                {
-                  "prometheusTarget": {
-                    "dataSourceId": "25233049-cb2b-5b49-af14-8b3d438b9fa9",
-                    "workspaceId": "{{workspace_id}}",
-                    "query": "100 * sum by (segment) (rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m])) / on () group_left() (sum(rate(findme_queue_segment_duration_seconds_total{job=\"findme-queue-telemetry\",queue=\"processing_{{ processor }}\"}[5m])) > 0)",
-                    "textMode": true,
-                    "name": "A"
-                  }
-                }
-              ],
-              "dataSources": [
-                {
-                  "prometheusDataSource": {
-                    "id": "25233049-cb2b-5b49-af14-8b3d438b9fa9",
-                    "step": "60000"
-                  }
-                }
-              ],
-              "visualizationSettings": {
-                "colorSchemeSettings": {
-                  "automatic": {}
-                },
-                "yaxisSettings": {
-                  "left": {
-                    "type": "YAXIS_TYPE_LINEAR",
-                    "title": "%",
-                    "min": "0",
-                    "max": "100"
-                  },
-                  "right": {
-                    "type": "YAXIS_TYPE_LINEAR"
-                  }
-                },
-                "type": "VISUALIZATION_TYPE_STACK"
-              },
-              "title": "Доли этапов обработки фото, %",
-              "description": "Доли ожидания первого захвата и времени от захвата до результата за 5 минут.",
-              "displayLegend": true
-            },
-            "position": {
-              "y": "16",
-              "w": "24",
-              "h": "8"
-            }
-          }
-        ]
-      }
     }
   ],
-  "parametrization": {
-    "parameters": [
-      {
-        "name": "processor",
-        "title": "Обработчик фото",
-        "query": {
-          "defaultValues": ["person_appearance"],
-          "prometheus": {
-            "match": [
-              "findme_processing_queue_work_count{job=\"findme-queue-telemetry\"}"
-            ],
-            "labelKey": "processor",
-            "workspaceId": "{{workspace_id}}"
-          }
-        }
-      }
-    ]
-  }
+  "parametrization": {}
 }

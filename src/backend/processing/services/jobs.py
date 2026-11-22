@@ -12,9 +12,9 @@ from functools import partial
 from typing import Any
 from uuid import UUID
 
-from config.queue_events import notify_queue_completion
+from config.queue_timings import worker_cycle
 from config.queue_work import PHOTO, schedule_transition
-from django.db import DatabaseError, IntegrityError, connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Min
 from django.utils import timezone
 from picflow.models import Event, Photo
@@ -347,7 +347,11 @@ def _terminal_submission(
                 job.completed_at = now
                 job.save(update_fields=["status", "completed_at"])
                 schedule_transition(
-                    PHOTO, previous_status, job.status, processor=job.processor_type
+                    PHOTO,
+                    previous_status,
+                    job.status,
+                    processor=job.processor_type,
+                    outcome="canceled",
                 )
                 _set_state(
                     state,
@@ -369,8 +373,7 @@ def _terminal_submission(
             job.status = ProcessingJob.Status.SUCCEEDED
             job.completed_at = now
             job.save(update_fields=["status", "completed_at"])
-            schedule_transition(PHOTO, previous_status, job.status, processor=job.processor_type)
-            schedule_processing_completion(job, now)
+            schedule_processing_completion(job, attempt, previous_status, now)
             _set_state(
                 state,
                 status=PhotoProcessingState.Status.SUCCEEDED,
@@ -397,39 +400,21 @@ def _terminal_submission(
         return AttemptCompletion(attempt=attempt)
 
 
-def schedule_processing_completion(job: ProcessingJob, completed_at: datetime) -> None:
-    transaction.on_commit(
-        partial(
-            _publish_processing_completion,
-            job.pk,
-            job.processor_type,
-            job.created_at,
-            completed_at,
-        ),
-        robust=True,
-    )
-
-
-def _publish_processing_completion(
-    job_id: UUID, processor: str, created_at: datetime, completed_at: datetime
+def schedule_processing_completion(
+    job: ProcessingJob, attempt: ProcessingAttempt, previous_status: str, completed_at: datetime
 ) -> None:
-    try:
-        with transaction.atomic(), connection.cursor() as cursor:
-            cursor.execute("SET LOCAL statement_timeout = 100")
-            first_claim = ProcessingAttempt.objects.filter(job_id=job_id).aggregate(
-                first=Min("claimed_at")
-            )["first"]
-    except DatabaseError:
-        logger.warning("Could not read the first claim for processing completion telemetry")
-        return
-    if first_claim is not None:
-        millisecond = timedelta(milliseconds=1)
-        waiting = max(0, round((first_claim - created_at) / millisecond))
-        elapsed = round((completed_at - created_at) / millisecond)
-        notify_queue_completion(
-            f"processing_{processor}",
-            {"waiting": waiting, "processing": max(0, elapsed - waiting)},
-        )
+    def first_claim() -> datetime | None:
+        return ProcessingAttempt.objects.filter(job_id=job.pk).aggregate(first=Min("claimed_at"))[
+            "first"
+        ]
+
+    schedule_transition(
+        PHOTO,
+        previous_status,
+        job.status,
+        processor=job.processor_type,
+        segments_ms=partial(worker_cycle, job.created_at, attempt, completed_at, first_claim),
+    )
 
 
 def _locked_context(

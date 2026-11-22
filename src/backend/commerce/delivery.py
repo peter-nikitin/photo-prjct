@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-from config.queue_work import COMMERCE, schedule_transition
+from config.queue_timings import elapsed_ms
+from config.queue_work import EMAIL, schedule_transition
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import transaction
@@ -67,8 +68,20 @@ def claim_due_email_deliveries(
             delivery.state = EmailDelivery.State.PROCESSING
             delivery.lease_id = lease_id
             delivery.lease_expires_at = current_time + lease_duration
-            delivery.save(update_fields=["state", "lease_id", "lease_expires_at", "updated_at"])
-            schedule_transition(COMMERCE, previous_state, delivery.state)
+            delivery.queue_claimed_at = current_time
+            if delivery.queue_first_claimed_at is None:
+                delivery.queue_first_claimed_at = current_time
+            delivery.save(
+                update_fields=[
+                    "state",
+                    "lease_id",
+                    "lease_expires_at",
+                    "updated_at",
+                    "queue_first_claimed_at",
+                    "queue_claimed_at",
+                ]
+            )
+            schedule_transition(EMAIL, previous_state, delivery.state)
             claims.append(EmailDeliveryClaim(delivery_id=delivery.pk, lease_id=lease_id))
     return tuple(claims)
 
@@ -93,6 +106,7 @@ def send_claimed_email_delivery(
         order_access_url_for_grant=order_access_url_for_grant,
         support_contact=support_contact,
     )
+    sending_at = _current_time(now)
     try:
         result = email_sender.send(message, timeout_seconds=timeout_seconds)
     except TimeoutError:
@@ -102,7 +116,9 @@ def send_claimed_email_delivery(
         )
     if not isinstance(result, EmailSendResult):
         raise TypeError("Email senders must return normalized delivery results.")
-    return _record_delivery_result(claim=claim, result=result, now=_current_time(now))
+    return _record_delivery_result(
+        claim=claim, result=result, now=_current_time(now), sending_at=sending_at
+    )
 
 
 def correct_delivery_email(
@@ -149,7 +165,7 @@ def correct_delivery_email(
                     "updated_at",
                 ]
             )
-            schedule_transition(COMMERCE, previous_state, delivery.state)
+            schedule_transition(EMAIL, previous_state, delivery.state)
     return order
 
 
@@ -174,8 +190,9 @@ def resend_order_access(*, order_id: int, now: datetime | None = None) -> EmailD
             recipient_email=order.delivery_email,
             access_grant=grant,
             next_attempt_at=current_time,
+            queue_enqueued_at=current_time,
         )
-        schedule_transition(COMMERCE, None, delivery.state)
+        schedule_transition(EMAIL, None, delivery.state)
         return delivery
 
 
@@ -212,8 +229,20 @@ def retry_failed_email_delivery(
             return None
         delivery.state = EmailDelivery.State.PENDING
         delivery.next_attempt_at = current_time
-        delivery.save(update_fields=["state", "next_attempt_at", "updated_at"])
-        schedule_transition(COMMERCE, str(EmailDelivery.State.FAILED), delivery.state)
+        delivery.queue_enqueued_at = current_time
+        delivery.queue_first_claimed_at = None
+        delivery.queue_claimed_at = None
+        delivery.save(
+            update_fields=[
+                "state",
+                "next_attempt_at",
+                "updated_at",
+                "queue_enqueued_at",
+                "queue_first_claimed_at",
+                "queue_claimed_at",
+            ]
+        )
+        schedule_transition(EMAIL, str(EmailDelivery.State.FAILED), delivery.state)
     return delivery
 
 
@@ -248,7 +277,7 @@ def _recover_expired_delivery_leases(*, now: datetime, limit: int) -> None:
                 "updated_at",
             ]
         )
-        schedule_transition(COMMERCE, str(EmailDelivery.State.PROCESSING), delivery.state)
+        schedule_transition(EMAIL, str(EmailDelivery.State.PROCESSING), delivery.state)
 
 
 def _delivery_for_active_claim(*, claim: EmailDeliveryClaim, now: datetime) -> EmailDelivery | None:
@@ -297,7 +326,7 @@ def _cancel_obsolete_active_claim(*, claim: EmailDeliveryClaim, now: datetime) -
         delivery.lease_id = None
         delivery.lease_expires_at = None
         delivery.save(update_fields=["state", "lease_id", "lease_expires_at", "updated_at"])
-        schedule_transition(COMMERCE, str(EmailDelivery.State.PROCESSING), delivery.state)
+        schedule_transition(EMAIL, str(EmailDelivery.State.PROCESSING), delivery.state)
 
 
 def _cancel_revoked_active_claim(*, claim: EmailDeliveryClaim, now: datetime) -> None:
@@ -320,7 +349,7 @@ def _cancel_revoked_active_claim(*, claim: EmailDeliveryClaim, now: datetime) ->
         delivery.lease_id = None
         delivery.lease_expires_at = None
         delivery.save(update_fields=["state", "lease_id", "lease_expires_at", "updated_at"])
-        schedule_transition(COMMERCE, str(EmailDelivery.State.PROCESSING), delivery.state)
+        schedule_transition(EMAIL, str(EmailDelivery.State.PROCESSING), delivery.state)
 
 
 def _customer_access_message(
@@ -375,11 +404,33 @@ def _is_safe_order_access_url(value: object) -> bool:
     return parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
 
 
+def _delivery_segments(
+    delivery: EmailDelivery, sending_at: datetime | None, now: datetime
+) -> dict[str, int] | None:
+    queued = delivery.queue_enqueued_at
+    first = delivery.queue_first_claimed_at
+    claimed = delivery.queue_claimed_at
+    if queued is None or first is None or claimed is None or sending_at is None:
+        return None
+    if not queued <= first <= claimed <= sending_at <= now:
+        return None
+    first_offset = elapsed_ms(queued, first)
+    claim_offset = elapsed_ms(queued, claimed)
+    send_offset = elapsed_ms(queued, sending_at)
+    return {
+        "wait": first_offset,
+        "retry": claim_offset - first_offset,
+        "prepare": send_offset - claim_offset,
+        "send": elapsed_ms(queued, now) - send_offset,
+    }
+
+
 def _record_delivery_result(
     *,
     claim: EmailDeliveryClaim,
     result: EmailSendResult,
     now: datetime,
+    sending_at: datetime | None = None,
 ) -> EmailDelivery | None:
     with transaction.atomic():
         delivery = (
@@ -421,7 +472,12 @@ def _record_delivery_result(
                     "updated_at",
                 ]
             )
-            schedule_transition(COMMERCE, str(EmailDelivery.State.PROCESSING), delivery.state)
+            schedule_transition(
+                EMAIL,
+                str(EmailDelivery.State.PROCESSING),
+                delivery.state,
+                segments_ms=_delivery_segments(delivery, sending_at, now),
+            )
             resolve_open_attention_automatically(
                 kind="email_exhausted",
                 subject=f"email-delivery:{delivery.pk}",
@@ -446,7 +502,7 @@ def _record_delivery_result(
                     "updated_at",
                 ]
             )
-            schedule_transition(COMMERCE, str(EmailDelivery.State.PROCESSING), delivery.state)
+            schedule_transition(EMAIL, str(EmailDelivery.State.PROCESSING), delivery.state)
             return delivery
         if result.outcome == EmailSendOutcome.RETRYABLE_FAILURE and attempt_number <= len(
             _RETRY_DELAYS
@@ -464,7 +520,7 @@ def _record_delivery_result(
                     "updated_at",
                 ]
             )
-            schedule_transition(COMMERCE, str(EmailDelivery.State.PROCESSING), delivery.state)
+            schedule_transition(EMAIL, str(EmailDelivery.State.PROCESSING), delivery.state)
             return delivery
 
         delivery.state = EmailDelivery.State.FAILED
@@ -478,7 +534,7 @@ def _record_delivery_result(
                 "updated_at",
             ]
         )
-        schedule_transition(COMMERCE, str(EmailDelivery.State.PROCESSING), delivery.state)
+        schedule_transition(EMAIL, str(EmailDelivery.State.PROCESSING), delivery.state)
         open_attention(
             kind="email_exhausted",
             subject=f"email-delivery:{delivery.pk}",

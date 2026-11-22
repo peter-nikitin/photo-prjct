@@ -11,6 +11,7 @@ class BankInitiationMigrationTests(TransactionTestCase):
         previous = [("commerce", "0009_rename_commerce_indexes")]
         executor = MigrationExecutor(connection)
         latest = executor.loader.graph.leaf_nodes()
+        target = [("commerce", "0010_payment_initiation_started_at")]
         try:
             executor.migrate(previous)
             apps = executor.loader.project_state(previous).apps
@@ -73,8 +74,8 @@ class BankInitiationMigrationTests(TransactionTestCase):
             before = list(Attempt.objects.order_by("pk").values())
             evidence = list(Evidence.objects.order_by("pk").values())
             executor = MigrationExecutor(connection)
-            executor.migrate(latest)
-            apps = executor.loader.project_state(latest).apps
+            executor.migrate(target)
+            apps = executor.loader.project_state(target).apps
             upgraded = apps.get_model("commerce", "PaymentAttempt")
             after = list(upgraded.objects.order_by("pk").values())
             for row in after:

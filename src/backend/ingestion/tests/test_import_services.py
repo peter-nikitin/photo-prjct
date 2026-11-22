@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
@@ -180,6 +181,77 @@ class ImportServiceTests(TestCase):
         self.assertEqual(result.directory_count, 1)
         self.assertEqual(ImportItem.objects.filter(batch_id=created.id).count(), 0)
 
+    def test_empty_manifest_replay_preserves_the_single_measured_success(self):
+        created, claim = self.create_and_claim_manifest()
+        submitted = ImportBatch.objects.get(pk=created.id).queue_enqueued_at
+        assert submitted is not None
+        attempt = ImportAttempt.objects.get(pk=claim.attempt_id)
+        finished = attempt.claimed_at + timedelta(seconds=3)
+        with (
+            override_feature_flags(self.flags),
+            patch("config.queue_work.notify_queue_result") as notify,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            record_manifest_page(
+                batch_id=created.id,
+                attempt_id=claim.attempt_id,
+                page_number=0,
+                page_fingerprint="empty",
+                entries=(),
+            )
+            for _ in range(2):
+                result = finish_manifest(
+                    batch_id=created.id,
+                    attempt_id=claim.attempt_id,
+                    canonical_source_key="canonical",
+                    now=finished,
+                )
+                self.assertEqual(result.status, ImportBatch.Status.COMPLETED)
+
+        notify.assert_called_once_with(
+            "disk_import",
+            "success",
+            {
+                "wait": round((attempt.claimed_at - submitted).total_seconds() * 1000),
+                "manifest": 3000,
+                "download": 0,
+                "upload": 0,
+                "publish": 0,
+                "idle": 0,
+                "retry": 0,
+            },
+            count=1,
+        )
+
+    def test_retry_of_one_file_keeps_the_active_batch_cycle_and_other_lease(self):
+        created, _ = self.finish_with_entries(
+            (
+                ManifestEntry(path="/a.jpg", name="a.jpg", kind="jpeg", size=10),
+                ManifestEntry(path="/b.jpg", name="b.jpg", kind="jpeg", size=10),
+            )
+        )
+        with override_feature_flags(self.flags):
+            first = claim_import_work()
+            assert first.attempt_id is not None
+            record_import_failure(
+                attempt_id=first.attempt_id,
+                operation="download",
+                code="source_unavailable",
+                retryable=False,
+            )
+            active = claim_import_work()
+            before = ImportBatch.objects.get(pk=created.id)
+            retried = retry_import_errors(actor=self.owner, batch_id=created.id)
+            after = ImportBatch.objects.get(pk=created.id)
+            lease = ImportAttempt.objects.get(pk=active.attempt_id)
+
+        self.assertEqual(retried.status, ImportBatch.Status.TRANSFERRING)
+        self.assertEqual(lease.status, ImportAttempt.Status.ACTIVE)
+        self.assertEqual(lease.lease_expires_at, active.lease_expires_at)
+        self.assertEqual(after.queue_enqueued_at, before.queue_enqueued_at)
+        self.assertEqual(after.queue_timings, before.queue_timings)
+        self.assertEqual(ImportItem.objects.get(pk=first.item_id).status, ImportItem.Status.PENDING)
+
     def test_oversized_jpeg_is_an_item_error_and_valid_neighbor_is_claimed(self) -> None:
         created, result = self.finish_with_entries(
             (
@@ -305,9 +377,15 @@ class ImportServiceTests(TestCase):
         second.save(update_fields=["status", "download_attempts", "error_code"])
         ImportBatch.objects.filter(pk=created.id).update(status=ImportBatch.Status.PARTIAL)
 
+        before = ImportBatch.objects.get(pk=created.id)
+        assert before.queue_enqueued_at is not None
+        reopened_at = before.queue_enqueued_at + timedelta(minutes=1)
         with override_feature_flags(self.flags):
-            retried = retry_import_errors(actor=self.owner, batch_id=created.id)
+            retried = retry_import_errors(actor=self.owner, batch_id=created.id, now=reopened_at)
 
+        after = ImportBatch.objects.get(pk=created.id)
+        self.assertEqual(after.queue_enqueued_at, reopened_at)
+        self.assertEqual(after.queue_timings, {})
         first.refresh_from_db()
         second.refresh_from_db()
         self.assertEqual(first.status, ImportItem.Status.IMPORTED)

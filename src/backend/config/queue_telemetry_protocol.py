@@ -8,3 +8,7 @@ COMPLETION_VERSION = 1
 GALLERY_QUEUE = "photo_import_gallery"
 FACE_QUEUE = "photo_import_face"
 PHOTO_IMPORT_QUEUES = frozenset((GALLERY_QUEUE, FACE_QUEUE))
+
+RESULT_EVENT = "queue.work.result"
+RESULT_VERSION = 1
+OUTCOMES = ("success", "failed", "canceled")

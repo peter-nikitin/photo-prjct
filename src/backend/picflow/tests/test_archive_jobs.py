@@ -59,11 +59,11 @@ class ArchiveJobTests(TestCase):
         ]
 
         with (
-            patch("picflow.archive_jobs.notify_queue_completion") as notify,
+            patch("config.queue_work.notify_queue_result") as notify,
             self.captureOnCommitCallbacks(execute=True),
         ):
             call_command("run_archive_worker", once=True)
-        notify.assert_not_called()
+        notify.assert_called_once_with("photo_archive", "failed", None, count=1)
         job.refresh_from_db()
         assert job.status == PhotoArchiveJob.Status.FAILED
         storage.upload_archive.assert_not_called()
@@ -167,17 +167,19 @@ class ArchiveJobTests(TestCase):
     def test_success_reports_queue_segments_only_after_commit(self, storage_class) -> None:
         job = self._job()
         now = timezone.now()
-        PhotoArchiveJob.objects.filter(pk=job.pk).update(updated_at=now - timedelta(seconds=4))
+        PhotoArchiveJob.objects.filter(pk=job.pk).update(
+            queue_enqueued_at=now - timedelta(seconds=4)
+        )
         storage_class.return_value.open_final.return_value = OpenedObject(
             BytesIO(b"one"), 3, "image/jpeg"
         )
 
         with (
-            patch("picflow.archive_jobs.notify_queue_completion") as notify,
+            patch("config.queue_work.notify_queue_result") as notify,
             patch("picflow.archive_jobs.timezone.now", return_value=now),
             patch(
                 "picflow.archive_jobs.monotonic_ns",
-                side_effect=[0, 2_000_000_000, 5_000_000_000],
+                side_effect=[0, 1_000_000_000, 3_000_000_000, 6_000_000_000],
             ),
         ):
             with self.captureOnCommitCallbacks(execute=True):
@@ -188,7 +190,9 @@ class ArchiveJobTests(TestCase):
 
             notify.assert_called_once_with(
                 "photo_archive",
-                {"archive_wait": 4000, "zip_build": 2000, "storage_upload": 3000},
+                "success",
+                {"wait": 4000, "retry": 0, "capacity": 1000, "build": 2000, "upload": 3000},
+                count=1,
             )
 
     def test_shared_queue_metrics_observe_only_claimable_work_and_latest_success(self) -> None:

@@ -3,9 +3,19 @@ set -eu
 
 cd "${DEPLOY_ROOT:-/opt/photo-prjct}"
 compose() { docker compose --project-name photo-prjct --env-file .env -f docker-compose.deployment.yml "$@"; }
+photo_worker_roles='photo-worker photo-worker-face photo-worker-appearance photo-worker-bib'
+worker_containers() {
+    docker ps --filter label=com.docker.compose.project=photo-prjct --filter label=com.docker.compose.oneoff=False "$@"
+}
 active_photo_worker=
 if [ "$DEPLOY_WEB" = true ] || [ "$DEPLOY_WORKER" = true ]; then
-    active_photo_worker="$(compose --profile photo-worker ps --status running -q photo-worker)"
+    running_services="$(worker_containers --format '{{.Label "com.docker.compose.service"}}')"
+    for role in $photo_worker_roles; do
+        if printf '%s\n' "$running_services" | grep -Fxq "$role"; then
+            active_photo_worker=true
+            break
+        fi
+    done
 fi
 
 if [ "$DEPLOY_WEB" = true ]; then
@@ -47,8 +57,26 @@ if [ -n "$active_photo_worker" ]; then
     if [ "$DEPLOY_WORKER" = true ]; then
         compose --profile photo-worker pull photo-worker
     fi
-    compose --profile photo-worker up -d --no-deps --pull never --timeout 180 photo-worker
+    defined_services="$(compose --profile photo-worker config --services)"
+    set --
+    retired_roles=
+    for role in $photo_worker_roles; do
+        if printf '%s\n' "$defined_services" | grep -Fxq "$role"; then
+            set -- "$@" "$role"
+        else
+            retired_roles="$retired_roles $role"
+        fi
+    done
+    [ "$#" -gt 0 ]
+    compose --profile photo-worker up -d --no-deps --pull never --timeout 180 "$@"
     python3 deploy/verify-photo-worker.py
+    for role in $retired_roles; do
+        ids="$(worker_containers -a -q --filter "label=com.docker.compose.service=$role")"
+        if [ -n "$ids" ]; then
+            docker stop --time 180 $ids
+            docker rm $ids
+        fi
+    done
 fi
 [ "$DEPLOY_IMPORT" = false ] || update_worker import import-worker
 [ "$DEPLOY_COMMERCE" = false ] || update_worker commerce commerce-worker

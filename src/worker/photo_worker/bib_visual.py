@@ -137,14 +137,19 @@ def server_command(*, model_path: Path, port: int) -> list[str]:
 
 
 class LlamaVisualReader:
-    """One loopback server per photo; requests and model lifetime remain sequential."""
+    """Start one loopback server on demand and close it at the end of the photo."""
 
     def __init__(self, *, model_path: Path) -> None:
         self._model_path = model_path
         self._process: subprocess.Popen[bytes] | None = None
         self._port = 0
+        self._active = False
 
     def __enter__(self) -> LlamaVisualReader:
+        self._active = True
+        return self
+
+    def _start(self) -> None:
         import socket
         import subprocess
         import time
@@ -173,7 +178,7 @@ class LlamaVisualReader:
                         f"http://127.0.0.1:{self._port}/health", timeout=0.5
                     ) as response:
                         if response.status == 200:
-                            return self
+                            return
                 except (URLError, TimeoutError):
                     time.sleep(0.1)
             raise TimeoutError("llama_server_start_timeout")
@@ -182,6 +187,7 @@ class LlamaVisualReader:
             raise
 
     def __exit__(self, *args: object) -> None:
+        self._active = False
         self.close()
 
     def close(self) -> None:
@@ -202,13 +208,15 @@ class LlamaVisualReader:
         from urllib.request import Request
 
         del image_id
-        if self._process is None:
+        if not self._active:
             raise RuntimeError("llama_server_not_started")
         # Crops are <=640px; cap encoded input independently of image dimensions.
         with image_path.open("rb") as stream:
             encoded = stream.read(2 * 1024 * 1024 + 1)
         if len(encoded) > 2 * 1024 * 1024:
             raise VisualBoundsError("visual input exceeds 2 MiB")
+        if self._process is None:
+            self._start()
         body = {
             "messages": [
                 {

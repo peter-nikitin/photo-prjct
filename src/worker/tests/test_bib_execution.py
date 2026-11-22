@@ -91,7 +91,9 @@ def test_rejects_downloaded_fingerprint_before_model_loading(tmp_path: Path):
     assert raised.value.code == "fingerprint_mismatch"
 
 
-def test_visual_adapter_preserves_leading_zeros_without_sending_ocr_text(tmp_path: Path):
+def test_visual_adapter_preserves_leading_zeros_without_sending_ocr_text(
+    tmp_path: Path, monkeypatch
+):
     import io
 
     from photo_worker.bib_visual import PROMPT, LlamaVisualReader
@@ -110,13 +112,14 @@ def test_visual_adapter_preserves_leading_zeros_without_sending_ocr_text(tmp_pat
     crop = tmp_path / "crop.png"
     crop.write_bytes(b"image")
     reader = LlamaVisualReader(model_path=tmp_path)
-    reader._process = object()
+    monkeypatch.setattr(reader, "_start", lambda: None)
     reader._opener = Opener()
-    result = reader.read(image_id="candidate-number", image_path=crop)
+    with reader:
+        result = reader.read(image_id="candidate-number", image_path=crop)
     assert result.numbers == ("0012",)
 
 
-def test_visual_adapter_reads_only_bounded_server_response(tmp_path: Path):
+def test_visual_adapter_reads_only_bounded_server_response(tmp_path: Path, monkeypatch):
     import io
 
     from photo_worker.bib_visual import LlamaVisualReader, VisualBoundsError
@@ -128,9 +131,9 @@ def test_visual_adapter_reads_only_bounded_server_response(tmp_path: Path):
     crop = tmp_path / "crop.png"
     crop.write_bytes(b"image")
     reader = LlamaVisualReader(model_path=tmp_path)
-    reader._process = object()
+    monkeypatch.setattr(reader, "_start", lambda: None)
     reader._opener = Opener()
-    with pytest.raises(VisualBoundsError, match="16 KiB"):
+    with reader, pytest.raises(VisualBoundsError, match="16 KiB"):
         reader.read(image_id="id", image_path=crop)
 
 
@@ -151,7 +154,7 @@ def test_missing_claim_sha_uses_digest_of_verified_download(tmp_path, monkeypatc
     assert run_bib_recognition(source, source_sha256=None)["source_sha256"] == expected
 
 
-def test_visual_server_lifetime_is_one_photo_and_cleanup_runs_on_failure(tmp_path, monkeypatch):
+def test_visual_server_starts_on_first_read_and_stops_on_photo_failure(tmp_path, monkeypatch):
     import io
 
     from photo_worker.bib_visual import LlamaVisualReader
@@ -179,15 +182,32 @@ def test_visual_server_lifetime_is_one_photo_and_cleanup_runs_on_failure(tmp_pat
 
     class Opener:
         def open(self, request, timeout):
-            assert request.startswith("http://127.0.0.1:")
-            return Health(b"{}")
+            if isinstance(request, str):
+                assert request.startswith("http://127.0.0.1:")
+                return Health(b"{}")
+            return io.BytesIO(
+                json.dumps({"choices": [{"message": {"content": '{"numbers":["12"]}'}}]}).encode()
+            )
 
-    monkeypatch.setattr("photo_worker.bib_visual.verify_model_files", lambda *a: None)
+    verified = []
+    monkeypatch.setattr("photo_worker.bib_visual.verify_model_files", lambda *a: verified.append(a))
     monkeypatch.setattr("subprocess.Popen", Process)
     monkeypatch.setattr("urllib.request.build_opener", lambda *a: Opener())
-    for _ in range(2):
+
+    with LlamaVisualReader(model_path=tmp_path):
+        pass
+    assert not processes
+    assert not verified
+
+    crop = tmp_path / "crop.png"
+    crop.write_bytes(b"image")
+    for photo_index in range(2):
         with pytest.raises(ValueError, match="photo failure"):
-            with LlamaVisualReader(model_path=tmp_path):
+            with LlamaVisualReader(model_path=tmp_path) as reader:
+                assert len(processes) == photo_index
+                for candidate in ("first", "second"):
+                    assert reader.read(image_id=candidate, image_path=crop).numbers == ("12",)
+                assert len(processes) == len(verified) == photo_index + 1
                 raise ValueError("photo failure")
     assert len(processes) == 2
     assert all(p.terminated and p.waited for p in processes)

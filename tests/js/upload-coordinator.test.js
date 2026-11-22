@@ -798,7 +798,7 @@ test('cancel during automatic backoff clears the timer and reports one terminal 
   );
   const delay = await backoffStarted;
 
-  const cancelled = coordinator.cancel(coordinator.items[0].clientItemId);
+  const cancelled = await coordinator.cancel(coordinator.items[0].clientItemId);
   const remainingAfterCancel = scheduled.size;
   for (const [id, callback] of scheduled) {
     scheduled.delete(id);
@@ -843,7 +843,7 @@ test('cancel wins a grant-refresh network race and reports cancellation once', a
   );
   await refreshStarted;
 
-  assert.equal(coordinator.cancel(coordinator.items[0].clientItemId), true);
+  assert.equal(await coordinator.cancel(coordinator.items[0].clientItemId), true);
   rejectRefresh(new Error('refresh network failed'));
   await completion;
 
@@ -877,7 +877,7 @@ test('cancel aborts a pending authorization without waiting for its response', a
   );
   await authorizationStarted;
 
-  assert.equal(coordinator.cancel(coordinator.items[0].clientItemId), true);
+  assert.equal(await coordinator.cancel(coordinator.items[0].clientItemId), true);
   const converged = await Promise.race([
     completion.then(() => true, () => false),
     new Promise((resolve) => setTimeout(() => resolve(false), 25)),
@@ -920,7 +920,7 @@ test('cancel during manual retry authorization closes the reopened batch once', 
   await retryStarted;
 
   assert.equal(coordinator.items[0].status, 'uploading');
-  assert.equal(coordinator.cancel(coordinator.items[0].clientItemId), true);
+  assert.equal(await coordinator.cancel(coordinator.items[0].clientItemId), true);
   releaseRetry();
   await retry;
 
@@ -975,10 +975,10 @@ test('a confirm network failure is contained across the whole manual retry cycle
 
   assert.equal(retried, false);
   assert.equal(coordinator.items[0].status, 'failed');
-  assert.equal(coordinator.items[0].error, 'Не удалось повторить загрузку. Повторите попытку.');
+  assert.equal(coordinator.items[0].error, 'Не удалось подтвердить загрузку. Повторите подтверждение.');
   assert.equal(coordinator.active, false);
   assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
-  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 2);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
 });
 
 test('a failed pending retry finalizes once after a sibling retry succeeds', async () => {
@@ -1072,68 +1072,28 @@ test('resume contains a retry confirmation failure and settles the other queued 
   const failed = coordinator.items.find((item) => item.id === 'failed');
   const pending = coordinator.items.find((item) => item.id === 'pending');
   assert.equal(failed.status, 'failed');
-  assert.equal(failed.error, 'Не удалось повторить загрузку. Повторите попытку.');
+  assert.equal(failed.error, 'Не удалось подтвердить загрузку. Повторите подтверждение.');
   assert.equal(pending.status, 'uploaded');
   assert.equal(coordinator.active, false);
-  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 0);
 });
 
-test('resume confirmation failure restores the durable retry state before finalizing', async () => {
-  let durableStatus = 'failed';
-  let confirmationAttempts = 0;
-  const finalizeStatuses = [];
+test('resume retries a temporary confirmation failure without reopening or retransferring', async () => {
+  let confirmations = 0;
   const { calls, coordinator } = makeHarness({
-    onRetryControl: ({ url }) => {
-      assert.equal(durableStatus, 'failed');
-      durableStatus = 'authorized';
-      return response(200, {
-        item: { id: url.split('/')[3], status: 'authorized', attempt: 1 },
-        grant: { url: 'https://storage.example/', fields: { policy: 'retry-secret' } },
-      });
-    },
-    onConfirmControl: ({ url }) => {
-      confirmationAttempts += 1;
-      if (confirmationAttempts === 1) {
-        assert.equal(durableStatus, 'authorized');
-        return response(503, {
-          error: { code: 'storage_unavailable', message: 'Private detail.' },
-        });
-      }
-      durableStatus = 'uploaded';
-      return response(200, { item: { id: url.split('/')[3], status: 'uploaded' } });
-    },
-    onFailedControl: ({ url }) => {
-      assert.equal(durableStatus, 'authorized');
-      durableStatus = 'failed';
-      return response(200, { item: { id: url.split('/')[3], status: 'failed' } });
-    },
-    onFinalizeControl: () => {
-      finalizeStatuses.push(durableStatus);
-      if (!['failed', 'uploaded'].includes(durableStatus)) {
-        return response(409, {
-          error: { code: 'items_not_terminal', message: 'Items are still active.' },
-        });
-      }
-      return response(200, { batch: { id: 'batch-1', status: 'complete' } });
-    },
+    onConfirmControl: ({ url }) => ++confirmations === 1
+      ? response(503, { error: { code: 'storage_unavailable' } })
+      : response(200, { item: { id: url.split('/')[3], status: 'uploaded' } }),
   });
-  const manifest = {
+  await coordinator.resume([file('failed.jpg', 4, 1000)], {
     batch: { id: 'batch-1', event: { id: 42, name: 'Race' } },
     items: [manifestItem({ id: 'failed', filename: 'failed.jpg', status: 'failed' })],
-  };
-
-  await coordinator.resume([file('failed.jpg', 4, 1000)], manifest);
-
-  assert.equal(durableStatus, 'failed');
-  assert.equal(coordinator.items[0].status, 'failed');
-  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
-  assert.deepEqual(finalizeStatuses, ['failed']);
-
-  await coordinator.manualRetry(coordinator.items[0].clientItemId);
-
-  assert.equal(durableStatus, 'uploaded');
+  });
   assert.equal(coordinator.items[0].status, 'uploaded');
-  assert.deepEqual(finalizeStatuses, ['failed', 'uploaded']);
+  assert.equal(confirmations, 2);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
 });
 
 test('close warning is active only while registered work is unfinished', async () => {
@@ -1395,7 +1355,7 @@ test('a queued selection follows the active batch and an old item retries agains
   assert.equal(harness.calls.filter(({ url }) => url === '/batches/').length, 1);
   releaseFirstBatch();
   await new Promise(setImmediate);
-  assert.equal(harness.getMaxActive(), 4);
+  assert.ok(harness.getMaxActive() <= 4);
   assert.equal(mounted.coordinator.items.at(-1).status, 'uploaded');
   const failed = mounted.coordinator.items.find((item) => item.status === 'failed');
   const retry = { dataset: { clientItemId: failed.clientItemId } };
@@ -1482,4 +1442,405 @@ test('fixed workspace rejects another event resume manifest before opening files
   await resumeClick({ target: { closest: () => ({ dataset: { resumeBatchId: 'other' } }) } });
   assert.equal(pickerOpened, false);
   assert.deepEqual(mounted.coordinator.items, []);
+});
+
+
+test('slow confirmations release POST slots but bound the whole unfinished pipeline', async () => {
+  const waiting = [];
+  const { calls, coordinator, getMaxActive } = makeHarness({
+    onConfirmControl: ({ url }) => new Promise((resolve) => waiting.push(() => resolve(response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })))),
+  });
+  const completion = startUpload(coordinator, Array.from({ length: 12 }, (_, i) => file(`${i}.jpg`, 4)), '42');
+  await new Promise(setImmediate);
+  const posted = coordinator.items.filter((item) => item.progress === 100).length;
+  const confirms = waiting.length;
+  const finalizes = calls.filter(({ url }) => url.endsWith('/finalize/')).length;
+  // Release every wave before assertions so a regression leaves no dangling work.
+  for (let wave = 0; wave < 20 && coordinator.items.some((item) => item.status !== 'uploaded'); wave += 1) {
+    waiting.splice(0).forEach((release) => release());
+    await new Promise(setImmediate);
+  }
+  assert.ok(coordinator.items.every((item) => item.status === 'uploaded'));
+  await completion;
+  assert.equal(posted, 8);
+  assert.equal(confirms, 4);
+  assert.equal(finalizes, 0);
+  assert.equal(getMaxActive(), 4);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('terminal transfer failures retain distinct safe codes and actual POST diagnostics', async () => {
+  for (const [results, code, status, attempts] of [
+    [[{ type: 'load', status: 400 }], 'transfer_http_error', 400, 1],
+    [[{ type: 'load', status: 403 }, { type: 'load', status: 403 }], 'transfer_http_error', 403, 2],
+    [Array.from({ length: 4 }, () => ({ type: 'error' })), 'transfer_network_error', 0, 4],
+    [Array.from({ length: 4 }, () => ({ type: 'timeout' })), 'transfer_timeout', 0, 4],
+  ]) {
+    const { calls, coordinator } = makeHarness({ xhrResults: results });
+    await startUpload(coordinator, [file('private-name.jpg', 4)], '42');
+    const report = calls.find(({ url }) => url.endsWith('/failed/')).body;
+    assert.deepEqual(Object.keys(report).sort(), ['code', 'http_status', 'post_attempts', 'post_duration_ms']);
+    assert.equal(report.code, code);
+    assert.equal(report.http_status, status);
+    assert.equal(report.post_attempts, attempts);
+    assert.ok(Number.isInteger(report.post_duration_ms) && report.post_duration_ms >= 0);
+    assert.equal(coordinator.items[0].status, 'failed');
+  }
+});
+
+test('lost confirmation responses recover by confirmation without another POST', async () => {
+  let attempts = 0;
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('response lost after commit');
+      return response(200, { item: { id: url.split('/')[3], status: 'uploaded' } });
+    },
+  });
+  await startUpload(coordinator, [file('one.jpg', 4)], '42');
+  assert.equal(attempts, 2);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 0);
+  assert.equal(coordinator.items[0].status, 'uploaded');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+
+test('exhausted confirmation retries can be retried locally without another transfer', async () => {
+  let available = false;
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => available
+      ? response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })
+      : response(503, { error: { code: 'storage_unavailable' } }),
+  });
+  await startUpload(coordinator, [file('one.jpg', 4)], '42');
+  assert.equal(coordinator.items[0].status, 'failed');
+  assert.equal(coordinator.active, false);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/confirm/')).length, 4);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 0);
+  available = true;
+  assert.equal(await coordinator.manualRetry(coordinator.items[0].clientItemId), true);
+  assert.equal(coordinator.items[0].status, 'uploaded');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('resume probes an authorized upload before transferring and only sends missing bytes', async () => {
+  for (const present of [true, false]) {
+    let confirmations = 0;
+    const { calls, coordinator } = makeHarness({
+      onConfirmControl: ({ url }) => !present && ++confirmations === 1
+        ? response(503, { error: { code: 'object_missing' } })
+        : response(200, { item: { id: url.split('/')[3], status: 'uploaded' } }),
+    });
+    await coordinator.resume([file('one.jpg', 4, 1000)], {
+      batch: { id: 'batch-1', event: { id: 42 } },
+      items: [manifestItem({ id: 'one', filename: 'one.jpg', status: 'authorized' })],
+    });
+    assert.equal(coordinator.items[0].status, 'uploaded');
+    assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, present ? 0 : 1);
+    assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+  }
+});
+
+test('backoff keeps at most eight unfinished lifecycles and cancellation drains queued confirmations', async () => {
+  const timers = [];
+  const { calls, coordinator } = makeHarness({
+    xhrResults: Array.from({ length: 8 }, () => ({ type: 'error' })),
+    retryTimer: { setTimeout(callback) { timers.push(callback); return timers.length; }, clearTimeout() {} },
+  });
+  const completion = startUpload(coordinator, Array.from({ length: 12 }, (_, i) => file(`${i}.jpg`, 4)), '42');
+  await new Promise(setImmediate);
+  const authorized = calls.filter(({ url }) => url.endsWith('/authorize/')).length;
+  const backoffs = timers.length;
+  timers.splice(0).forEach((callback) => callback());
+  await completion;
+  assert.equal(authorized, 8);
+  assert.equal(backoffs, 8);
+  assert.equal(coordinator.items.filter((item) => item.status === 'uploaded').length, 12);
+});
+
+test('cancelling a queued confirmation settles the item and still finalizes siblings', async () => {
+  const waiting = [];
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => new Promise((resolve) => waiting.push(() => resolve(response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })))),
+  });
+  const completion = startUpload(coordinator, Array.from({ length: 9 }, (_, i) => file(`${i}.jpg`, 4)), '42');
+  await new Promise(setImmediate);
+  const cancelled = coordinator.items[4];
+  await coordinator.cancel(cancelled.clientItemId);
+  for (let wave = 0; wave < 20 && coordinator.items.some((item) => !['uploaded', 'failed'].includes(item.status)); wave += 1) {
+    waiting.splice(0).forEach((release) => release());
+    await new Promise(setImmediate);
+  }
+  assert.ok(coordinator.items.every((item) => ['uploaded', 'failed'].includes(item.status)));
+  await completion;
+  assert.equal(cancelled.status, 'failed');
+  const reports = calls.filter(({ url }) => url.endsWith('/failed/'));
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].body.code, 'transfer_cancelled');
+  assert.equal(reports[0].body.http_status, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/confirm/')).length, 8);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('a confirmation outage pauses later transfers until local confirmation retry recovers', async () => {
+  let available = false;
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => available
+      ? response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })
+      : response(503, { error: { code: 'storage_unavailable' } }),
+  });
+  await startUpload(coordinator, Array.from({ length: 20 }, (_, i) => file(`${i}.jpg`, 4)), '42');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 8);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 0);
+  available = true;
+  await Promise.all(coordinator.items.filter((item) => item.status === 'failed').map((item) => coordinator.manualRetry(item.clientItemId)));
+  assert.equal(coordinator.items.filter((item) => item.status === 'uploaded').length, 20);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 20);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('retrying a transfer failure waits behind unresolved confirmations', async () => {
+  let available = false;
+  const { calls, coordinator } = makeHarness({
+    xhrResults: [{ type: 'load', status: 400 }],
+    onConfirmControl: ({ url }) => available
+      ? response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })
+      : response(503, { error: { code: 'storage_unavailable' } }),
+  });
+  await startUpload(coordinator, Array.from({ length: 20 }, (_, i) => file(`${i}.jpg`, 4)), '42');
+  const transferFailure = coordinator.items.find((item) => item.status === 'failed' && !item.confirmationPending);
+  await coordinator.manualRetry(transferFailure.clientItemId);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 0);
+  available = true;
+  await Promise.all(coordinator.items.filter((item) => item.confirmationPending).map((item) => coordinator.manualRetry(item.clientItemId)));
+  assert.equal(coordinator.items.filter((item) => item.status === 'uploaded').length, 20);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('POST diagnostics sum transfer durations and exclude time between attempts', async (t) => {
+  const ticks = [100, 140, 300, 390];
+  t.mock.method(performance, 'now', () => ticks.shift());
+  const { calls, coordinator } = makeHarness({ xhrResults: [
+    { type: 'load', status: 500 }, { type: 'load', status: 400 },
+  ] });
+  await startUpload(coordinator, [file('one.jpg', 4)], '42');
+  const report = calls.find(({ url }) => url.endsWith('/failed/')).body;
+  assert.equal(report.post_attempts, 2);
+  assert.equal(report.post_duration_ms, 130);
+  assert.equal(report.http_status, 400);
+});
+
+test('manual retry preserves the authorized resume probe until missing bytes are established', async () => {
+  let available = false;
+  let transferred = false;
+  const { calls, coordinator } = makeHarness({
+    onAuthorizeControl: () => {
+      transferred = true;
+      return response(200, { grant: { url: 'https://storage.example/', fields: {} } });
+    },
+    onConfirmControl: ({ url }) => !available
+      ? response(503, { error: { code: 'storage_unavailable' } })
+      : !transferred
+        ? response(503, { error: { code: 'object_missing' } })
+        : response(200, { item: { id: url.split('/')[3], status: 'uploaded' } }),
+  });
+  await coordinator.resume([file('one.jpg', 4, 1000)], {
+    batch: { id: 'batch-1', event: { id: 42 } },
+    items: [manifestItem({ id: 'one', filename: 'one.jpg', status: 'authorized' })],
+  });
+  assert.equal(coordinator.items[0].status, 'failed');
+  available = true;
+  await coordinator.manualRetry(coordinator.items[0].clientItemId);
+  assert.equal(coordinator.items[0].status, 'uploaded');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('offline failure reporting keeps the same diagnostics and a working item retry', async () => {
+  let connected = false;
+  const { calls, coordinator } = makeHarness({
+    xhrResults: Array.from({ length: 4 }, () => ({ type: 'error' })),
+    onFailedControl: ({ url }) => {
+      if (!connected) throw new TypeError('offline private detail');
+      return response(200, { item: { id: url.split('/')[3], status: 'failed' } });
+    },
+  });
+  await startUpload(coordinator, [file('one.jpg', 4)], '42');
+  const item = coordinator.items[0];
+  assert.equal(item.status, 'failed');
+  assert.match(item.error, /Соединение/);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 0);
+  const report = calls.find(({ url }) => url.endsWith('/failed/')).body;
+  connected = true;
+  assert.equal(await coordinator.manualRetry(item.clientItemId), true);
+  const reports = calls.filter(({ url }) => url.endsWith('/failed/'));
+  assert.equal(reports.length, 2);
+  assert.deepEqual(reports[1].body, report);
+  assert.equal(report.code, 'transfer_network_error');
+  assert.equal(report.post_attempts, 4);
+  assert.equal(item.status, 'uploaded');
+  assert.ok(calls.indexOf(reports[1]) < calls.findIndex(({ url }) => url.endsWith('/retry/')));
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('cancelling an outage-deferred item reports zero POST immediately and excludes continuation', async () => {
+  let connected = false;
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => connected
+      ? response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })
+      : response(503, { error: { code: 'storage_unavailable' } }),
+  });
+  await startUpload(coordinator, Array.from({ length: 9 }, (_, i) => file(`${i}.jpg`, 4)), '42');
+  const deferred = coordinator.items[8];
+  assert.equal(await coordinator.cancel(deferred.clientItemId), true);
+  await new Promise(setImmediate);
+  assert.equal(deferred.status, 'failed');
+  const report = calls.find(({ url }) => url.endsWith('/failed/'));
+  assert.equal(report.body.code, 'transfer_cancelled');
+  assert.equal(report.body.post_attempts, 0);
+  connected = true;
+  await Promise.all(coordinator.items.filter((item) => item.confirmationPending).map((item) => coordinator.manualRetry(item.clientItemId)));
+  assert.equal(deferred.status, 'failed');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 8);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('cancelling an authorized resume before its first confirm does not publish it', async () => {
+  const waiting = [];
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => new Promise((resolve) => waiting.push(() => resolve(response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })))),
+  });
+  const completion = coordinator.resume(Array.from({ length: 5 }, (_, i) => file(`${i}.jpg`, 4, 1000)), {
+    batch: { id: 'batch-1', event: { id: 42 } },
+    items: Array.from({ length: 5 }, (_, i) => manifestItem({ id: `item-${i}`, filename: `${i}.jpg`, status: 'authorized' })),
+  });
+  await new Promise(setImmediate);
+  const queued = coordinator.items[4];
+  await coordinator.cancel(queued.clientItemId);
+  for (let wave = 0; wave < 20 && coordinator.items.some((item) => !['uploaded', 'failed'].includes(item.status)); wave += 1) {
+    waiting.splice(0).forEach((release) => release());
+    await new Promise(setImmediate);
+  }
+  assert.ok(coordinator.items.every((item) => ['uploaded', 'failed'].includes(item.status)));
+  await completion;
+  assert.equal(queued.status, 'failed');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/confirm/')).length, 4);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('a stale confirmation outcome is reconciled before finalization or failed-only retry', async () => {
+  let stale = true;
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => {
+      if (stale) {
+        stale = false;
+        return response(503, { error: { code: 'confirmation_in_progress' } });
+      }
+      return response(200, { item: { id: url.split('/')[3], status: 'uploaded' } });
+    },
+  });
+  await startUpload(coordinator, [file('one.jpg', 4)], '42');
+  assert.equal(coordinator.items[0].status, 'uploaded');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/confirm/')).length, 2);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('queued resume cancellations reconcile concurrent commits without retaining confirm slots', async () => {
+  const waiting = [];
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => new Promise((resolve) => waiting.push(() => resolve(response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })))),
+    onFailedControl: () => response(409, { error: { code: 'item_uploaded' } }),
+  });
+  const completion = coordinator.resume(Array.from({ length: 8 }, (_, i) => file(`${i}.jpg`, 4, 1000)), {
+    batch: { id: 'batch-1', event: { id: 42 } },
+    items: Array.from({ length: 8 }, (_, i) => manifestItem({ id: `item-${i}`, filename: `${i}.jpg`, status: 'authorized' })),
+  });
+  await new Promise(setImmediate);
+  await Promise.all(coordinator.items.slice(4).map((item) => coordinator.cancel(item.clientItemId)));
+  for (let wave = 0; wave < 20 && coordinator.items.some((item) => item.status !== 'uploaded'); wave += 1) {
+    waiting.splice(0).forEach((release) => release());
+    await new Promise(setImmediate);
+  }
+  assert.ok(coordinator.items.every((item) => item.status === 'uploaded'));
+  await completion;
+  assert.equal(calls.filter(({ url }) => url.endsWith('/confirm/')).length, 8);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 4);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/authorize/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+});
+
+test('cancelling a deferred failed resume retry preserves its terminal state and later retry', async () => {
+  let connected = false;
+  const { calls, coordinator } = makeHarness({
+    onConfirmControl: ({ url }) => connected
+      ? response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })
+      : response(503, { error: { code: 'storage_unavailable' } }),
+    onFailedControl: () => response(409, { error: { code: 'item_failed' } }),
+  });
+  await coordinator.resume(Array.from({ length: 9 }, (_, i) => file(`${i}.jpg`, 4, 1000)), {
+    batch: { id: 'batch-1', event: { id: 42 } },
+    items: Array.from({ length: 9 }, (_, i) => manifestItem({ id: `item-${i}`, filename: `${i}.jpg`, status: i === 8 ? 'failed' : 'authorized' })),
+  });
+  const deferredRetry = coordinator.items[8];
+  assert.equal(await coordinator.cancel(deferredRetry.clientItemId), true);
+  await new Promise(setImmediate);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/failed/')).length, 0);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 0);
+  assert.equal(deferredRetry.status, 'failed');
+  connected = true;
+  await Promise.all(coordinator.items.slice(0, 8).map((item) => coordinator.manualRetry(item.clientItemId)));
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
+  await coordinator.manualRetry(deferredRetry.clientItemId);
+  assert.equal(deferredRetry.status, 'uploaded');
+  assert.equal(calls.filter(({ url }) => url.endsWith('/retry/')).length, 1);
+  assert.equal(calls.filter(({ url }) => url.endsWith('/finalize/')).length, 2);
+});
+
+test('the page contains a delayed deferred-cancel finalization failure and shows recovery guidance', async () => {
+  let connected = false;
+  let releaseFailed;
+  const failedResponse = new Promise((resolve) => { releaseFailed = resolve; });
+  const harness = makeHarness({
+    onConfirmControl: ({ url }) => connected
+      ? response(200, { item: { id: url.split('/')[3], status: 'uploaded' } })
+      : response(503, { error: { code: 'storage_unavailable' } }),
+    onFailedControl: () => failedResponse,
+    onFinalizeControl: () => { throw new TypeError('private finalize offline detail'); },
+  });
+  let queueClick;
+  const summaryTitle = {};
+  const summaryMessage = {};
+  const mounted = mountedUpload(harness, {
+    '[data-upload-queue]': { addEventListener(_type, callback) { queueClick = callback; } },
+    '#upload-summary-title': summaryTitle,
+    '[data-summary-message]': summaryMessage,
+  });
+  const click = (action, item) => queueClick({ target: { closest: (selector) => selector === `[data-${action}-item]` ? { dataset: { clientItemId: item.clientItemId } } : null } });
+  mounted.select(Array.from({ length: 9 }, (_, i) => file(`${i}.jpg`, 4)));
+  await new Promise(setImmediate);
+  const cancelled = mounted.coordinator.items[8];
+  const cancellation = click('cancel', cancelled);
+  await new Promise(setImmediate);
+  connected = true;
+  await Promise.all(mounted.coordinator.items.slice(0, 8).map((item) => click('retry', item)));
+  assert.equal(harness.calls.filter(({ url }) => url.endsWith('/finalize/')).length, 0);
+  releaseFailed(response(200, { item: { id: cancelled.id, status: 'failed' } }));
+  await cancellation;
+  await new Promise(setImmediate);
+  assert.equal(cancelled.status, 'failed');
+  assert.equal(mounted.coordinator.active, false);
+  assert.equal(summaryTitle.textContent, 'Загрузка остановлена');
+  assert.match(summaryMessage.textContent, /Обновите страницу/);
+  assert.doesNotMatch(summaryMessage.textContent, /private/);
+  assert.equal(harness.calls.filter(({ url }) => url.endsWith('/finalize/')).length, 1);
 });

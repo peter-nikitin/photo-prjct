@@ -27,6 +27,7 @@ from ingestion.services.batches import (
     authorize_item,
     create_batch,
     register_items,
+    report_item_failed,
 )
 from ingestion.services.confirmation import confirm_upload_item
 from ingestion.storage import (
@@ -222,6 +223,115 @@ class ConfirmationTests(TransactionTestCase):
         self.assertIsNotNone(photo.uploaded_at)
         self.assertEqual(batch.status, UploadBatch.Status.COMPLETED)
         self.assertEqual(len([key for key in self.storage.objects if key == item.final_key]), 1)
+
+    def test_storage_wait_does_not_block_sibling_authorization_or_cancellation(self) -> None:
+        UploadBatch.objects.filter(pk=self.batch_id).update(expected_item_count=2)
+        sibling = register_items(
+            uploader=self.user,
+            batch_id=self.batch_id,
+            items=[ItemInput(uuid4(), "other.jpg", "image/jpeg", len(self.jpeg), None)],
+        ).items[0]
+        storage_entered = ThreadEvent()
+        release_storage = ThreadEvent()
+        original_inspect = self.storage.inspect
+
+        def slow_inspect(*, key: str) -> ObjectIdentity:
+            storage_entered.set()
+            if not release_storage.wait(timeout=5):
+                raise AssertionError("storage was not released")
+            return original_inspect(key=key)
+
+        def confirm_in_thread() -> Photo | None:
+            close_old_connections()
+            try:
+                return self.confirm()
+            finally:
+                close_old_connections()
+
+        def authorize_and_cancel() -> None:
+            close_old_connections()
+            try:
+                authorize_item(
+                    uploader=self.user,
+                    batch_id=self.batch_id,
+                    item_id=sibling.id,
+                    reason=AuthorizationReason.DATA_ATTEMPT,
+                    storage=ConfirmationStorage(),
+                )
+                report_item_failed(
+                    uploader=self.user,
+                    batch_id=self.batch_id,
+                    item_id=self.item_id,
+                    code="transfer_cancelled",
+                )
+            finally:
+                close_old_connections()
+
+        with (
+            patch.object(self.storage, "inspect", side_effect=slow_inspect),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            confirmation = executor.submit(confirm_in_thread)
+            self.assertTrue(storage_entered.wait(timeout=5))
+            independent = executor.submit(authorize_and_cancel)
+            try:
+                independent.result(timeout=2)
+            finally:
+                release_storage.set()
+            with self.assertRaises(ItemStateConflict):
+                confirmation.result(timeout=5)
+        self.assertEqual(Photo.objects.count(), 0)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.error_code, "transfer_cancelled")
+        self.assertIsNone(self.item.verified_source_etag)
+
+    def test_old_verification_failure_does_not_fail_a_new_authorization(self) -> None:
+        original_read = self.storage.read_range
+        changed = False
+
+        def read(**kwargs):
+            nonlocal changed
+            if not changed:
+                changed = True
+                authorize_item(
+                    uploader=self.user,
+                    batch_id=self.batch_id,
+                    item_id=self.item_id,
+                    reason=AuthorizationReason.DATA_ATTEMPT,
+                    storage=ConfirmationStorage(),
+                )
+                return b"bad"
+            return original_read(**kwargs)
+
+        with patch.object(self.storage, "read_range", side_effect=read):
+            self.assertIsNone(self.confirm())
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, UploadItem.Status.AUTHORIZED)
+        self.assertEqual(self.item.upload_attempts, 2)
+        self.assertEqual(self.item.error_code, "")
+        self.assertIsNone(self.item.verified_source_etag)
+        self.assertFalse(Photo.objects.exists())
+
+    def test_all_storage_verification_runs_outside_database_transaction(self) -> None:
+        states = []
+        original_inspect = self.storage.inspect
+        original_read = self.storage.read_range
+
+        def inspect(**kwargs):
+            states.append(connection.in_atomic_block)
+            return original_inspect(**kwargs)
+
+        def read(**kwargs):
+            states.append(connection.in_atomic_block)
+            return original_read(**kwargs)
+
+        with (
+            patch.object(self.storage, "inspect", side_effect=inspect),
+            patch.object(self.storage, "read_range", side_effect=read),
+        ):
+            self.confirm_success()
+        self.assertTrue(states)
+        self.assertFalse(any(states))
 
     def test_success_and_repeated_confirmation_are_idempotent(self) -> None:
         first = self.confirm_success()
@@ -759,7 +869,7 @@ class ConfirmationTests(TransactionTestCase):
         item = UploadItem.objects.get(id=self.item_id)
         self.assertEqual(item.status, UploadItem.Status.AUTHORIZED)
         self.assertEqual(item.verified_source_etag, "newer-etag")
-        self.assertEqual(item.error_code, "object_changed")
+        self.assertEqual(item.error_code, "")
         photo = self.confirm_success()
         self.assert_completed_once(photo)
 

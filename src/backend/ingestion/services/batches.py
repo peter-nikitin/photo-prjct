@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import transaction
+from django.db.models import Count, Q
 from django.utils import timezone
 from picflow.models import Event, EventFolder
 
@@ -265,7 +266,9 @@ def report_item_failed(
     code: str,
 ) -> ItemResult:
     public_messages = {
-        "transfer_retries_exhausted": "The upload could not be completed after several attempts.",
+        "transfer_http_error": "Object storage rejected the upload.",
+        "transfer_network_error": "The connection failed during the upload.",
+        "transfer_timeout": "The upload timed out.",
         "transfer_cancelled": "The upload was cancelled.",
     }
     if code not in public_messages:
@@ -317,7 +320,9 @@ def classify_failure(failure: object) -> FailureDisposition:
         "content_type_mismatch",
         "invalid_jpeg",
         "promotion_conflict",
-        "transfer_retries_exhausted",
+        "transfer_http_error",
+        "transfer_network_error",
+        "transfer_timeout",
         "transfer_cancelled",
         "upload_expired",
     }
@@ -389,10 +394,9 @@ def _authorize_locked(
 
 
 def _derive_and_save(*, batch: UploadBatch, require_terminal: bool) -> BatchResult:
-    counts = {
-        status: UploadItem.objects.filter(batch=batch, status=status).count()
-        for status in UploadItem.Status.values
-    }
+    counts = UploadItem.objects.filter(batch=batch).aggregate(
+        **{status: Count("id", filter=Q(status=status)) for status in UploadItem.Status.values}
+    )
     persisted = sum(counts.values())
     if require_terminal and persisted != batch.expected_item_count:
         raise BatchConflict("missing_registrations", "Not every selected file is registered.")

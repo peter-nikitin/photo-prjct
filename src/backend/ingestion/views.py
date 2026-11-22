@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
@@ -48,6 +49,8 @@ from ingestion.services.batches import (
 from ingestion.services.confirmation import confirm_upload_item
 from ingestion.services.resume import ResumeManifest, get_resume_manifest
 from ingestion.storage import PrivateUploadStorage, StorageError
+
+logger = logging.getLogger(__name__)
 
 UploadView = Callable[..., HttpResponse]
 
@@ -266,6 +269,10 @@ def upload_item_confirm(request: HttpRequest, batch: UUID, item: UUID) -> JsonRe
     except (UploadBatch.DoesNotExist, UploadItem.DoesNotExist):
         return _not_found()
     except (BatchConflict, ItemStateConflict) as exc:
+        if exc.code == "authorization_changed":
+            return _error(
+                "confirmation_in_progress", "Confirm the current upload again.", status=503
+            )
         return _service_error(exc)
     except StorageError:
         return _storage_unavailable()
@@ -293,6 +300,10 @@ def upload_item_confirm(request: HttpRequest, batch: UUID, item: UUID) -> JsonRe
                 state.error_code,
                 retryable_messages[state.error_code],
                 status=503,
+            )
+        if state.status == UploadItem.Status.AUTHORIZED:
+            return _error(
+                "confirmation_in_progress", "Confirm the current upload again.", status=503
             )
         return _error(
             state.error_code or "confirmation_failed",
@@ -324,6 +335,16 @@ def upload_item_failed(request: HttpRequest, batch: UUID, item: UUID) -> JsonRes
         return _not_found()
     except (BatchConflict, ItemStateConflict) as exc:
         return _service_error(exc)
+    diagnostics = {
+        "event": "browser_upload_failed",
+        "batch_id": str(batch),
+        "item_id": str(item),
+        "error_code": data["code"],
+        "http_status": data["http_status"],
+        "post_attempts": data["post_attempts"],
+        "post_duration_ms": data["post_duration_ms"],
+    }
+    logger.warning(json.dumps(diagnostics, sort_keys=True), extra=diagnostics)
     return JsonResponse({"item": _failed_item_payload(result)})
 
 

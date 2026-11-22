@@ -68,6 +68,7 @@ class PreviewPublicationRequired(ValueError):
     """Preview success must pass the storage-verifying publication service."""
 
 
+@transaction.atomic
 def claim_job(
     *,
     contract_version: int,
@@ -85,30 +86,32 @@ def claim_job(
         or processor_version not in QUALITY_FACE_PROCESSOR_VERSIONS
     ):
         raise ValueError("unsupported processor contract")
+    candidates = ProcessingJob.objects.filter(
+        contract_version=contract_version,
+        processor_type=processor_type,
+        processor_version=processor_version,
+        status__in=(ProcessingJob.Status.QUEUED, ProcessingJob.Status.RETRY_WAIT),
+        available_at__lte=now,
+        run__status__in=(
+            EventProcessingRun.Status.COLLECTING,
+            EventProcessingRun.Status.SEALED,
+        ),
+    )
+    if event_id is not None:
+        candidates = candidates.filter(event_id=event_id)
+    if configuration_hash is not None:
+        candidates = candidates.filter(configuration_hash=configuration_hash)
+    candidates = candidates.order_by("available_at", "created_at", "id")
     tried: set[UUID] = set()
-    with transaction.atomic():
-        while True:
-            candidates = ProcessingJob.objects.filter(
-                contract_version=contract_version,
-                processor_type=processor_type,
-                processor_version=processor_version,
-                status__in=(ProcessingJob.Status.QUEUED, ProcessingJob.Status.RETRY_WAIT),
-                available_at__lte=now,
-                run__status__in=(
-                    EventProcessingRun.Status.COLLECTING,
-                    EventProcessingRun.Status.SEALED,
-                ),
-            )
-            if event_id is not None:
-                candidates = candidates.filter(event_id=event_id)
-            if configuration_hash is not None:
-                candidates = candidates.filter(configuration_hash=configuration_hash)
-            candidates = candidates.order_by("available_at", "created_at", "id")
-            candidate = candidates.exclude(pk__in=tried).first()
-            if candidate is None:
-                return EmptyClaim()
-            tried.add(candidate.id)
-            _lock_transition_row(Event, pk=candidate.event_id)
+    while True:
+        candidate = candidates.exclude(pk__in=tried).only("id", "event_id", "run_id").first()
+        if candidate is None:
+            return EmptyClaim()
+        tried.add(candidate.id)
+        # Roll back stale candidates to release their locks before taking another Run,
+        # even when the HTTP grant still owns the outer transaction.
+        with transaction.atomic():
+            _lock_claim_event(candidate.event_id, processor_type)
             run = _lock_transition_row(EventProcessingRun, pk=candidate.run_id)
             job = (
                 ProcessingJob.objects.select_for_update(skip_locked=True)
@@ -120,20 +123,22 @@ def claim_job(
                 .first()
             )
             if job is None or run.status == EventProcessingRun.Status.CLOSED:
+                transaction.set_rollback(True)
                 continue
             _lock_transition_row(Photo, pk=job.photo_id)
             _validate_lease_seconds(lease_seconds, job.configuration)
-            if run.status == EventProcessingRun.Status.COLLECTING:
-                run.status = EventProcessingRun.Status.SEALED
-                run.sealed_at = now
-                run.save(update_fields=["status", "sealed_at"])
             state = _lock_transition_row(
                 PhotoProcessingState,
                 photo_id=job.photo_id,
                 processor_type=job.processor_type,
             )
             if state.current_job_id != job.id:
+                transaction.set_rollback(True)
                 continue
+            if run.status == EventProcessingRun.Status.COLLECTING:
+                run.status = EventProcessingRun.Status.SEALED
+                run.sealed_at = now
+                run.save(update_fields=["status", "sealed_at"])
             previous_status = job.status
             if job.processor_type == PERSON_APPEARANCE_PROCESSOR:
                 from processing.services.person_appearance import current_appearance_input
@@ -447,6 +452,21 @@ def _locked_context(
     )
     attempt = _lock_transition_row(ProcessingAttempt, pk=attempt_id)
     return event, run, job, photo, state, attempt
+
+
+def _lock_claim_event(event_id: int, processor_type: str) -> None:
+    if processor_type == PERSON_APPEARANCE_PROCESSOR:
+        # This claim can cancel stale inputs and close runs before leasing another job.
+        _lock_transition_row(Event, pk=event_id)
+        return
+    # Independent runs may claim together. Lifecycle writers still need exclusive access
+    # and the Attempt's deferred Event FK can acquire KEY SHARE without a lock upgrade.
+    table = connection.ops.quote_name(Event._meta.db_table)
+    pk = connection.ops.quote_name(Event._meta.pk.column)
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT 1 FROM {table} WHERE {pk} = %s FOR SHARE", [event_id])
+        if cursor.fetchone() is None:
+            raise Event.DoesNotExist
 
 
 def _lock_transition_row(model: Any, **lookup: Any) -> Any:

@@ -208,7 +208,7 @@ services:
 
   photo-worker:
     <<: *photo-worker
-    scale: 2
+    scale: 10
     environment:
       <<: *photo-worker-environment
       PHOTO_WORKER_PROCESSOR_IDENTITIES: 1/capture_metadata/2,2/generate_preview/1,2/generate_watermarked_preview/1,1/selfie_query/2

@@ -47,6 +47,7 @@ DASHBOARD_INPUTS = {
     "deploy/classify-release.py",
     "deploy/monitoring/prometheus/single_vm_dashboard.py",
     "deploy/monitoring/prometheus/queue_panels.py",
+    "deploy/monitoring/prometheus/dashboard_layout.py",
     "src/backend/config/queue_catalog.py",
     "deploy/monitoring/prometheus/single-vm-dashboard.json",
     "deploy/monitoring/prometheus/control.py",

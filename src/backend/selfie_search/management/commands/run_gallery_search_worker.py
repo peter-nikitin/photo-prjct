@@ -6,10 +6,13 @@ from multiprocessing import get_context
 from multiprocessing.connection import wait
 from multiprocessing.process import BaseProcess
 
+import psycopg
+from config.queue_notifications import MATCHING_CHANNEL, listen, wait_for_notifications
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, connection, connections
 
 from selfie_search.services.face_search_queue import (
+    next_wakeup_delay,
     recover_missing_payloads,
     recover_processing,
     run_once,
@@ -48,19 +51,22 @@ def recover_at_startup() -> None:
 def run_worker() -> None:
     signal.signal(signal.SIGTERM, terminate_immediately)
     signal.signal(signal.SIGALRM, attempt_timeout)
-    while True:
-        try:
-            signal.alarm(MATCHING_WATCHDOG_SECONDS)
-            worked = run_once()
-        except DatabaseError:
-            logger.error("Face-search database unavailable")
-            connection.close()
-            # Recover interrupted processing in a fresh generation before claiming again.
-            raise SystemExit(1) from None
-        finally:
-            signal.alarm(0)
-        if not worked:
-            time.sleep(IDLE_POLL_SECONDS)
+    try:
+        with listen(MATCHING_CHANNEL, application_name="findme-matching-worker") as listener:
+            while True:
+                try:
+                    signal.alarm(MATCHING_WATCHDOG_SECONDS)
+                    worked = run_once()
+                    delay = None if worked else next_wakeup_delay()
+                finally:
+                    signal.alarm(0)
+                if not worked:
+                    wait_for_notifications(listener, timeout=delay)
+    except (DatabaseError, psycopg.Error, OSError):
+        logger.error("Face-search database or notification connection unavailable")
+        connection.close()
+        # A fresh generation subscribes and recovers interrupted processing.
+        raise SystemExit(1) from None
 
 
 def stop_workers(workers: list[BaseProcess]) -> None:

@@ -14,6 +14,7 @@ from time import monotonic, monotonic_ns
 from uuid import UUID, uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
+from config.queue_notifications import ARCHIVE_CHANNEL, notify_work
 from config.queue_timings import elapsed_ms
 from config.queue_work import ARCHIVE, schedule_transition
 from django.db import connection, transaction
@@ -136,6 +137,8 @@ def enqueue_archive_job(
                 ]
             )
         schedule_transition(ARCHIVE, previous_status, job.status)
+        if job.status == PhotoArchiveJob.Status.QUEUED:
+            notify_work(ARCHIVE_CHANNEL)
     return job
 
 
@@ -156,6 +159,7 @@ def sign_archive_job(job: PhotoArchiveJob) -> str:
     return sign_private_archive(object_id=job.object_id, expires_in=expires_in)
 
 
+@transaction.atomic
 def recover_interrupted_archives() -> None:
     """Requeue work abandoned by the previous holder of the worker lock."""
     updated = PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.RUNNING).update(
@@ -168,6 +172,9 @@ def recover_interrupted_archives() -> None:
         str(PhotoArchiveJob.Status.QUEUED),
         amount=updated,
     )
+
+    if updated:
+        notify_work(ARCHIVE_CHANNEL)
 
 
 def prune_archive_jobs() -> None:
@@ -190,6 +197,11 @@ def prune_archive_jobs() -> None:
         schedule_transition(
             ARCHIVE, str(PhotoArchiveJob.Status.QUEUED), None, amount=removed[0], outcome="canceled"
         )
+
+
+def has_queued_archives() -> bool:
+    """Include committed queued rows temporarily skipped by a competing row lock."""
+    return PhotoArchiveJob.objects.filter(status=PhotoArchiveJob.Status.QUEUED).exists()
 
 
 def process_next_archive() -> bool:

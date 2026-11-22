@@ -1,20 +1,27 @@
+import logging
 import signal
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from time import monotonic
 from types import FrameType
 
+import psycopg
+from config.queue_notifications import ARCHIVE_CHANNEL, listen, wait_for_notifications
 from django.core.checks import Tags
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import connection, connections
 from picflow.archive_jobs import (
+    has_queued_archives,
     process_next_archive,
     prune_archive_jobs,
     recover_interrupted_archives,
 )
 
 _WORKER_ADVISORY_LOCK = 806_220_02
-_IDLE_POLL_SECONDS = 0.5
+logger = logging.getLogger(__name__)
+_STOP_CHECK_SECONDS = 1
+_LOCK_RETRY_SECONDS = 0.5
+_RECONNECT_SECONDS = 2
 _SUPERVISOR_POLL_SECONDS = 2
 _PRUNE_INTERVAL_SECONDS = 900
 
@@ -22,8 +29,22 @@ _PRUNE_INTERVAL_SECONDS = 900
 def _run_slot(stopping: Event) -> None:
     try:
         while not stopping.is_set():
-            if not process_next_archive():
-                stopping.wait(_IDLE_POLL_SECONDS)
+            try:
+                with listen(ARCHIVE_CHANNEL, application_name="findme-archive-worker") as listener:
+                    while not stopping.is_set():
+                        if process_next_archive():
+                            continue
+                        # SKIP LOCKED can miss committed work held by a duplicate
+                        # request which may roll back without emitting a new signal.
+                        contended = has_queued_archives()
+                        timeout = _LOCK_RETRY_SECONDS if contended else _STOP_CHECK_SECONDS
+                        while not stopping.is_set():
+                            if wait_for_notifications(listener, timeout=timeout) or contended:
+                                break
+                            # Empty queues only check the local stop flag, without SQL.
+            except (psycopg.Error, OSError):
+                logger.warning("Archive notification connection unavailable; retrying")
+                stopping.wait(_RECONNECT_SECONDS)
     finally:
         connections.close_all()
 

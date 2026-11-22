@@ -7,10 +7,12 @@ from functools import cache, partial
 from time import perf_counter
 
 from config.queue_events import notify_queue_completion
+from config.queue_notifications import MATCHING_CHANNEL, notify_work
 from config.queue_timings import elapsed_ms
 from config.queue_work import MATCHING_QUEUES, schedule_transition
 from django.db import DatabaseError, connection, transaction
-from django.db.models import Q, Subquery
+from django.db.models import Min, Q, Subquery
+from django.db.models.functions import Least
 from django.utils import timezone
 from feature_flags.registry import APPAREL_SEARCH_EXPANSION, FACE_SEARCH_ANCHOR_EXPANSION
 from feature_flags.services import is_enabled_for_background_task
@@ -71,6 +73,7 @@ RETRY_DELAY = timedelta(seconds=5)
 RANKING_TIMEOUT_MS = 120_000
 APPAREL_TIMEOUT_MS = 2_000
 APPAREL_MAX_ATTEMPTS = 2
+_LOCK_RETRY_SECONDS = 0.5
 
 
 class _ApparelSearchUnavailable(Exception):
@@ -106,6 +109,8 @@ def recover_processing() -> int:
                 str(FaceSearchTask.Status.QUEUED),
                 amount=count,
             )
+        if recovered:
+            notify_work(MATCHING_CHANNEL)
         return sum(count for _, count in recovered)
 
 
@@ -160,6 +165,19 @@ def claim() -> FaceSearchTask | None:
             search.matching_started_at = now
         search.save(update_fields=["status", "state_changed_at", "matching_started_at"])
         return task
+
+
+def next_wakeup_delay() -> float | None:
+    """Wait until the next queued retry or expiry; an empty queue has no timer."""
+    due = FaceSearchTask.objects.filter(status=FaceSearchTask.Status.QUEUED).aggregate(
+        due=Min(Least("available_at", "expires_at"))
+    )["due"]
+    if due is None:
+        return None
+    delay = (due - timezone.now()).total_seconds()
+    # The failed SKIP LOCKED claim may have skipped a ready task/search held by
+    # another transaction. Retry positively rather than spinning until it commits.
+    return delay if delay > 0 else _LOCK_RETRY_SECONDS
 
 
 def _queued_state(task: FaceSearchTask) -> str:
@@ -646,6 +664,7 @@ def retry(task: FaceSearchTask, *, apparel_failure: bool = False) -> None:
             task.status = FaceSearchTask.Status.QUEUED
             task.available_at = now + RETRY_DELAY
             task.save(update_fields=["status", "available_at"])
+            notify_work(MATCHING_CHANNEL)
             schedule_transition(
                 MATCHING_QUEUES.get(task.source), previous_status, _queued_state(task)
             )

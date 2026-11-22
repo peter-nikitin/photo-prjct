@@ -57,6 +57,7 @@ DASHBOARD_INPUTS = {
 }
 
 ALERT_INPUTS = {
+    "src/backend/config/queue_catalog.py",
     ".github/workflows/monitoring.yml",
     "deploy/classify-release.py",
     "deploy/monitoring/prometheus/alerts.py",

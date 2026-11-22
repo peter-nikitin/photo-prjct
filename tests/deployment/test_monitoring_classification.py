@@ -60,6 +60,11 @@ def test_mixed_dashboard_and_source_changes_select_dashboard():
     )["cloud_changed"]
 
 
+def test_catalog_change_selects_dashboard_and_alert_publication():
+    result = classifier().classify_observability(["src/backend/config/queue_catalog.py"])
+    assert result["dashboard_changed"] and result["alerts_changed"]
+
+
 def test_rules_only_select_alert_publication_without_image_or_dashboard():
     module = classifier()
     path = "deploy/monitoring/prometheus/rules.yml"

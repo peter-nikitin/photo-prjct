@@ -37,6 +37,7 @@ def test_catalog_addition_gets_same_instruments_without_changing_existing_identi
     assert extended[:-1] == original
     template = original[0]["group"]["widgets"]
     new_widgets = extended[-1]["group"]["widgets"]
+    assert len(template) == len(new_widgets) == 6
     assert [w["position"] for w in template] == [w["position"] for w in new_widgets]
     assert [w["multiSourceChart"]["title"] for w in template] == [
         w["multiSourceChart"]["title"] for w in new_widgets
@@ -83,11 +84,6 @@ def test_generated_instruments_keep_states_distinct_and_hide_unavailable_or_stal
             "exp_samples": [{"labels": "{}", "value": 2}],
         },
         {"expr": query(panel, "Незавершённые"), "eval_time": "6m", "exp_samples": []},
-        {
-            "expr": query(panel, "Состояние наблюдения", 0),
-            "eval_time": "6m",
-            "exp_samples": [{"labels": "{}", "value": 0}],
-        },
         {"expr": query(panel, "Незавершённые"), "eval_time": "12m", "exp_samples": []},
         {
             "expr": query(panel, "Готово"),

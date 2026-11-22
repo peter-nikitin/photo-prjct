@@ -7,9 +7,15 @@ import argparse
 import base64
 import importlib.util
 import math
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from config.queue_catalog import QueueDefinition
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("monitoring_control", HERE / "control.py")
@@ -96,6 +102,85 @@ def wait_for_sources(transport) -> None:
             time.sleep(10)
 
 
+def _catalog() -> tuple[QueueDefinition, ...]:
+    path = HERE.parents[2] / "src/backend/config/queue_catalog.py"
+    spec = importlib.util.spec_from_file_location("monitoring_alert_catalog", path)
+    assert spec and spec.loader
+    catalog = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = catalog
+    spec.loader.exec_module(catalog)
+    return catalog.QUEUES
+
+
+def _queue_observation_expression(queues: tuple[QueueDefinition, ...]) -> str:
+    # The expected series exist even if all application and collector samples disappear.
+    expected = " or ".join(
+        f'label_replace(vector(1), "queue", "{queue.key}", "", "")' for queue in queues
+    )
+    telemetry = f'job="findme-queue-telemetry",instance="{INSTANCE}"'
+    sources = []
+    for source, job in (
+        ("work", "findme-queue-telemetry"),
+        ("ready", "findme-http"),
+        ("results", "findme-queue-telemetry"),
+    ):
+        age = (
+            "time() - max by(queue) "
+            f'(findme_queue_{source}_observed_timestamp_seconds{{job="{job}",instance="{INSTANCE}"}})'
+        )
+        healthy = f"(({age}) >= 0) and on(queue) (({age}) <= 150)"
+        if source == "work":
+            healthy += (
+                f" and on(queue) (max by(queue) (findme_queue_work_available{{{telemetry}}}) == 1)"
+            )
+        if source == "results":
+            healthy += (
+                f" and on() (max(findme_queue_results_listener_connected{{{telemetry}}}) == 1)"
+            )
+        sources.append(
+            f"label_replace((({expected}) unless on(queue) ({healthy})), "
+            f'"source", "{source}", "", "")'
+        )
+    return "\n or ".join(sources)
+
+
+def render_rules(queues: tuple[QueueDefinition, ...] | None = None) -> bytes:
+    import yaml
+
+    rules = yaml.safe_load((HERE / "rules.yml").read_text())
+    critical = next(group for group in rules["groups"] if group["name"] == "findme-critical")
+    critical["rules"].append(
+        {
+            "alert": "QueueObservationUnavailable",
+            "expr": _queue_observation_expression(_catalog() if queues is None else queues),
+            "for": "5m",
+            "labels": {
+                "instance": INSTANCE,
+                "severity": "critical",
+                "project": "findme-photo",
+                "notification": "actionable",
+                "incident": "queue-observation",
+            },
+            "annotations": {
+                "summary": "Недоступен источник наблюдения очереди",
+                "description": "Очередь {{ $labels.queue }}, источник {{ $labels.source }}. "
+                "Состояние сохраняется не менее 5 минут.",
+            },
+        }
+    )
+    return yaml.safe_dump(rules, allow_unicode=True, sort_keys=False).encode()
+
+
+def validate_rules(promtool: str, desired: bytes) -> None:
+    with tempfile.TemporaryDirectory(prefix=".monitoring-alerts-", dir=Path.cwd()) as directory:
+        rendered = Path(directory) / "rules.yml"
+        rendered.write_bytes(desired)
+        fixtures = Path(directory) / "rules.test.yml"
+        fixtures.write_bytes((HERE / fixtures.name).read_bytes())
+        subprocess.run([promtool, "check", "rules", str(rendered)], check=True)
+        subprocess.run([promtool, "test", "rules", str(fixtures)], check=True)
+
+
 def _expected_rules(desired: bytes) -> dict[str, set[str]]:
     import yaml
 
@@ -176,12 +261,7 @@ def main() -> int:
         if args.validate:
             if not args.promtool:
                 parser.error("--promtool is required for validation")
-            import subprocess
-
-            subprocess.run([args.promtool, "check", "rules", str(HERE / "rules.yml")], check=True)
-            subprocess.run(
-                [args.promtool, "test", "rules", str(HERE / "rules.test.yml")], check=True
-            )
+            validate_rules(args.promtool, render_rules())
             import yaml
 
             yaml.safe_load((HERE / "alertmanager.yml").read_text())
@@ -193,12 +273,12 @@ def main() -> int:
         )
         publish_alerts(
             transport,
-            (HERE / "rules.yml").read_bytes(),
+            render_rules(),
             (HERE / "alertmanager.yml").read_bytes(),
             args.backup,
         )
         return 0
-    except (control.ControlError, OSError, ValueError) as error:
+    except (control.ControlError, OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Alert reconciliation failed: {error}", file=sys.stderr)
         return 1
 

@@ -30,13 +30,10 @@ def _selector(metric: str, queue: str, job: str = "findme-queue-telemetry", **la
     return metric + "{" + ",".join(f'{key}="{value}"' for key, value in values.items()) + "}"
 
 
-def _fresh(queue: str, source: str, *, boolean: bool = False) -> str:
+def _fresh(queue: str, source: str) -> str:
     job = "findme-http" if source == "ready" else "findme-queue-telemetry"
     observed = _selector(f"findme_queue_{source}_observed_timestamp_seconds", queue, job)
     age = f"(time() - max({observed}))"
-    comparator = " bool" if boolean else ""
-    if boolean:
-        return f"(({age} >={comparator} 0) * ({age} <={comparator} 150))"
     return f"(({age} >= 0) and ({age} <= 150))"
 
 
@@ -89,8 +86,6 @@ def _chart(
     y: int,
     visualization: str = "LINE",
     unit: str = "",
-    width: int = 12,
-    height: int = 8,
     aggregation: str | None = None,
 ) -> dict[str, Any]:
     chart_id = identity(queue.key, role)
@@ -132,8 +127,8 @@ def _chart(
         "position": {
             **({"x": str(x)} if x else {}),
             **({"y": str(y)} if y else {}),
-            "w": str(width),
-            "h": str(height),
+            "w": "12",
+            "h": "8",
         },
         "multiSourceChart": {
             "id": chart_id,
@@ -260,34 +255,9 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
             visualization="PIE",
             aggregation="SUM",
         ),
-        chart(
-            "observation",
-            "Состояние наблюдения, 1 = доступно",
-            "Независимые источники: остатки, готовность, результаты. Свежесть не более 150 с. "
-            "Доступность не гарантирует точность приблизительного остатка или полноту событий.",
-            [
-                (
-                    f"max({_selector('findme_queue_work_available', queue.key)}) "
-                    f"* {_fresh(queue.key, 'work', boolean=True)}",
-                    "Остатки",
-                    "#7895b2",
-                ),
-                (_fresh(queue.key, "ready", boolean=True), "Готовность", "#4c91cd"),
-                (
-                    'max(findme_queue_results_listener_connected{job="findme-queue-telemetry"}) '
-                    f"* {_fresh(queue.key, 'results', boolean=True)}",
-                    "Результаты и подписка",
-                    "#47a878",
-                ),
-            ],
-            0,
-            24,
-            width=24,
-            height=4,
-        ),
     ]
     return {
-        "position": {**({"y": str(y)} if y else {}), "w": "24", "h": "28"},
+        "position": {**({"y": str(y)} if y else {}), "w": "24", "h": "24"},
         "group": {
             "id": identity(queue.key, "panel"),
             "title": queue.title,
@@ -299,4 +269,4 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
 def panels(
     queues: tuple[QueueDefinition, ...], workspace_id: str, *, start_y: int = 0
 ) -> list[dict[str, Any]]:
-    return [_panel(queue, workspace_id, start_y + index * 28) for index, queue in enumerate(queues)]
+    return [_panel(queue, workspace_id, start_y + index * 24) for index, queue in enumerate(queues)]

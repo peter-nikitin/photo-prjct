@@ -464,7 +464,7 @@ def test_monitoring_only_change_selects_exporter_without_app_images():
     assert not any(selection[name] for name in ("web_changed", "worker_changed", "import_changed"))
 
 
-def test_gallery_executor_uses_upload_mode_limits_and_shutdown_grace() -> None:
+def test_gallery_executor_runs_two_processes_in_one_service_with_shutdown_grace() -> None:
     import yaml
 
     deployment = yaml.safe_load((ROOT / "docker-compose.deployment.yml").read_text())
@@ -477,11 +477,11 @@ def test_gallery_executor_uses_upload_mode_limits_and_shutdown_grace() -> None:
     ]
     assert "volumes" not in worker
     assert "healthcheck" not in worker
-    assert worker["command"] == ["--concurrency", "1"]
+    assert worker["command"] == ["--concurrency", "2"]
     assert worker["stop_grace_period"] == "10s"
     assert worker["environment"]["DB_HOST"] == "db"
-    assert worker["cpus"] == "0.5"
-    assert worker["mem_limit"] == "256m"
+    assert worker["cpus"] == "1"
+    assert worker["mem_limit"] == "512m"
     assert worker["pids_limit"] == 32
     assert worker["restart"] == "unless-stopped"
     assert "profiles" not in worker

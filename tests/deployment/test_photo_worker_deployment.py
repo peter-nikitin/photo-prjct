@@ -25,11 +25,15 @@ ROLES = {
     "photo-worker-appearance": (2, ("2/person_appearance/1",)),
     "photo-worker-bib": (1, ("1/bib_recognition/1",)),
 }
+SEARCH_ROLES = {
+    "photo-worker": (1, ("1/selfie_query/2",)),
+    **{name: (0, identities) for name, (_, identities) in ROLES.items() if name != "photo-worker"},
+}
 DESIRED_TOKEN = "private-desired-worker-token"
 RUNNING_TOKEN = "private-running-worker-token"
 
 
-def test_deployment_partitions_upload_work_despite_stale_overrides(tmp_path):
+def test_deployment_enables_only_selfie_processing_despite_stale_overrides(tmp_path):
     services = render_compose(
         tmp_path,
         "docker-compose.deployment.yml",
@@ -37,14 +41,14 @@ def test_deployment_partitions_upload_work_despite_stale_overrides(tmp_path):
         environment={
             "PHOTO_WORKER_IMAGE": WORKER_IMAGE,
             "PHOTO_PROCESSING_WORKER_TOKEN": DESIRED_TOKEN,
-            "PHOTO_WORKER_PROCESSOR_IDENTITIES": "1/selfie_query/2",
-            "PHOTO_WORKER_PROCESSOR_TYPES": "selfie_query",
+            "PHOTO_WORKER_PROCESSOR_IDENTITIES": "3/face_embedding/5,1/bib_recognition/1",
+            "PHOTO_WORKER_PROCESSOR_TYPES": "face_embedding,bib_recognition",
         },
     )["services"]
     assert {
         name for name, service in services.items() if "photo-worker" in service.get("profiles", [])
-    } == set(ROLES)
-    for name, (replicas, identities) in ROLES.items():
+    } == set(SEARCH_ROLES)
+    for name, (replicas, identities) in SEARCH_ROLES.items():
         worker = services[name]
         assert worker.get("scale", 1) == replicas
         assert worker["image"] == WORKER_IMAGE
@@ -65,8 +69,9 @@ def test_deployment_partitions_upload_work_despite_stale_overrides(tmp_path):
         assert set(environment["PHOTO_WORKER_PROCESSOR_TYPES"].split(",")) == {
             identity.split("/")[1] for identity in identities
         }
-    assert services["web"]["environment"]["GUNICORN_WORKERS"] == "2"
-    assert services["web"]["environment"]["GUNICORN_THREADS"] == "3"
+    assert services["photo-worker"]["cpus"] == 2
+    assert services["web"]["environment"]["GUNICORN_WORKERS"] == "4"
+    assert services["web"]["environment"]["GUNICORN_THREADS"] == "2"
 
 
 @pytest.fixture
@@ -150,8 +155,17 @@ store.write_text(json.dumps(state))
 
 
 def run_release(
-    release, *, web=True, worker=False, active=True, search=False, corruption=None, missing=None
+    release,
+    *,
+    web=True,
+    worker=False,
+    active=True,
+    search=False,
+    retire=False,
+    corruption=None,
+    missing=None,
 ):
+    roles = SEARCH_ROLES if search else ROLES
     desired = {
         name: {
             "profiles": ["photo-worker"],
@@ -163,17 +177,20 @@ def run_release(
                 "PHOTO_WORKER_TOKEN": DESIRED_TOKEN,
             },
         }
-        for name, (replicas, identities) in ROLES.items()
+        for name, (replicas, identities) in roles.items()
     }
     containers = {
         "legacy": {"service": "photo-worker", "status": "running" if active else "exited"}
     }
     if search:
-        desired = {"photo-worker": desired["photo-worker"]}
-        del desired["photo-worker"]["scale"]
+        if retire:
+            desired = {"photo-worker": desired["photo-worker"]}
+            del desired["photo-worker"]["scale"]
         containers |= {
             "face-a": {"service": "photo-worker-face", "status": "running"},
             "face-b": {"service": "photo-worker-face", "status": "exited"},
+            "appearance-a": {"service": "photo-worker-appearance", "status": "running"},
+            "bib-a": {"service": "photo-worker-bib", "status": "running"},
             "other-project": {
                 "service": "photo-worker-face",
                 "status": "running",
@@ -238,8 +255,9 @@ def test_recovery_release_does_not_activate_inactive_photo_profile(release, web,
     assert "PHOTO_WORKER_VERIFY=" not in result.stdout
 
 
-def test_search_release_drains_only_retired_project_workers(release):
-    result, calls, actual = run_release(release, active=False, search=True)
+@pytest.mark.parametrize("retire", [False, True])
+def test_search_release_stops_upload_workers_and_keeps_selfie(release, retire):
+    result, calls, actual = run_release(release, active=False, search=True, retire=retire)
     assert result.returncode == 0, result.stderr
     assert set(actual) == {
         "photo-worker-1",
@@ -248,7 +266,11 @@ def test_search_release_drains_only_retired_project_workers(release):
         "other-project",
         "run-command",
     }
-    assert "stop --time 180 face-a face-b" in calls
+    assert "PHOTO_WORKER_PROCESSOR_TYPES=selfie_query" in actual["photo-worker-1"]["environment"]
+    if retire:
+        assert "stop --time 180 face-a face-b" in calls
+    else:
+        assert "up -d --no-deps --pull never --timeout 180 " + " ".join(SEARCH_ROLES) in calls
     assert "PHOTO_WORKER_VERIFY=ok" in result.stdout
 
 

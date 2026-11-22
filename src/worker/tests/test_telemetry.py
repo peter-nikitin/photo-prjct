@@ -179,6 +179,80 @@ def test_local_selfie_entrypoint_starts_two_slots_and_drains_together(monkeypatc
     assert workers[0].drain.completed.is_set()
 
 
+@pytest.mark.parametrize("declare_appearance", [True, False])
+def test_local_upload_entrypoint_isolates_bib_claims_and_drains_both_slots(
+    monkeypatch, declare_appearance
+) -> None:
+    from photo_worker import __main__ as entrypoint
+    from photo_worker.contracts import Claim
+    from photo_worker.runner import Worker
+
+    monkeypatch.setattr(entrypoint, "install_signal_handlers", lambda _worker: None)
+    monkeypatch.setenv("PHOTO_WORKER_API_URL", "http://web:8000/internal/photo-processing/v1")
+    monkeypatch.setenv("PHOTO_WORKER_TOKEN", "worker-token")
+    monkeypatch.setenv("PHOTO_WORKER_TRANSPORT", "local")
+
+    upload_identities = (
+        (1, "capture_metadata", 2),
+        (2, "generate_preview", 1),
+        (2, "generate_watermarked_preview", 1),
+        (3, "face_embedding", 5),
+        (2, "person_appearance", 1),
+    )
+    selfie = (1, "selfie_query", 2)
+    bib = (1, "bib_recognition", 1)
+    identities = (*upload_identities, selfie, bib)
+    monkeypatch.setenv(
+        "PHOTO_WORKER_PROCESSOR_IDENTITIES",
+        ",".join(
+            f"{contract}/{processor}/{version}" for contract, processor, version in identities
+        ),
+    )
+    types = [
+        processor
+        for _, processor, _ in (bib, *upload_identities, selfie)
+        if declare_appearance or processor != "person_appearance"
+    ]
+    monkeypatch.setenv("PHOTO_WORKER_PROCESSOR_TYPES", ",".join(types))
+
+    claims: dict[int, list[tuple[int, str, int]]] = {}
+    workers: dict[int, Worker] = {}
+    lock = threading.Lock()
+    entered = threading.Barrier(2)
+    polled = threading.Barrier(2)
+
+    def claim(_client, *, lease_seconds, processor_type, contract_version, processor_version):
+        assert lease_seconds == 120
+        with lock:
+            claims[threading.get_ident()].append(
+                (contract_version, processor_type, processor_version)
+            )
+        return Claim(job=None, suggested_delay_seconds=1)
+
+    def run(worker: Worker) -> None:
+        thread_id = threading.get_ident()
+        with lock:
+            workers[thread_id] = worker
+            claims[thread_id] = []
+        entered.wait(timeout=3)
+        assert worker.run_once() == 1
+        polled.wait(timeout=3)
+        if claims[thread_id] == [bib]:
+            worker.request_drain()
+        assert worker.draining.wait(timeout=3)
+        assert worker.run_once() is None
+        assert not worker.drain.completed.is_set()
+
+    monkeypatch.setattr(HttpClient, "claim_job", claim)
+    monkeypatch.setattr(Worker, "run_forever", run)
+    entrypoint.main()
+
+    assert list(sorted(claims.values(), key=len)) == [[bib], [selfie, *upload_identities]]
+    left, right = workers.values()
+    assert left.drain is right.drain
+    assert left.drain.completed.is_set()
+
+
 def test_bulk_slot_failure_keeps_drain_deadline_until_other_slot_finishes(monkeypatch) -> None:
     from photo_worker import __main__ as entrypoint
     from photo_worker.runner import Worker, WorkerConfig

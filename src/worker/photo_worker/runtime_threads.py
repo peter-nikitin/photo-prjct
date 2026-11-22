@@ -26,9 +26,16 @@ def cpu_thread_budget(path: Path = CPU_MAX_PATH) -> int:
 _CPU_BUDGET = cpu_thread_budget()
 
 
+def has_mixed_bib_types(processor_types: tuple[str, ...]) -> bool:
+    return len(processor_types) > 1 and "bib_recognition" in processor_types
+
+
 def worker_slot_count() -> int:
     if os.environ.get("PHOTO_WORKER_TRANSPORT", "local") == "remote":
         return 2 if os.environ.get("PHOTO_WORKER_POOL") == "bulk" else 1
+    raw_types = os.environ.get("PHOTO_WORKER_PROCESSOR_TYPES", "")
+    if has_mixed_bib_types(tuple(item.strip() for item in raw_types.split(","))):
+        return 2
     if (
         _CPU_BUDGET == 2
         and os.environ.get("PHOTO_WORKER_PROCESSOR_IDENTITIES", "").strip()

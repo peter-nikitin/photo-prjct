@@ -15,7 +15,8 @@ from photo_worker.telemetry import RuntimeTelemetry, start_runtime_server
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     config, client = WorkerConfig.from_env()
-    worker = Worker(client, config)
+    slot_configs = config.slot_configs()
+    worker = Worker(client, slot_configs[0])
     install_signal_handlers(worker)
     runtime_server = None
     executor = ThreadPoolExecutor(max_workers=2) if config.concurrency == 2 else None
@@ -64,8 +65,8 @@ def main() -> None:
             worker.run_forever()
         else:
             workers = [worker]
-            for _ in range(config.concurrency - 1):
-                slot = Worker(client, config, drain=worker.drain, telemetry=worker.telemetry)
+            for slot_config in slot_configs[1:]:
+                slot = Worker(client, slot_config, drain=worker.drain, telemetry=worker.telemetry)
                 slot.fleet = worker.fleet
                 workers.append(slot)
             futures = [executor.submit(slot.run_forever) for slot in workers]

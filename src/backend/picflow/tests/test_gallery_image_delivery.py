@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.test import override_settings
-from ingestion.storage import ObjectMismatch, ObjectMissing, StorageUnavailable, s3_object_key
+from ingestion.storage import s3_object_key
 from ingestion.tests.fakes import FakeS3Client, client_error
 
 from picflow.gallery_image_delivery import (
@@ -167,18 +167,43 @@ def test_preview_redirect_uses_configured_download_lifetime_for_both_signatures(
 
 @override_settings(**VALID_SETTINGS)
 @pytest.mark.parametrize(
-    ("status", "expected"), [(404, ObjectMissing), (503, StorageUnavailable), (200, ObjectMismatch)]
+    ("key", "attachment", "path"),
+    [
+        (PREVIEW_KEY, None, f"/gallery-media/{s3_object_key(PREVIEW_KEY)}"),
+        ("originals/" + "a" * 32, None, f"/delivery/originals/{'a' * 32}/inline"),
+        (
+            "originals/" + "a" * 32,
+            "findme-photo-id.jpg",
+            f"/delivery/originals/{'a' * 32}/findme-photo-id.jpg",
+        ),
+    ],
 )
-def test_preview_redirect_checks_exact_storage_object_before_issuing_grant(status, expected):
+def test_final_grant_signs_exact_object_without_storage_reads(key, attachment, path):
     client = FakeS3Client()
-    object_key = s3_object_key(PREVIEW_KEY)
-    if status == 200:
-        client.put_object("gallery-media", object_key, b"invalid", '"etag"', "text/plain")
-    else:
-        client.failures["head_object"] = client_error(status)
-    with pytest.raises(expected):
-        CdnFinalObjectStorage(client=client).sign_final(key=PREVIEW_KEY)
-    assert client.calls == [("head_object", {"Bucket": "gallery-media", "Key": object_key})]
+    client.failures["head_object"] = client_error(503)
+    url = CdnFinalObjectStorage(client=client).sign_final(key=key, attachment_filename=attachment)
+    parsed = urlsplit(url)
+    assert parsed.netloc == "img.findme-photo.ru"
+    assert parsed.path == path
+    assert parse_qs(parsed.query)["md5"]
+    assert int(parse_qs(parsed.query)["expires"][0]) > int(time())
+    assert client.calls == []
+
+
+@override_settings(**VALID_SETTINGS)
+@pytest.mark.parametrize(
+    ("key", "attachment"),
+    [
+        ("incoming/00000000-0000-0000-0000-000000000001/object", None),
+        (PREVIEW_KEY + "/extra", None),
+        ("originals/" + "a" * 32, "unsafe.jpg\r\nInjected: yes"),
+    ],
+)
+def test_final_grant_rejects_invalid_local_inputs_without_storage_reads(key, attachment):
+    client = FakeS3Client()
+    with pytest.raises(ValueError):
+        CdnFinalObjectStorage(client=client).sign_final(key=key, attachment_filename=attachment)
+    assert client.calls == []
 
 
 @override_settings(

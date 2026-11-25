@@ -170,16 +170,11 @@ class PrivateUploadStorage:
         _validate_managed_key(key)
         return self._inspect(key)
 
-    def _verify_final_image(self, key: str) -> None:
-        _validate_public_final_key(key)
-        if self._inspect(key).content_type not in {"image/jpeg", "image/png"}:
-            raise ObjectMismatch()
-
     def sign_final(self, *, key: str, attachment_filename: str | None = None) -> str:
-        """Verify then create a short-lived GET URL for one public final object."""
+        """Locally sign a short-lived GET URL for one authorized final object."""
         if attachment_filename is not None:
             validate_attachment_filename(attachment_filename)
-        self._verify_final_image(key)
+        _validate_public_final_key(key)
         params = {"Bucket": self._bucket_for_key(key), "Key": s3_object_key(key)}
         if attachment_filename is not None:
             params["ResponseContentDisposition"] = f'attachment; filename="{attachment_filename}"'

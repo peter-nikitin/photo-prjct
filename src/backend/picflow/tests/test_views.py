@@ -2680,6 +2680,49 @@ class GalleryMediaViewTests(TransactionTestCase):
         self.assertFalse(response.streaming)
         resolver.resolve_download.assert_called_once_with(photo=photo)
 
+    @override_settings(
+        GALLERY_CDN_ORIGIN="https://img.example.test",
+        GALLERY_CDN_TOKEN_SECRET="test-secret",
+        EVENT_MEDIA_S3_BUCKET="gallery-media",
+        ORIGINALS_S3_BUCKET="originals-bucket",
+        PRIVATE_MEDIA_S3_ACCESS_KEY_ID="test-key",
+        PRIVATE_MEDIA_S3_SECRET_ACCESS_KEY="test-secret",
+        PRIVATE_MEDIA_S3_ENDPOINT_URL="https://storage.example.test",
+        PRIVATE_MEDIA_S3_REGION="ru-central1",
+    )
+    def test_accepted_public_media_and_download_sign_without_storage_reads(self) -> None:
+        from ingestion.storage import PrivateUploadStorage
+
+        event = self.make_event()
+        photo = self.make_private_photo(
+            event,
+            processing_generation=Photo.ProcessingGeneration.PREVIEW_FIRST_V1,
+            gallery_media_policy=Photo.GalleryMediaPolicy.PREVIEW_REQUIRED,
+        )
+        preview_key = f"derivatives/previews/{photo.id}/preview-small-v1/{uuid4()}-{'a' * 64}.jpg"
+        self.publish_preview(photo, final_key=preview_key)
+        # Keep boto3's real local signing; only fail its network transport.
+        transport = PrivateUploadStorage()._client
+        with patch.object(
+            transport, "_make_api_call", side_effect=AssertionError("unexpected S3 read")
+        ) as network:
+            with patch("ingestion.storage.boto3.client", return_value=transport):
+                for cdn_state in (FEATURE_FLAG_OFF, FEATURE_FLAG_ON):
+                    with (
+                        self.subTest(cdn_state=cdn_state),
+                        override_feature_flags({GALLERY_CDN_IMAGES: cdn_state}),
+                    ):
+                        media = self.client.get(self.media_url(event=event, photo=photo))
+                        download = self.client.get(self.download_url(event=event, photo=photo))
+                        self.assertEqual(media.status_code, 302)
+                        self.assertEqual(download.status_code, 302)
+                        self.assertIn("previews/", media["Location"])
+                        self.assertIn(photo.original_key, download["Location"])
+                        self.assertIn(f"findme-photo-{photo.pk}.jpg", download["Location"])
+                        self.assertEqual(media.content, b"")
+                        self.assertEqual(download.content, b"")
+            network.assert_not_called()
+
     def test_photo_download_maps_storage_failures_to_existing_responses(self) -> None:
         event = self.make_event()
         photo = self.make_private_photo(event, id="download-storage")

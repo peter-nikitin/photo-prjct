@@ -37,7 +37,7 @@ def test_catalog_addition_gets_same_instruments_without_changing_existing_identi
     assert extended[:-1] == original
     template = original[0]["group"]["widgets"]
     new_widgets = extended[-1]["group"]["widgets"]
-    assert len(template) == len(new_widgets) == 6
+    assert len(template) == len(new_widgets) == 7
     assert [w["position"] for w in template] == [w["position"] for w in new_widgets]
     assert [w["multiSourceChart"]["title"] for w in template] == [
         w["multiSourceChart"]["title"] for w in new_widgets
@@ -140,7 +140,7 @@ def test_segment_means_use_measured_cohort_and_pie_accumulates_reset_safe_scrape
             "exp_samples": [{"labels": "{}", "value": 10}],
         },
         {
-            "expr": query(panel, "Завершения"),
+            "expr": query(panel, "Число завершений").replace("@ start()", "@ 0"),
             "eval_time": "6m",
             "exp_samples": [{"labels": "{}", "value": 2}],
         },
@@ -205,18 +205,17 @@ def test_pie_keeps_both_jittered_scrapes_and_the_peak_before_a_reset(tmp_path):
     _test_promql(tmp_path, series, expressions, interval="1s")
 
 
-def test_all_pie_targets_fit_a_monium_get_request():
+def test_all_queue_targets_fit_a_monium_get_request():
     from urllib.parse import quote, urlencode
 
     path = "/monitoring/v2/prometheus/workspaces/workspace01234567890/api/v1/query_range"
     for panel in load().panels(QUEUES, "workspace"):
-        chart = next(
-            widget["multiSourceChart"]
+        targets = (
+            target
             for widget in panel["group"]["widgets"]
-            if widget["multiSourceChart"]["visualizationSettings"]["type"]
-            == "VISUALIZATION_TYPE_PIE"
+            for target in widget["multiSourceChart"]["targets"]
         )
-        for target in chart["targets"]:
+        for target in targets:
             encoded = urlencode(
                 {
                     "query": target["prometheusTarget"]["query"],
@@ -229,3 +228,82 @@ def test_all_pie_targets_fit_a_monium_get_request():
             request_line = f"GET {path}?{encoded} HTTP/1.1\r\n"
             # Leave room for the dashboard proxy's request framing.
             assert len(request_line.encode()) <= 4096, panel["group"]["title"]
+
+
+def test_results_count_observed_minute_increments_by_outcome(tmp_path):
+    panel = load().panels(QUEUES[:1], "workspace")[0]
+    labels = f'job="findme-queue-telemetry",queue="{QUEUES[0].key}"'
+    series = [
+        {
+            "series": f"findme_queue_results_observed_timestamp_seconds{{{labels}}}",
+            "values": "0+1x180 180+0x181",
+        },
+        {
+            "series": 'findme_queue_results_listener_connected{job="findme-queue-telemetry"}',
+            "values": "1+0x179 0+0x59 1+0x121",
+        },
+    ]
+    expressions = []
+    for index, (outcome, first, last, expected) in enumerate(
+        (("success", 10, 30, 30), ("failed", 10, 3, 13), ("canceled", 0, 0, 0))
+    ):
+        series.append(
+            {
+                "series": f'findme_queue_results_total{{{labels},outcome="{outcome}"}}',
+                "values": f"0 _x60 {first} _x57 {last} _x60 {last} _x59 {last} _x119 {last}",
+            }
+        )
+        expression = query(panel, "Число завершений", index).replace("@ start()", "@ 0")
+        expressions += [
+            {"expr": expression, "eval_time": "0s", "exp_samples": []},
+            {"expr": expression, "eval_time": "60s", "exp_samples": []},
+            {
+                "expr": expression,
+                "eval_time": "120s",
+                "exp_samples": [{"labels": "{}", "value": expected}],
+            },
+            {"expr": expression, "eval_time": "180s", "exp_samples": []},
+            {
+                "expr": expression,
+                "eval_time": "240s",
+                "exp_samples": [{"labels": "{}", "value": 0}],
+            },
+            {"expr": expression, "eval_time": "360s", "exp_samples": []},
+        ]
+    _test_promql(tmp_path, series, expressions, interval="1s")
+
+
+def test_full_cycle_percentiles_hide_empty_windows_and_missing_sources(tmp_path):
+    panel = load().panels(QUEUES[:1], "workspace")[0]
+    labels = f'job="findme-queue-telemetry",queue="{QUEUES[0].key}"'
+    metric = "findme_queue_cycle_duration_seconds"
+    counts = "0 0 100+0x4 200+0x5"
+    series = [
+        {"series": f'{metric}_bucket{{{labels},le="10.0"}}', "values": "0+0x12"},
+        {"series": f'{metric}_bucket{{{labels},le="60.0"}}', "values": counts},
+        {"series": f'{metric}_bucket{{{labels},le="+Inf"}}', "values": counts},
+        {"series": f"{metric}_count{{{labels}}}", "values": counts},
+        {
+            "series": f"findme_queue_results_observed_timestamp_seconds{{{labels}}}",
+            "values": "0+60x5 300+0x6",
+        },
+        {
+            "series": 'findme_queue_results_listener_connected{job="findme-queue-telemetry"}',
+            "values": "1+0x3 0 1+0x6",
+        },
+    ]
+    expressions = []
+    for target, percentile in enumerate((35, 57.5, 59.5)):
+        expression = query(panel, "Перцентили", target)
+        expressions += [
+            {"expr": expression, "eval_time": "1m", "exp_samples": []},
+            {
+                "expr": expression,
+                "eval_time": "3m",
+                "exp_samples": [{"labels": "{}", "value": percentile}],
+            },
+            {"expr": expression, "eval_time": "4m", "exp_samples": []},
+            {"expr": expression, "eval_time": "6m", "exp_samples": []},
+            {"expr": expression, "eval_time": "8m", "exp_samples": []},
+        ]
+    _test_promql(tmp_path, series, expressions)

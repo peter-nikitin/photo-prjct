@@ -215,7 +215,7 @@ def test_cli_waits_for_fresh_samples_with_a_bounded_retry(
     assert elapsed == elapsed_expected
 
 
-@pytest.mark.parametrize("failure", [None, "unavailable", "missing", "stale"])
+@pytest.mark.parametrize("failure", [None, "unavailable", "missing", "stale", "bucket"])
 def test_queue_work_requires_a_fresh_series_for_every_queue_and_state(failure):
     checker = load("release_queue_work", "deploy/monitoring/prometheus/verify_metrics.py")
     queues = set(checker.WORK_QUEUES)
@@ -237,6 +237,22 @@ def test_queue_work_requires_a_fresh_series_for_every_queue_and_state(failure):
                 for selector in selectors
                 if selector["__name__"] == "findme_queue_work_count"
             } == {(queue, state) for queue in queues for state in states}
+            histogram = "findme_queue_cycle_duration_seconds"
+            assert {
+                (selector["queue"], selector["le"])
+                for selector in selectors
+                if selector["__name__"] == histogram + "_bucket"
+            } == {
+                (queue, bound)
+                for queue in queues
+                for bound in (*checker.catalog.CYCLE_DURATION_BUCKETS, "+Inf")
+            }
+            for suffix in ("_count", "_sum"):
+                assert {
+                    selector["queue"]
+                    for selector in selectors
+                    if selector["__name__"] == histogram + suffix
+                } == queues
             results = []
             for selector in selectors:
                 availability = selector["__name__"] == "findme_queue_work_available"
@@ -254,6 +270,8 @@ def test_queue_work_requires_a_fresh_series_for_every_queue_and_state(failure):
                         results.append([])
                     else:
                         results.append([[(1600 if failure == "stale" else 1995, 1)]])
+                elif failure == "bucket" and selector.get("le") == "+Inf":
+                    results.append([])
                 else:
                     observed = selector["__name__"].endswith("_observed_timestamp_seconds")
                     results.append([[(1995, 1995 if observed else 1 if availability else 0)]])

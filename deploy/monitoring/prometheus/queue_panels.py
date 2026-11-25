@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 if TYPE_CHECKING:
     from config.queue_catalog import QueueDefinition
 
+PANEL_HEIGHT = 32
 STATES = (
     ("waiting", "Ожидает", "#7895b2"),
     ("processing", "Обрабатывается", "#47a878"),
@@ -86,6 +87,7 @@ def _chart(
     visualization: str = "LINE",
     unit: str = "",
     aggregation: str | None = None,
+    width: int = 12,
 ) -> dict[str, Any]:
     chart_id = identity(queue.key, role)
     source_id = identity(queue.key, role + "/source")
@@ -126,7 +128,7 @@ def _chart(
         "position": {
             **({"x": str(x)} if x else {}),
             **({"y": str(y)} if y else {}),
-            "w": "12",
+            "w": str(width),
             "h": "8",
         },
         "multiSourceChart": {
@@ -153,6 +155,11 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
 
     result_counter = "findme_queue_results_total"
     measured = _selector("findme_queue_duration_observations_total", queue.key)
+    cycle = "findme_queue_cycle_duration_seconds"
+    buckets = _selector(f"{cycle}_bucket", queue.key)
+    cycle_count = _selector(f"{cycle}_count", queue.key)
+    distribution = f"sum by (le) (rate({buckets}[5m]))"
+    measured_cycles = f"(sum(rate({cycle_count}[5m])) > 0)"
     means, deltas = [], []
     for segment in queue.segments:
         counter = _selector(
@@ -209,15 +216,13 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
         ),
         chart(
             "results",
-            "Завершения в минуту, среднее за 5 мин",
-            "Принятые терминальные исходы задач. Повторяемая ошибка не является завершением. "
-            "Счётчики описывают наблюдённые события и могут теряться при отключении подписки.",
+            "Число завершений за минуту",
+            "Принятые терминальные исходы между наблюдениями, с точностью минутного сбора. "
+            "После пропуска опроса прирост относится к следующему наблюдению.",
             [
                 (
                     _gate(
-                        "sum(rate("
-                        + _selector(result_counter, queue.key, outcome=outcome)
-                        + "[5m])) * 60",
+                        _interval_increment(_selector(result_counter, queue.key, outcome=outcome)),
                         queue.key,
                         "results",
                     ),
@@ -228,7 +233,8 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
             ],
             12,
             8,
-            unit=queue.unit + "/мин",
+            visualization="COLUMN",
+            unit=queue.unit,
         ),
         chart(
             "durations",
@@ -254,9 +260,36 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
             visualization="PIE",
             aggregation="SUM",
         ),
+        chart(
+            "percentiles",
+            "Перцентили полного времени за 5 мин, с",
+            "p50, p95 и p99 по успешным циклам с полными временами, включая ожидание и повторы. "
+            "Значения оцениваются по гистограмме. Без измеренных успехов график пуст.",
+            [
+                (
+                    _gate(
+                        f"histogram_quantile({quantile}, {distribution})"
+                        f" and on() {measured_cycles}",
+                        queue.key,
+                        "results",
+                    ),
+                    label,
+                    color,
+                )
+                for quantile, label, color in (
+                    (0.5, "p50", "#4c91cd"),
+                    (0.95, "p95", "#e5a743"),
+                    (0.99, "p99", "#a882bd"),
+                )
+            ],
+            0,
+            24,
+            width=24,
+            unit="Секунды",
+        ),
     ]
     return {
-        "position": {**({"y": str(y)} if y else {}), "w": "24", "h": "24"},
+        "position": {**({"y": str(y)} if y else {}), "w": "24", "h": str(PANEL_HEIGHT)},
         "group": {
             "id": identity(queue.key, "panel"),
             "title": queue.title,
@@ -268,4 +301,7 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
 def panels(
     queues: tuple[QueueDefinition, ...], workspace_id: str, *, start_y: int = 0
 ) -> list[dict[str, Any]]:
-    return [_panel(queue, workspace_id, start_y + index * 24) for index, queue in enumerate(queues)]
+    return [
+        _panel(queue, workspace_id, start_y + index * PANEL_HEIGHT)
+        for index, queue in enumerate(queues)
+    ]

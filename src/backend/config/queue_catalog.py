@@ -2,6 +2,40 @@
 
 from dataclasses import dataclass
 
+CYCLE_DURATION_METRIC = "findme_queue_cycle_duration_seconds"
+# Prometheus le label values in seconds. The final finite bucket covers 400 days,
+# above the maximum representable sum of 16 segments of 2**31 - 1 milliseconds.
+CYCLE_DURATION_BUCKETS = (
+    "0.005",
+    "0.01",
+    "0.025",
+    "0.05",
+    "0.1",
+    "0.25",
+    "0.5",
+    "1.0",
+    "2.5",
+    "5.0",
+    "10.0",
+    "20.0",
+    "30.0",
+    "60.0",
+    "120.0",
+    "300.0",
+    "600.0",
+    "1800.0",
+    "3600.0",
+    "10800.0",
+    "21600.0",
+    "43200.0",
+    "86400.0",
+    "259200.0",
+    "604800.0",
+    "2.592e+06",
+    "7.776e+06",
+    "3.456e+07",
+)
+
 
 @dataclass(frozen=True)
 class SegmentDefinition:

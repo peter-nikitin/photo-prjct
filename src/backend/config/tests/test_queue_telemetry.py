@@ -174,3 +174,65 @@ def test_photo_import_scrape_reads_only_counter_rows_and_clamps_display():
     assert "JOIN" not in reads[0]
     assert connection.connection is None
     assert PhotoImportCounter.objects.get(pk="photo_import_gallery").pending == -2
+
+
+def test_full_cycle_histogram_measures_only_individual_successes_with_complete_timings():
+    from config.queue_catalog import CYCLE_DURATION_BUCKETS, QUEUES
+    from config.queue_telemetry import MAX_SEGMENT_MS, MAX_SEGMENTS, QueueTelemetry
+
+    telemetry = QueueTelemetry()
+    registry = CollectorRegistry()
+    registry.register(telemetry)
+    queue = QUEUES[0]
+    labels = (("queue", queue.key),)
+    metric = "findme_queue_cycle_duration_seconds"
+    timings = dict.fromkeys((segment.key for segment in queue.segments), 1000)
+
+    def record(outcome="success", segments=timings, count=1):
+        telemetry.record(
+            json.dumps(
+                {
+                    "event": "queue.work.result",
+                    "version": 1,
+                    "queue": queue.key,
+                    "outcome": outcome,
+                    "segments_ms": segments,
+                    "count": count,
+                }
+            )
+        )
+
+    initial = samples(registry)
+    assert {metric_labels for name, metric_labels in initial if name == metric + "_bucket"} == {
+        (("le", bound), ("queue", definition.key))
+        for definition in QUEUES
+        for bound in (*CYCLE_DURATION_BUCKETS, "+Inf")
+    }
+    assert initial[(metric + "_count", labels)] == 0
+    record(outcome="failed")
+    record(outcome="canceled")
+    record(segments={})
+    record(count=2)
+    record(segments={**timings, queue.segments[0].key: -1})
+    record()
+    record(segments=dict.fromkeys(timings, MAX_SEGMENT_MS))
+    observed = samples(registry)
+
+    assert observed[(metric + "_count", labels)] == 2
+    assert observed[(metric + "_sum", labels)] == pytest.approx(
+        len(timings) * (1 + MAX_SEGMENT_MS / 1000)
+    )
+    assert observed[("findme_queue_duration_observations_total", labels)] == 2
+    assert observed[(metric + "_bucket", (("le", "0.5"), *labels))] == 0
+    assert observed[(metric + "_bucket", (("le", "10.0"), *labels))] == 1
+    finite_buckets = [
+        (float(dict(metric_labels)["le"]), value)
+        for (name, metric_labels), value in observed.items()
+        if name == metric + "_bucket"
+        and dict(metric_labels)["queue"] == queue.key
+        and dict(metric_labels)["le"] != "+Inf"
+    ]
+    upper_bound, count = max(finite_buckets)
+    assert upper_bound >= MAX_SEGMENTS * MAX_SEGMENT_MS / 1000
+    assert count == 2
+    assert observed[(metric + "_count", (("queue", QUEUES[1].key),))] == 0

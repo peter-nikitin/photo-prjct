@@ -140,7 +140,7 @@ def test_segment_means_use_measured_cohort_and_pie_accumulates_reset_safe_scrape
             "exp_samples": [{"labels": "{}", "value": 10}],
         },
         {
-            "expr": query(panel, "Число завершений").replace("@ start()", "@ 0"),
+            "expr": query(panel, "Число завершений"),
             "eval_time": "6m",
             "exp_samples": [{"labels": "{}", "value": 2}],
         },
@@ -236,11 +236,11 @@ def test_results_count_observed_minute_increments_by_outcome(tmp_path):
     series = [
         {
             "series": f"findme_queue_results_observed_timestamp_seconds{{{labels}}}",
-            "values": "0+1x180 180+0x181",
+            "values": "0.002+1x180 180+0x179 362+1x59",
         },
         {
             "series": 'findme_queue_results_listener_connected{job="findme-queue-telemetry"}',
-            "values": "1+0x179 0+0x59 1+0x121",
+            "values": "1+0x179 0+0x59 1+0x180",
         },
     ]
     expressions = []
@@ -250,10 +250,12 @@ def test_results_count_observed_minute_increments_by_outcome(tmp_path):
         series.append(
             {
                 "series": f'findme_queue_results_total{{{labels},outcome="{outcome}"}}',
-                "values": f"0 _x60 {first} _x57 {last} _x60 {last} _x59 {last} _x119 {last}",
+                "values": (
+                    f"0 _x60 {first} _x57 {last} _x60 {last} _x59 {last} _x119 {last} _x59 {last}"
+                ),
             }
         )
-        expression = query(panel, "Число завершений", index).replace("@ start()", "@ 0")
+        expression = query(panel, "Число завершений", index)
         expressions += [
             {"expr": expression, "eval_time": "0s", "exp_samples": []},
             {"expr": expression, "eval_time": "60s", "exp_samples": []},
@@ -269,6 +271,7 @@ def test_results_count_observed_minute_increments_by_outcome(tmp_path):
                 "exp_samples": [{"labels": "{}", "value": 0}],
             },
             {"expr": expression, "eval_time": "360s", "exp_samples": []},
+            {"expr": expression, "eval_time": "420s", "exp_samples": []},
         ]
     _test_promql(tmp_path, series, expressions, interval="1s")
 

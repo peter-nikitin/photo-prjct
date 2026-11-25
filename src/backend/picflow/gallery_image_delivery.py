@@ -189,8 +189,5 @@ class CdnFinalObjectStorage(PrivateUploadStorage):
         except ImproperlyConfigured:
             raise StorageUnavailable() from None
         if key.startswith("derivatives/") and attachment_filename is None:
-            self._verify_final_image(key)
             return signer.preview_redirect_url(key=key)
-        url = signer.original_url(key=key, attachment_filename=attachment_filename)
-        self._verify_final_image(key)
-        return url
+        return signer.original_url(key=key, attachment_filename=attachment_filename)

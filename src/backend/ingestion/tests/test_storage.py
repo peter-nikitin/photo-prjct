@@ -215,15 +215,15 @@ def test_open_final_returns_validated_stream_without_reading_it(
     assert client.last_body is not None and not client.last_body.closed
 
 
-def test_sign_final_verifies_the_exact_public_object_before_creating_a_get_url(
+def test_sign_final_signs_the_exact_public_object_without_network_reads(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(ORIGINALS_BUCKET, FINAL_KEY, b"jpeg-data", '"final-etag"')
+    client.failures["head_object"] = client_error(503)
 
     url = storage.sign_final(key=FINAL_KEY)
 
     assert url == client.presigned_get_url
-    assert calls(client, "head_object") == [{"Bucket": ORIGINALS_BUCKET, "Key": FINAL_KEY}]
+    assert calls(client, "head_object") == []
     assert calls(client, "generate_presigned_url") == [
         {
             "ClientMethod": "get_object",
@@ -238,16 +238,16 @@ def test_sign_final_verifies_the_exact_public_object_before_creating_a_get_url(
 def test_sign_final_allows_a_content_addressed_watermarked_preview(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(
-        EVENT_MEDIA_BUCKET, WATERMARKED_PREVIEW_OBJECT_KEY, b"watermarked", '"watermark-etag"'
-    )
+    client.failures["head_object"] = client_error(503)
 
     url = storage.sign_final(key=WATERMARKED_PREVIEW_FINAL_KEY)
 
     assert url == client.presigned_get_url
-    assert calls(client, "head_object") == [
-        {"Bucket": EVENT_MEDIA_BUCKET, "Key": WATERMARKED_PREVIEW_OBJECT_KEY}
-    ]
+    assert calls(client, "head_object") == []
+    assert calls(client, "generate_presigned_url")[0]["Params"] == {
+        "Bucket": EVENT_MEDIA_BUCKET,
+        "Key": WATERMARKED_PREVIEW_OBJECT_KEY,
+    }
 
 
 def test_sign_accepted_preview_locally_signs_one_managed_preview_for_six_hours(
@@ -282,7 +282,7 @@ def test_sign_accepted_preview_rejects_an_original_before_calling_the_client(
 def test_sign_final_adds_a_safe_attachment_disposition(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
-    client.put_object(ORIGINALS_BUCKET, FINAL_KEY, b"jpeg-data", '"final-etag"')
+    client.failures["head_object"] = client_error(503)
 
     url = storage.sign_final(key=FINAL_KEY, attachment_filename="findme-photo-photo-42.jpg")
 
@@ -318,13 +318,13 @@ def test_sign_final_rejects_malformed_attachment_filename_before_client_call(
     assert client.calls == []
 
 
-def test_sign_final_rejects_a_non_image_object_before_signing(
+def test_open_final_rejects_a_non_image_object(
     storage: PrivateUploadStorage, client: FakeS3Client
 ) -> None:
     client.put_object(ORIGINALS_BUCKET, FINAL_KEY, b"not-an-image", '"final-etag"', "text/plain")
 
     with pytest.raises(ObjectMismatch):
-        storage.sign_final(key=FINAL_KEY)
+        storage.open_final(key=FINAL_KEY)
 
     assert calls(client, "generate_presigned_url") == []
 
@@ -345,11 +345,12 @@ def test_open_final_allows_only_the_content_addressed_published_preview_namespac
     ]
 
 
-def test_open_final_rejects_invalid_key_before_client_call(
-    storage: PrivateUploadStorage, client: FakeS3Client
+@pytest.mark.parametrize("method", ["open_final", "sign_final"])
+def test_final_methods_reject_incoming_key_before_client_call(
+    storage: PrivateUploadStorage, client: FakeS3Client, method: str
 ) -> None:
     with pytest.raises(ValueError):
-        storage.open_final(key=INCOMING_KEY)
+        getattr(storage, method)(key=INCOMING_KEY)
 
     assert client.calls == []
 

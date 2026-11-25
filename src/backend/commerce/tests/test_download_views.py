@@ -46,7 +46,7 @@ class PurchasedDownloadViewTests(OrderViewFixture):
         EVENT_MEDIA_S3_BUCKET="gallery-media",
         ORIGINALS_S3_BUCKET="originals-bucket",
     )
-    def test_paid_cdn_grant_checks_entitlement_and_records_exact_original(self):
+    def test_paid_cdn_grant_checks_entitlement_without_storage_reads(self):
         self.enable(purchase=FEATURE_FLAG_ON)
         self.feature_flag_states[GALLERY_CDN_IMAGES] = FEATURE_FLAG_ON
         self.photo.original_key = "originals/" + "a" * 32
@@ -55,15 +55,11 @@ class PurchasedDownloadViewTests(OrderViewFixture):
         url = self.download_url(order, self.photo.pk)
         with patch("ingestion.storage.boto3.client") as client:
             inspect = client.return_value.head_object
-            inspect.return_value = {
-                "ETag": '"etag"',
-                "ContentLength": 10,
-                "ContentType": "image/jpeg",
-            }
+            inspect.side_effect = AssertionError("HEAD must not be used to issue a grant")
             assert Client().get(url).status_code == 404
             inspect.assert_not_called()
             response = self.client.get(url)
-        inspect.assert_called_once_with(Bucket="originals-bucket", Key=self.photo.original_key)
+        inspect.assert_not_called()
         assert response.status_code == 302
         assert response["Location"].startswith(
             f"https://img.example.test/delivery/{self.photo.original_key}/findme-photo-{self.photo.pk}.jpg?md5="

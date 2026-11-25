@@ -63,8 +63,20 @@ SOURCES = {
                 ("findme_queue_ready_count", "findme-http"),
                 ("findme_queue_results_observed_timestamp_seconds", "findme-queue-telemetry"),
                 ("findme_queue_duration_observations_total", "findme-queue-telemetry"),
+                (f"{catalog.CYCLE_DURATION_METRIC}_count", "findme-queue-telemetry"),
+                (f"{catalog.CYCLE_DURATION_METRIC}_sum", "findme-queue-telemetry"),
             )
             for queue in WORK_QUEUES
+        ),
+        *(
+            {
+                "__name__": f"{catalog.CYCLE_DURATION_METRIC}_bucket",
+                "job": "findme-queue-telemetry",
+                "queue": queue,
+                "le": bound,
+            }
+            for queue in WORK_QUEUES
+            for bound in (*catalog.CYCLE_DURATION_BUCKETS, "+Inf")
         ),
         *(
             {

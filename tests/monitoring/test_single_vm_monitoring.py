@@ -97,13 +97,17 @@ def test_detail_dashboards_preserve_all_charts_and_queue_assignment():
         if key != "overview"
         for c in module.control._dashboard_charts(d)
     ]
-    assert len(detail_ids) == len(set(detail_ids)) == 121
+    assert len(detail_ids) == len(set(detail_ids)) == 134
     assert original_ids <= set(detail_ids)
     assert len(module.control._dashboard_charts(rendered["overview"])) <= 8
     expected = {"upload": 7, "search": 4, "commerce": 2}
     for key, count in expected.items():
-        queue_groups = [w for w in rendered[key]["widgets"] if len(w["group"]["widgets"]) == 6]
-        assert len(queue_groups) == count
+        queue_groups = rendered[key]["widgets"][:count]
+        for group in queue_groups:
+            assert len(group["group"]["widgets"]) == 7
+            for child in group["group"]["widgets"]:
+                position = child["position"]
+                assert int(position.get("y", 0)) + int(position["h"]) <= int(group["position"]["h"])
     for key, dashboard in rendered.items():
         assert len(dashboard["links"]) == 5
         for first, second in combinations(dashboard["widgets"], 2):

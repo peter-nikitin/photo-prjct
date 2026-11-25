@@ -6,9 +6,10 @@ from collections.abc import Iterator
 from threading import Lock
 from typing import Any
 
+from prometheus_client import Histogram
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, Metric
 
-from config.queue_catalog import QUEUES
+from config.queue_catalog import CYCLE_DURATION_BUCKETS, CYCLE_DURATION_METRIC, QUEUES
 from config.queue_telemetry_protocol import (
     COMPLETED_EVENT,
     COMPLETION_VERSION,
@@ -78,6 +79,15 @@ class QueueTelemetry:
         self._segments_ms = {
             queue: dict.fromkeys(segments, 0) for queue, segments in SEGMENTS.items()
         }
+        self._cycle_duration = Histogram(
+            CYCLE_DURATION_METRIC,
+            "Elapsed time of successful cycles with complete timings.",
+            labelnames=("queue",),
+            buckets=tuple(map(float, CYCLE_DURATION_BUCKETS)),
+            registry=None,
+        )
+        for queue in SEGMENTS:
+            self._cycle_duration.labels(queue)
         self._counts: dict[str, int] = {}
         self._durations_ms: dict[str, dict[str, int]] = {}
 
@@ -121,6 +131,7 @@ class QueueTelemetry:
                 and all(type(ms) is int and 0 <= ms <= MAX_SEGMENT_MS for ms in timings.values())
             ):
                 self._observations[queue] += 1
+                self._cycle_duration.labels(queue).observe(sum(timings.values()) / 1000)
                 for segment, ms in timings.items():
                     self._segments_ms[queue][segment] += ms
 
@@ -142,6 +153,7 @@ class QueueTelemetry:
             listening = self._listening
             results = {queue: outcomes.copy() for queue, outcomes in self._results.items()}
             observations = self._observations.copy()
+            cycle_duration = list(self._cycle_duration.collect())
             segments_ms = {queue: segments.copy() for queue, segments in self._segments_ms.items()}
             counts = self._counts.copy()
             durations_ms = {queue: totals.copy() for queue, totals in self._durations_ms.items()}
@@ -198,3 +210,4 @@ class QueueTelemetry:
         yield result
         yield measurement
         yield timings
+        yield from cycle_duration

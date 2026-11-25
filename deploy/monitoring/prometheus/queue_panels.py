@@ -34,8 +34,9 @@ def _selector(metric: str, queue: str, job: str = "findme-queue-telemetry", **la
 def _fresh(queue: str, source: str) -> str:
     job = "findme-http" if source == "ready" else "findme-queue-telemetry"
     observed = _selector(f"findme_queue_{source}_observed_timestamp_seconds", queue, job)
+    # Scrape timestamps can be milliseconds ahead of the whole-second query grid.
     # Center the allowed age interval [0, 150] at 75 to use the selector once.
-    return f"(abs(time() - max({observed}) - 75) <= 75)"
+    return f"(abs(time() - floor(max({observed})) - 75) <= 75)"
 
 
 def _gate(expression: str, queue: str, source: str) -> str:
@@ -55,7 +56,7 @@ def _reset_difference(last: str, first: str) -> str:
     return f"(({last}-{first}>=0) or ({last}<{first}))"
 
 
-def _interval_increment(counter: str) -> str:
+def _interval_increment(counter: str, *, bound_period: bool) -> str:
     """Observe each transition in a minute bucket, including two jittered polls.
 
     The single minute-aligned agent route can place two neighboring scrapes in
@@ -70,8 +71,11 @@ def _interval_increment(counter: str) -> str:
     preceding = f"{_reset_difference(first, previous)} or (0*{counter})"
     last_increment = f"({difference}>=0) or ({counter} and ({difference}<0))"
     two = f"(({preceding}) + ({last_increment})) and ({count}==2)"
-    before_range = f"timestamp({counter})<=timestamp({counter} @ start())"
-    return f"sum((({one}) or ({two})) unless ({before_range}))"
+    increment = f"(({one}) or ({two}))"
+    if bound_period:
+        before_range = f"timestamp({counter})<=timestamp({counter} @ start())"
+        increment += f" unless ({before_range})"
+    return f"sum({increment})"
 
 
 def _chart(
@@ -168,7 +172,7 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
         mean = f"sum(rate({counter}[5m])) / (sum(rate({measured}[5m])) > 0)"
         means.append((_gate(mean, queue.key, "results"), segment.title, segment.color))
         # SUM reduces disjoint minute buckets over the whole selected interval.
-        delta = _interval_increment(counter)
+        delta = _interval_increment(counter, bound_period=True)
         deltas.append((_gate(f"({delta}) > 0", queue.key, "results"), segment.title, segment.color))
 
     widgets = [
@@ -222,7 +226,10 @@ def _panel(queue: QueueDefinition, workspace_id: str, y: int) -> dict[str, Any]:
             [
                 (
                     _gate(
-                        _interval_increment(_selector(result_counter, queue.key, outcome=outcome)),
+                        _interval_increment(
+                            _selector(result_counter, queue.key, outcome=outcome),
+                            bound_period=False,
+                        ),
                         queue.key,
                         "results",
                     ),

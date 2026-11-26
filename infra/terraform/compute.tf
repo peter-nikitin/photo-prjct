@@ -37,6 +37,8 @@ resource "yandex_compute_instance" "app" {
     })
     serial-port-enable = "1"
     enable-oslogin     = "false"
+    # Default daily в core. Установщик агента читает политику при регистрации.
+    cloudbackup = jsonencode({ initialPolicies = ["cdg3zbstfcpxlmyrxm3a"] })
   }
 
   lifecycle {

@@ -675,7 +675,17 @@
         }
       } else if (cancel) {
         const clientItemId = cancel.dataset.clientItemId;
-        batchForItem(clientItemId)?.cancel(clientItemId);
+        const batch = batchForItem(clientItemId);
+        if (!batch) return;
+        globalError = '';
+        try {
+          await batch.cancel(clientItemId);
+        } catch (error) {
+          globalError = 'Не удалось завершить загрузку. Обновите страницу, чтобы проверить её состояние.';
+          batch.active = false;
+          notifyActivity(batch);
+          render();
+        }
       }
     });
     globalScope.addEventListener?.('beforeunload', (event) => {
@@ -708,6 +718,7 @@
       this.finalized = false;
       this.transferQueue = [];
       this.runningTransfers = 0;
+      this.slots = { post: { active: 0, queue: [] }, confirm: { active: 0, queue: [] } };
       this.manualRetryCycles = new Map();
     }
 
@@ -787,6 +798,10 @@
         this.items.map((item) => this.enqueueTransfer(item, null, item.cycleToken)),
       );
       await this.finalizeIfReady();
+      if (!this.finalized) {
+        this.active = false;
+        this.onChange(this);
+      }
       return this;
     }
 
@@ -842,6 +857,8 @@
           error: '',
           xhr: null,
           durable: true,
+          confirmationPending: manifestItem.status === 'authorized',
+          confirmationProbe: manifestItem.status === 'authorized',
           cycleToken: this.createCycleToken(),
         };
       });
@@ -888,11 +905,34 @@
         failureReported: false,
         retryTimer: null,
         wakeRetry: null,
+        postAttempts: 0,
+        postDurationMs: 0,
+        httpStatus: 0,
       };
     }
 
     enqueueTransfer(item, initialGrant = null, token = item.cycleToken) {
-      return this.enqueueWork(() => this.processItem(item, initialGrant, token));
+      return this.enqueueWork(() => {
+        if (this.recoveryBlocked() && !token.cancelled) {
+          item.deferred = true;
+          return Promise.resolve(false);
+        }
+        return this.processItem(item, initialGrant, token);
+      });
+    }
+
+    recoveryBlocked() {
+      return this.items.some((item) => (item.confirmationPending || item.pendingFailure?.waiting) && item.status === 'failed');
+    }
+
+    async resumeDeferred() {
+      if (this.recoveryBlocked()) return;
+      const deferred = this.items.filter((item) => item.deferred);
+      for (const item of deferred) item.deferred = false;
+      await waitForTransfers(deferred.map((item) => item.status === 'retry_pending'
+        ? this.enqueueWork(() => this.runResumeRetry(item, item.cycleToken))
+        : this.enqueueTransfer(item, null, item.cycleToken)));
+      await this.finalizeIfReady();
     }
 
     enqueueWork(run) {
@@ -903,7 +943,7 @@
     }
 
     drainTransferQueue() {
-      const limit = Math.min(this.config.concurrency, 4);
+      const limit = 8;
       while (this.runningTransfers < limit && this.transferQueue.length) {
         const queued = this.transferQueue.shift();
         this.runningTransfers += 1;
@@ -916,6 +956,81 @@
       }
     }
 
+    withSlot(kind, run) {
+      const pool = this.slots[kind];
+      const limit = kind === 'post' ? Math.min(this.config.concurrency, 4) : 4;
+      return new Promise((resolve, reject) => {
+        pool.queue.push({ run, resolve, reject });
+        const drain = () => {
+          while (pool.active < limit && pool.queue.length) {
+            const work = pool.queue.shift();
+            pool.active += 1;
+            Promise.resolve().then(work.run).then(work.resolve, work.reject).finally(() => {
+              pool.active -= 1;
+              drain();
+            });
+          }
+        };
+        drain();
+      });
+    }
+
+    async confirmItem(item, token, { probe = false } = {}) {
+      const result = await this.withSlot('confirm', async () => {
+        // A queued confirmation can still be cancelled before it starts. Once a
+        // request starts its response may be lost after commit; recover with confirm.
+        if (token.cancelled && !item.confirmationStarted) {
+          return null;
+        }
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          try {
+            item.confirmationStarted = true;
+            await this.control(
+              interpolate(this.config.confirmUrl, { batch: this.batchId, item: item.id }), {},
+            );
+            item.confirmationPending = false;
+            item.confirmationProbe = false;
+            item.status = 'uploaded';
+            item.progress = 100;
+            item.error = '';
+            this.onChange(this);
+            return true;
+          } catch (error) {
+            const code = error.payload?.error?.code;
+            if (probe && code === 'object_missing') {
+              item.confirmationPending = false;
+              item.confirmationProbe = false;
+              item.confirmationStarted = false;
+              return false;
+            }
+            const retryable = !(error instanceof ControlError) || retryableTransfer(error.status);
+            if (retryable && attempt < 3) {
+              await this.waitForRetry(token, [1000, 3000, 7000][attempt]);
+              continue;
+            }
+            // A transport failure leaves server authority unknown. Keep the file
+            // retryable in memory and never turn it into a new data upload.
+            item.confirmationPending = retryable;
+            if (!retryable) item.confirmationStarted = false;
+            item.status = 'failed';
+            item.error = retryable
+              ? 'Не удалось подтвердить загрузку. Повторите подтверждение.'
+              : 'Сервер не подтвердил файл. Повторите загрузку.';
+            this.onChange(this);
+            return false;
+          }
+        }
+        return false;
+      });
+      if (result === null) {
+        // Cancellation may need confirm to reconcile a concurrent commit. Release
+        // this slot first so several cancellations cannot wait on their own pool.
+        await this.finishCancellation(item, token);
+        return item.status === 'uploaded';
+      }
+      return result;
+    }
+
     markUploading(item, token) {
       if (token.cancelled || item.status === 'uploading') return;
       item.status = 'uploading';
@@ -924,6 +1039,10 @@
     }
 
     async processItem(item, initialGrant = null, token = item.cycleToken) {
+      if (item.confirmationPending) {
+        const confirmed = await this.confirmItem(item, token, { probe: item.confirmationProbe });
+        if (confirmed || item.confirmationPending || item.status === 'failed') return confirmed;
+      }
       let grant = initialGrant;
       let dataAttempt = 0;
       let refreshed = false;
@@ -936,11 +1055,10 @@
         if (!grant) {
           let authorization;
           try {
-            authorization = await this.control(
+            authorization = await this.withSlot('post', () => this.control(
               interpolate(this.config.authorizeUrl, { batch: this.batchId, item: item.id }),
-              { reason: 'data_attempt' },
-              token,
-            );
+              { reason: 'data_attempt' }, token,
+            ));
           } catch (error) {
             if (token.cancelled) {
               await this.finishCancellation(item, token);
@@ -954,7 +1072,9 @@
           await this.finishCancellation(item, token);
           return;
         }
-        const outcome = await this.transfer(item, grant);
+        const outcome = await this.withSlot('post', () => token.cancelled
+          ? { type: 'cancelled', status: 0 }
+          : this.transfer(item, grant, token));
         grant = null;
         if (token.cancelled || outcome.type === 'cancelled') {
           token.cancelled = true;
@@ -962,25 +1082,16 @@
           return;
         }
         if (outcome.status >= 200 && outcome.status < 300) {
-          await this.control(
-            interpolate(this.config.confirmUrl, { batch: this.batchId, item: item.id }),
-            {},
-          );
-          item.status = 'uploaded';
-          item.progress = 100;
-          item.error = '';
-          this.onChange(this);
-          return;
+          return this.confirmItem(item, token);
         }
         if (outcome.status === 403 && !refreshed) {
           refreshed = true;
           let authorization;
           try {
-            authorization = await this.control(
+            authorization = await this.withSlot('post', () => this.control(
               interpolate(this.config.authorizeUrl, { batch: this.batchId, item: item.id }),
-              { reason: 'grant_refresh' },
-              token,
-            );
+              { reason: 'grant_refresh' }, token,
+            ));
           } catch (error) {
             if (token.cancelled) {
               await this.finishCancellation(item, token);
@@ -992,16 +1103,12 @@
           continue;
         }
         if (outcome.status === 403 || !retryableTransfer(outcome.status)) {
-          await this.failItem(item, 'transfer_retries_exhausted', 'Не удалось передать файл.');
+          await this.failTransfer(item, outcome, token);
           return;
         }
         dataAttempt += 1;
         if (dataAttempt >= 4) {
-          await this.failItem(
-            item,
-            'transfer_retries_exhausted',
-            'Не удалось передать файл после четырёх попыток.',
-          );
+          await this.failTransfer(item, outcome, token);
           return;
         }
         await this.waitForRetry(token, [1000, 3000, 7000][dataAttempt - 1]);
@@ -1027,10 +1134,20 @@
     async finishCancellation(item, token) {
       if (token.failureReported) return;
       token.failureReported = true;
+      token.httpStatus = 0;
       await this.failItem(item, 'transfer_cancelled', 'Передача отменена.');
     }
 
-    transfer(item, grant) {
+    async failTransfer(item, outcome, token) {
+      const [code, message] = outcome.type === 'timeout'
+        ? ['transfer_timeout', 'Истекло время передачи файла. Повторите попытку.']
+        : outcome.type === 'error'
+          ? ['transfer_network_error', 'Соединение прервалось при передаче файла. Повторите попытку.']
+          : ['transfer_http_error', `Хранилище отклонило передачу файла (HTTP ${outcome.status}). Повторите попытку.`];
+      await this.failItem(item, code, message, token);
+    }
+
+    transfer(item, grant, token = item.cycleToken) {
       return new Promise((resolve) => {
         const xhr = new this.XMLHttpRequest();
         item.xhr = xhr;
@@ -1042,42 +1159,69 @@
             this.onChange(this);
           }
         };
-        xhr.onload = () => {
+        const started = globalScope.performance.now();
+        const finish = (type) => {
           item.xhr = null;
-          resolve({ type: 'load', status: xhr.status });
+          token.httpStatus = type === 'load' ? xhr.status : 0;
+          token.postDurationMs = Math.min(600000, token.postDurationMs + Math.max(0, Math.round(globalScope.performance.now() - started)));
+          resolve({ type, status: token.httpStatus });
         };
-        xhr.onerror = () => {
-          item.xhr = null;
-          resolve({ type: 'error', status: 0 });
-        };
-        xhr.ontimeout = () => {
-          item.xhr = null;
-          resolve({ type: 'timeout', status: 0 });
-        };
-        xhr.onabort = () => {
-          item.xhr = null;
-          resolve({ type: 'cancelled', status: 0 });
-        };
+        xhr.onload = () => finish('load');
+        xhr.onerror = () => finish('error');
+        xhr.ontimeout = () => finish('timeout');
+        xhr.onabort = () => finish('cancelled');
         const form = new this.FormData();
         for (const [key, value] of Object.entries(grant.fields)) {
           form.append(key, value);
         }
         form.append('file', item.file);
+        token.postAttempts += 1;
         xhr.send(form);
       });
     }
 
-    async failItem(item, code, message) {
-      await this.control(
-        interpolate(this.config.failedUrl, { batch: this.batchId, item: item.id }),
-        { code },
-      );
+    async failItem(item, code, message, token = item.cycleToken) {
+      item.pendingFailure = {
+        body: { code, http_status: token.httpStatus, post_attempts: token.postAttempts, post_duration_ms: token.postDurationMs },
+        message,
+      };
       item.status = 'failed';
       item.error = message;
       this.onChange(this);
+      return this.submitFailureReport(item, token);
     }
 
-    cancel(clientItemId) {
+    async submitFailureReport(item, token) {
+      const report = item.pendingFailure;
+      if (!report) return true;
+      try {
+        await this.control(
+          interpolate(this.config.failedUrl, { batch: this.batchId, item: item.id }), report.body,
+        );
+      } catch (error) {
+        if (error.payload?.error?.code === 'item_uploaded') {
+          // A concurrent confirmation committed first. Reconcile its authority
+          // instead of reporting cancellation or retransmitting an accepted file.
+          item.pendingFailure = null;
+          item.confirmationPending = true;
+          item.confirmationStarted = true;
+          return this.confirmItem(item, token);
+        }
+        report.waiting = true;
+        item.status = 'failed';
+        item.error = report.message;
+        this.onChange(this);
+        return false;
+      }
+      item.pendingFailure = null;
+      item.confirmationPending = false;
+      item.confirmationProbe = false;
+      item.confirmationStarted = false;
+      this.onChange(this);
+      return true;
+    }
+
+    async cancel(clientItemId) {
       const item = this.items.find((candidate) => candidate.clientItemId === clientItemId);
       const token = item?.cycleToken;
       if (!item || !token || ['uploaded', 'failed'].includes(item.status)) return false;
@@ -1087,6 +1231,22 @@
       if (item.xhr) item.xhr.abort();
       if (token.retryTimer !== null) this.clearTimeout(token.retryTimer);
       token.wakeRetry?.();
+      if (item.deferred) {
+        item.deferred = false;
+        if (item.status === 'retry_pending') {
+          // This retry has not called /retry yet: its server item is already
+          // failed. Cancel the local intention without replacing that authority.
+          item.status = 'failed';
+          item.error = 'Повтор отменён.';
+          this.onChange(this);
+          await this.finalizeIfReady();
+          return true;
+        }
+        await this.enqueueWork(async () => {
+          await this.finishCancellation(item, token);
+          await this.finalizeIfReady();
+        });
+      }
       return true;
     }
 
@@ -1105,7 +1265,10 @@
       item.error = '';
       item.cycleToken = this.createCycleToken();
       this.onChange(this);
-      const cycle = this.enqueueWork(() => this.runManualRetry(item, item.cycleToken));
+      const cycle = this.enqueueWork(() => this.runManualRetry(item, item.cycleToken)).then(async (completed) => {
+        await this.resumeDeferred();
+        return completed;
+      });
       this.manualRetryCycles.set(clientItemId, cycle);
       cycle.then(
         () => this.manualRetryCycles.delete(clientItemId),
@@ -1115,19 +1278,45 @@
     }
 
     async runManualRetry(item, token) {
+      if (item.pendingFailure) {
+        const recorded = await this.submitFailureReport(item, token);
+        if (!recorded) {
+          this.active = this.items.some((candidate) => !['uploaded', 'failed'].includes(candidate.status) && !candidate.deferred);
+          this.onChange(this);
+          return false;
+        }
+        if (item.status === 'uploaded') {
+          await this.finalizeIfReady();
+          return true;
+        }
+      }
+      if (!item.confirmationPending && this.recoveryBlocked() && !token.cancelled) {
+        item.deferred = true;
+        this.active = false;
+        this.onChange(this);
+        return false;
+      }
       let completed = true;
       try {
         this.markUploading(item, token);
-        const authorization = await this.control(
-          interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
-          {},
-          token,
-        );
+        if (item.confirmationPending) {
+          completed = await this.confirmItem(item, token, { probe: item.confirmationProbe });
+          if (!completed && !item.confirmationPending && item.status !== 'failed') {
+            completed = await this.processItem(item, null, token) !== false;
+          }
+          await this.finalizeIfReady();
+          if (!completed) this.active = this.items.some((candidate) => !['uploaded', 'failed'].includes(candidate.status));
+          this.onChange(this);
+          return completed;
+        }
+        const authorization = await this.withSlot('post', () => this.control(
+          interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }), {}, token,
+        ));
         this.finalized = false;
         if (token.cancelled) {
           await this.finishCancellation(item, token);
         } else {
-          await this.processItem(item, authorization.grant, token);
+          completed = await this.processItem(item, authorization.grant, token) !== false;
         }
       } catch (error) {
         if (token.cancelled) {
@@ -1138,25 +1327,31 @@
         }
       }
       await this.finalizeIfReady();
+      if (!completed) {
+        this.active = this.items.some((candidate) => !['uploaded', 'failed'].includes(candidate.status));
+        this.onChange(this);
+      }
       return completed;
     }
 
     async runResumeRetry(item, token) {
+      if (this.recoveryBlocked() && !token.cancelled) {
+        item.deferred = true;
+        return false;
+      }
       let completed = true;
       let retryAuthorized = false;
       try {
         this.markUploading(item, token);
-        const authorization = await this.control(
-          interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }),
-          {},
-          token,
-        );
+        const authorization = await this.withSlot('post', () => this.control(
+          interpolate(this.config.retryUrl, { batch: this.batchId, item: item.id }), {}, token,
+        ));
         retryAuthorized = true;
         this.finalized = false;
         if (token.cancelled) {
           await this.finishCancellation(item, token);
         } else {
-          await this.processItem(item, authorization.grant, token);
+          completed = await this.processItem(item, authorization.grant, token) !== false;
         }
       } catch (error) {
         if (token.cancelled) {
@@ -1165,7 +1360,7 @@
           if (retryAuthorized) {
             await this.failItem(
               item,
-              'transfer_retries_exhausted',
+              'transfer_network_error',
               'Не удалось повторить загрузку. Повторите попытку.',
             );
           }
@@ -1174,6 +1369,10 @@
         }
       }
       await this.finalizeIfReady();
+      if (!completed) {
+        this.active = this.items.some((candidate) => !['uploaded', 'failed'].includes(candidate.status));
+        this.onChange(this);
+      }
       return completed;
     }
 
@@ -1211,7 +1410,7 @@
     async finalizeIfReady() {
       const durableItems = this.items.filter((item) => item.durable !== false);
       const terminal = durableItems.length > 0 && durableItems.every(
-        (item) => ['uploaded', 'failed'].includes(item.status),
+        (item) => ['uploaded', 'failed'].includes(item.status) && !item.confirmationPending && !item.pendingFailure,
       );
       if (!this.registeredAll || !terminal || this.finalizing || this.finalized) {
         return;

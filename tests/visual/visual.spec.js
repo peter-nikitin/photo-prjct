@@ -2910,10 +2910,13 @@ test('manual retry confirm failure is contained without an unhandled page error'
 
   await page.getByRole('button', { name: 'Повторить' }).click();
 
-  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично');
+  await expect(page.locator('#upload-summary-title')).toHaveText('Загружено частично', { timeout: 20000 });
   await expect(page.locator('[data-file-error]')).toHaveText(
-    'Не удалось повторить загрузку. Повторите попытку.',
+    'Не удалось подтвердить загрузку. Повторите подтверждение.',
   );
   expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/failed/'))).toHaveLength(1);
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/confirm/'))).toHaveLength(4);
+  expect(stubs.controlCalls.filter(({ path }) => path.endsWith('/retry/'))).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Повторить' })).toBeVisible();
   expect(stubs.pageErrors).toEqual([]);
 });

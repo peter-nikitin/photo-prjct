@@ -82,13 +82,43 @@ class AuthorizationForm(forms.Form):
     )
 
 
+class DiagnosticIntegerField(forms.IntegerField):
+    def to_python(self, value: object) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise forms.ValidationError("Submit an integer.")
+        return super().to_python(value)
+
+
 class FailureForm(forms.Form):
     code = forms.ChoiceField(
-        choices=(
-            ("transfer_retries_exhausted", "transfer_retries_exhausted"),
-            ("transfer_cancelled", "transfer_cancelled"),
+        choices=tuple(
+            (code, code)
+            for code in (
+                "transfer_http_error",
+                "transfer_network_error",
+                "transfer_timeout",
+                "transfer_cancelled",
+            )
         )
     )
+    http_status = DiagnosticIntegerField(min_value=0, max_value=599)
+    post_attempts = DiagnosticIntegerField(min_value=0, max_value=5)
+    post_duration_ms = DiagnosticIntegerField(min_value=0, max_value=600000)
+
+    def clean(self) -> dict[str, Any]:
+        cleaned_data = super().clean()
+        if set(self.data) - set(self.fields):
+            raise forms.ValidationError("Unexpected diagnostic fields.")
+        status = cleaned_data.get("http_status")
+        code = cleaned_data.get("code")
+        if status is not None and (
+            (code == "transfer_http_error" and status < 100)
+            or (code != "transfer_http_error" and status != 0)
+        ):
+            self.add_error("http_status", "The status does not match the failure type.")
+        if code != "transfer_cancelled" and cleaned_data.get("post_attempts") == 0:
+            self.add_error("post_attempts", "A transfer failure requires an actual POST.")
+        return cleaned_data
 
 
 class EmptyJsonForm(forms.Form):

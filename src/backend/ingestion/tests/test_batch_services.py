@@ -92,6 +92,24 @@ class BatchServiceTests(TransactionTestCase):
         )
         return result.items[0]
 
+    def test_status_derivation_reads_all_item_states_in_one_query(self) -> None:
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        batch = self.make_batch(2)
+        first = self.register_one(batch.id)
+        UploadItem.objects.filter(pk=first.id).update(status=UploadItem.Status.FAILED)
+        with CaptureQueriesContext(connection) as captured:
+            result = derive_batch_status(uploader=self.user, batch_id=batch.id)
+        reads = [
+            query["sql"]
+            for query in captured
+            if query["sql"].startswith("SELECT") and '"ingestion_uploaditem"' in query["sql"]
+        ]
+        self.assertEqual(len(reads), 1)
+        self.assertEqual((result.uploaded, result.failed), (0, 1))
+        self.assertNotIn(result.status, {UploadBatch.Status.COMPLETED, UploadBatch.Status.FAILED})
+
     def test_results_are_immutable_and_count_is_validated(self) -> None:
         result = self.make_batch()
         with self.assertRaises(FrozenInstanceError):
@@ -350,7 +368,7 @@ class BatchServiceTests(TransactionTestCase):
                 uploader=self.user,
                 batch_id=batch.id,
                 item_id=item.id,
-                code="transfer_retries_exhausted",
+                code="transfer_http_error",
             )
         with self.assertRaises(ItemStateConflict):
             manual_retry_item(

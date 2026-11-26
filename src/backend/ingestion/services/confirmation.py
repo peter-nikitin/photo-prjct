@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from io import BytesIO
 from typing import Protocol
 from uuid import UUID
@@ -81,38 +82,60 @@ def confirm_upload_item(
                 existing_photo = None
                 _require_authorized(item)
 
-                recovering_final = _inspect_recoverable_final(storage=storage, item=item)
-                if recovering_final:
-                    checkpoint = item.verified_source_etag or ""
-                else:
-                    try:
-                        source = verify_jpeg_object(
-                            storage=storage,
-                            key=item.incoming_key,
-                            expected_size=item.expected_size,
-                        )
-                    except OriginalVerificationError as error:
-                        raise _VerificationFailure(error.code) from None
-
-                    checkpoint = source.etag_value
-                    source_etag_wire = source.etag_wire
-                    item.verified_source_etag = checkpoint
-                    item.error_code = ""
-                    item.sanitized_error_message = ""
-                    item.last_activity_at = timezone.now()
-                    item.save(
-                        update_fields=[
-                            "verified_source_etag",
-                            "error_code",
-                            "sanitized_error_message",
-                            "last_activity_at",
-                        ]
-                    )
-                    batch.last_activity_at = item.last_activity_at
-                    batch.save(update_fields=["last_activity_at"])
+            authorization = (item.upload_attempts, item.authorization_expires_at)
+            previous_checkpoint = item.verified_source_etag
 
         if existing_photo is not None:
             _best_effort_delete(storage=storage, incoming_key=incoming_key)
+            return existing_photo
+
+        # The owned snapshot is not authority: all storage I/O is outside the batch
+        # lock, and both subsequent writes revalidate authorization and checkpoint.
+        recovering_final = _inspect_recoverable_final(storage=storage, item=item)
+        if recovering_final:
+            checkpoint = item.verified_source_etag or ""
+        else:
+            try:
+                source = verify_jpeg_object(
+                    storage=storage,
+                    key=item.incoming_key,
+                    expected_size=item.expected_size,
+                )
+            except OriginalVerificationError as error:
+                raise _VerificationFailure(error.code) from None
+            checkpoint = source.etag_value
+            source_etag_wire = source.etag_wire
+
+        _run_failpoint(failpoint, "after_source_verification")
+        with transaction.atomic():
+            batch = _locked_owned_batch(uploader=uploader, batch_id=batch_id)
+            item = _locked_item(batch=batch, item_id=item_id)
+            if item.status == UploadItem.Status.UPLOADED:
+                existing_photo = _uploaded_photo(item)
+            else:
+                _require_authorized(item)
+                if (item.upload_attempts, item.authorization_expires_at) != authorization:
+                    raise ItemStateConflict(
+                        "authorization_changed", "The upload authorization changed."
+                    )
+                if item.verified_source_etag not in {previous_checkpoint, checkpoint}:
+                    raise ObjectChanged()
+                item.verified_source_etag = checkpoint
+                item.error_code = ""
+                item.sanitized_error_message = ""
+                item.last_activity_at = timezone.now()
+                item.save(
+                    update_fields=[
+                        "verified_source_etag",
+                        "error_code",
+                        "sanitized_error_message",
+                        "last_activity_at",
+                    ]
+                )
+                batch.last_activity_at = item.last_activity_at
+                batch.save(update_fields=["last_activity_at"])
+        if existing_photo is not None:
+            _best_effort_delete(storage=storage, incoming_key=item.incoming_key)
             return existing_photo
 
         _run_failpoint(failpoint, "after_source_checkpoint")
@@ -162,6 +185,10 @@ def confirm_upload_item(
             else:
                 completed_concurrently = False
                 _require_authorized(item)
+                if (item.upload_attempts, item.authorization_expires_at) != authorization:
+                    raise ItemStateConflict(
+                        "authorization_changed", "The upload authorization changed."
+                    )
                 if not checkpoint or item.verified_source_etag != checkpoint:
                     raise ObjectChanged()
                 if item.folder_id is not None and item.folder.event_id != batch.event_id:
@@ -212,6 +239,8 @@ def confirm_upload_item(
             batch_id=batch_id,
             item_id=item_id,
             failure=failure.code,
+            authorization=authorization,
+            checkpoints=(previous_checkpoint, checkpoint),
         )
     except StorageError as failure:
         return _record_failure(
@@ -219,6 +248,8 @@ def confirm_upload_item(
             batch_id=batch_id,
             item_id=item_id,
             failure=failure,
+            authorization=authorization,
+            checkpoints=(previous_checkpoint, checkpoint),
         )
 
 
@@ -268,6 +299,8 @@ def _record_failure(
     batch_id: UUID,
     item_id: UUID,
     failure: object,
+    authorization: tuple[int, datetime | None],
+    checkpoints: tuple[str | None, str],
 ) -> Photo | None:
     disposition = classify_failure(failure)
     messages = {
@@ -287,6 +320,11 @@ def _record_failure(
         if item.status == UploadItem.Status.UPLOADED:
             return _uploaded_photo(item)
         _require_authorized(item)
+        if (
+            item.upload_attempts,
+            item.authorization_expires_at,
+        ) != authorization or item.verified_source_etag not in checkpoints:
+            return None
         item.error_code = disposition.code
         item.sanitized_error_message = messages[disposition.code]
         item.last_activity_at = now

@@ -12,6 +12,7 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from ingestion.models import UploadItem
+from ingestion.services.batches import ItemStateConflict
 from ingestion.storage import ObjectIdentity, ObjectMissing, StorageUnavailable, UploadGrant
 from picflow.models import Event, EventFolder, Photo
 from processing.models import PhotoProcessingState, ProcessingJob
@@ -432,7 +433,14 @@ class UploadViewTests(TestCase):
         item_id = registered.json()["items"][0]["id"]
         self.client.post(
             reverse("upload_item_failed", args=[batch_id, item_id]),
-            json.dumps({"code": "transfer_retries_exhausted"}),
+            json.dumps(
+                {
+                    "code": "transfer_http_error",
+                    "http_status": 400,
+                    "post_attempts": 1,
+                    "post_duration_ms": 50,
+                }
+            ),
             content_type="application/json",
         )
         expires_at = timezone.now() + timedelta(minutes=10)
@@ -493,7 +501,14 @@ class UploadViewTests(TestCase):
         item_id = registered.json()["items"][0]["id"]
         self.client.post(
             reverse("upload_item_failed", args=[batch_id, item_id]),
-            json.dumps({"code": "transfer_cancelled"}),
+            json.dumps(
+                {
+                    "code": "transfer_cancelled",
+                    "http_status": 0,
+                    "post_attempts": 0,
+                    "post_duration_ms": 0,
+                }
+            ),
             content_type="application/json",
         )
         storage_class.return_value.create_presigned_post.side_effect = StorageUnavailable()
@@ -508,6 +523,105 @@ class UploadViewTests(TestCase):
         self.assertEqual(response.json()["error"]["code"], "storage_unavailable")
         self.assertNotIn("bucket", response.content.decode())
 
+    @patch("ingestion.views.confirm_upload_item")
+    @patch("ingestion.views.PrivateUploadStorage")
+    def test_stale_confirmation_returns_retryable_http_while_item_remains_authorized(
+        self, storage_class, confirm_upload
+    ) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+        UploadItem.objects.filter(pk=item_id).update(status=UploadItem.Status.AUTHORIZED)
+        for outcome in [
+            None,
+            ItemStateConflict("authorization_changed", "The upload authorization changed."),
+        ]:
+            with self.subTest(outcome=outcome):
+                confirm_upload.side_effect = outcome
+                confirm_upload.return_value = None
+                response = self.client.post(
+                    reverse("upload_item_confirm", args=[batch_id, item_id]),
+                    "{}",
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json()["error"]["code"], "confirmation_in_progress")
+                self.assertEqual(UploadItem.objects.get(pk=item_id).status, "authorized")
+                self.assertFalse(Photo.objects.filter(pk=UUID(item_id).hex).exists())
+
+    def test_failed_api_logs_only_bounded_safe_diagnostics(self) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+        payload = {
+            "code": "transfer_network_error",
+            "http_status": 0,
+            "post_attempts": 5,
+            "post_duration_ms": 600000,
+        }
+        with self.assertLogs("ingestion.views", level="WARNING") as captured:
+            response = self.client.post(
+                reverse("upload_item_failed", args=[batch_id, item_id]),
+                json.dumps(payload),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(UploadItem.objects.get(pk=item_id).error_code, "transfer_network_error")
+        record = captured.records[0]
+        logged = json.loads(record.getMessage())
+        self.assertEqual(logged["event"], "browser_upload_failed")
+        self.assertEqual(
+            set(logged),
+            {
+                "event",
+                "batch_id",
+                "item_id",
+                "error_code",
+                "http_status",
+                "post_attempts",
+                "post_duration_ms",
+            },
+        )
+        self.assertEqual(
+            (record.http_status, record.post_attempts, record.post_duration_ms), (0, 5, 600000)
+        )
+        self.assertEqual((record.batch_id, record.item_id), (str(batch_id), item_id))
+        self.assertNotIn("race.jpg", record.getMessage())
+        self.assertNotIn("url", record.__dict__)
+
+    def test_failed_api_rejects_invalid_or_private_diagnostics_without_mutation(self) -> None:
+        batch_id, _ = self.create_batch()
+        _, registered = self.register_item(batch_id)
+        item_id = registered.json()["items"][0]["id"]
+        payload = {
+            "code": "transfer_http_error",
+            "http_status": 403,
+            "post_attempts": 2,
+            "post_duration_ms": 50,
+        }
+        invalid_changes: list[dict[str, object]] = [
+            {"http_status": 600},
+            {"http_status": -1},
+            {"http_status": 1},
+            {"http_status": True},
+            {"post_attempts": 6},
+            {"post_attempts": "2"},
+            {"post_duration_ms": 600001},
+            {"post_duration_ms": -1},
+            {"post_duration_ms": 1.5},
+            {"code": "transfer_timeout"},
+            {"url": "https://private.test/secret"},
+        ]
+        for change in invalid_changes:
+            with self.subTest(change=change):
+                response = self.client.post(
+                    reverse("upload_item_failed", args=[batch_id, item_id]),
+                    json.dumps(payload | change),
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(UploadItem.objects.get(pk=item_id).status, "pending")
+
     def test_failed_and_finalize_return_exact_shapes(self) -> None:
         batch_id, _ = self.create_batch()
         _, registered = self.register_item(batch_id)
@@ -515,7 +629,14 @@ class UploadViewTests(TestCase):
 
         failed = self.client.post(
             reverse("upload_item_failed", args=[batch_id, item_id]),
-            json.dumps({"code": "transfer_cancelled"}),
+            json.dumps(
+                {
+                    "code": "transfer_cancelled",
+                    "http_status": 0,
+                    "post_attempts": 0,
+                    "post_duration_ms": 0,
+                }
+            ),
             content_type="application/json",
         )
         finalized = self.client.post(

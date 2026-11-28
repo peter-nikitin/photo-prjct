@@ -89,24 +89,3 @@ groups:
         annotations:
           summary: "Критический остаток места на {{ $labels.mountpoint }}"
           description: "На {{ $labels.mountpoint }} свободно менее 1 GiB или менее 5%."
-      - alert: ReadyWorkStalled
-        expr: |
-          (
-            (findme_queue_oldest_due_age_seconds{queue=~"^(gallery-search|selfie|selfie_face_search)$"} > 300
-             and on(queue,instance) (time() - findme_queue_last_success_timestamp_seconds{queue=~"^(gallery-search|selfie|selfie_face_search)$"} > 300))
-            or
-            (findme_queue_oldest_due_age_seconds{queue=~"^(photo|import|commerce)$"} > 900
-             and on(queue,instance) (time() - findme_queue_last_success_timestamp_seconds{queue=~"^(photo|import|commerce)$"} > 900))
-          )
-          and on(queue,instance) (findme_queue_due_count > 0)
-          and on(queue,instance) (time() - findme_queue_due_observed_timestamp_seconds >= 0)
-          and on(queue,instance) (time() - findme_queue_due_observed_timestamp_seconds < 300)
-        for: 5m
-        labels:
-          severity: critical
-          project: findme-photo
-          notification: actionable
-          incident: queue
-        annotations:
-          summary: "Очередь {{ $labels.queue }} не продвигается"
-          description: "Готовая работа ожидает дольше порога без успешного прогресса."

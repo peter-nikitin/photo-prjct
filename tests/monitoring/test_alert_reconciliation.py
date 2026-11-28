@@ -184,13 +184,16 @@ def test_preflight_protocol_error_is_not_retried(monkeypatch):
     assert transport.read_samples.call_count == 1
 
 
-def test_missing_gallery_search_observation_blocks_publication(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "queue", ["gallery_matching", "photo_bib_recognition", "commerce_payment", "photo_archive"]
+)
+def test_missing_canonical_queue_observation_blocks_publication(tmp_path, monkeypatch, queue):
     module = load()
     transport = Transport(b"old rules")
     read_samples = transport.read_samples
     missing_selector = {
         "__name__": "findme_queue_due_observed_timestamp_seconds",
-        "queue": "gallery-search",
+        "queue": queue,
         "instance": "findme-photo-app",
     }
 

@@ -25,6 +25,7 @@ def _series(queues, overrides=None, listener="1+0x13"):
             ("work_available", TELEMETRY, "1+0x13"),
             ("work_observed_timestamp_seconds", TELEMETRY, "0+60x13"),
             ("ready_observed_timestamp_seconds", HTTP, "0+60x13"),
+            ("due_observed_timestamp_seconds", HTTP, "0+60x13"),
             ("results_observed_timestamp_seconds", TELEMETRY, "0+60x13"),
             ("ready_count", HTTP, "0+0x13"),
         ):
@@ -40,9 +41,11 @@ def _series(queues, overrides=None, listener="1+0x13"):
 
 
 def _expected(queue, source):
+    title = next((q.title for q in QUEUES if q.key == queue), QUEUES[0].title)
     return {
         "exp_labels": {
             "queue": queue,
+            "queue_title": title,
             "source": source,
             "instance": "findme-photo-app",
             "severity": "critical",
@@ -51,9 +54,8 @@ def _expected(queue, source):
             "incident": "queue-observation",
         },
         "exp_annotations": {
-            "summary": "Недоступен источник наблюдения очереди",
-            "description": f"Очередь {queue}, источник {source}. "
-            "Состояние сохраняется не менее 5 минут.",
+            "summary": f"Недоступен источник наблюдения очереди „{title}“ ({queue})",
+            "description": f"Источник {source}. Состояние сохраняется не менее 5 минут.",
         },
     }
 
@@ -87,7 +89,9 @@ def test_rendered_alert_handles_partial_and_complete_source_loss(tmp_path):
     )
     disconnected = [_expected(queue.key, "results") for queue in queues]
     absent = [
-        _expected(queue.key, source) for queue in queues for source in ("work", "ready", "results")
+        _expected(queue.key, source)
+        for queue in queues
+        for source in ("work", "ready", "due", "results")
     ]
 
     interrupted = _series(queues, failures)
@@ -104,6 +108,15 @@ def test_rendered_alert_handles_partial_and_complete_source_loss(tmp_path):
         "evaluation_interval": "1m",
         "tests": [
             scenario(_series(queues), ("12m", [])),
+            scenario(
+                _series(queues, {(key, "due_observed_timestamp_seconds"): None}),
+                ("4m", []),
+                ("5m", [_expected(key, "due")]),
+            ),
+            scenario(
+                _series(queues, {(key, "due_observed_timestamp_seconds"): "6000+0x13"}),
+                ("5m", [_expected(key, "due")]),
+            ),
             scenario(
                 interrupted,
                 ("4m", []),

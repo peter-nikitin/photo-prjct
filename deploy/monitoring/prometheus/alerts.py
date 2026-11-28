@@ -24,6 +24,18 @@ control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
 RULE_NAME = "findme-photo.yml"
 INSTANCE = "findme-photo-app"
+
+
+def _catalog() -> tuple[QueueDefinition, ...]:
+    path = HERE.parents[2] / "src/backend/config/queue_catalog.py"
+    spec = importlib.util.spec_from_file_location("monitoring_alert_catalog", path)
+    assert spec and spec.loader
+    catalog = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = catalog
+    spec.loader.exec_module(catalog)
+    return catalog.QUEUES
+
+
 SOURCE_SELECTORS = (
     {"__name__": "findme_probe_success", "check": "canonical-health", "instance": INSTANCE},
     {
@@ -37,14 +49,7 @@ SOURCE_SELECTORS = (
             "queue": queue,
             "instance": INSTANCE,
         }
-        for queue in (
-            "gallery-search",
-            "selfie",
-            "selfie_face_search",
-            "photo",
-            "import",
-            "commerce",
-        )
+        for queue in (definition.key for definition in _catalog())
     ),
     {"__name__": "findme_db_usable", "instance": INSTANCE},
     {"__name__": "findme_db_check_timestamp_seconds", "instance": INSTANCE},
@@ -102,33 +107,27 @@ def wait_for_sources(transport) -> None:
             time.sleep(10)
 
 
-def _catalog() -> tuple[QueueDefinition, ...]:
-    path = HERE.parents[2] / "src/backend/config/queue_catalog.py"
-    spec = importlib.util.spec_from_file_location("monitoring_alert_catalog", path)
-    assert spec and spec.loader
-    catalog = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = catalog
-    spec.loader.exec_module(catalog)
-    return catalog.QUEUES
-
-
 def _queue_observation_expression(queues: tuple[QueueDefinition, ...]) -> str:
     # The expected series exist even if all application and collector samples disappear.
     expected = " or ".join(
-        f'label_replace(vector(1), "queue", "{queue.key}", "", "")' for queue in queues
+        f'label_replace(label_replace(vector(1), "queue", "{queue.key}", "", ""), '
+        f'"queue_title", "{queue.title}", "", "")'
+        for queue in queues
     )
     telemetry = f'job="findme-queue-telemetry",instance="{INSTANCE}"'
     sources = []
     for source, job in (
         ("work", "findme-queue-telemetry"),
         ("ready", "findme-http"),
+        ("due", "findme-http"),
         ("results", "findme-queue-telemetry"),
     ):
         age = (
             "time() - max by(queue) "
             f'(findme_queue_{source}_observed_timestamp_seconds{{job="{job}",instance="{INSTANCE}"}})'
         )
-        healthy = f"(({age}) >= 0) and on(queue) (({age}) <= 150)"
+        limit = "< 300" if source == "due" else "<= 150"
+        healthy = f"(({age}) >= 0) and on(queue) (({age}) {limit})"
         if source == "work":
             healthy += (
                 f" and on(queue) (max by(queue) (findme_queue_work_available{{{telemetry}}}) == 1)"
@@ -149,10 +148,52 @@ def render_rules(queues: tuple[QueueDefinition, ...] | None = None) -> bytes:
 
     rules = yaml.safe_load((HERE / "rules.yml").read_text())
     critical = next(group for group in rules["groups"] if group["name"] == "findme-critical")
+    queues = _catalog() if queues is None else queues
+    stalled = []
+    for queue in queues:
+        threshold = (
+            300
+            if queue.key in {"selfie_recognition", "selfie_matching", "gallery_matching"}
+            else 900
+        )
+        selector = f'queue="{queue.key}"'
+        expression = (
+            f"(findme_queue_oldest_due_age_seconds{{{selector}}} > {threshold})"
+            " and on(queue,instance) (time() - "
+            f"findme_queue_last_success_timestamp_seconds{{{selector}}} > {threshold})"
+            f" and on(queue,instance) (findme_queue_due_count{{{selector}}} > 0)"
+            " and on(queue,instance) (time() - "
+            f"findme_queue_due_observed_timestamp_seconds{{{selector}}} >= 0)"
+            " and on(queue,instance) (time() - "
+            f"findme_queue_due_observed_timestamp_seconds{{{selector}}} < 300)"
+        )
+        stalled.append(
+            f'label_replace(label_replace(({expression}), "queue_title", "{queue.title}", "", ""), '
+            f'"stall_threshold", "{threshold}", "", "")'
+        )
+    critical["rules"].append(
+        {
+            "alert": "ReadyWorkStalled",
+            "expr": "\n or ".join(stalled),
+            "for": "5m",
+            "labels": {
+                "severity": "critical",
+                "project": "findme-photo",
+                "notification": "actionable",
+                "incident": "queue",
+            },
+            "annotations": {
+                "summary": "Очередь „{{ $labels.queue_title }}“ "
+                "({{ $labels.queue }}) не продвигается",
+                "description": "Готовая работа и последнее успешное завершение старше "
+                "{{ $labels.stall_threshold }} секунд. Состояние сохраняется не менее 5 минут.",
+            },
+        }
+    )
     critical["rules"].append(
         {
             "alert": "QueueObservationUnavailable",
-            "expr": _queue_observation_expression(_catalog() if queues is None else queues),
+            "expr": _queue_observation_expression(queues),
             "for": "5m",
             "labels": {
                 "instance": INSTANCE,
@@ -162,8 +203,9 @@ def render_rules(queues: tuple[QueueDefinition, ...] | None = None) -> bytes:
                 "incident": "queue-observation",
             },
             "annotations": {
-                "summary": "Недоступен источник наблюдения очереди",
-                "description": "Очередь {{ $labels.queue }}, источник {{ $labels.source }}. "
+                "summary": "Недоступен источник наблюдения очереди "
+                "„{{ $labels.queue_title }}“ ({{ $labels.queue }})",
+                "description": "Источник {{ $labels.source }}. "
                 "Состояние сохраняется не менее 5 минут.",
             },
         }

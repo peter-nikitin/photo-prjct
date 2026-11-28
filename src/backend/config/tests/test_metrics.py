@@ -195,8 +195,8 @@ class MultiprocessMetricsTests(SimpleTestCase):
         ]
         ready.return_value = {"photo_face_embedding": (2, None, 1000.0)}
         collect.return_value = {
-            "gallery-search": (2, 310.0, 0.0, 1_000.0),
-            "selfie": (0, 0.0, 950.0, 1_000.0),
+            "gallery_matching": (2, 310.0, 0.0, 1_000.0),
+            "selfie_recognition": (0, 0.0, 950.0, 1_000.0),
         }
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -204,11 +204,13 @@ class MultiprocessMetricsTests(SimpleTestCase):
         ):
             output = generate_metrics().decode()
         self.assertNotIn("findme_photo_import_", output)
-        self.assertIn('findme_queue_due_count{queue="gallery-search"} 2', output)
-        self.assertIn('findme_queue_oldest_due_age_seconds{queue="gallery-search"} 310.0', output)
-        self.assertIn('findme_queue_last_success_timestamp_seconds{queue="selfie"} 950.0', output)
+        self.assertIn('findme_queue_due_count{queue="gallery_matching"} 2', output)
+        self.assertIn('findme_queue_oldest_due_age_seconds{queue="gallery_matching"} 310.0', output)
         self.assertIn(
-            'findme_queue_due_observed_timestamp_seconds{queue="gallery-search"} 1000.0', output
+            'findme_queue_last_success_timestamp_seconds{queue="selfie_recognition"} 950.0', output
+        )
+        self.assertIn(
+            'findme_queue_due_observed_timestamp_seconds{queue="gallery_matching"} 1000.0', output
         )
         self.assertNotIn('queue="photo"', output)
         self.assertIn('findme_queue_ready_count{queue="photo_face_embedding"} 2', output)
@@ -592,7 +594,7 @@ class GallerySearchMetricsTests(TransactionTestCase):
         future = self.search()
         FaceSearchTask.objects.filter(search=future).update(available_at=now + timedelta(minutes=5))
         done = self.search(status="ready", terminal=now - timedelta(minutes=1))
-        sample = collect_queue_samples()["gallery-search"]
+        sample = collect_queue_samples()["gallery_matching"]
         self.assertEqual(sample[0], 1)
         self.assertGreaterEqual(sample[1], 420)
         self.assertAlmostEqual(sample[2], done.terminal_at.timestamp(), delta=0.1)
@@ -622,12 +624,12 @@ class GallerySearchMetricsTests(TransactionTestCase):
             key="yandex-disk-import",
             defaults={"description": "Import", "state": "on"},
         )
-        self.assertEqual(collect_queue_samples()["import"][0], 0)
+        self.assertEqual(collect_queue_samples()["disk_import"][0], 0)
         owner.user_permissions.add(Permission.objects.get(codename="upload_photos"))
-        self.assertEqual(collect_queue_samples()["import"][0], 1)
+        self.assertEqual(collect_queue_samples()["disk_import"][0], 1)
         flag.state = "off"
         flag.save(update_fields=["state"])
-        self.assertEqual(collect_queue_samples()["import"][0], 0)
+        self.assertEqual(collect_queue_samples()["disk_import"][0], 0)
         self.assertEqual(batch.status, "queued")
 
     def test_failed_queue_observation_omits_only_that_queue(self):
@@ -637,9 +639,9 @@ class GallerySearchMetricsTests(TransactionTestCase):
 
         with patch("config.queue_metrics._gallery", side_effect=DatabaseError("private")):
             samples = collect_queue_samples()
-        self.assertNotIn("gallery-search", samples)
-        self.assertIn("commerce", samples)
-        self.assertEqual(samples["commerce"][:3], (0, 0.0, 0.0))
+        self.assertNotIn("gallery_matching", samples)
+        self.assertIn("commerce_email", samples)
+        self.assertEqual(samples["commerce_email"][:3], (0, 0.0, 0.0))
 
     def test_observation_restores_outer_transaction_statement_timeout(self):
         from django.db import connection, transaction
@@ -662,8 +664,8 @@ class GallerySearchMetricsTests(TransactionTestCase):
         from config.queue_metrics import collect_queue_samples
 
         samples = collect_queue_samples()
-        self.assertEqual(samples["selfie"][:3], (0, 0.0, 0.0))
-        self.assertEqual(samples["photo"][:3], (0, 0.0, 0.0))
+        self.assertEqual(samples["selfie_recognition"][:3], (0, 0.0, 0.0))
+        self.assertEqual(samples["photo_bib_recognition"][:3], (0, 0.0, 0.0))
 
     @override_settings(
         PHOTO_PROCESSING_ENABLED=True,
@@ -725,9 +727,14 @@ class GallerySearchMetricsTests(TransactionTestCase):
                 status="succeeded",
                 completed_at=last_success - timedelta(minutes=index),
             )
-        sample = collect_queue_samples()["photo"]
-        self.assertEqual(sample[0], 2)
-        self.assertEqual(sample[2], last_success.timestamp())
+        samples = collect_queue_samples()
+        self.assertEqual(samples["photo_face_embedding"][0], 1)
+        self.assertEqual(samples["photo_face_embedding"][2], last_success.timestamp())
+        self.assertEqual(samples["photo_generate_preview"][0], 1)
+        self.assertEqual(
+            samples["photo_generate_preview"][2], (last_success - timedelta(minutes=1)).timestamp()
+        )
+        self.assertEqual(samples["photo_bib_recognition"][:3], (0, 0.0, 0.0))
 
     def test_expired_import_file_lease_is_ready_for_immediate_reclaim(self):
         from datetime import timedelta
@@ -782,7 +789,7 @@ class GallerySearchMetricsTests(TransactionTestCase):
                 heartbeat_at=now - timedelta(minutes=5),
                 lease_expires_at=expires_at,
             )
-        sample = collect_queue_samples()["import"]
+        sample = collect_queue_samples()["disk_import"]
         self.assertEqual(sample[0], 1)
         self.assertGreaterEqual(sample[1], 60)
         self.assertLess(sample[1], 120)

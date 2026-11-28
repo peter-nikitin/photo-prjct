@@ -217,61 +217,65 @@ tests:
               description: На /var/lib/findme-photo свободно менее 1 GiB или менее 5%.
   - interval: 1m
     input_series:
-      - series: 'findme_queue_due_count{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="gallery_matching",instance="findme-photo-app"}'
         values: '1+0x12'
-      - series: 'findme_queue_oldest_due_age_seconds{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="gallery_matching",instance="findme-photo-app"}'
         values: '0+60x12'
-      - series: 'findme_queue_last_success_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="gallery_matching",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_due_observed_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="gallery_matching",instance="findme-photo-app"}'
         values: '0+60x12'
     alert_rule_test:
       - eval_time: 12m
         alertname: ReadyWorkStalled
         exp_alerts:
           - exp_labels:
-              queue: gallery-search
+              queue: gallery_matching
+              queue_title: Поиск по фотографии галереи
+              stall_threshold: "300"
               instance: findme-photo-app
               severity: critical
               project: findme-photo
               notification: actionable
               incident: queue
             exp_annotations:
-              summary: Очередь gallery-search не продвигается
-              description: Готовая работа ожидает дольше порога без успешного прогресса.
+              summary: Очередь „Поиск по фотографии галереи“ (gallery_matching) не продвигается
+              description: Готовая работа и последнее успешное завершение старше 300 секунд. Состояние сохраняется не менее 5 минут.
   - interval: 1m
     input_series:
-      - series: 'findme_queue_due_count{queue="selfie_face_search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="selfie_matching",instance="findme-photo-app"}'
         values: '1+0x12'
-      - series: 'findme_queue_oldest_due_age_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="selfie_matching",instance="findme-photo-app"}'
         values: '0+60x12'
-      - series: 'findme_queue_last_success_timestamp_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="selfie_matching",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_due_observed_timestamp_seconds{queue="selfie_face_search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="selfie_matching",instance="findme-photo-app"}'
         values: '0+60x12'
     alert_rule_test:
       - eval_time: 12m
         alertname: ReadyWorkStalled
         exp_alerts:
           - exp_labels:
-              queue: selfie_face_search
+              queue: selfie_matching
+              queue_title: Поиск совпадений селфи
+              stall_threshold: "300"
               instance: findme-photo-app
               severity: critical
               project: findme-photo
               notification: actionable
               incident: queue
             exp_annotations:
-              summary: Очередь selfie_face_search не продвигается
-              description: Готовая работа ожидает дольше порога без успешного прогресса.
+              summary: Очередь „Поиск совпадений селфи“ (selfie_matching) не продвигается
+              description: Готовая работа и последнее успешное завершение старше 300 секунд. Состояние сохраняется не менее 5 минут.
   - interval: 1m
     input_series:
-      - series: 'findme_queue_due_count{queue="selfie",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="selfie_recognition",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_oldest_due_age_seconds{queue="selfie",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="selfie_recognition",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_last_success_timestamp_seconds{queue="selfie",instance="findme-photo-app"}'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="selfie_recognition",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_due_observed_timestamp_seconds{queue="selfie",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="selfie_recognition",instance="findme-photo-app"}'
         values: '0+60x12'
     alert_rule_test:
       - eval_time: 12m
@@ -279,13 +283,13 @@ tests:
         exp_alerts: []
   - interval: 1m
     input_series:
-      - series: 'findme_queue_due_count{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="gallery_matching",instance="findme-photo-app"}'
         values: '1+0x12'
-      - series: 'findme_queue_oldest_due_age_seconds{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="gallery_matching",instance="findme-photo-app"}'
         values: '0+60x12'
-      - series: 'findme_queue_last_success_timestamp_seconds{queue="gallery-search",instance="findme-photo-app"}'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="gallery_matching",instance="findme-photo-app"}'
         values: '0+0x12'
-      - series: 'findme_queue_due_observed_timestamp_seconds{queue="gallery-search",instance="other"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="gallery_matching",instance="other"}'
         values: '0+60x12'
     alert_rule_test:
       - eval_time: 12m
@@ -293,13 +297,13 @@ tests:
         exp_alerts: []
   - interval: 1m
     input_series:
-      - series: 'findme_queue_due_count{queue="photo",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="photo_bib_recognition",instance="findme-photo-app"}'
         values: '1+0x22'
-      - series: 'findme_queue_oldest_due_age_seconds{queue="photo",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="photo_bib_recognition",instance="findme-photo-app"}'
         values: '0+60x22'
-      - series: 'findme_queue_last_success_timestamp_seconds{queue="photo",instance="findme-photo-app"}'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="photo_bib_recognition",instance="findme-photo-app"}'
         values: '0+60x22'
-      - series: 'findme_queue_due_observed_timestamp_seconds{queue="photo",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="photo_bib_recognition",instance="findme-photo-app"}'
         values: '0+60x22'
     alert_rule_test:
       - eval_time: 22m
@@ -307,25 +311,27 @@ tests:
         exp_alerts: []
   - interval: 1m
     input_series:
-      - series: 'findme_queue_due_count{queue="import",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_count{queue="disk_import",instance="findme-photo-app"}'
         values: '1+0x22'
-      - series: 'findme_queue_oldest_due_age_seconds{queue="import",instance="findme-photo-app"}'
+      - series: 'findme_queue_oldest_due_age_seconds{queue="disk_import",instance="findme-photo-app"}'
         values: '0+60x22'
-      - series: 'findme_queue_last_success_timestamp_seconds{queue="import",instance="findme-photo-app"}'
+      - series: 'findme_queue_last_success_timestamp_seconds{queue="disk_import",instance="findme-photo-app"}'
         values: '0+0x22'
-      - series: 'findme_queue_due_observed_timestamp_seconds{queue="import",instance="findme-photo-app"}'
+      - series: 'findme_queue_due_observed_timestamp_seconds{queue="disk_import",instance="findme-photo-app"}'
         values: '0+60x22'
     alert_rule_test:
       - eval_time: 22m
         alertname: ReadyWorkStalled
         exp_alerts:
           - exp_labels:
-              queue: import
+              queue: disk_import
+              queue_title: Импорт с Яндекс Диска
+              stall_threshold: "900"
               instance: findme-photo-app
               severity: critical
               project: findme-photo
               notification: actionable
               incident: queue
             exp_annotations:
-              summary: Очередь import не продвигается
-              description: Готовая работа ожидает дольше порога без успешного прогресса.
+              summary: Очередь „Импорт с Яндекс Диска“ (disk_import) не продвигается
+              description: Готовая работа и последнее успешное завершение старше 900 секунд. Состояние сохраняется не менее 5 минут.

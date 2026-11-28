@@ -6,6 +6,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from functools import partial
 
 from commerce.models import EmailDelivery, EmailDeliveryAttempt, PaymentAttempt
 from commerce.tbank_gateway import TBANK_ADAPTER_KEY
@@ -104,10 +105,10 @@ def _ready_photo(jobs: QuerySet[ProcessingJob], now: datetime) -> QuerySet[Proce
     )
 
 
-def _photo(now: datetime) -> QueueSample:
+def _photo(now: datetime, *, processor: str) -> QueueSample:
     if not settings.PHOTO_PROCESSING_ENABLED:
         return _sample(0, None, None, now)
-    jobs = _photo_jobs()
+    jobs = _photo_jobs().filter(processor_type=processor)
     ready = _ready_photo(jobs, now)
     values = ready.aggregate(count=Count("pk"), oldest=Min("available_at"))
     success = (
@@ -191,31 +192,30 @@ def _ready_payment(now: datetime) -> QuerySet[PaymentAttempt]:
     )
 
 
-def _commerce(now: datetime) -> QueueSample:
-    email = _ready_email(now).aggregate(
+def _email(now: datetime) -> QueueSample:
+    values = _ready_email(now).aggregate(
         count=Count("pk"),
         oldest=Min("next_attempt_at", filter=Q(state__in=("pending", "retry_wait"))),
         expired=Min("lease_expires_at", filter=Q(state="processing")),
     )
-    payment = _ready_payment(now).aggregate(
+    success = EmailDeliveryAttempt.objects.filter(outcome="succeeded").aggregate(
+        last=Max("attempted_at")
+    )["last"]
+    oldest = min((value for value in (values["oldest"], values["expired"]) if value), default=None)
+    return _sample(values["count"], oldest, success, now)
+
+
+def _payment(now: datetime) -> QueueSample:
+    values = _ready_payment(now).aggregate(
         count=Count("pk"),
         oldest=Min("reconciliation_next_attempt_at", filter=Q(reconciliation_state="pending")),
         expired=Min("reconciliation_lease_expires_at", filter=Q(reconciliation_state="processing")),
     )
-    successes = (
-        EmailDeliveryAttempt.objects.filter(outcome="succeeded").aggregate(
-            last=Max("attempted_at")
-        )["last"],
-        PaymentAttempt.objects.filter(status="succeeded").aggregate(last=Max("terminal_at"))[
-            "last"
-        ],
-    )
-    oldest = min(
-        (value for value in (*email.values(), *payment.values()) if isinstance(value, datetime)),
-        default=None,
-    )
-    success = max((value for value in successes if value), default=None)
-    return _sample(email["count"] + payment["count"], oldest, success, now)
+    success = PaymentAttempt.objects.filter(status="succeeded").aggregate(last=Max("terminal_at"))[
+        "last"
+    ]
+    oldest = min((value for value in (values["oldest"], values["expired"]) if value), default=None)
+    return _sample(values["count"], oldest, success, now)
 
 
 def _archive(now: datetime) -> QueueSample:
@@ -234,15 +234,20 @@ def collect_queue_samples() -> dict[str, QueueSample]:
     """A failed queue omits only its own series; no failure becomes a healthy zero."""
     now = timezone.now()
     samples: dict[str, QueueSample] = {}
-    for name, collector in (
-        ("gallery-search", _gallery),
-        ("selfie", _selfie),
-        ("selfie_face_search", _selfie_matching),
-        ("photo", _photo),
-        ("import", _import),
-        ("commerce", _commerce),
-        ("photo_archive", _archive),
-    ):
+    collectors = {
+        "gallery_matching": _gallery,
+        "selfie_recognition": _selfie,
+        "selfie_matching": _selfie_matching,
+        "disk_import": _import,
+        "commerce_email": _email,
+        "commerce_payment": _payment,
+        "photo_archive": _archive,
+    }
+    for queue in QUEUES:
+        name = queue.key
+        collector = collectors.get(name)
+        if collector is None:
+            collector = partial(_photo, processor=name.removeprefix("photo_"))
         try:
             with _observation_timeout():
                 sample = collector(now)
